@@ -1,0 +1,3 @@
+[tool.pytest.ini_options]
+markers = ["slow: needs model download"]
+addopts = "-m 'not slow'"
