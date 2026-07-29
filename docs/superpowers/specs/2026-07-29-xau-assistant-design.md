@@ -67,7 +67,7 @@ ever allowed to block a trade.
     │       ├── TradeManager.mqh            # CTrade wrapper — auto-mode execution
     │       ├── AiApi.mqh                   # WebRequest client, JSON, 3s timeout
     │       ├── SignalManager.mqh           # strategy + AI → combined report, 1/bar
-    │       ├── RiskManager.mqh             # ATR lot sizing, spread check, daily-loss breaker
+    │       ├── RiskManager.mqh             # MoneyWatch: fixed-% sizing + drawdown kill switch, spread check
     │       └── Alerts.mqh                  # chart arrows, MT5 popup/push
     ├── service/
     │   ├── app/
@@ -98,13 +98,36 @@ Failure policy in AUTO + VETO: **fail-open** — trade executes, report
 marked "AI unavailable", urgent Telegram warning sent by the EA path
 that still works (MT5 alert) and by the service once it returns.
 
+## 5a. MoneyWatch (AUTO-mode risk management)
+
+Deliberately minimal — two rules, two inputs, implemented entirely in
+`RiskManager.mqh` (works even if the AI service is dead):
+
+1. **Grow — fixed-fractional sizing:** every trade risks
+   `RiskPerTradePct` (default 0.5 %) of current equity;
+   `lots = equity × risk% / (SL_distance_points × point_value)`.
+   Lots compound as equity grows and shrink as it falls. Hard
+   invariant: size never increases after a loss (no martingale).
+2. **Protect — drawdown kill switch:** track the equity high-water
+   mark (only ever rises). If equity falls `MaxDrawdownPct`
+   (default 10 %) below the peak: AUTO trading disabled, urgent
+   Telegram alert, manual re-enable required. This protects both the
+   starting balance and profits already made.
+
+State (high-water mark, kill-switch tripped) persists in MT5 global
+variables so terminal restarts cannot reset protection. MoneyWatch
+status (current risk %, distance to kill switch) is included in every
+Telegram report. Deferred by choice (add only if live data shows the
+need): losing-streak throttle, daily loss limit, AI-confidence-scaled
+sizing.
+
 ## 6. Data flow (each closed M15 bar)
 
 1. EA detects a new bar → `Strategy.mqh` returns BUY / SELL / EXIT / NONE.
 2. AUTO mode + signal: `TradeManager` executes immediately (before any
-   AI call). RiskManager gates entry: max spread, one position per
-   symbol (magic number), daily-loss circuit breaker (drops EA to
-   MANUAL for the rest of the day when hit).
+   AI call). RiskManager (MoneyWatch, §5a) gates entry: max spread,
+   one position per symbol (magic number), drawdown kill switch not
+   tripped.
 3. EA POSTs to `/analyze` on every bar — **including NONE** — with:
    symbol, timeframe, signal, last 200 closed OHLCV candles. The
    fresh candles let the service lazily resolve outcomes of past
