@@ -7,8 +7,8 @@
 ## 1. Goal
 
 An MT5-based trading assistant where the user's own strategy is the sole
-decision maker and a Time-MoE AI service acts as a confirmation/grading
-layer. Alerts via Telegram. Supports manual and automatic execution.
+decision maker and an AI forecasting service (Chronos-Bolt by default,
+swappable) acts as a confirmation/grading layer. Alerts via Telegram. Supports manual and automatic execution.
 Low-cost: runs entirely on the local machine (MT5 on Windows, Python
 service in WSL2), free demo broker account, no cloud services.
 
@@ -27,22 +27,31 @@ service in WSL2), free demo broker account, no cloud services.
 6. On a live account, auto mode refuses to trade unless
    `AllowLiveTrading = true` is explicitly set.
 
-## 3. What Time-MoE actually provides (and what it doesn't)
+## 3. What the AI model provides (and what it doesn't)
 
-Time-MoE is a **univariate point-forecasting** model. It takes a single
-numeric series (last 200 M15 closes) and predicts future values. It does
-not accept indicators, does not output probabilities, and does not
-classify regimes. Therefore the service derives the response fields:
+Default model: **Chronos-Bolt** (amazon/chronos-bolt-small to start).
+It is a **univariate probabilistic forecaster**: it takes a single
+numeric series (last 200 M15 closes) and returns **quantile forecasts**
+(e.g., q10/q25/q50/q75/q90) for the next 16 bars in a single forward
+pass. It does not accept indicators and does not classify regimes.
+The service derives the response fields:
 
-- **direction** — sign of the 16-bar-ahead forecast path vs last close.
-- **confidence** (0–1) — engineered proxy: forecast slope magnitude
-  relative to current ATR, combined with forecast monotonicity
-  (how consistently the forecast path points one way).
+- **direction** — position of the median (q50) 16-bar forecast path
+  vs last close.
+- **confidence** (0–1) — derived from the quantile distribution: how
+  far the median moves relative to ATR, discounted by the quantile
+  spread (wide q10–q90 band = uncertain, tight band clear of the
+  current price = confident).
 - **regime** — computed classically (not by the AI): ADX(14) plus ATR
   percentile over the last 100 bars → `trend | range | high_volatility`.
 - **verdict** — `confirm | neutral | conflict`, from comparing AI
   direction/confidence against the strategy signal using configurable
   thresholds.
+
+Alternative implementation: **Time-MoE** (point forecasts only; its
+confidence is an engineered proxy — forecast slope vs ATR plus
+monotonicity). Selectable via `.env`; the SQLite accuracy log (§8)
+allows A/B comparison of models on real XAUUSD data.
 
 Expectation: zero-shot directional accuracy on gold at M15 may be near
 coin-flip. The system is built to measure this (see §8) before the AI is
@@ -56,14 +65,14 @@ ever allowed to block a trade.
     │   └── Include/XauAssistant/
     │       ├── Strategy.mqh                # strategy interface + stub (user rules later)
     │       ├── TradeManager.mqh            # CTrade wrapper — auto-mode execution
-    │       ├── TimeMoeApi.mqh              # WebRequest client, JSON, 3s timeout
+    │       ├── AiApi.mqh                   # WebRequest client, JSON, 3s timeout
     │       ├── SignalManager.mqh           # strategy + AI → combined report, 1/bar
     │       ├── RiskManager.mqh             # ATR lot sizing, spread check, daily-loss breaker
     │       └── Alerts.mqh                  # chart arrows, MT5 popup/push
     ├── service/
     │   ├── app/
     │   │   ├── main.py                     # FastAPI: POST /analyze, GET /health
-    │   │   ├── forecaster.py               # Forecaster ABC + TimeMoeForecaster (50M, CPU)
+    │   │   ├── forecaster.py               # Forecaster ABC + ChronosBoltForecaster (default) + TimeMoeForecaster
     │   │   ├── analysis.py                 # forecast → direction + confidence
     │   │   ├── regime.py                   # ADX + ATR percentile classifier
     │   │   ├── verdict.py                  # grading/veto combination logic
@@ -100,7 +109,7 @@ that still works (MT5 alert) and by the service once it returns.
    symbol, timeframe, signal, last 200 closed OHLCV candles. The
    fresh candles let the service lazily resolve outcomes of past
    signals (price change 16 bars later) with no separate data feed.
-4. Service: Time-MoE forecast → direction/confidence → regime →
+4. Service: model forecast → direction/confidence → regime →
    verdict. If signal ≠ NONE: log to SQLite and send the Telegram
    report directly (no second EA round trip).
 5. EA parses the JSON response, draws the chart signal with the AI
@@ -120,8 +129,8 @@ that still works (MT5 alert) and by the service once it returns.
 
     GET /health → { status, model_loaded, db_ok }
 
-This contract is the seam for rule §2.5: swapping Time-MoE for Chronos,
-TimesFM, etc. touches only `forecaster.py`.
+This contract is the seam for rule §2.5: swapping Chronos-Bolt for
+Time-MoE, TimesFM, etc. touches only `forecaster.py`.
 
 ## 8. Accuracy tracking (from day one)
 
@@ -143,8 +152,8 @@ and deciding whether VETO mode ever turns on.
 |---|---|---|
 | Strategy evaluation (in-terminal) | µs | yes |
 | Order execution (EA → broker) | 50–300 ms | yes (AUTO) |
-| Time-MoE 50M CPU inference | ~200–500 ms | no (GRADING) |
-| Full AI round trip | ~0.5–1.5 s | only in VETO, capped 3 s |
+| Chronos-Bolt-small CPU inference (single pass) | ~20–100 ms | no (GRADING) |
+| Full AI round trip | ~0.3–1 s | only in VETO, capped 3 s |
 
 Footprint: ~1.5–2 GB RAM (PyTorch CPU + model), one inference per
 15 min. No GPU, no Docker required.
@@ -162,7 +171,7 @@ Footprint: ~1.5–2 GB RAM (PyTorch CPU + model), one inference per
 
 - **Python:** pytest with synthetic candle fixtures (known trend,
   known range, known vol spike) validating analysis/regime/verdict
-  without loading the model; one slow marked test with real Time-MoE;
+  without loading the model; one slow marked test with real Chronos-Bolt;
   contract tests on request/response schemas.
 - **EA:** compiles clean in MetaEditor; `DebugFireTestSignal` input
   exercises EA → API → Telegram end-to-end before any real strategy
@@ -173,8 +182,8 @@ Footprint: ~1.5–2 GB RAM (PyTorch CPU + model), one inference per
 
 1. **Scaffold + pipeline** — both sides, stub strategy, debug signal
    end-to-end, Telegram, SQLite logging live.
-2. **Real AI** — Time-MoE inference, confidence derivation, regime
-   detection, verdict logic.
+2. **Real AI** — Chronos-Bolt inference, quantile-based confidence,
+   regime detection, verdict logic; Time-MoE as optional alternative.
 3. **Strategy implementation** — user supplies documented rules
    (currently in a video, to be extracted as text); implemented in
    `Strategy.mqh`; live grading on demo; AUTO mode available.
