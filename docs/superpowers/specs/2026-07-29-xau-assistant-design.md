@@ -121,6 +121,54 @@ Telegram report. Deferred by choice (add only if live data shows the
 need): losing-streak throttle, daily loss limit, AI-confidence-scaled
 sizing.
 
+## 5b. Pyramiding & profit target (AUTO mode, optional)
+
+Scale into winners only — never into losers. While the strategy
+condition stays green and the open basket is in profit:
+
+- **Spacing:** add one position after each favorable move of
+  `AddTriggerATR` (default 1.0 × ATR(14)) since the last entry.
+  ATR-based, never fixed pips, so spacing adapts to volatility.
+- **Sizing:** shrinking pyramid — adds at 1.0 / 0.7 / 0.4 × initial
+  lots (`MaxPositions` default 3 total). Keeps the basket's average
+  entry anchored near the first price so a normal pullback cannot
+  round-trip the cycle.
+- **Breakeven on add:** every add moves all stops to basket
+  breakeven; from the second position onward only the market's money
+  is at risk. Total cycle risk never exceeds the initial
+  `RiskPerTradePct`.
+- **Profit target:** balance is recorded at cycle start; when basket
+  floating profit ≥ `ProfitTargetPct` (default 2.0 %) of it, close
+  all positions immediately (even if the condition is still green),
+  reset, await the next fresh signal.
+- **Loss handling:** only the stop-loss (ATR-based, default 2 × ATR)
+  or a strategy EXIT signal closes a losing trade. No exits on
+  floating loss; no adds while in loss (hard invariant, see §5a).
+
+Inputs: `EnablePyramiding`, `MaxPositions=3`, `AddTriggerATR=1.0`,
+`BreakevenOnAdd=true`, `ProfitTargetPct=2.0`, `StopAtrMult=2.0`.
+All defaults are starting points to be calibrated in the MT5 Strategy
+Tester once the real strategy rules are implemented.
+
+## 5c. Trading window & daily exposure budget
+
+The strategy is fractal/interval-based: several short trades may occur
+within a 30–60 minute burst. Exposure is capped, not trade count:
+
+- `TradingWindowStart` / `TradingWindowEnd` — entries allowed only
+  inside the configured daily window (chosen for gold liquidity,
+  e.g., London open or London/NY overlap).
+- `MaxDailyExposureMinutes` (default 60) — the EA accumulates minutes
+  of open-position time per day; once spent, no new entries until the
+  next trading day (open positions still manage/close normally).
+- **Direction filter (deterministic, EA-side):** entries additionally
+  require the classical trend check (ADX above threshold) computed
+  in the EA itself — not via the AI service — so the "only trade when
+  direction is clear" gate stays in the fast path and works when the
+  AI is down. The AI verdict remains grading-only per §2.1.
+
+Daily exposure state persists in MT5 global variables like §5a.
+
 ## 6. Data flow (each closed M15 bar)
 
 1. EA detects a new bar → `Strategy.mqh` returns BUY / SELL / EXIT / NONE.
@@ -217,6 +265,12 @@ Footprint: ~1.5–2 GB RAM (PyTorch CPU + model), one inference per
 
 - Strategy rules: pending user extraction from video (entries, exits,
   filters, session limits). Blocked on user; does not block Phases 1–2.
+- Fractal interval length: if the strategy's decision intervals are
+  shorter than 15 minutes, the EA's evaluation timeframe moves to
+  M5/M1 bar close (architecture unchanged — same event loop, smaller
+  bars). Confirm when rules are extracted.
+- Trading window hours: user to choose the daily session window
+  (recommendation: London/NY overlap for gold liquidity).
 - Telegram bot token + chat ID: user must create the bot via BotFather
   and provide credentials in `.env`.
 - Confidence/verdict thresholds: initial defaults are placeholders by
