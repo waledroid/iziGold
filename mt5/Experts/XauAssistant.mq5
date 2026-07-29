@@ -4,6 +4,8 @@
 
 #include <XauAssistant/Strategy.mqh>
 #include <XauAssistant/Alerts.mqh>
+#include <XauAssistant/AiApi.mqh>
+#include <XauAssistant/SignalManager.mqh>
 
 enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
@@ -26,10 +28,12 @@ input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
 
-CStrategy g_strategy;
-CAlerts   g_alerts;
-datetime  g_lastBar = 0;
-bool      g_debugFired = false;
+CStrategy      g_strategy;
+CAlerts        g_alerts;
+CAiApi         g_api;
+CSignalManager g_sm;
+datetime       g_lastBar = 0;
+bool           g_debugFired = false;
 
 int OnInit()
   {
@@ -39,6 +43,7 @@ int OnInit()
       g_alerts.Notify("XauAssistant: AUTO on LIVE account blocked (AllowLiveTrading=false)");
       return INIT_FAILED;
      }
+   g_api.Init(ApiUrl, ApiTimeoutMs);
    return INIT_SUCCEEDED;
   }
 
@@ -54,7 +59,15 @@ void ProcessBar()
   {
    ENUM_SIGNAL sig = g_strategy.Evaluate();
    if(DebugFireTestSignal && !g_debugFired) { sig = SIGNAL_BUY; g_debugFired = true; }
-   if(sig == SIGNAL_NONE) return;
-   g_alerts.Draw(sig, "pipeline test");
-   g_alerts.Notify("XauAssistant " + _Symbol + " " + SignalToString(sig));
+   if(sig == SIGNAL_NONE)
+     {
+      AiResponse quiet;
+      g_api.Analyze(sig, quiet);   // keeps outcome-resolution data flowing (spec 6.3)
+      return;
+     }
+   AiResponse r;
+   bool ok = g_api.Analyze(sig, r);
+   string report = g_sm.BuildReport(sig, r, ok);
+   g_alerts.Draw(sig, report);
+   g_alerts.Notify(report);
   }
