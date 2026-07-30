@@ -42,8 +42,9 @@ class ChronosBoltForecaster(Forecaster):
 
     def forecast(self, closes, horizon):
         import torch
+        # positional: the first param is `context` in chronos 1.x, `inputs` in 2.x
         q, _ = self._load().predict_quantiles(
-            context=torch.tensor(closes, dtype=torch.float32),
+            torch.tensor(closes, dtype=torch.float32),
             prediction_length=horizon,
             quantile_levels=[0.1, 0.5, 0.9])
         q = q[0]  # (horizon, 3)
