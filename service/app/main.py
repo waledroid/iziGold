@@ -52,6 +52,16 @@ def analyze(req: AnalyzeRequest):
             bar_time=req.candles[-1].t, symbol=req.symbol, signal=req.signal,
             price=closes[-1], direction=direction, confidence=confidence,
             regime=regime, verdict=resp.verdict, mode=settings.mode,
-            ai_available=ai_available)
+            ai_available=ai_available, strategy_id=req.strategy_id, is_active=True)
         send_alert(format_report(req, resp), settings)
+    for shadow in req.shadows:
+        if shadow.signal == "NONE":
+            continue
+        app.state.db.insert_signal(
+            bar_time=req.candles[-1].t, symbol=req.symbol, signal=shadow.signal,
+            price=closes[-1], direction=direction, confidence=confidence,
+            regime=regime, mode=settings.mode, ai_available=ai_available,
+            verdict=combine(shadow.signal, direction, confidence,
+                            settings.confirm_threshold),
+            strategy_id=shadow.strategy_id, is_active=False)
     return resp

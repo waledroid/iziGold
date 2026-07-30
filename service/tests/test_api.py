@@ -54,3 +54,28 @@ def test_fail_open_on_model_error(client):
     assert r.status_code == 200
     assert body["ai_available"] is False
     assert body["direction"] == "neutral" and body["confidence"] == 0.0
+
+
+def test_shadows_logged_active_alerted_once(client, monkeypatch):
+    from app import main
+    alerts = []
+    monkeypatch.setattr(main, "send_alert", lambda text, settings: alerts.append(text))
+    payload = _payload("BUY")
+    payload["strategy_id"] = "halftrend_ema_v1"
+    payload["shadows"] = [{"strategy_id": "stub", "signal": "SELL"},
+                          {"strategy_id": "quiet", "signal": "NONE"}]
+    r = client.post("/analyze", json=payload)
+    assert r.status_code == 200
+    rows = main.app.state.db.conn.execute(
+        "SELECT strategy_id, signal, is_active FROM signals ORDER BY id").fetchall()
+    assert rows == [("halftrend_ema_v1", "BUY", 1), ("stub", "SELL", 0)]
+    assert len(alerts) == 1          # active signal only; shadows are silent
+
+
+def test_old_style_request_tagged_unknown(client):
+    from app import main
+    r = client.post("/analyze", json=_payload("BUY"))   # no new fields
+    assert r.status_code == 200
+    row = main.app.state.db.conn.execute(
+        "SELECT strategy_id, is_active FROM signals").fetchone()
+    assert row == ("unknown", 1)
