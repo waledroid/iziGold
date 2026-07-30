@@ -78,6 +78,7 @@ private:
       if(!m_expansion)
         {
          if(squeeze) m_armed = true;
+         else if(!rising) m_armed = false;   // chain broken: disarm
          if(m_armed && m_risingStreak >= m_expansionBars) m_expansion = true;
         }
       else if(m_flatStreak >= m_expansionBars)
