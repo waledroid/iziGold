@@ -10,6 +10,7 @@
 #include <XauAssistant/TradeManager.mqh>
 #include <XauAssistant/StrategyRegistry.mqh>
 #include <XauAssistant/Strategies/HalfTrendEma.mqh>
+#include <XauAssistant/Strategies/BollStochRsi.mqh>
 
 enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
@@ -36,6 +37,16 @@ input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy t
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
 input int    ConfirmCloses  = 2;                  // consecutive closes beyond EMA
+input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
+input double BbDev           = 2.0;  // boll_stochrsi: Bollinger deviation
+input int    TrendCloses     = 2;    // boll_stochrsi: closes in trend zone
+input int    SqueezeLookback = 100;  // boll_stochrsi: bandwidth history bars
+input double SqueezePctile   = 25;   // boll_stochrsi: squeeze percentile
+input int    ExpansionBars   = 2;    // boll_stochrsi: rising bars to confirm expansion
+input int    RsiPeriod       = 14;   // boll_stochrsi: RSI period
+input int    StochPeriod     = 14;   // boll_stochrsi: stochastic window over RSI
+input int    KSmooth         = 3;    // boll_stochrsi: %K smoothing
+input int    DSmooth         = 3;    // boll_stochrsi: %D smoothing
 
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
@@ -57,6 +68,9 @@ int OnInit()
      }
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
    g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses));
+   g_registry.Register(new CBollStochRsiStrategy(BbPeriod, BbDev, TrendCloses,
+                       SqueezeLookback, SqueezePctile, ExpansionBars,
+                       RsiPeriod, StochPeriod, KSmooth, DSmooth));
    if(!g_registry.SetActive(ActiveStrategy))
      {
       g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");
