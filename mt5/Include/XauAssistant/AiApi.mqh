@@ -18,7 +18,8 @@ private:
    string m_url;
    int    m_timeout;
 
-   string BuildJson(ENUM_SIGNAL sig, int count)
+   string BuildJson(ENUM_SIGNAL sig, int count, string strategyId,
+                    string &shadowIds[], ENUM_SIGNAL &shadowSigs[])
      {
       MqlRates rates[];
       // shift 1 = last CLOSED bar; the forming bar is never sent
@@ -36,6 +37,13 @@ private:
                  ",\"l\":" + DoubleToString(rates[i].low, _Digits) +
                  ",\"c\":" + DoubleToString(rates[i].close, _Digits) +
                  ",\"v\":" + (string)rates[i].tick_volume + "}";
+        }
+      json += "],\"strategy_id\":\"" + strategyId + "\",\"shadows\":[";
+      for(int i = 0; i < ArraySize(shadowIds); i++)
+        {
+         if(i > 0) json += ",";
+         json += "{\"strategy_id\":\"" + shadowIds[i] + "\",\"signal\":\"" +
+                 SignalToString(shadowSigs[i]) + "\"}";
         }
       return json + "]}";
      }
@@ -69,10 +77,11 @@ private:
 public:
    void Init(string url, int timeout_ms) { m_url = url; m_timeout = timeout_ms; }
 
-   bool Analyze(ENUM_SIGNAL sig, AiResponse &out)
+   bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
+                ENUM_SIGNAL &shadowSigs[], AiResponse &out)
      {
       out.ai_available = false;
-      string json = BuildJson(sig, 200);
+      string json = BuildJson(sig, 200, strategyId, shadowIds, shadowSigs);
       if(json == "") return false;
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

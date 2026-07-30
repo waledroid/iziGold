@@ -8,6 +8,8 @@
 #include <XauAssistant/SignalManager.mqh>
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/TradeManager.mqh>
+#include <XauAssistant/StrategyRegistry.mqh>
+#include <XauAssistant/Strategies/HalfTrendEma.mqh>
 
 enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
@@ -30,7 +32,12 @@ input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
 
-CStrategy      g_strategy;
+input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
+input int    HtAmplitude    = 4;                  // Half Trend amplitude
+input int    EmaLength      = 55;                 // confirmation EMA
+input int    ConfirmCloses  = 2;                  // consecutive closes beyond EMA
+
+CStrategyRegistry g_registry;
 CAlerts        g_alerts;
 CAiApi         g_api;
 CSignalManager g_sm;
@@ -46,6 +53,13 @@ int OnInit()
       AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL)
      {
       g_alerts.Notify("XauAssistant: AUTO on LIVE account blocked (AllowLiveTrading=false)");
+      return INIT_FAILED;
+     }
+   g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
+   g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses));
+   if(!g_registry.SetActive(ActiveStrategy))
+     {
+      g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");
       return INIT_FAILED;
      }
    g_api.Init(ApiUrl, ApiTimeoutMs);
@@ -65,9 +79,26 @@ void OnTick()
    ProcessBar();
   }
 
+void OnDeinit(const int reason) { g_registry.Clear(); }
+
 void ProcessBar()
   {
-   ENUM_SIGNAL sig = g_strategy.Evaluate();
+   CStrategy *active = g_registry.Active();
+   ENUM_SIGNAL sig = SIGNAL_NONE;
+   string shadowIds[];
+   ENUM_SIGNAL shadowSigs[];
+   for(int i = 0; i < g_registry.Count(); i++)
+     {
+      CStrategy *st = g_registry.Get(i);
+      ENUM_SIGNAL s = st.Evaluate();     // every strategy evaluates every bar
+      if(st == active) { sig = s; continue; }
+      if(s == SIGNAL_NONE) continue;
+      int n = ArraySize(shadowIds);
+      ArrayResize(shadowIds, n + 1);
+      ArrayResize(shadowSigs, n + 1);
+      shadowIds[n] = st.Id();
+      shadowSigs[n] = s;
+     }
    if(DebugFireTestSignal && !g_debugFired) { sig = SIGNAL_BUY; g_debugFired = true; }
 
    g_risk.OnBarUpdate();
@@ -77,18 +108,19 @@ void ProcessBar()
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
    if(ExecutionMode == EXEC_AUTO && atrVal > 0)
      {
-      g_trades.OnSignal(sig, atrVal);
-      g_trades.Manage(atrVal, g_strategy.ConditionStillTrue(sig));
+      g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
+      g_trades.Manage(atrVal, active.ConditionStillTrue(sig));
      }
 
-   if(sig == SIGNAL_NONE)
+   if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)
      {
       AiResponse quiet;
-      g_api.Analyze(sig, quiet);   // keeps outcome-resolution data flowing (spec 6.3)
-      return;
+      g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, quiet);
+      return;   // keeps outcome-resolution data flowing (spec 6.3)
      }
    AiResponse r;
-   bool ok = g_api.Analyze(sig, r);
+   bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r);
+   if(sig == SIGNAL_NONE) return;        // shadows logged; nothing to alert
    string report = g_sm.BuildReport(sig, r, ok) + "\n" + g_risk.Status();
    g_alerts.Draw(sig, report);
    g_alerts.Notify(report);
