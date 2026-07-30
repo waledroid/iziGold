@@ -68,6 +68,7 @@ private:
         {
          m_fired = false;   // a flip re-arms the once-per-trend entry
          m_extreme = (m_trend == 0) ? barLow : barHigh;
+         m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
         }
       else
          m_extreme = (m_trend == 0) ? MathMin(m_extreme, barLow)

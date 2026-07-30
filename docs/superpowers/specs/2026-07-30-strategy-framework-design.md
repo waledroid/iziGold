@@ -125,8 +125,9 @@ close" and kills intra-bar fake-outs by construction.
   (the video's "multiple closes"; user chose 2 as default, calibratable
   in the Strategy Tester).
 - **BUY:** Half Trend blue AND last `ConfirmCloses` consecutive closes
-  above the EMA. Fires **once per Half Trend flip**, on the first bar
-  where both hold. No re-entry signals within the same trend.
+  above the EMA. Fires **once per Half Trend flip**; the close-count
+  restarts at the flip, so confirmation closes are counted from the flip bar
+  onward. No re-entry signals within the same trend.
 - **SELL:** exact inverse.
 - **EXIT:** opposite Half Trend color AND `ConfirmCloses` consecutive
   closes on the opposite side of the EMA. Whichever of EXIT or stop-loss
