@@ -96,6 +96,8 @@ public:
                          (sig == SIGNAL_SELL && ptype == POSITION_TYPE_BUY);
          if(!opposite) return;              // same direction: one cycle at a time
          CloseAll("reversal signal");       // stop-and-reverse, then enter below
+         if(CountOwn() > 0)                 // guard: close incomplete
+           { Print("TradeManager: reversal aborted — close incomplete, still ", CountOwn(), " open"); return; }
         }
       string why;
       if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return; }
