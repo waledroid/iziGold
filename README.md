@@ -14,6 +14,9 @@ Strategies live in `mt5/Include/XauAssistant/Strategies/` behind the
 strategies are shadow-evaluated and logged every bar; only `ActiveStrategy`
 trades. First real strategy: `halftrend_ema_v1` (Half Trend amplitude 4 +
 EMA 55 dual confirmation, stop at the wick extreme since the trend flip).
+Second strategy: `boll_stochrsi_v1` (Bollinger trend zone + squeeze→expansion
++ StochRSI cross, middle-band exit, ATR stop) — runs as a shadow until you
+switch `ActiveStrategy`.
 Per-strategy hit-rates accumulate in `xau_assistant.db` (`stats()`).
 
 ## 1. Run the AI service (WSL2 or any Linux/macOS)
@@ -74,6 +77,7 @@ Notes:
 | `DebugFireTestSignal` | `false` | Fire one fake BUY to test the pipeline |
 | `ActiveStrategy` | `halftrend_ema_v1` | Which registered strategy trades; others run as logged shadows |
 | `HtAmplitude` / `EmaLength` / `ConfirmCloses` | `4` / `55` / `2` | halftrend_ema_v1 parameters |
+| `BbPeriod`…`DSmooth` (10 inputs) | spec defaults | `boll_stochrsi_v1` parameters (starts as shadow) |
 
 AI mode (`grading` vs `veto`) is set service-side in `.env` (`MODE=grading`).
 Keep it `grading` until the SQLite accuracy log proves the AI earns veto power.
