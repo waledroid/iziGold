@@ -69,4 +69,21 @@ class SignalDb:
         done = self.conn.execute(
             "SELECT COUNT(*), COALESCE(AVG(ai_correct) * 100, 0) FROM signals"
             " WHERE outcome_price IS NOT NULL").fetchone()
-        return {"total": total, "resolved": done[0], "ai_correct_pct": round(done[1], 1)}
+        by_strategy = {}
+        rows = self.conn.execute(
+            "SELECT COALESCE(strategy_id, 'pre-framework'), COUNT(*),"
+            " COUNT(outcome_price),"
+            " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
+            "   CASE WHEN (signal='BUY' AND outcome_move > 0)"
+            "          OR (signal='SELL' AND outcome_move < 0)"
+            "   THEN 1.0 ELSE 0.0 END END) * 100,"
+            " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
+            "   CASE WHEN signal='BUY' THEN outcome_move ELSE -outcome_move END END)"
+            " FROM signals WHERE signal IN ('BUY','SELL')"
+            " GROUP BY COALESCE(strategy_id, 'pre-framework')").fetchall()
+        for sid, count, resolved, hit, avg in rows:
+            by_strategy[sid] = {"signals": count, "resolved": resolved,
+                                "hit_pct": round(hit or 0.0, 1),
+                                "avg_move": round(avg or 0.0, 2)}
+        return {"total": total, "resolved": done[0],
+                "ai_correct_pct": round(done[1], 1), "by_strategy": by_strategy}

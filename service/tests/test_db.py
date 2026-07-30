@@ -50,3 +50,21 @@ def test_insert_records_strategy(tmp_path):
                      strategy_id="halftrend_ema_v1", is_active=False)
     row = db.conn.execute("SELECT strategy_id, is_active FROM signals").fetchone()
     assert row == ("halftrend_ema_v1", 0)
+
+
+def test_per_strategy_stats(tmp_path):
+    db = SignalDb(str(tmp_path / "t.db"))
+    candles = trend_candles(200)
+    common = dict(bar_time=candles[100].t, symbol="XAUUSD", price=candles[100].c,
+                  direction="bullish", confidence=0.8, regime="trend",
+                  verdict="confirm", mode="grading", ai_available=True)
+    db.insert_signal(signal="BUY", strategy_id="winner", is_active=True, **common)
+    db.insert_signal(signal="SELL", strategy_id="loser", is_active=False, **common)
+    db.resolve_outcomes(candles)
+    s = db.stats()
+    assert s["by_strategy"]["winner"] == {
+        "signals": 1, "resolved": 1, "hit_pct": 100.0,
+        "avg_move": s["by_strategy"]["winner"]["avg_move"]}
+    assert s["by_strategy"]["winner"]["avg_move"] > 0   # uptrend: BUY gains
+    assert s["by_strategy"]["loser"]["hit_pct"] == 0.0
+    assert s["by_strategy"]["loser"]["avg_move"] < 0    # uptrend: SELL loses
