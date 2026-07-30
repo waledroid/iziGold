@@ -39,6 +39,16 @@ private:
       return p;
      }
 
+   long OwnType()
+     {
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+         if(PositionGetTicket(i) > 0 &&
+            PositionGetInteger(POSITION_MAGIC) == m_magic &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+            return PositionGetInteger(POSITION_TYPE);
+      return -1;
+     }
+
    void MoveStopsToBreakeven()
      {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -75,20 +85,32 @@ public:
       Print("TradeManager: closed all (", reason, ")");
      }
 
-   void OnSignal(ENUM_SIGNAL sig, double atr_value)
+   void OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return;
-      if(CountOwn() > 0) return;                    // one cycle at a time
+      if(CountOwn() > 0)
+        {
+         long ptype = OwnType();
+         bool opposite = (sig == SIGNAL_BUY  && ptype == POSITION_TYPE_SELL) ||
+                         (sig == SIGNAL_SELL && ptype == POSITION_TYPE_BUY);
+         if(!opposite) return;              // same direction: one cycle at a time
+         CloseAll("reversal signal");       // stop-and-reverse, then enter below
+        }
       string why;
       if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return; }
-      double sl_points = m_stopAtrMult * atr_value / _Point;
-      double lots = m_risk.CalcLots(sl_points, m_ratios[0]);
-      if(lots <= 0) return;
       double price = (sig == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                                          : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double sl = (sig == SIGNAL_BUY) ? price - m_stopAtrMult * atr_value
-                                      : price + m_stopAtrMult * atr_value;
+      double sl;
+      bool validStop = stopPrice > 0 &&
+                       ((sig == SIGNAL_BUY  && stopPrice < price) ||
+                        (sig == SIGNAL_SELL && stopPrice > price));
+      if(validStop) sl = stopPrice;
+      else sl = (sig == SIGNAL_BUY) ? price - m_stopAtrMult * atr_value
+                                    : price + m_stopAtrMult * atr_value;
+      double sl_points = MathAbs(price - sl) / _Point;
+      double lots = m_risk.CalcLots(sl_points, m_ratios[0]);
+      if(lots <= 0) return;
       bool ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
                                     : m_trade.Sell(lots, _Symbol, 0, sl);
       if(ok)
