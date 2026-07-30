@@ -24,16 +24,16 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # core (fast)
 pip install -r requirements-model.txt    # torch + chronos (large, CPU-only is fine)
 cp .env.example .env                     # then edit .env
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 9000
 ```
 
-Check: `curl http://127.0.0.1:8000/health` → `{"status":"ok",...}`.
+Check: `curl http://127.0.0.1:9000/health` → `{"status":"ok",...}`.
 
 Notes:
 - The **first** Chronos call downloads the model (~1 min); afterwards inference
   is ~20–100 ms on CPU.
 - To develop without the model: `FORECASTER=fake` in `.env`.
-- **If port 8000 is taken** (it was on this machine during development), pick
+- **If port 9000 is taken**, pick
   another port and set the EA input `ApiUrl` to match.
 
 ## 2. Telegram (optional but recommended)
@@ -52,7 +52,7 @@ Notes:
    and `mt5/Include/XauAssistant/` → `MQL5/Include/XauAssistant/`.
 4. Open MetaEditor (F4), open `XauAssistant.mq5`, **Compile** — expect 0 errors.
 5. MT5 → Tools → Options → Expert Advisors → check *Allow WebRequest for
-   listed URL* and add `http://127.0.0.1:8000` (or your port).
+   listed URL* and add `http://127.0.0.1:9000` (or your port).
 6. Attach `XauAssistant` to a **XAUUSD M15** chart. Enable *Algo Trading*.
 7. First test: set input `DebugFireTestSignal=true` → within one bar you should
    see a chart arrow, an MT5 alert with the AI grade, a Telegram message, and a

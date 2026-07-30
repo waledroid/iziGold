@@ -15,7 +15,7 @@ enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
 input ENUM_EXEC_MODE ExecutionMode          = EXEC_MANUAL;
 input bool           AllowLiveTrading       = false;
-input string         ApiUrl                 = "http://127.0.0.1:8000/analyze";
+input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
 input double         RiskPerTradePct        = 0.5;
 input double         MaxDrawdownPct         = 10.0;

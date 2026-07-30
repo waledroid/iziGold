@@ -26,7 +26,7 @@ pytest tests/test_analysis.py            # one file
 pytest tests/test_api.py::test_name      # one test
 pytest -m slow                           # real Chronos-Bolt inference (downloads model ~1 min first time)
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000   # run the service (cp .env.example .env first)
+uvicorn app.main:app --host 0.0.0.0 --port 9000   # run the service (cp .env.example .env first)
 ```
 
 Set `FORECASTER=fake` in `.env` to develop/run without torch or the model — `FakeForecaster` is a deterministic linear extrapolation used by the fast tests.
