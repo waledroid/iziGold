@@ -27,3 +27,21 @@ def test_response_bounds():
     with pytest.raises(ValidationError):
         AnalyzeResponse(direction="bullish", confidence=1.5, regime="trend",
                         verdict="confirm", mode="grading", ai_available=True)
+
+
+def test_request_defaults_backward_compatible():
+    from tests.fixtures import trend_candles
+    req = AnalyzeRequest(symbol="XAUUSD", timeframe="M15", signal="BUY",
+                         candles=trend_candles(50))
+    assert req.strategy_id == "unknown"
+    assert req.shadows == []
+
+
+def test_request_accepts_shadows():
+    from tests.fixtures import trend_candles
+    req = AnalyzeRequest(
+        symbol="XAUUSD", timeframe="M15", signal="BUY",
+        candles=trend_candles(50), strategy_id="halftrend_ema_v1",
+        shadows=[{"strategy_id": "stub", "signal": "SELL"}])
+    assert req.shadows[0].strategy_id == "stub"
+    assert req.shadows[0].signal == "SELL"

@@ -12,11 +12,18 @@ class Candle(BaseModel):
     v: float = 0.0
 
 
+class ShadowSignal(BaseModel):
+    strategy_id: str
+    signal: Literal["NONE", "BUY", "SELL", "EXIT"]
+
+
 class AnalyzeRequest(BaseModel):
     symbol: str
     timeframe: str
     signal: Literal["NONE", "BUY", "SELL", "EXIT"]
     candles: list[Candle] = Field(min_length=50)
+    strategy_id: str = "unknown"
+    shadows: list[ShadowSignal] = []
 
 
 class AnalyzeResponse(BaseModel):
