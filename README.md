@@ -9,8 +9,12 @@ management.
 Full design: [docs/superpowers/specs/2026-07-29-xau-assistant-design.md](docs/superpowers/specs/2026-07-29-xau-assistant-design.md)
 Implementation plan: [docs/superpowers/plans/2026-07-29-xau-assistant-scaffold.md](docs/superpowers/plans/2026-07-29-xau-assistant-scaffold.md)
 
-The strategy itself is currently a stub (`mt5/Include/XauAssistant/Strategy.mqh`)
-— the real rules slot into that one file without touching anything else.
+Strategies live in `mt5/Include/XauAssistant/Strategies/` behind the
+`CStrategy` interface and register in the EA's `OnInit`. All registered
+strategies are shadow-evaluated and logged every bar; only `ActiveStrategy`
+trades. First real strategy: `halftrend_ema_v1` (Half Trend amplitude 4 +
+EMA 55 dual confirmation, stop at the wick extreme since the trend flip).
+Per-strategy hit-rates accumulate in `xau_assistant.db` (`stats()`).
 
 ## 1. Run the AI service (WSL2 or any Linux/macOS)
 
@@ -68,6 +72,8 @@ Notes:
 | `TradingWindowStartHour/EndHour` | `15/18` | Entries only inside this server-time window |
 | `MaxDailyExposureMin` | `60` | Max minutes of open-position time per day |
 | `DebugFireTestSignal` | `false` | Fire one fake BUY to test the pipeline |
+| `ActiveStrategy` | `halftrend_ema_v1` | Which registered strategy trades; others run as logged shadows |
+| `HtAmplitude` / `EmaLength` / `ConfirmCloses` | `4` / `55` / `2` | halftrend_ema_v1 parameters |
 
 AI mode (`grading` vs `veto`) is set service-side in `.env` (`MODE=grading`).
 Keep it `grading` until the SQLite accuracy log proves the AI earns veto power.

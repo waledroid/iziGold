@@ -62,4 +62,4 @@ Tests use synthetic candle fixtures (`tests/fixtures.py`: known trend, known ran
 
 ## Current status
 
-Strategy is a stub (Phase 1 scaffold complete; real strategy rules pending user extraction from a video — see spec §12–13). Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.
+Strategy layer is modular: strategies live in `mt5/Include/XauAssistant/Strategies/` behind `CStrategy` (with `Id()` and `StopPrice()`), registered in the EA's `OnInit`, all shadow-evaluated per bar (only `ActiveStrategy` trades/alerts). First real strategy: `halftrend_ema_v1`. The `/analyze` request carries `strategy_id` + `shadows`; SQLite tags every row and `stats()` reports per-strategy hit-rates. Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.
