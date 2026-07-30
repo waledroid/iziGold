@@ -103,6 +103,12 @@ public:
          int avail = Bars(_Symbol, PERIOD_CURRENT) - m_amplitude - 2;
          int from = MathMin(m_warmupBars, MathMax(avail, 1));
          for(int s = from; s >= 1; s--) ProcessClosedBar(s);   // oldest -> newest
+
+         // suppress stale entry: if this trend already confirmed during warm-up,
+         // the real entry bar is long past — wait for the next flip
+         if((m_trend == 0 && m_consecAbove >= m_confirm) ||
+            (m_trend == 1 && m_consecBelow >= m_confirm))
+            m_fired = true;
         }
       else
          ProcessClosedBar(1);

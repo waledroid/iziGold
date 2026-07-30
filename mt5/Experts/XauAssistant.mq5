@@ -109,7 +109,8 @@ void ProcessBar()
    if(ExecutionMode == EXEC_AUTO && atrVal > 0)
      {
       g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
-      g_trades.Manage(atrVal, active.ConditionStillTrue(sig));
+      ENUM_SIGNAL basketDir = g_trades.BasketDirection();
+      g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
      }
 
    if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)

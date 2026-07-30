@@ -73,6 +73,14 @@ public:
 
    int OpenCount() { return CountOwn(); }
 
+   ENUM_SIGNAL BasketDirection()
+     {
+      long t = OwnType();
+      if(t == POSITION_TYPE_BUY)  return SIGNAL_BUY;
+      if(t == POSITION_TYPE_SELL) return SIGNAL_SELL;
+      return SIGNAL_NONE;
+     }
+
    void CloseAll(string reason)
      {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
