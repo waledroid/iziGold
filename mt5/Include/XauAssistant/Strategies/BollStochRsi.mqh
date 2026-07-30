@@ -59,15 +59,17 @@ private:
       return (100.0 * below / n) <= m_squeezePctile;
      }
 
-   void ProcessClosedBar(int shift)
+   bool ProcessClosedBar(int shift)
      {
+      m_crossUp = false;  // reset stale cross flags before any early return
+      m_crossDown = false;
       double upper[], middle[], lower[], close[];
-      if(CopyBuffer(m_bbHandle, 1, shift, 1, upper)  != 1) return; // 1 = upper
-      if(CopyBuffer(m_bbHandle, 0, shift, 1, middle) != 1) return; // 0 = middle
-      if(CopyBuffer(m_bbHandle, 2, shift, 1, lower)  != 1) return; // 2 = lower
-      if(CopyClose(_Symbol, PERIOD_CURRENT, shift, 1, close) != 1) return;
+      if(CopyBuffer(m_bbHandle, 1, shift, 1, upper)  != 1) return false; // 1 = upper
+      if(CopyBuffer(m_bbHandle, 0, shift, 1, middle) != 1) return false; // 0 = middle
+      if(CopyBuffer(m_bbHandle, 2, shift, 1, lower)  != 1) return false; // 2 = lower
+      if(CopyClose(_Symbol, PERIOD_CURRENT, shift, 1, close) != 1) return false;
       double up = upper[0], mid = middle[0], lo = lower[0], cl = close[0];
-      if(mid <= 0) return;
+      if(mid <= 0) return false;
 
       // --- bandwidth + squeeze/expansion state machine
       double bw = (up - lo) / mid;
@@ -77,7 +79,8 @@ private:
       else       { m_flatStreak++;  m_risingStreak = 0; }
       if(!m_expansion)
         {
-         if(squeeze) m_armed = true;
+         if(squeeze && !m_armed) { m_armed = true; m_risingStreak = rising ? 1 : 0; }
+         else if(squeeze) m_armed = true;
          else if(!rising) m_armed = false;   // chain broken: disarm
          if(m_armed && m_risingStreak >= m_expansionBars) m_expansion = true;
         }
@@ -93,7 +96,7 @@ private:
 
       // --- Stochastic RSI: raw stoch of RSI, then K = SMA(raw), D = SMA(K)
       double rsi[];
-      if(CopyBuffer(m_rsiHandle, 0, shift, m_stochPeriod, rsi) != m_stochPeriod) return;
+      if(CopyBuffer(m_rsiHandle, 0, shift, m_stochPeriod, rsi) != m_stochPeriod) return false;
       double rmin = rsi[ArrayMinimum(rsi)], rmax = rsi[ArrayMaximum(rsi)];
       double cur = rsi[m_stochPeriod - 1];              // newest = requested shift bar
       double raw = (rmax - rmin > 0) ? (cur - rmin) / (rmax - rmin) * 100.0 : 50.0;
@@ -108,6 +111,7 @@ private:
       // --- virtual-position exit: close crossing the middle band against us
       if(m_virtualDir == SIGNAL_BUY  && cl < mid) m_pendingExit = true;
       if(m_virtualDir == SIGNAL_SELL && cl > mid) m_pendingExit = true;
+      return true;
      }
 
    bool m_pendingExit;
@@ -146,9 +150,8 @@ public:
          m_crossUp = false; m_crossDown = false; m_pendingExit = false;
          m_virtualDir = SIGNAL_NONE;
         }
-      else
-         ProcessClosedBar(1);
-      m_lastProcessed = closed;
+      else if(ProcessClosedBar(1))
+         m_lastProcessed = closed;
 
       if(m_pendingExit)
         { m_pendingExit = false; m_virtualDir = SIGNAL_NONE; return SIGNAL_EXIT; }

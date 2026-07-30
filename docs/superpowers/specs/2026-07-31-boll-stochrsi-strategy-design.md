@@ -23,8 +23,7 @@ TradingView tab, chart cleanup) do not carry over.
   StochRSI = (RSI − min(RSI, 14)) / (max(RSI, 14) − min(RSI, 14)) × 100;
   %K = SMA(StochRSI, 3) (the source's "blue line"),
   %D = SMA(%K, 3) (the "red line"). Cross detection on closed bars.
-- The source's overbought (100) / oversold (0) commentary is logged but is
-  **not** an entry/exit filter in v1 (the source states no rule for it).
+- The overbought (100) / oversold (0) extremes are NOT used in v1 (no rule in the source).
 
 ## 3. Rules (all on closed M15 bars)
 
@@ -54,6 +53,10 @@ Inputs (defaults calibratable in the Strategy Tester):
 - **ConditionStillTrue** (pyramiding gate): close still in the trend zone
   for the basket direction.
 - `Id()` = exact string `"boll_stochrsi_v1"`.
+
+### Known Limitations
+
+The strategy tracks a virtual position (the last signal sent to the framework) to manage exit conditions. This position can desynchronize from the real basket when it is the ACTIVE strategy in AUTO mode—risk-manager-blocked entries or framework-side closes will not update the virtual position. This mode is acceptable for shadow mode (where the strategy is not acting on real trades). Before making `boll_stochrsi_v1` the active strategy in AUTO (live trading), a strategy/basket synchronization hook is required to keep the virtual position in sync with actual fills.
 
 ## 4. Integration
 
