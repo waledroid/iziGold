@@ -10,7 +10,8 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
   price REAL NOT NULL,
   direction TEXT, confidence REAL, regime TEXT, verdict TEXT,
   mode TEXT, ai_available INTEGER,
-  outcome_price REAL, outcome_move REAL, ai_correct INTEGER
+  outcome_price REAL, outcome_move REAL, ai_correct INTEGER,
+  strategy_id TEXT, is_active INTEGER DEFAULT 1
 )"""
 
 
@@ -19,15 +20,23 @@ class SignalDb:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute(_SCHEMA)
         self.conn.commit()
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
+        if "strategy_id" not in cols:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN strategy_id TEXT")
+        if "is_active" not in cols:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN is_active INTEGER DEFAULT 1")
+        self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
-                      confidence, regime, verdict, mode, ai_available) -> int:
+                      confidence, regime, verdict, mode, ai_available,
+                      strategy_id="unknown", is_active=True) -> int:
         cur = self.conn.execute(
             "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
-            " confidence, regime, verdict, mode, ai_available)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " confidence, regime, verdict, mode, ai_available, strategy_id, is_active)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), bar_time, symbol, signal, price, direction,
-             confidence, regime, verdict, mode, int(ai_available)))
+             confidence, regime, verdict, mode, int(ai_available),
+             strategy_id, int(is_active)))
         self.conn.commit()
         return cur.lastrowid
 
