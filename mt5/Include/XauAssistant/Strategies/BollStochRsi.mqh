@@ -149,6 +149,7 @@ public:
          // and no exit for a virtual position that was never really signaled
          m_crossUp = false; m_crossDown = false; m_pendingExit = false;
          m_virtualDir = SIGNAL_NONE;
+         m_lastProcessed = closed;
         }
       else if(ProcessClosedBar(1))
          m_lastProcessed = closed;
