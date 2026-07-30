@@ -1,4 +1,5 @@
-// Strategy.mqh — the ONLY file the real strategy rules will touch.
+// Strategy.mqh — strategy interface. Concrete strategies live in
+// Include/XauAssistant/Strategies/ and register in the EA's OnInit.
 #ifndef XAU_STRATEGY_MQH
 #define XAU_STRATEGY_MQH
 
@@ -18,9 +19,13 @@ string SignalToString(ENUM_SIGNAL s)
 class CStrategy
   {
 public:
-   // Called once per closed bar. Stub until the documented rules are extracted.
+   // Stable identifier — flows through the API into SQLite per-strategy stats.
+   virtual string      Id() { return "stub"; }
+   // Called once per closed bar.
    virtual ENUM_SIGNAL Evaluate() { return SIGNAL_NONE; }
    // True while the entry condition remains valid (pyramiding gate, spec 5b).
-   virtual bool ConditionStillTrue(ENUM_SIGNAL dir) { return false; }
+   virtual bool        ConditionStillTrue(ENUM_SIGNAL dir) { return false; }
+   // Strategy's preferred stop for a new position; 0 = use the ATR default.
+   virtual double      StopPrice(ENUM_SIGNAL dir) { return 0.0; }
   };
 #endif
