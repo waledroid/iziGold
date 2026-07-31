@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>XAU Assistant</title>
+<style>
+ body{font:14px system-ui;margin:0;background:#111;color:#ddd}
+ .wrap{max-width:1100px;margin:0 auto;padding:16px}
+ .strip{display:flex;gap:24px;flex-wrap:wrap;background:#1a1a1a;border-radius:8px;padding:12px 16px}
+ .strip b{display:block;font-size:18px}
+ .stale{background:#5a1111;color:#fff;padding:8px 16px;border-radius:8px;margin:8px 0;display:none}
+ table{border-collapse:collapse;width:100%;margin:8px 0}
+ th,td{border-bottom:1px solid #333;padding:6px 8px;text-align:left;font-size:13px}
+ h2{font-size:15px;margin:20px 0 4px}
+ canvas{width:100%;height:220px;background:#1a1a1a;border-radius:8px}
+ button{background:#2a4d69;color:#fff;border:0;border-radius:4px;padding:4px 10px;cursor:pointer}
+ .pos{color:#5c5}.neg{color:#e66}
+</style>
+<div class="wrap">
+ <h1 style="font-size:18px">🥇 XAU Assistant</h1>
+ <div id="stale" class="stale">EA not reporting (heartbeat stale)</div>
+ <div class="strip" id="strip">waiting for first heartbeat…</div>
+ <h2>Equity</h2><canvas id="eq" width="1100" height="220"></canvas>
+ <h2>Strategy comparison</h2><table id="cmp"></table>
+ <h2>Signal log</h2><table id="sig"></table>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
+async function j(u){const r=await fetch(u);return r.json()}
+async function state(){
+ const s=await j('/ui/state');
+ $('stale').style.display=(s.age_s==null||s.age_s>30)?'block':'none';
+ const h=s.heartbeat; if(!h) return;
+ const pos=h.positions.map(p=>`${p.direction} ${p.lots}@${fmt(p.open_price)} <span class="${p.profit>=0?'pos':'neg'}">${fmt(p.profit)}</span>`).join('<br>')||'flat';
+ $('strip').innerHTML=
+  `<div>Equity<b>${fmt(h.equity)}</b></div><div>Floating P/L<b class="${h.floating_pl>=0?'pos':'neg'}">${fmt(h.floating_pl)}</b></div>`+
+  `<div>Positions<b>${pos}</b></div><div>Active<b>${h.active_strategy}${s.pending_switch?' → '+s.pending_switch:''}</b></div>`+
+  `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)'}</b></div>`+
+  `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
+}
+async function equity(){
+ const {series}=await j('/ui/equity'); const c=$('eq').getContext('2d');
+ c.clearRect(0,0,1100,220); if(series.length<2)return;
+ const xs=series.map(p=>p.ts), ys=series.map(p=>p.equity);
+ const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys)||1;
+ c.strokeStyle='#f5c542';c.beginPath();
+ series.forEach((p,i)=>{const x=(p.ts-x0)/(x1-x0||1)*1080+10,y=210-(p.equity-y0)/(y1-y0||1)*190;i?c.lineTo(x,y):c.moveTo(x,y)});
+ c.stroke();
+}
+async function stats(){
+ const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
+ $('cmp').innerHTML='<tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr>'+
+  rows.map(([id,v])=>`<tr><td>${id}</td><td>${v.signals}</td><td>${v.resolved}</td><td>${fmt(v.hit_pct,1)}</td><td>${fmt(v.avg_move)}</td>`+
+  `<td><button onclick="sw('${id}')">switch to this</button></td></tr>`).join('');
+}
+async function signals(){
+ const {signals}=await j('/ui/signals');
+ $('sig').innerHTML='<tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr>'+
+  signals.map(s=>`<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td>${s.strategy_id||'—'}${s.is_active?'':' (shadow)'}</td>`+
+  `<td>${s.signal}</td><td>${s.direction} ${fmt(100*s.confidence,0)}%</td><td>${s.verdict}</td>`+
+  `<td>${s.outcome_move==null?'pending':fmt(s.outcome_move)}</td></tr>`).join('');
+}
+async function sw(id){await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});state()}
+state();equity();stats();signals();
+setInterval(state,5000);setInterval(equity,30000);setInterval(stats,30000);setInterval(signals,30000);
+</script>

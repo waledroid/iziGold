@@ -1,7 +1,9 @@
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app.analysis import analyze_forecast
 from app.config import settings
@@ -114,3 +116,9 @@ def ui_stats():
 @app.get("/ui/signals")
 def ui_signals(limit: int = 50):
     return {"signals": app.state.db.recent_signals(limit)}
+
+
+@app.get("/ui")
+def ui_page():
+    return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
+                        media_type="text/html")

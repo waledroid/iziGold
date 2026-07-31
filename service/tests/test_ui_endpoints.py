@@ -43,3 +43,11 @@ def test_signals_endpoint(client):
     body = client.get("/ui/signals").json()
     assert body["signals"][0]["strategy_id"] == "halftrend_ema_v1"
     assert body["signals"][0]["signal"] == "BUY"
+
+
+def test_dashboard_served(client):
+    r = client.get("/ui")
+    assert r.status_code == 200
+    assert "XAU Assistant" in r.text
+    for needle in ("/ui/state", "/ui/equity", "/ui/stats", "/ui/signals", "/ui/switch"):
+        assert needle in r.text
