@@ -78,10 +78,17 @@ public:
       string strategyId = (active != NULL) ? active.Id() : "unknown";
       // Sync hook: every "close" event (TradeManager closes AND Task-5's
       // stop-loss/TP OnTradeTransaction reports) tells the active strategy
-      // its basket is flat, regardless of whether the UI post below
-      // succeeds — this is local state, not network-dependent.
+      // which basket direction just closed, regardless of whether the UI
+      // post below succeeds — this is local state, not network-dependent.
+      // Direction-matched (not unconditional) so a reversal's synchronous
+      // close of the OLD basket can't clobber a virtual position a
+      // strategy already flipped to the NEW direction this same bar.
       if(event == "close" && active != NULL)
-         active.OnBasketClosed();
+        {
+         ENUM_SIGNAL closedDir = (dir == "BUY")  ? SIGNAL_BUY  :
+                                 (dir == "SELL") ? SIGNAL_SELL : SIGNAL_NONE;
+         active.OnBasketClosed(closedDir);
+        }
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit);
       if(id < 0) return;
       if(event == "open" || event == "close")
@@ -229,11 +236,16 @@ void ProcessBar()
      {
       bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
       // A same-direction signal into an already-open basket is a legitimate
-      // early return (false) with OpenCount() > 0 — not a rejection, since
-      // the strategy's virtual position is still validly tracking that
-      // basket. Only flag it when nothing is open afterward: the signal
-      // truly failed to produce or preserve a position.
-      if(!opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.OpenCount() == 0)
+      // early return (false) — not a rejection, since the strategy's
+      // virtual position is still validly tracking that basket (basket
+      // direction == sig). Two failure shapes ARE a rejection, both
+      // captured by "basket direction != sig": (a) nothing opened at all
+      // (BasketDirection() == SIGNAL_NONE, which never equals a BUY/SELL
+      // sig); (b) reversal-abort — CloseAll left the OLD-direction basket
+      // partly open and no new position opened, so the real basket is
+      // still the opposite direction of sig. Either way the strategy needs
+      // to drop its virtual position rather than believe it holds sig.
+      if(!opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.BasketDirection() != sig)
          active.OnEntryRejected(sig);
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
       g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));

@@ -29,8 +29,12 @@ public:
    virtual double      StopPrice(ENUM_SIGNAL dir) { return 0.0; }
    // Fired by the EA sink on every basket "close" event (TradeManager closes
    // and Task-5 stop-loss/TP transactions), for the ACTIVE strategy only.
-   // Lets a strategy that tracks a virtual position resync with reality.
-   virtual void        OnBasketClosed() {}
+   // closedDir is the direction of the basket that just closed (SIGNAL_BUY/
+   // SIGNAL_SELL, or SIGNAL_NONE if the event carried no recognizable
+   // direction). Direction-matched so a reversal's close of the OLD basket
+   // doesn't clobber a virtual position a strategy already flipped to the
+   // NEW direction for the position about to open in the same OnSignal call.
+   virtual void        OnBasketClosed(ENUM_SIGNAL closedDir) {}
    // Fired by the EA (AUTO mode only) when a BUY/SELL signal failed to open
    // a position (blocked, no lots, order-send failure) and no basket is
    // open afterward — i.e. the rejection left nothing tracking the signal.

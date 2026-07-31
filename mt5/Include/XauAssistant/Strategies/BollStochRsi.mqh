@@ -181,7 +181,20 @@ public:
    // SIGNAL_EXIT — a risk-manager-blocked entry, a broker-side stop-loss,
    // TradeManager's own profit-target close, etc. — reset the virtual
    // state so the next bar starts clean instead of drifting out of sync.
-   virtual void OnBasketClosed() { m_virtualDir = SIGNAL_NONE; m_pendingExit = false; }
+   //
+   // OnBasketClosed is direction-matched, not unconditional: on a
+   // stop-and-reverse, Evaluate() already flips m_virtualDir to the NEW
+   // direction before TradeManager.OnSignal runs, and that same OnSignal
+   // call synchronously closes the OLD basket and reports it through this
+   // hook. Resetting unconditionally there would clobber the direction
+   // just set for the position about to open, killing its middle-band
+   // exit. Only reset when the closed basket's direction matches (or is
+   // unknown) — i.e. it's actually OUR virtual position that went flat.
+   virtual void OnBasketClosed(ENUM_SIGNAL closedDir)
+     {
+      if(closedDir == SIGNAL_NONE || closedDir == m_virtualDir)
+        { m_virtualDir = SIGNAL_NONE; m_pendingExit = false; }
+     }
    virtual void OnEntryRejected(ENUM_SIGNAL dir) { m_virtualDir = SIGNAL_NONE; m_pendingExit = false; }
   };
 #endif
