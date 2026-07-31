@@ -34,8 +34,8 @@ async function state(){
  const pos=h.positions.map(p=>`${p.direction} ${p.lots}@${fmt(p.open_price)} <span class="${p.profit>=0?'pos':'neg'}">${fmt(p.profit)}</span>`).join('<br>')||'flat';
  $('strip').innerHTML=
   `<div>Equity<b>${fmt(h.equity)}</b></div><div>Floating P/L<b class="${h.floating_pl>=0?'pos':'neg'}">${fmt(h.floating_pl)}</b></div>`+
-  `<div>Positions<b>${pos}</b></div><div>Active<b>${h.active_strategy}${s.pending_switch?' → '+s.pending_switch:''}</b></div>`+
-  `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)'}</b></div>`+
+  `<div>Positions<b>${pos}</b></div><div>Active<b>${h.active_strategy}${s.pending_switch?' → '+s.pending_switch+' <button onclick="sw(\'\')">cancel</button>':''}</b></div>`+
+  `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':(h.hwm>0?'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)':'ok')}</b></div>`+
   `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
 }
 async function equity(){
@@ -51,7 +51,7 @@ async function stats(){
  const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
  $('cmp').innerHTML='<tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr>'+
   rows.map(([id,v])=>`<tr><td>${id}</td><td>${v.signals}</td><td>${v.resolved}</td><td>${fmt(v.hit_pct,1)}</td><td>${fmt(v.avg_move)}</td>`+
-  `<td><button onclick="sw('${id}')">switch to this</button></td></tr>`).join('');
+  `<td>${id==='pre-framework'?'':'<button onclick="sw(\''+id+'\')">switch to this</button>'}</td></tr>`).join('');
 }
 async function signals(){
  const {signals}=await j('/ui/signals');

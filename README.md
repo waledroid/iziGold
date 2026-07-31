@@ -71,7 +71,7 @@ arrow, confirming the change took effect.
 Screenshots land in `service/screenshots/` as PNG files, one per trade. The
 dashboard embeds them as clickable thumbnails (click to zoom).
 
-## 5. Install the EA in MetaTrader 5 (Windows)
+## 4. Install the EA in MetaTrader 5 (Windows)
 
 1. Install MT5 + open a **demo** account (any broker with XAUUSD).
 2. MT5 → File → **Open Data Folder** → `MQL5/`.
@@ -86,7 +86,7 @@ dashboard embeds them as clickable thumbnails (click to zoom).
    row in `service/xau_assistant.db`
    (`sqlite3 xau_assistant.db "SELECT * FROM signals;"`).
 
-## 6. Mode switches (EA inputs)
+## 5. Mode switches (EA inputs)
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -106,7 +106,7 @@ dashboard embeds them as clickable thumbnails (click to zoom).
 AI mode (`grading` vs `veto`) is set service-side in `.env` (`MODE=grading`).
 Keep it `grading` until the SQLite accuracy log proves the AI earns veto power.
 
-## 7. Tests
+## 6. Tests
 
 ```bash
 cd service && source .venv/bin/activate

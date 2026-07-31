@@ -54,3 +54,12 @@ def test_switch_queue_delivers_until_confirmed(client):
     assert r.json() == {"switch_to": None}
     r = client.post("/heartbeat", json=_hb(active="boll_stochrsi_v1"))
     assert r.json() == {"switch_to": None}
+
+
+def test_switch_queue_cancel_clears_pending(client):
+    r = client.post("/ui/switch", json={"strategy_id": "boll_stochrsi_v1"})
+    assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
+    r = client.post("/ui/switch", json={"strategy_id": ""})
+    assert r.status_code == 200 and r.json() == {"pending": None}
+    r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
+    assert r.json() == {"switch_to": None}

@@ -127,7 +127,7 @@ public:
          bool opposite = (sig == SIGNAL_BUY  && ptype == POSITION_TYPE_SELL) ||
                          (sig == SIGNAL_SELL && ptype == POSITION_TYPE_BUY);
          if(!opposite) return;              // same direction: one cycle at a time
-         CloseAll("reversal signal");       // stop-and-reverse, then enter below
+         CloseAll("reversal");               // stop-and-reverse, then enter below
          if(CountOwn() > 0)                 // guard: close incomplete
            { Print("TradeManager: reversal aborted — close incomplete, still ", CountOwn(), " open"); return; }
          wasReversal = true;
@@ -156,7 +156,8 @@ public:
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
             string openReason = wasReversal ? "reversal" : ("signal " + dir);
-            m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason);
+            m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason,
+                                (long)m_trade.ResultOrder());
            }
         }
      }
@@ -168,7 +169,7 @@ public:
       // profit target: close everything at +targetPct of cycle-start balance
       double cycleBal = GlobalVariableGet(CycleKey());
       if(cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
-        { CloseAll("profit target reached"); return; }
+        { CloseAll("profit target"); return; }
       // pyramid: add only in profit, only while condition true, shrinking size
       if(!m_pyramid || !conditionStillTrue || n >= m_maxPos) return;
       if(BasketProfit() <= 0) return;               // never add in loss
@@ -194,7 +195,8 @@ public:
          if(m_sink != NULL)
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-            m_sink.OnTradeEvent("add", dir, lots, price, 0.0, "pyramid add");
+            m_sink.OnTradeEvent("add", dir, lots, price, 0.0, "pyramid add",
+                                (long)m_trade.ResultOrder());
            }
         }
      }

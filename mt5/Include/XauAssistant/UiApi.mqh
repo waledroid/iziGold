@@ -11,7 +11,7 @@ class CTradeEventSink
   {
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
-                             double sl, string reason) = 0;
+                             double sl, string reason, long ticket = 0) = 0;
   };
 
 class CUiApi

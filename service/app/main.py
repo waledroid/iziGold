@@ -91,6 +91,7 @@ def heartbeat(hb: HeartbeatRequest):
 def ui_switch(body: dict):
     sid = str(body.get("strategy_id", "")).strip()
     if not sid:
+        app.state.pending_switch = None
         return {"pending": None}
     app.state.pending_switch = sid
     return {"pending": sid}

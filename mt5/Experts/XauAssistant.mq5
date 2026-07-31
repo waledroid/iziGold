@@ -21,6 +21,7 @@ input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
 input string         UiBaseUrl              = "http://127.0.0.1:9000";
 input int            HeartbeatSec           = 5;
+input int            UiTimeoutMs            = 1000;
 input double         RiskPerTradePct        = 0.5;
 input double         MaxDrawdownPct         = 10.0;
 input bool           EnablePyramiding       = true;
@@ -70,11 +71,11 @@ class CUiSink : public CTradeEventSink
   {
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
-                             double sl, string reason)
+                             double sl, string reason, long ticket = 0)
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
-      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, 0);
+      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket);
       if(id < 0) return;
       if(event == "open" || event == "close")
          g_ui.UploadScreenshot(id);
@@ -101,7 +102,7 @@ int OnInit()
       return INIT_FAILED;
      }
    g_api.Init(ApiUrl, ApiTimeoutMs);
-   g_ui.Init(UiBaseUrl, ApiTimeoutMs, MagicNumber);
+   g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
