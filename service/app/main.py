@@ -87,3 +87,30 @@ def ui_switch(body: dict):
         return {"pending": None}
     app.state.pending_switch = sid
     return {"pending": sid}
+
+
+@app.get("/ui/state")
+def ui_state():
+    latest = app.state.latest_heartbeat
+    hb, age = None, None
+    if latest is not None:
+        age = round(time.time() - latest[0], 1)
+        hb = latest[1].model_dump()
+    return {"age_s": age, "heartbeat": hb,
+            "pending_switch": app.state.pending_switch,
+            "stats": app.state.db.stats()}
+
+
+@app.get("/ui/equity")
+def ui_equity():
+    return {"series": app.state.db.equity_series()}
+
+
+@app.get("/ui/stats")
+def ui_stats():
+    return app.state.db.stats()
+
+
+@app.get("/ui/signals")
+def ui_signals(limit: int = 50):
+    return {"signals": app.state.db.recent_signals(limit)}

@@ -116,3 +116,12 @@ class SignalDb:
             " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [{"ts": t, "equity": e, "balance": b, "floating_pl": f}
                 for t, e, b, f in reversed(rows)]
+
+    def recent_signals(self, limit: int = 50) -> list:
+        cols = ["id", "created_ts", "bar_time", "strategy_id", "signal", "price",
+                "direction", "confidence", "regime", "verdict", "is_active",
+                "outcome_move", "ai_correct"]
+        rows = self.conn.execute(
+            f"SELECT {', '.join(cols)} FROM signals ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
