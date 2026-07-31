@@ -43,6 +43,31 @@ _KV_SCHEMA = """CREATE TABLE IF NOT EXISTS kv (
   value TEXT
 )"""
 
+_PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  name TEXT, email TEXT, phone TEXT,
+  telegram_bot_token TEXT, telegram_chat_id TEXT,
+  risk_per_trade_pct REAL, max_drawdown_pct REAL, profit_target_pct REAL,
+  window_start_hour INTEGER, window_end_hour INTEGER,
+  broker_name TEXT, account_login TEXT, account_type TEXT,
+  experience_level TEXT, risk_ack INTEGER,
+  created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER
+)"""
+
+PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
+                  "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
+                  "profit_target_pct", "window_start_hour", "window_end_hour",
+                  "broker_name", "account_login", "account_type",
+                  "experience_level", "risk_ack"]
+
+
+def profile_completion(profile) -> int:
+    if not profile:
+        return 0
+    filled = sum(1 for f in PROFILE_FIELDS
+                 if profile.get(f) not in (None, ""))
+    return round(100 * filled / len(PROFILE_FIELDS))
+
 
 class SignalDb:
     def __init__(self, path: str):
@@ -51,6 +76,7 @@ class SignalDb:
         self.conn.execute(_HB_SCHEMA)
         self.conn.execute(_TRADES_SCHEMA)
         self.conn.execute(_KV_SCHEMA)
+        self.conn.execute(_PROFILE_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -192,3 +218,27 @@ class SignalDb:
             "INSERT INTO kv (key, value) VALUES (?,?)"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         self.conn.commit()
+
+    def get_profile(self):
+        row = self.conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in self.conn.execute(
+            "SELECT * FROM profile WHERE id = 1").description]
+        return dict(zip(cols, row))
+
+    def save_profile(self, partial: dict) -> dict:
+        now = int(time.time())
+        if self.get_profile() is None:
+            self.conn.execute(
+                "INSERT INTO profile (id, created_ts, updated_ts) VALUES (1, ?, ?)",
+                (now, now))
+        updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
+        if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
+            updates["risk_ack_ts"] = now
+        updates["updated_ts"] = now
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        self.conn.execute(f"UPDATE profile SET {sets} WHERE id = 1",
+                          tuple(updates.values()))
+        self.conn.commit()
+        return self.get_profile()
