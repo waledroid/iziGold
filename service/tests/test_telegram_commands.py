@@ -176,11 +176,41 @@ def test_history_lists_recent_trades():
                          "strategy_id": "halftrend_ema_v1", "direction": "BUY",
                          "lots": 0.1, "price": 2400.0, "sl": 2390.0,
                          "reason": "signal", "ticket": 1,
-                         "screenshot_path": None}])
+                         "screenshot_path": None, "profit": 0.0,
+                         "render_path": None}])
     app = _app(db=db)
     reply = handle_command("/history", app)
     assert "halftrend_ema_v1" in reply
     assert "BUY" in reply
+
+
+def test_history_open_trade_omits_pl():
+    """insert_trade always stores a profit (default 0.0), so an open/add
+    row must not print a misleading "P/L 0.0" -- only close events carry
+    a real P/L."""
+    db = FakeDb(trades=[{"id": 1, "ts": 1234567890, "event": "open",
+                         "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+                         "lots": 0.1, "price": 2400.0, "sl": 2390.0,
+                         "reason": "signal", "ticket": 1,
+                         "screenshot_path": None, "profit": 0.0,
+                         "render_path": None}])
+    app = _app(db=db)
+    reply = handle_command("/history", app)
+    assert "P/L" not in reply
+
+
+def test_history_close_trade_includes_pl_even_when_negative():
+    """A break-even or losing close (profit 0.0 or negative) is still a
+    real close outcome and must be shown, not treated as falsy/missing."""
+    db = FakeDb(trades=[{"id": 2, "ts": 1234567890, "event": "close",
+                         "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+                         "lots": 0.1, "price": 2400.0, "sl": 2390.0,
+                         "reason": "sl hit", "ticket": 1,
+                         "screenshot_path": None, "profit": -3.2,
+                         "render_path": None}])
+    app = _app(db=db)
+    reply = handle_command("/history", app)
+    assert "P/L -3.2" in reply
 
 
 def test_unknown_command_returns_none():

@@ -136,9 +136,8 @@ def _format_history(app) -> str:
         reason = t.get("reason")
         if reason:
             line += f" ({reason})"
-        profit = t.get("profit")
-        if profit is not None:
-            line += f" P/L {profit}"
+        if t.get("event") == "close":
+            line += f" P/L {t.get('profit')}"
         lines.append(line)
     return "\n".join(lines)
 
