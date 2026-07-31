@@ -63,6 +63,25 @@ datetime       g_lastBar = 0;
 bool           g_debugFired = false;
 string         g_pendingSwitch = "";
 
+// Bridges TradeManager (strategy-agnostic) to the UI service: reads the
+// active strategy id at call time, posts the event, then screenshots the
+// chart for open/close. Every step here is best-effort — see UiApi.mqh.
+class CUiSink : public CTradeEventSink
+  {
+public:
+   virtual void OnTradeEvent(string event, string dir, double lots, double price,
+                             double sl, string reason)
+     {
+      CStrategy *active = g_registry.Active();
+      string strategyId = (active != NULL) ? active.Id() : "unknown";
+      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, 0);
+      if(id < 0) return;
+      if(event == "open" || event == "close")
+         g_ui.UploadScreenshot(id);
+     }
+  };
+CUiSink g_uiSink;
+
 int OnInit()
   {
    if(ExecutionMode == EXEC_AUTO && !AllowLiveTrading &&
@@ -86,7 +105,7 @@ int OnInit()
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
-                 AddTriggerATR, ProfitTargetPct, StopAtrMult);
+                 AddTriggerATR, ProfitTargetPct, StopAtrMult, &g_uiSink);
    g_atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
    EventSetTimer(HeartbeatSec);
    return INIT_SUCCEEDED;

@@ -3,12 +3,14 @@
 #include <Trade/Trade.mqh>
 #include <XauAssistant/Strategy.mqh>
 #include <XauAssistant/RiskManager.mqh>
+#include <XauAssistant/UiApi.mqh>
 
 class CTradeManager
   {
 private:
-   CTrade        m_trade;
-   CRiskManager *m_risk;
+   CTrade            m_trade;
+   CRiskManager     *m_risk;
+   CTradeEventSink  *m_sink;
    long          m_magic;
    bool          m_pyramid;
    int           m_maxPos;
@@ -63,10 +65,12 @@ private:
 
 public:
    void Init(CRiskManager *risk, long magic, bool pyramid, int maxPos,
-             double addAtr, double targetPct, double stopAtrMult)
+             double addAtr, double targetPct, double stopAtrMult,
+             CTradeEventSink *sink = NULL)
      {
       m_risk = risk; m_magic = magic; m_pyramid = pyramid; m_maxPos = maxPos;
       m_addTriggerAtr = addAtr; m_targetPct = targetPct; m_stopAtrMult = stopAtrMult;
+      m_sink = sink;
       m_trade.SetExpertMagicNumber(magic);
       m_ratios[0] = 1.0; m_ratios[1] = 0.7; m_ratios[2] = 0.4;
      }
@@ -83,6 +87,15 @@ public:
 
    void CloseAll(string reason)
      {
+      // Capture the basket direction/size BEFORE closing — after the loop
+      // below there are no own positions left to read it from.
+      long ptype = OwnType();
+      double totalLots = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+         if(PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+            totalLots += PositionGetDouble(POSITION_VOLUME);
+
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
          ulong tk = PositionGetTicket(i);
@@ -91,12 +104,23 @@ public:
             m_trade.PositionClose(tk);
         }
       Print("TradeManager: closed all (", reason, ")");
+
+      // One "close" event per CloseAll call (not per ticket), only when there
+      // was actually a basket to close.
+      if(m_sink != NULL && ptype != -1)
+        {
+         string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         double price = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                      : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason);
+        }
      }
 
    void OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return;
+      bool wasReversal = false;
       if(CountOwn() > 0)
         {
          long ptype = OwnType();
@@ -106,6 +130,7 @@ public:
          CloseAll("reversal signal");       // stop-and-reverse, then enter below
          if(CountOwn() > 0)                 // guard: close incomplete
            { Print("TradeManager: reversal aborted — close incomplete, still ", CountOwn(), " open"); return; }
+         wasReversal = true;
         }
       string why;
       if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return; }
@@ -127,6 +152,12 @@ public:
         {
          m_lastEntryPrice = price;
          GlobalVariableSet(CycleKey(), AccountInfoDouble(ACCOUNT_BALANCE));
+         if(m_sink != NULL)
+           {
+            string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
+            string openReason = wasReversal ? "reversal" : ("signal " + dir);
+            m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason);
+           }
         }
      }
 
@@ -156,7 +187,16 @@ public:
       if(lots <= 0) return;
       bool ok = (ptype == POSITION_TYPE_BUY) ? m_trade.Buy(lots, _Symbol)
                                              : m_trade.Sell(lots, _Symbol);
-      if(ok) { m_lastEntryPrice = price; MoveStopsToBreakeven(); }
+      if(ok)
+        {
+         m_lastEntryPrice = price;
+         MoveStopsToBreakeven();
+         if(m_sink != NULL)
+           {
+            string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+            m_sink.OnTradeEvent("add", dir, lots, price, 0.0, "pyramid add");
+           }
+        }
      }
   };
 #endif
