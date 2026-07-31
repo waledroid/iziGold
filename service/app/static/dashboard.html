@@ -55,7 +55,7 @@ async function equity(){
    const y=210-(pt.equity-y0)/(y1-y0||1)*190;
    const sz=4;
    if(t.event==='open'){c.fillStyle='#5c5';c.beginPath();c.moveTo(x,y-sz);c.lineTo(x-sz,y+sz);c.lineTo(x+sz,y+sz);c.fill()}
-   else{c.fillStyle=t.reason==='stop-loss'?'#fa8':'e66';c.beginPath();c.moveTo(x,y+sz);c.lineTo(x-sz,y-sz);c.lineTo(x+sz,y-sz);c.fill()}
+   else{c.fillStyle=t.reason==='stop-loss'?'#fa8':'#e66';c.beginPath();c.moveTo(x,y+sz);c.lineTo(x-sz,y-sz);c.lineTo(x+sz,y-sz);c.fill()}
   }
  });
 }
