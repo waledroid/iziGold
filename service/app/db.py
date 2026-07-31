@@ -177,6 +177,11 @@ class SignalDb:
             "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
         self.conn.commit()
 
+    def set_render(self, trade_id: int, path: str) -> None:
+        self.conn.execute(
+            "UPDATE trades SET render_path=? WHERE id=?", (path, trade_id))
+        self.conn.commit()
+
     def get_kv(self, key: str) -> str | None:
         row = self.conn.execute(
             "SELECT value FROM kv WHERE key=?", (key,)).fetchone()

@@ -13,6 +13,7 @@ from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, TradeEventRequest)
 from app.regime import classify_regime, last_atr
+from app.render import render_trade_chart
 from app.telegram import (TelegramClient, format_report, handle_command,
                           pinned_tick, send_alert)
 from app.verdict import combine
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI):
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
     app.state.pending_switch = None
+    app.state.last_candles = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     app.state.telegram = (
@@ -103,6 +105,7 @@ def health():
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
+    app.state.last_candles = req.candles
     regime = classify_regime(req.candles)
     atr_value = last_atr(req.candles)
     closes = [x.c for x in req.candles]
@@ -193,9 +196,27 @@ def ui_page():
 
 
 @app.post("/trade-event")
-def trade_event(ev: TradeEventRequest):
+async def trade_event(ev: TradeEventRequest):
     trade_id = app.state.db.insert_trade(ev.model_dump())
+    if ev.event in ("open", "close") and app.state.last_candles:
+        render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
+        try:
+            ok = await asyncio.to_thread(
+                render_trade_chart, app.state.last_candles, ev.model_dump(),
+                str(render_path))
+            if ok:
+                app.state.db.set_render(trade_id, str(render_path))
+                if app.state.telegram is not None:
+                    caption = f"render: {ev.reason}"
+                    await asyncio.to_thread(
+                        _send_render_photo, app.state.telegram, caption, render_path)
+        except Exception:
+            pass
     return {"id": trade_id}
+
+
+def _send_render_photo(telegram: TelegramClient, caption: str, path: Path) -> None:
+    telegram.send_photo(caption, path.read_bytes())
 
 
 @app.post("/screenshot")
@@ -247,4 +268,16 @@ def ui_screenshot(trade_id: int):
     path = Path(row[0])
     if not path.exists():
         return JSONResponse(status_code=404, content={"detail": "screenshot not found"})
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get("/ui/render/{trade_id}")
+def ui_render(trade_id: int):
+    row = app.state.db.conn.execute(
+        "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
+    if not row or not row[0]:
+        return JSONResponse(status_code=404, content={"detail": "render not found"})
+    path = Path(row[0])
+    if not path.exists():
+        return JSONResponse(status_code=404, content={"detail": "render not found"})
     return FileResponse(path, media_type="image/png")
