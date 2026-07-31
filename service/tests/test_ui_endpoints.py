@@ -46,6 +46,7 @@ def test_signals_endpoint(client):
 
 
 def test_dashboard_served(client):
+    client.post("/ui/profile", json={})  # Skip: profile row must exist for /ui to serve the dashboard
     r = client.get("/ui")
     assert r.status_code == 200
     assert "XAU Assistant" in r.text

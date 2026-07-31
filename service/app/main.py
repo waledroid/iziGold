@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app.analysis import analyze_forecast
 from app.config import settings
-from app.db import SignalDb
+from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, TradeEventRequest)
@@ -67,6 +67,48 @@ async def pinned_editor(app: FastAPI):
         await asyncio.sleep(60)
 
 
+def _effective_telegram(app: FastAPI) -> tuple[str, str]:
+    """Profile credentials when non-empty, else settings (.env) values, both
+    stripped. Profile is only consulted once the row exists (get_profile can
+    be None before any /ui/profile POST -- Save or Skip -- has happened)."""
+    profile = app.state.db.get_profile() or {}
+    token = str(profile.get("telegram_bot_token") or "").strip()
+    chat_id = str(profile.get("telegram_chat_id") or "").strip()
+    if not token or not chat_id:
+        token = str(settings.telegram_bot_token or "").strip()
+        chat_id = str(settings.telegram_chat_id or "").strip()
+    return token, chat_id
+
+
+async def _apply_telegram(app: FastAPI) -> None:
+    """Single owner of the Telegram client/task lifecycle: cancels whatever
+    tasks currently exist, then rebuilds app.state.telegram (and its two
+    background tasks) from the effective credentials. Called at lifespan
+    startup and live from POST /ui/profile. Never raises -- fail-open."""
+    try:
+        for attr in ("telegram_task", "pinned_task"):
+            task = getattr(app.state, attr, None)
+            if task is not None:
+                task.cancel()
+                try:
+                    # See the lifespan shutdown comment: the underlying
+                    # TelegramClient call runs in a worker thread which
+                    # task.cancel() cannot interrupt mid-call, so bound the
+                    # wait instead of hanging on an in-flight long-poll.
+                    await asyncio.wait_for(task, timeout=3.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+        token, chat_id = _effective_telegram(app)
+        app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
+        app.state.telegram_task = (
+            asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
+        app.state.pinned_task = (
+            asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
@@ -76,13 +118,10 @@ async def lifespan(app: FastAPI):
     app.state.last_candles = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
-    app.state.telegram = (
-        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
-        if settings.telegram_bot_token and settings.telegram_chat_id else None)
-    app.state.telegram_task = (
-        asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
-    app.state.pinned_task = (
-        asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
+    app.state.telegram = None
+    app.state.telegram_task = None
+    app.state.pinned_task = None
+    await _apply_telegram(app)
     yield
     for task in (app.state.telegram_task, app.state.pinned_task):
         if task is not None:
@@ -194,8 +233,27 @@ def ui_signals(limit: int = 50):
     return {"signals": app.state.db.recent_signals(limit)}
 
 
+@app.get("/ui/profile")
+def ui_profile_get():
+    row = app.state.db.get_profile()
+    return {"profile": row, "completion_pct": profile_completion(row)}
+
+
+@app.post("/ui/profile")
+async def ui_profile_save(body: dict):
+    row = app.state.db.save_profile(body if isinstance(body, dict) else {})
+    if "telegram_bot_token" in body or "telegram_chat_id" in body:
+        try:
+            await _apply_telegram(app)
+        except Exception:
+            pass
+    return {"profile": row, "completion_pct": profile_completion(row)}
+
+
 @app.get("/ui")
 def ui_page():
+    if app.state.db.get_profile() is None:
+        return RedirectResponse("/ui/onboarding", status_code=307)
     return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
                         media_type="text/html")
 
