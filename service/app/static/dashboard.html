@@ -16,6 +16,7 @@
 </style>
 <div class="wrap">
  <h1 style="font-size:18px">🥇 XAU Assistant</h1>
+ <span id="prof" style="font-size:13px;color:#888"></span>
  <div id="stale" class="stale">EA not reporting (heartbeat stale)</div>
  <div class="strip" id="strip">waiting for first heartbeat…</div>
  <h2>Equity</h2><canvas id="eq" width="1100" height="220"></canvas>
@@ -37,6 +38,11 @@ async function state(){
   `<div>Positions<b>${pos}</b></div><div>Active<b>${h.active_strategy}${s.pending_switch?' → '+s.pending_switch+' <button onclick="sw(\'\')">cancel</button>':''}</b></div>`+
   `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':(h.hwm>0?'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)':'ok')}</b></div>`+
   `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
+ fetch('/ui/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
+  const who=profile&&profile.name?profile.name+' · ':'';
+  const win=profile&&profile.window_start_hour!=null?` · declared window ${profile.window_start_hour}–${profile.window_end_hour}h`:'';
+  $('prof').innerHTML=`${who}<a href="/ui/onboarding" style="color:#f5c542">profile ${completion_pct}%</a>${win}`;
+ });
 }
 async function equity(){
  const {series}=await j('/ui/equity');

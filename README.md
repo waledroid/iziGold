@@ -74,6 +74,12 @@ changed it). It shows:
   screenshots
 - **Signal log** — all active and shadow signals with AI confidence and outcomes
 
+**Setup on first visit:** the dashboard redirects to `/ui/onboarding` where you
+can enter your identity, Telegram credentials, risk preferences, and broker info.
+Everything is optional — click "Skip for now" to begin trading immediately and
+finish setup anytime via the profile badge on the dashboard. Telegram credentials
+entered here apply live and override `.env` values.
+
 Two EA inputs control the dashboard:
 - `UiBaseUrl` — defaults to `http://127.0.0.1:9000`; set to match your service
   port and network interface.

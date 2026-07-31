@@ -72,3 +72,10 @@ def test_telegram_live_apply(client):
     assert main.app.state.telegram_task is not None
     client.post("/ui/profile", json={"telegram_bot_token": "", "telegram_chat_id": ""})
     assert main.app.state.telegram is None       # cleared back to .env fallback (empty)
+
+
+def test_onboarding_page_served(client):
+    r = client.get("/ui/onboarding")
+    assert r.status_code == 200
+    for needle in ("Identity", "Telegram", "Risk profile", "Account", "/ui/profile"):
+        assert needle in r.text

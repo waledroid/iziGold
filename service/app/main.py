@@ -267,6 +267,12 @@ def ui_page():
                         media_type="text/html")
 
 
+@app.get("/ui/onboarding")
+def ui_onboarding():
+    return FileResponse(Path(__file__).parent / "static" / "onboarding.html",
+                        media_type="text/html")
+
+
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
     trade_id = app.state.db.insert_trade(ev.model_dump())
