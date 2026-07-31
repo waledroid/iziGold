@@ -13,7 +13,8 @@ from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, TradeEventRequest)
 from app.regime import classify_regime, last_atr
-from app.telegram import TelegramClient, format_report, handle_command, send_alert
+from app.telegram import (TelegramClient, format_report, handle_command,
+                          pinned_tick, send_alert)
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -49,6 +50,22 @@ async def telegram_poller(app: FastAPI):
             await asyncio.sleep(5)
 
 
+async def pinned_editor(app: FastAPI):
+    """Every 60 s, create-pin-or-edit the pinned live-status message.
+    Fail-open: any exception is swallowed and the loop just retries next
+    tick. The (synchronous, blocking) TelegramClient calls happen inside
+    `pinned_tick`, dispatched via asyncio.to_thread so they run off the
+    event loop -- same reasoning as `telegram_poller` above."""
+    while True:
+        try:
+            await asyncio.to_thread(pinned_tick, app, app.state.telegram)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
@@ -62,13 +79,16 @@ async def lifespan(app: FastAPI):
         if settings.telegram_bot_token and settings.telegram_chat_id else None)
     app.state.telegram_task = (
         asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
+    app.state.pinned_task = (
+        asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
     yield
-    if app.state.telegram_task is not None:
-        app.state.telegram_task.cancel()
-        try:
-            await app.state.telegram_task
-        except asyncio.CancelledError:
-            pass
+    for task in (app.state.telegram_task, app.state.pinned_task):
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title="XAU Assistant AI Service", lifespan=lifespan)

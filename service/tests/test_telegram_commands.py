@@ -5,7 +5,8 @@ import threading
 import types
 
 from app import main as app_main
-from app.telegram import TelegramClient, handle_command
+from app.db import SignalDb
+from app.telegram import TelegramClient, format_live_status, handle_command, pinned_tick
 
 
 class FakeTransport:
@@ -281,3 +282,110 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
     assert recorded["sent"] == ["no heartbeat yet"]
+
+
+# ---------------------------------------------------------------------------
+# kv store (SignalDb)
+# ---------------------------------------------------------------------------
+
+def test_kv_roundtrip(tmp_path):
+    db = SignalDb(str(tmp_path / "kv.db"))
+    assert db.get_kv("pinned_message_id") is None
+    db.set_kv("pinned_message_id", "123")
+    assert db.get_kv("pinned_message_id") == "123"
+    db.set_kv("pinned_message_id", "456")
+    assert db.get_kv("pinned_message_id") == "456"
+
+
+# ---------------------------------------------------------------------------
+# format_live_status
+# ---------------------------------------------------------------------------
+
+def test_format_live_status_contains_equity_and_strategy():
+    app = _app(latest_heartbeat=_hb(active="halftrend_ema_v1", equity=10250.5))
+    text = format_live_status(app)
+    assert "10250.5" in text
+    assert "halftrend_ema_v1" in text
+
+
+def test_format_live_status_no_heartbeat_yet():
+    app = _app(latest_heartbeat=None)
+    text = format_live_status(app)
+    assert "no heartbeat" in text
+
+
+# ---------------------------------------------------------------------------
+# pinned_tick
+# ---------------------------------------------------------------------------
+
+def test_pinned_tick_creates_and_pins_then_edits_on_next_call(tmp_path):
+    db = SignalDb(str(tmp_path / "pin.db"))
+    app = _app(latest_heartbeat=_hb(), db=db)
+    ft = FakeTransport(result={"ok": True, "result": {"message_id": 999}})
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    methods = [c[0] for c in ft.calls]
+    assert methods == ["sendMessage", "pinChatMessage"]
+    assert db.get_kv("pinned_message_id") == "999"
+    pin_payload = ft.calls[1][1]
+    assert pin_payload["message_id"] == 999
+
+    ft.calls.clear()
+    ft.result = {"ok": True}
+    pinned_tick(app, client)
+
+    assert len(ft.calls) == 1
+    method, payload, files = ft.calls[0]
+    assert method == "editMessageText"
+    assert str(payload["message_id"]) == "999"
+
+
+def test_pinned_tick_noop_without_heartbeat(tmp_path):
+    db = SignalDb(str(tmp_path / "pin2.db"))
+    app = _app(latest_heartbeat=None, db=db)
+    ft = FakeTransport()
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    assert ft.calls == []
+    assert db.get_kv("pinned_message_id") is None
+
+
+# ---------------------------------------------------------------------------
+# pinned_editor must not block the event loop (same reasoning as the poller)
+# ---------------------------------------------------------------------------
+
+def test_pinned_editor_dispatches_client_calls_off_event_loop(tmp_path):
+    db = SignalDb(str(tmp_path / "pin3.db"))
+    main_thread_name = threading.current_thread().name
+    recorded = {"send_message_thread": None}
+
+    class StubClient:
+        def send_message(self, text):
+            recorded["send_message_thread"] = threading.current_thread().name
+            return {"ok": True, "result": {"message_id": 42}}
+
+        def edit_message(self, message_id, text):
+            pass
+
+        def pin_message(self, message_id):
+            return True
+
+    stub_app = types.SimpleNamespace(state=types.SimpleNamespace(
+        telegram=StubClient(), latest_heartbeat=_hb(), db=db))
+
+    async def run():
+        task = asyncio.ensure_future(app_main.pinned_editor(stub_app))
+        await asyncio.sleep(0.1)  # let one tick run before it sleeps 60s
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert recorded["send_message_thread"] is not None
+    assert recorded["send_message_thread"] != main_thread_name
+    assert db.get_kv("pinned_message_id") == "42"

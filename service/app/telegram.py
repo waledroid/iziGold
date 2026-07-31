@@ -156,6 +156,50 @@ def _format_switch(app, args: list) -> str:
     return f"switch to {target} queued — confirms on next EA heartbeat"
 
 
+def format_live_status(app) -> str:
+    latest = app.state.latest_heartbeat
+    if latest is None:
+        return "📌 Live status\nno heartbeat yet"
+    ts, hb = latest
+    if hb.kill_switch:
+        ks = "⛔ TRIPPED"
+    elif hb.hwm > 0:
+        ks = f"{100 * (hb.equity / hb.hwm - 1):.1f}% off peak"
+    else:
+        ks = "ok"
+    updated = time.strftime("%H:%M", time.localtime(ts))
+    lines = [
+        "📌 Live status",
+        f"Equity: {hb.equity} Floating P/L: {hb.floating_pl}",
+        f"Positions: {len(hb.positions)}",
+        f"Kill-switch: {ks}",
+        f"Strategy: {hb.active_strategy}",
+        f"Updated: {updated}",
+    ]
+    return "\n".join(lines)
+
+
+def pinned_tick(app, client: "TelegramClient") -> None:
+    """Create-pin-or-edit the live-status message. Sync so tests can drive
+    it directly with a fake transport; the async pinned_editor loop calls
+    this via asyncio.to_thread. All failures are swallowed (fail-open)."""
+    if app.state.latest_heartbeat is None:
+        return
+    text = format_live_status(app)
+    pinned_id = app.state.db.get_kv("pinned_message_id")
+    if pinned_id:
+        client.edit_message(pinned_id, text)
+        return
+    result = client.send_message(text)
+    if not result or not result.get("ok"):
+        return
+    message_id = (result.get("result") or {}).get("message_id")
+    if message_id is None:
+        return
+    client.pin_message(message_id)
+    app.state.db.set_kv("pinned_message_id", str(message_id))
+
+
 def handle_command(text: str, app) -> str | None:
     """Pure function mapping a slash command to a reply, or None if unknown."""
     parts = text.strip().split()

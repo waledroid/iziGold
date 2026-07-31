@@ -36,6 +36,11 @@ _TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
   screenshot_path TEXT
 )"""
 
+_KV_SCHEMA = """CREATE TABLE IF NOT EXISTS kv (
+  key TEXT PRIMARY KEY,
+  value TEXT
+)"""
+
 
 class SignalDb:
     def __init__(self, path: str):
@@ -43,6 +48,7 @@ class SignalDb:
         self.conn.execute(_SCHEMA)
         self.conn.execute(_HB_SCHEMA)
         self.conn.execute(_TRADES_SCHEMA)
+        self.conn.execute(_KV_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -162,4 +168,15 @@ class SignalDb:
     def set_screenshot(self, trade_id: int, path: str) -> None:
         self.conn.execute(
             "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
+        self.conn.commit()
+
+    def get_kv(self, key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_kv(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
         self.conn.commit()
