@@ -78,7 +78,7 @@ async function stats(){
 async function signals(){
  const {signals}=await j('/ui/signals');
  $('sig').innerHTML='<tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr>'+
-  signals.map(s=>`<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td>${s.strategy_id||'—'}${s.is_active?'':' (shadow)'}</td>`+
+  signals.map(s=>`<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td>${s.strategy_id||'—'}${s.timeframe?' @'+s.timeframe:''}${s.is_active?'':' (shadow)'}</td>`+
   `<td>${s.signal}</td><td>${s.direction} ${fmt(100*s.confidence,0)}%</td><td>${s.verdict}</td>`+
   `<td>${s.outcome_move==null?'pending':fmt(s.outcome_move)}</td></tr>`).join('');
 }

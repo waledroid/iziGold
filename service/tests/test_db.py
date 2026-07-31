@@ -68,3 +68,27 @@ def test_per_strategy_stats(tmp_path):
     assert s["by_strategy"]["winner"]["avg_move"] > 0   # uptrend: BUY gains
     assert s["by_strategy"]["loser"]["hit_pct"] == 0.0
     assert s["by_strategy"]["loser"]["avg_move"] < 0    # uptrend: SELL loses
+
+
+def test_stats_split_per_timeframe(tmp_path):
+    db = SignalDb(str(tmp_path / "t.db"))
+    candles = trend_candles(200)
+    common = dict(bar_time=candles[100].t, symbol="XAUUSD", price=candles[100].c,
+                  direction="bullish", confidence=0.8, regime="trend",
+                  verdict="confirm", mode="grading", ai_available=True)
+    db.insert_signal(signal="BUY", strategy_id="a", timeframe="M5", **common)
+    db.insert_signal(signal="BUY", strategy_id="a", timeframe="M15", **common)
+    db.resolve_outcomes(candles)
+    s = db.stats()
+    assert "a @M5" in s["by_strategy"] and "a @M15" in s["by_strategy"]
+    assert s["by_strategy"]["a @M5"]["signals"] == 1
+
+
+def test_stats_no_timeframe_keeps_plain_key(tmp_path):
+    db = SignalDb(str(tmp_path / "t.db"))
+    candles = trend_candles(200)
+    db.insert_signal(bar_time=candles[100].t, symbol="XAUUSD", signal="BUY",
+                     price=candles[100].c, direction="bullish", confidence=0.8,
+                     regime="trend", verdict="confirm", mode="grading",
+                     ai_available=True, strategy_id="legacy")
+    assert "legacy" in db.stats()["by_strategy"]

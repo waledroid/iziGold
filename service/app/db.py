@@ -11,7 +11,7 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
   direction TEXT, confidence REAL, regime TEXT, verdict TEXT,
   mode TEXT, ai_available INTEGER,
   outcome_price REAL, outcome_move REAL, ai_correct INTEGER,
-  strategy_id TEXT, is_active INTEGER DEFAULT 1
+  strategy_id TEXT, is_active INTEGER DEFAULT 1, timeframe TEXT
 )"""
 
 _HB_SCHEMA = """CREATE TABLE IF NOT EXISTS heartbeats (
@@ -82,6 +82,8 @@ class SignalDb:
             self.conn.execute("ALTER TABLE signals ADD COLUMN strategy_id TEXT")
         if "is_active" not in cols:
             self.conn.execute("ALTER TABLE signals ADD COLUMN is_active INTEGER DEFAULT 1")
+        if "timeframe" not in cols:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
         trade_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
         if "profit" not in trade_cols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN profit REAL DEFAULT 0")
@@ -91,14 +93,14 @@ class SignalDb:
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
                       confidence, regime, verdict, mode, ai_available,
-                      strategy_id="unknown", is_active=True) -> int:
+                      strategy_id="unknown", is_active=True, timeframe="") -> int:
         cur = self.conn.execute(
             "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
-            " confidence, regime, verdict, mode, ai_available, strategy_id, is_active)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " confidence, regime, verdict, mode, ai_available, strategy_id, is_active,"
+            " timeframe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), bar_time, symbol, signal, price, direction,
              confidence, regime, verdict, mode, int(ai_available),
-             strategy_id, int(is_active)))
+             strategy_id, int(is_active), timeframe))
         self.conn.commit()
         return cur.lastrowid
 
@@ -133,8 +135,8 @@ class SignalDb:
             " WHERE outcome_price IS NOT NULL").fetchone()
         by_strategy = {}
         rows = self.conn.execute(
-            "SELECT COALESCE(strategy_id, 'pre-framework'), COUNT(*),"
-            " COUNT(outcome_price),"
+            "SELECT COALESCE(strategy_id, 'pre-framework'), COALESCE(timeframe, ''),"
+            " COUNT(*), COUNT(outcome_price),"
             " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
             "   CASE WHEN (signal='BUY' AND outcome_move > 0)"
             "          OR (signal='SELL' AND outcome_move < 0)"
@@ -142,9 +144,11 @@ class SignalDb:
             " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
             "   CASE WHEN signal='BUY' THEN outcome_move ELSE -outcome_move END END)"
             " FROM signals WHERE signal IN ('BUY','SELL')"
-            " GROUP BY COALESCE(strategy_id, 'pre-framework')").fetchall()
-        for sid, count, resolved, hit, avg in rows:
-            by_strategy[sid] = {"signals": count, "resolved": resolved,
+            " GROUP BY COALESCE(strategy_id, 'pre-framework'),"
+            " COALESCE(timeframe, '')").fetchall()
+        for sid, tf, count, resolved, hit, avg in rows:
+            key = f"{sid} @{tf}" if tf else sid   # timeframes never blend
+            by_strategy[key] = {"signals": count, "resolved": resolved,
                                 "hit_pct": round(hit or 0.0, 1),
                                 "avg_move": round(avg or 0.0, 2)}
         return {"total": total, "resolved": done[0],
@@ -171,7 +175,7 @@ class SignalDb:
                 for t, e, b, f in reversed(rows)]
 
     def recent_signals(self, limit: int = 50) -> list:
-        cols = ["id", "created_ts", "bar_time", "strategy_id", "signal", "price",
+        cols = ["id", "created_ts", "bar_time", "strategy_id", "timeframe", "signal", "price",
                 "direction", "confidence", "regime", "verdict", "is_active",
                 "outcome_move", "ai_correct"]
         rows = self.conn.execute(

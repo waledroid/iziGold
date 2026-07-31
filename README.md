@@ -1,6 +1,7 @@
 # XAU Assistant
 
-An MT5 trading assistant for XAUUSD M15 where **your strategy is the sole
+An MT5 trading assistant for XAUUSD (M5 default; the EA follows whatever
+chart timeframe it is attached to) where **your strategy is the sole
 decision maker** and an AI forecasting service (Chronos-Bolt) acts as a
 confirmation/grading layer. Alerts via Telegram, signal + outcome logging in
 SQLite from day one, manual and automatic execution modes with strict money
@@ -107,7 +108,10 @@ dashboard embeds them as clickable thumbnails (click to zoom).
 4. Open MetaEditor (F4), open `XauAssistant.mq5`, **Compile** — expect 0 errors.
 5. MT5 → Tools → Options → Expert Advisors → check *Allow WebRequest for
    listed URL* and add `http://127.0.0.1:9000` (or your port).
-6. Attach `XauAssistant` to a **XAUUSD M15** chart. Enable *Algo Trading*.
+6. Attach `XauAssistant` to a **XAUUSD M5** chart (recommended default —
+   any timeframe works; all indicators, signals, and stats follow the
+   chart, and performance stats are kept separate per timeframe).
+   Enable *Algo Trading*.
 7. First test: set input `DebugFireTestSignal=true` → within one bar you should
    see a chart arrow, an MT5 alert with the AI grade, a Telegram message, and a
    row in `service/xau_assistant.db`

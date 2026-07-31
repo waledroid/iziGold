@@ -79,3 +79,16 @@ def test_old_style_request_tagged_unknown(client):
     row = main.app.state.db.conn.execute(
         "SELECT strategy_id, is_active FROM signals").fetchone()
     assert row == ("unknown", 1)
+
+
+def test_analyze_records_timeframe(client):
+    payload = _payload("BUY")
+    payload["timeframe"] = "M5"
+    payload["strategy_id"] = "halftrend_ema_v1"
+    payload["shadows"] = [{"strategy_id": "stub", "signal": "SELL"}]
+    client.post("/analyze", json=payload)
+    from app import main
+    rows = main.app.state.db.conn.execute(
+        "SELECT strategy_id, timeframe FROM signals ORDER BY id").fetchall()
+    assert rows == [("halftrend_ema_v1", "M5"), ("stub", "M5")]
+    assert "halftrend_ema_v1 @M5" in main.app.state.db.stats()["by_strategy"]

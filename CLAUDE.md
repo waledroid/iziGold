@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An MT5 trading assistant for XAUUSD M15 with two halves that talk over HTTP:
+An MT5 trading assistant for XAUUSD (M5 default; the EA runs on the chart's timeframe — everything is PERIOD_CURRENT and stats split per timeframe) with two halves that talk over HTTP:
 
 - `mt5/` — MQL5 Expert Advisor (runs in MetaTrader 5 on Windows). The user's strategy is the **sole decision maker**.
 - `service/` — Python FastAPI service (runs in WSL2/Linux) that grades strategy signals with an AI forecaster (Chronos-Bolt), sends Telegram alerts, and logs everything to SQLite.
@@ -49,7 +49,7 @@ The MQL5 side (`mt5/`) **cannot be compiled or tested from this environment** �
 
 ## Architecture / data flow
 
-Each closed M15 bar: EA evaluates `Strategy.mqh` → (AUTO) `TradeManager` executes immediately → EA POSTs to `/analyze` with the signal (**including NONE**) and the last 200 OHLCV candles → service runs forecast → `analysis.py` derives direction/confidence → `regime.py` classifies trend/range/high_volatility classically (ADX + ATR percentile, not the AI) → `verdict.py` combines with the strategy signal → service logs to SQLite and sends Telegram directly (no second EA round trip) → EA draws the chart signal with the AI grade.
+Each closed bar (of the chart timeframe, M5 by default): EA evaluates `Strategy.mqh` → (AUTO) `TradeManager` executes immediately → EA POSTs to `/analyze` with the signal (**including NONE**) and the last 200 OHLCV candles → service runs forecast → `analysis.py` derives direction/confidence → `regime.py` classifies trend/range/high_volatility classically (ADX + ATR percentile, not the AI) → `verdict.py` combines with the strategy signal → service logs to SQLite and sends Telegram directly (no second EA round trip) → EA draws the chart signal with the AI grade.
 
 Key subtlety: the every-bar NONE posts are what let `db.py` **lazily resolve outcomes** of past signals (`resolve_outcomes` runs on every `/analyze` call using the fresh candles) — there is no separate data feed. Don't "optimize away" the NONE calls.
 
