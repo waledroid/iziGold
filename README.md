@@ -47,7 +47,31 @@ Notes:
    `TELEGRAM_CHAT_ID`.
 3. Restart the service. Every non-NONE signal now sends a report.
 
-## 3. Install the EA in MetaTrader 5 (Windows)
+## 3. Dashboard & heartbeat
+
+The dashboard is live at `http://127.0.0.1:9000/ui` (adjust port if you
+changed it). It shows:
+- **Equity curve** — updated every 30 seconds from heartbeats
+- **Strategy comparison** — live hit rates and average moves for each strategy
+- **Trade history** — recent open/close/exit events with timestamps and thumbnail
+  screenshots
+- **Signal log** — all active and shadow signals with AI confidence and outcomes
+
+Two EA inputs control the dashboard:
+- `UiBaseUrl` — defaults to `http://127.0.0.1:9000`; set to match your service
+  port and network interface.
+- `HeartbeatSec` — defaults to 5; heartbeats push position state to the service
+  every N seconds (dashboard updates use these snapshots).
+
+**Remote strategy switch:** Click "switch to this" on any strategy row. The
+dashboard shows a pending arrow → active strategy name until the next bar. When
+the EA processes the bar and sees the switch, it logs the switch and clears the
+arrow, confirming the change took effect.
+
+Screenshots land in `service/screenshots/` as PNG files, one per trade. The
+dashboard embeds them as clickable thumbnails (click to zoom).
+
+## 5. Install the EA in MetaTrader 5 (Windows)
 
 1. Install MT5 + open a **demo** account (any broker with XAUUSD).
 2. MT5 → File → **Open Data Folder** → `MQL5/`.
@@ -62,7 +86,7 @@ Notes:
    row in `service/xau_assistant.db`
    (`sqlite3 xau_assistant.db "SELECT * FROM signals;"`).
 
-## 4. Mode switches (EA inputs)
+## 6. Mode switches (EA inputs)
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -82,7 +106,7 @@ Notes:
 AI mode (`grading` vs `veto`) is set service-side in `.env` (`MODE=grading`).
 Keep it `grading` until the SQLite accuracy log proves the AI earns veto power.
 
-## 5. Tests
+## 7. Tests
 
 ```bash
 cd service && source .venv/bin/activate
