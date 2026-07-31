@@ -21,12 +21,18 @@ _SCREENSHOT_RETENTION = 500
 
 async def telegram_poller(app: FastAPI):
     """Long-poll Telegram for commands and reply. Fail-open: any exception
-    just backs off and continues."""
+    just backs off and continues.
+
+    Every TelegramClient call is dispatched via asyncio.to_thread so the
+    (synchronous, up-to-30s-blocking) HTTP call runs off the event loop —
+    otherwise it would stall the entire FastAPI app for the duration of
+    each long-poll, and task.cancel() would be unable to interrupt an
+    in-flight call since the block isn't at an await point."""
     offset = 0
     chat_id = str(settings.telegram_chat_id)
     while True:
         try:
-            updates = app.state.telegram.get_updates(offset)
+            updates = await asyncio.to_thread(app.state.telegram.get_updates, offset)
             for upd in updates:
                 offset = upd.get("update_id", offset - 1) + 1
                 message = upd.get("message") or {}
@@ -35,7 +41,7 @@ async def telegram_poller(app: FastAPI):
                 if text.startswith("/") and msg_chat_id == chat_id:
                     reply = handle_command(text, app)
                     if reply is not None:
-                        app.state.telegram.send_message(reply)
+                        await asyncio.to_thread(app.state.telegram.send_message, reply)
             await asyncio.sleep(1)
         except asyncio.CancelledError:
             raise

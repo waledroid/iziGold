@@ -1,6 +1,10 @@
+import asyncio
+import contextlib
 import importlib
+import threading
 import types
 
+from app import main as app_main
 from app.telegram import TelegramClient, handle_command
 
 
@@ -225,3 +229,55 @@ def test_poller_task_created_and_cancelled_when_configured(tmp_path, monkeypatch
         assert main.app.state.telegram_task is not None
         assert not main.app.state.telegram_task.done()
     assert main.app.state.telegram_task.done()
+
+
+# ---------------------------------------------------------------------------
+# Poller must not block the event loop (regression: FastAPI + shutdown hangs)
+# ---------------------------------------------------------------------------
+
+def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
+    """A blocking (sync, slow) TelegramClient must run in a worker thread,
+    not directly on the event loop -- otherwise every /health, /analyze,
+    /heartbeat request stalls for the duration of each long-poll, and
+    task.cancel() can't interrupt an in-flight call because the block
+    isn't at an await point."""
+    monkeypatch.setattr(app_main.settings, "telegram_chat_id", "555")
+    main_thread_name = threading.current_thread().name
+    recorded = {"get_updates_thread": None, "send_message_thread": None,
+                "sent": []}
+
+    class StubClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get_updates(self, offset):
+            recorded["get_updates_thread"] = threading.current_thread().name
+            self.calls += 1
+            if self.calls == 1:
+                return [{"update_id": 1,
+                        "message": {"text": "/status", "chat": {"id": 555}}}]
+            return []
+
+        def send_message(self, text):
+            recorded["send_message_thread"] = threading.current_thread().name
+            recorded["sent"].append(text)
+            return {"ok": True}
+
+    stub_app = types.SimpleNamespace(state=types.SimpleNamespace(
+        telegram=StubClient(), latest_heartbeat=None, pending_switch=None,
+        db=None))
+
+    async def run():
+        task = asyncio.ensure_future(app_main.telegram_poller(stub_app))
+        await asyncio.sleep(0.1)   # let one get_updates/send_message cycle run
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert recorded["get_updates_thread"] is not None
+    assert recorded["get_updates_thread"] != main_thread_name
+    assert recorded["send_message_thread"] is not None
+    assert recorded["send_message_thread"] != main_thread_name
+    assert recorded["sent"] == ["no heartbeat yet"]
