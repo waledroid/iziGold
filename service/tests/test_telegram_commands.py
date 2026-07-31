@@ -339,7 +339,49 @@ def test_pinned_tick_creates_and_pins_then_edits_on_next_call(tmp_path):
     assert len(ft.calls) == 1
     method, payload, files = ft.calls[0]
     assert method == "editMessageText"
-    assert str(payload["message_id"]) == "999"
+    assert payload["message_id"] == 999
+    assert isinstance(payload["message_id"], int)
+
+
+def test_pinned_tick_self_heals_when_edit_fails(tmp_path):
+    """If the pinned message was deleted server-side, editMessageText comes
+    back None/error. That tick must clear the stale kv id (not retry it
+    forever); the *next* tick then falls through to create+pin again and
+    stores the new id."""
+    db = SignalDb(str(tmp_path / "pin_heal.db"))
+    db.set_kv("pinned_message_id", "999")
+    app = _app(latest_heartbeat=_hb(), db=db)
+    ft = FakeTransport()
+    ft.result = None  # editMessageText fails
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    assert [c[0] for c in ft.calls] == ["editMessageText"]
+    assert db.get_kv("pinned_message_id") in (None, "")
+
+    ft.calls.clear()
+    ft.result = {"ok": True, "result": {"message_id": 1000}}
+    pinned_tick(app, client)
+
+    assert [c[0] for c in ft.calls] == ["sendMessage", "pinChatMessage"]
+    assert db.get_kv("pinned_message_id") == "1000"
+
+
+def test_pinned_tick_self_heals_when_edit_returns_error(tmp_path):
+    """Same self-heal path, but the transport returns an explicit error
+    response (ok: False) rather than None -- e.g. Telegram's "message to
+    edit not found"."""
+    db = SignalDb(str(tmp_path / "pin_heal2.db"))
+    db.set_kv("pinned_message_id", "999")
+    app = _app(latest_heartbeat=_hb(), db=db)
+    ft = FakeTransport(result={"ok": False, "description": "message not found"})
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    assert [c[0] for c in ft.calls] == ["editMessageText"]
+    assert db.get_kv("pinned_message_id") in (None, "")
 
 
 def test_pinned_tick_noop_without_heartbeat(tmp_path):

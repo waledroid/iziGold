@@ -182,13 +182,26 @@ def format_live_status(app) -> str:
 def pinned_tick(app, client: "TelegramClient") -> None:
     """Create-pin-or-edit the live-status message. Sync so tests can drive
     it directly with a fake transport; the async pinned_editor loop calls
-    this via asyncio.to_thread. All failures are swallowed (fail-open)."""
+    this via asyncio.to_thread. All failures are swallowed (fail-open).
+
+    Self-healing: if the stored id can't be edited -- e.g. the pinned
+    message was deleted server-side (edit_message returns None/an error),
+    or the stored value isn't a valid numeric id -- the kv id is cleared
+    so the *next* tick falls through to the create-and-pin path instead of
+    retrying a dead id forever."""
     if app.state.latest_heartbeat is None:
         return
     text = format_live_status(app)
     pinned_id = app.state.db.get_kv("pinned_message_id")
     if pinned_id:
-        client.edit_message(pinned_id, text)
+        try:
+            numeric_id = int(pinned_id)
+        except ValueError:
+            app.state.db.set_kv("pinned_message_id", "")
+            return
+        result = client.edit_message(numeric_id, text)
+        if result is None or not result.get("ok", True):
+            app.state.db.set_kv("pinned_message_id", "")
         return
     result = client.send_message(text)
     if not result or not result.get("ok"):
