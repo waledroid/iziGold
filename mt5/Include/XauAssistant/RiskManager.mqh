@@ -44,6 +44,16 @@ public:
 
    bool KillSwitchTripped() { return GlobalVariableGet(Key("KILL")) > 0; }
 
+   // Read-only wrappers for the UI heartbeat (Task 4) — expose internals without
+   // changing risk-decision behavior.
+   double HighWaterMark()      { return GlobalVariableGet(Key("HWM")); }
+   int    ExposureMinutesUsed(){ return (int)GlobalVariableGet(ExpoKey()); }
+   bool   InTradingWindow()
+     {
+      MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+      return dt.hour >= m_winStart && dt.hour < m_winEnd;
+     }
+
    bool TrendOK()
      {
       double adx[];

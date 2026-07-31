@@ -5,6 +5,7 @@
 #include <XauAssistant/Strategy.mqh>
 #include <XauAssistant/Alerts.mqh>
 #include <XauAssistant/AiApi.mqh>
+#include <XauAssistant/UiApi.mqh>
 #include <XauAssistant/SignalManager.mqh>
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/TradeManager.mqh>
@@ -18,6 +19,8 @@ input ENUM_EXEC_MODE ExecutionMode          = EXEC_MANUAL;
 input bool           AllowLiveTrading       = false;
 input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
+input string         UiBaseUrl              = "http://127.0.0.1:9000";
+input int            HeartbeatSec           = 5;
 input double         RiskPerTradePct        = 0.5;
 input double         MaxDrawdownPct         = 10.0;
 input bool           EnablePyramiding       = true;
@@ -51,12 +54,14 @@ input int    DSmooth         = 3;    // boll_stochrsi: %D smoothing
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
 CAiApi         g_api;
+CUiApi         g_ui;
 CSignalManager g_sm;
 CRiskManager   g_risk;
 CTradeManager  g_trades;
 int            g_atrHandle = INVALID_HANDLE;
 datetime       g_lastBar = 0;
 bool           g_debugFired = false;
+string         g_pendingSwitch = "";
 
 int OnInit()
   {
@@ -77,11 +82,13 @@ int OnInit()
       return INIT_FAILED;
      }
    g_api.Init(ApiUrl, ApiTimeoutMs);
+   g_ui.Init(UiBaseUrl, ApiTimeoutMs, MagicNumber);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
                  AddTriggerATR, ProfitTargetPct, StopAtrMult);
    g_atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+   EventSetTimer(HeartbeatSec);
    return INIT_SUCCEEDED;
   }
 
@@ -93,10 +100,46 @@ void OnTick()
    ProcessBar();
   }
 
-void OnDeinit(const int reason) { g_registry.Clear(); }
+// Fires every HeartbeatSec seconds regardless of bar boundaries; only ever
+// posts state and stashes a pending switch id — never touches trading state.
+void OnTimer()
+  {
+   double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance     = AccountInfoDouble(ACCOUNT_BALANCE);
+   double floating_pl = equity - balance;
+   CStrategy *active  = g_registry.Active();
+   string activeId    = (active != NULL) ? active.Id() : "unknown";
+   double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+
+   string sw = g_ui.PostHeartbeat(equity, balance, floating_pl,
+                                  g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
+                                  g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
+                                  spreadPts, activeId);
+   if(sw != "") g_pendingSwitch = sw;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+   g_registry.Clear();
+  }
 
 void ProcessBar()
   {
+   // Apply any pending remote strategy switch only at the bar boundary.
+   if(g_pendingSwitch != "")
+     {
+      string sw = g_pendingSwitch;
+      g_pendingSwitch = "";
+      if(g_registry.SetActive(sw))
+        {
+         Print("XauAssistant: switched active strategy to '", sw, "'");
+         g_alerts.Notify("switched to " + sw);
+        }
+      else
+         Print("XauAssistant: remote switch requested unknown strategy id '", sw, "'");
+     }
+
    CStrategy *active = g_registry.Active();
    ENUM_SIGNAL sig = SIGNAL_NONE;
    string shadowIds[];
