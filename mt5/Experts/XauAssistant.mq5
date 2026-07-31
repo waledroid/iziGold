@@ -76,6 +76,12 @@ public:
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
+      // Sync hook: every "close" event (TradeManager closes AND Task-5's
+      // stop-loss/TP OnTradeTransaction reports) tells the active strategy
+      // its basket is flat, regardless of whether the UI post below
+      // succeeds — this is local state, not network-dependent.
+      if(event == "close" && active != NULL)
+         active.OnBasketClosed();
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit);
       if(id < 0) return;
       if(event == "open" || event == "close")
@@ -221,7 +227,14 @@ void ProcessBar()
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
    if(ExecutionMode == EXEC_AUTO && atrVal > 0)
      {
-      g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
+      bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
+      // A same-direction signal into an already-open basket is a legitimate
+      // early return (false) with OpenCount() > 0 — not a rejection, since
+      // the strategy's virtual position is still validly tracking that
+      // basket. Only flag it when nothing is open afterward: the signal
+      // truly failed to produce or preserve a position.
+      if(!opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.OpenCount() == 0)
+         active.OnEntryRejected(sig);
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
       g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
      }

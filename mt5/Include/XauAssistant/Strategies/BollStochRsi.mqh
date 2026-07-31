@@ -174,5 +174,14 @@ public:
      }
 
    virtual double StopPrice(ENUM_SIGNAL dir) { return 0.0; }  // ATR default
+
+   // Sync hooks (AUTO-mode safety, spec Known Limitations): the virtual
+   // position above only mirrors what this strategy *thinks* it signaled.
+   // When the real basket goes flat for any reason other than our own
+   // SIGNAL_EXIT — a risk-manager-blocked entry, a broker-side stop-loss,
+   // TradeManager's own profit-target close, etc. — reset the virtual
+   // state so the next bar starts clean instead of drifting out of sync.
+   virtual void OnBasketClosed() { m_virtualDir = SIGNAL_NONE; m_pendingExit = false; }
+   virtual void OnEntryRejected(ENUM_SIGNAL dir) { m_virtualDir = SIGNAL_NONE; m_pendingExit = false; }
   };
 #endif

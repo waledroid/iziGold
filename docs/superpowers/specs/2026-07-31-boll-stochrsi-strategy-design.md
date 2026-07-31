@@ -56,7 +56,7 @@ Inputs (defaults calibratable in the Strategy Tester):
 
 ### Known Limitations
 
-The strategy tracks a virtual position (the last signal sent to the framework) to manage exit conditions. This position can desynchronize from the real basket when it is the ACTIVE strategy in AUTO mode—risk-manager-blocked entries or framework-side closes will not update the virtual position. This mode is acceptable for shadow mode (where the strategy is not acting on real trades). Before making `boll_stochrsi_v1` the active strategy in AUTO (live trading), a strategy/basket synchronization hook is required to keep the virtual position in sync with actual fills.
+The strategy tracks a virtual position (the last signal sent to the framework) to manage exit conditions. This previously risked desynchronizing from the real basket when the strategy was ACTIVE in AUTO mode—risk-manager-blocked entries or framework-side closes would not update the virtual position. This is now resolved: `CStrategy::OnBasketClosed()` (fired by the EA sink on every basket "close" event, including Task-5 stop-loss/TP transactions) and `CStrategy::OnEntryRejected(dir)` (fired by the EA when an AUTO-mode BUY/SELL signal fails to open a position and no basket remains open) both reset `m_virtualDir`/`m_pendingExit`, keeping the virtual position in sync with actual fills. `boll_stochrsi_v1` is AUTO-safe. Shadow-mode virtual-position tracking is unchanged—these hooks only fire for the ACTIVE strategy.
 
 ## 4. Integration
 

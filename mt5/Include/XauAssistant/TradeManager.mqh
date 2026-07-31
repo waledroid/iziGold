@@ -117,24 +117,27 @@ public:
         }
      }
 
-   void OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0)
+   // Returns true ONLY when an order was actually opened (used by the EA to
+   // detect AUTO-mode entry rejections). EXIT closes rather than opens, so
+   // it returns false; every blocked/no-op path returns false too.
+   bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0)
      {
-      if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return; }
-      if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return;
+      if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return false; }
+      if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return false;
       bool wasReversal = false;
       if(CountOwn() > 0)
         {
          long ptype = OwnType();
          bool opposite = (sig == SIGNAL_BUY  && ptype == POSITION_TYPE_SELL) ||
                          (sig == SIGNAL_SELL && ptype == POSITION_TYPE_BUY);
-         if(!opposite) return;              // same direction: one cycle at a time
+         if(!opposite) return false;         // same direction: one cycle at a time
          CloseAll("reversal");               // stop-and-reverse, then enter below
          if(CountOwn() > 0)                 // guard: close incomplete
-           { Print("TradeManager: reversal aborted — close incomplete, still ", CountOwn(), " open"); return; }
+           { Print("TradeManager: reversal aborted — close incomplete, still ", CountOwn(), " open"); return false; }
          wasReversal = true;
         }
       string why;
-      if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return; }
+      if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return false; }
       double price = (sig == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                                          : SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double sl;
@@ -146,7 +149,7 @@ public:
                                     : price + m_stopAtrMult * atr_value;
       double sl_points = MathAbs(price - sl) / _Point;
       double lots = m_risk.CalcLots(sl_points, m_ratios[0]);
-      if(lots <= 0) return;
+      if(lots <= 0) return false;
       bool ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
                                     : m_trade.Sell(lots, _Symbol, 0, sl);
       if(ok)
@@ -161,6 +164,7 @@ public:
                                 (long)m_trade.ResultOrder());
            }
         }
+      return ok;
      }
 
    void Manage(double atr_value, bool conditionStillTrue)

@@ -27,5 +27,13 @@ public:
    virtual bool        ConditionStillTrue(ENUM_SIGNAL dir) { return false; }
    // Strategy's preferred stop for a new position; 0 = use the ATR default.
    virtual double      StopPrice(ENUM_SIGNAL dir) { return 0.0; }
+   // Fired by the EA sink on every basket "close" event (TradeManager closes
+   // and Task-5 stop-loss/TP transactions), for the ACTIVE strategy only.
+   // Lets a strategy that tracks a virtual position resync with reality.
+   virtual void        OnBasketClosed() {}
+   // Fired by the EA (AUTO mode only) when a BUY/SELL signal failed to open
+   // a position (blocked, no lots, order-send failure) and no basket is
+   // open afterward — i.e. the rejection left nothing tracking the signal.
+   virtual void        OnEntryRejected(ENUM_SIGNAL dir) {}
   };
 #endif
