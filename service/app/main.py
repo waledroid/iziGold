@@ -88,34 +88,40 @@ async def _apply_telegram(app: FastAPI) -> None:
     """Single owner of the Telegram client/task lifecycle: cancels whatever
     tasks currently exist, then rebuilds app.state.telegram (and its two
     background tasks) from the effective credentials. Called at lifespan
-    startup and live from POST /ui/profile. Never raises -- fail-open."""
-    try:
-        for attr in ("telegram_task", "pinned_task"):
-            task = getattr(app.state, attr, None)
-            if task is not None:
-                task.cancel()
-                try:
-                    # See the lifespan shutdown comment: the underlying
-                    # TelegramClient call runs in a worker thread which
-                    # task.cancel() cannot interrupt mid-call, so bound the
-                    # wait instead of hanging on an in-flight long-poll.
-                    await asyncio.wait_for(task, timeout=3.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
+    startup and live from POST /ui/profile. Never raises -- fail-open.
 
-        token, chat_id = _effective_telegram(app)
-        app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
-        # Keep app.telegram's module-level active client in sync so
-        # send_alert (used by the sync /analyze endpoint) reaches whichever
-        # client is live -- including profile-only credentials that never
-        # appear in `settings`.
-        set_active_client(app.state.telegram)
-        app.state.telegram_task = (
-            asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
-        app.state.pinned_task = (
-            asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
-    except Exception:
-        pass
+    Serialized on app.state.telegram_lock: two overlapping callers (e.g. two
+    rapid POST /ui/profile requests) must not both read the old task, both
+    decide it needs replacing, and each spawn a fresh pair -- that would
+    leak a poller/pinned-editor task that nothing ever cancels again."""
+    async with app.state.telegram_lock:
+        try:
+            for attr in ("telegram_task", "pinned_task"):
+                task = getattr(app.state, attr, None)
+                if task is not None:
+                    task.cancel()
+                    try:
+                        # See the lifespan shutdown comment: the underlying
+                        # TelegramClient call runs in a worker thread which
+                        # task.cancel() cannot interrupt mid-call, so bound the
+                        # wait instead of hanging on an in-flight long-poll.
+                        await asyncio.wait_for(task, timeout=3.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+
+            token, chat_id = _effective_telegram(app)
+            app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
+            # Keep app.telegram's module-level active client in sync so
+            # send_alert (used by the sync /analyze endpoint) reaches whichever
+            # client is live -- including profile-only credentials that never
+            # appear in `settings`.
+            set_active_client(app.state.telegram)
+            app.state.telegram_task = (
+                asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
+            app.state.pinned_task = (
+                asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -130,6 +136,7 @@ async def lifespan(app: FastAPI):
     app.state.telegram = None
     app.state.telegram_task = None
     app.state.pinned_task = None
+    app.state.telegram_lock = asyncio.Lock()
     await _apply_telegram(app)
     yield
     for task in (app.state.telegram_task, app.state.pinned_task):
@@ -144,6 +151,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(task, timeout=3.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+    set_active_client(None)
 
 
 app = FastAPI(title="XAU Assistant AI Service", lifespan=lifespan)
@@ -242,15 +250,35 @@ def ui_signals(limit: int = 50):
     return {"signals": app.state.db.recent_signals(limit)}
 
 
+def _mask_secret(value: str) -> str:
+    """Never return the full secret: "****" + last 4 chars (or all dots if
+    shorter than that)."""
+    tail = value[-4:] if len(value) >= 4 else value
+    return "••••" + tail
+
+
 @app.get("/ui/profile")
 def ui_profile_get():
     row = app.state.db.get_profile()
-    return {"profile": row, "completion_pct": profile_completion(row)}
+    completion_pct = profile_completion(row)
+    if row is not None:
+        row = dict(row)
+        token = row.get("telegram_bot_token")
+        if token:
+            row["telegram_bot_token"] = _mask_secret(str(token))
+    return {"profile": row, "completion_pct": completion_pct}
 
 
 @app.post("/ui/profile")
 async def ui_profile_save(body: dict):
-    row = app.state.db.save_profile(body if isinstance(body, dict) else {})
+    body = dict(body) if isinstance(body, dict) else {}
+    # Belt and braces: the onboarding page never sends a masked value back,
+    # but guard here too so a masked telegram_bot_token (from the GET
+    # response, e.g. round-tripped by a stale client) can never overwrite
+    # the real stored token.
+    if str(body.get("telegram_bot_token", "")).startswith("•"):
+        body.pop("telegram_bot_token", None)
+    row = app.state.db.save_profile(body)
     if "telegram_bot_token" in body or "telegram_chat_id" in body:
         try:
             await _apply_telegram(app)
@@ -261,7 +289,11 @@ async def ui_profile_save(body: dict):
 
 @app.get("/ui")
 def ui_page():
-    if app.state.db.get_profile() is None:
+    try:
+        has_profile = app.state.db.get_profile() is not None
+    except Exception:
+        has_profile = True  # fail open to the dashboard, not a redirect/500
+    if not has_profile:
         return RedirectResponse("/ui/onboarding", status_code=307)
     return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
                         media_type="text/html")

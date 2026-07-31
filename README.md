@@ -27,10 +27,14 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # core (fast)
 pip install -r requirements-model.txt    # torch + chronos (large, CPU-only is fine)
 cp .env.example .env                     # then edit .env
-uvicorn app.main:app --host 0.0.0.0 --port 9000
+uvicorn app.main:app --host 127.0.0.1 --port 9000
 ```
 
 Check: `curl http://127.0.0.1:9000/health` → `{"status":"ok",...}`.
+
+Note: `--host 127.0.0.1` keeps the dashboard and stored credentials (e.g. your
+Telegram bot token) reachable only from this machine. Use `--host 0.0.0.0`
+only if you accept exposing the dashboard and its credentials to your LAN.
 
 Notes:
 - The **first** Chronos call downloads the model (~1 min); afterwards inference

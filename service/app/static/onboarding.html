@@ -21,7 +21,7 @@
  <p class="note">Everything below is optional — save what you have, skip the rest,
  and finish anytime from the dashboard's profile badge. Nothing here blocks or
  alters trading.</p>
- <form id="f">
+ <form id="f" novalidate>
   <fieldset><legend>Identity &amp; contact</legend>
    <label>Name</label><input name="name">
    <div class="row"><div><label>Email</label><input name="email" type="email"></div>
@@ -79,6 +79,11 @@ f.onsubmit=async e=>{e.preventDefault();
  for(const el of f.elements){ if(!el.name) continue;
   if(el.type==='checkbox') body[el.name]=el.checked?1:0;
   else if(el.value!=='') body[el.name]=el.type==='number'?Number(el.value):el.value; }
+ // The bot token field is pre-filled with a masked "••••1234" placeholder
+ // when a token is already stored (see the profile-load block above); if
+ // the user never touched it, don't send the mask back -- it would
+ // overwrite the real stored token with garbage.
+ if(typeof body.telegram_bot_token==='string' && body.telegram_bot_token.startsWith('•')) delete body.telegram_bot_token;
  await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  location.href='/ui';};
 document.getElementById('skip').onclick=async()=>{

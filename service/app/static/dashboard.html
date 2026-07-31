@@ -39,9 +39,15 @@ async function state(){
   `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':(h.hwm>0?'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)':'ok')}</b></div>`+
   `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
  fetch('/ui/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
-  const who=profile&&profile.name?profile.name+' · ':'';
-  const win=profile&&profile.window_start_hour!=null?` · declared window ${profile.window_start_hour}–${profile.window_end_hour}h`:'';
-  $('prof').innerHTML=`${who}<a href="/ui/onboarding" style="color:#f5c542">profile ${completion_pct}%</a>${win}`;
+  const prof=$('prof');
+  prof.textContent='';
+  if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
+  const a=document.createElement('a');
+  a.href='/ui/onboarding'; a.style.color='#f5c542';
+  a.textContent=`profile ${completion_pct}%`;
+  prof.appendChild(a);
+  if(profile&&profile.window_start_hour!=null&&profile.window_end_hour!=null)
+   prof.appendChild(document.createTextNode(` · declared window ${profile.window_start_hour}–${profile.window_end_hour}h`));
  });
 }
 async function equity(){
