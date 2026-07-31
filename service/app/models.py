@@ -70,3 +70,4 @@ class TradeEventRequest(BaseModel):
     sl: float = 0.0
     reason: str = ""
     ticket: int = 0
+    profit: float = 0.0

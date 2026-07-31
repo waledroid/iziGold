@@ -62,10 +62,13 @@ async function signals(){
 }
 async function trades(){
  const {trades}=await j('/ui/trades');
- $('tr').innerHTML='<tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>reason</th><th>screenshot</th></tr>'+
-  trades.map(t=>`<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td>${t.event}</td><td>${t.strategy_id||'—'}</td><td>${t.direction||'—'}</td>`+
-  `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${t.reason||'—'}</td>`+
-  `<td><img src="/ui/screenshot/${t.id}" height="40" onerror="this.style.display='none'" onclick="window.open(this.src)"></td></tr>`).join('');
+ $('tr').innerHTML='<tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th></tr>'+
+  trades.map(t=>{
+   const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${fmt(t.profit)}</span>`:'';
+   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td>${t.event}</td><td>${t.strategy_id||'—'}</td><td>${t.direction||'—'}</td>`+
+    `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td>${t.reason||'—'}</td>`+
+    `<td><img src="/ui/screenshot/${t.id}" height="40" onerror="this.style.display='none'" onclick="window.open(this.src)"></td></tr>`;
+  }).join('');
 }
 async function sw(id){await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});state()}
 state();equity();stats();signals();trades();

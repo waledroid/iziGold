@@ -206,7 +206,24 @@ async def screenshot(event: int, request: Request):
     file_path.write_bytes(body)
     app.state.db.set_screenshot(event, str(file_path))
     _prune_screenshots(dir_path)
+    if app.state.telegram is not None:
+        try:
+            row = app.state.db.conn.execute(
+                "SELECT event, direction, lots, price, reason, profit"
+                " FROM trades WHERE id=?", (event,)).fetchone()
+            if row is not None:
+                caption = _trade_caption(*row)
+                await asyncio.to_thread(app.state.telegram.send_photo, caption, body)
+        except Exception:
+            pass
     return {"saved": str(file_path)}
+
+
+def _trade_caption(event, direction, lots, price, reason, profit) -> str:
+    caption = f"{event} {direction} {lots}@{price} — {reason}"
+    if event == "close":
+        caption += f"; P/L {profit}"
+    return caption
 
 
 def _prune_screenshots(dir_path: Path, keep: int = _SCREENSHOT_RETENTION) -> None:
