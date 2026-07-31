@@ -125,6 +125,31 @@ def test_trade_event_without_prior_candles_still_200_no_render(client):
     assert r.status_code == 404
 
 
+def test_trade_event_render_prunes_to_retention_cap(client, tmp_path):
+    import os
+    import time
+
+    shot_dir = tmp_path / "screenshots"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+
+    now = time.time()
+    for i in range(502):
+        f = shot_dir / f"fake_{i}.png"
+        f.write_bytes(b"x")
+        os.utime(f, (now - 1000 + i, now - 1000 + i))
+
+    client.post("/analyze", json=_analyze_payload())
+    trade_id = client.post(
+        "/trade-event", json=_trade(event="close", reason="tp hit")).json()["id"]
+
+    remaining = list(shot_dir.glob("*.png"))
+    assert len(remaining) == 500
+    # the newly rendered chart (newest) must survive
+    assert (shot_dir / f"render_{trade_id}.png") in remaining
+    assert not (shot_dir / "fake_0.png").exists()
+    assert (shot_dir / "fake_501.png").exists()
+
+
 def test_ui_render_404_when_missing(client):
     trade_id = client.post("/trade-event", json=_trade()).json()["id"]
     r = client.get(f"/ui/render/{trade_id}")

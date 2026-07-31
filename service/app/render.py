@@ -1,11 +1,18 @@
 import matplotlib
-matplotlib.use("Agg")  # noqa: E402 -- must precede pyplot import, no display in service
-import matplotlib.pyplot as plt  # noqa: E402
+matplotlib.use("Agg")  # noqa: E402 -- harmless with the OO API below, kept
+# in case anything else in the process imports pyplot and picks a backend.
+from matplotlib.figure import Figure  # noqa: E402
 
 
 def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
     """Render the last 100 candles as manual OHLC bars with an entry/exit
     marker and optional SL line, saved as a PNG to `out_path`.
+
+    Uses the matplotlib object-oriented API (`Figure` directly) rather than
+    `pyplot`, whose global figure-manager state is not thread-safe --
+    renders here run concurrently via `asyncio.to_thread` for overlapping
+    /trade-event calls, so sharing pyplot's global current-figure state
+    across threads could race and corrupt/cross-contaminate figures.
 
     Returns True on success, False on any failure (empty candles, bad
     out_path, etc.) -- never raises.
@@ -13,10 +20,10 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
     if not candles:
         return False
 
-    fig = None
     try:
         window = candles[-100:]
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig = Figure(figsize=(10, 5))
+        ax = fig.add_subplot(111)
 
         for i, c in enumerate(window):
             color = "#2ecc71" if c.c >= c.o else "#e74c3c"
@@ -43,6 +50,3 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
         return True
     except Exception:
         return False
-    finally:
-        if fig is not None:
-            plt.close(fig)

@@ -206,6 +206,7 @@ async def trade_event(ev: TradeEventRequest):
                 str(render_path))
             if ok:
                 app.state.db.set_render(trade_id, str(render_path))
+                await asyncio.to_thread(_prune_screenshots, app.state.screenshot_dir)
                 if app.state.telegram is not None:
                     caption = f"render: {ev.reason}"
                     await asyncio.to_thread(
