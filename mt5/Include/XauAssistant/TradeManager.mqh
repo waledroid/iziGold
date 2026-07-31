@@ -87,10 +87,11 @@ public:
 
    void CloseAll(string reason)
      {
-      // Capture the basket direction/size BEFORE closing — after the loop
-      // below there are no own positions left to read it from.
+      // Capture the basket direction/size/profit BEFORE closing — after the
+      // loop below there are no own positions left to read them from.
       long ptype = OwnType();
       double totalLots = 0;
+      double basketProfit = BasketProfit();
       for(int i = PositionsTotal() - 1; i >= 0; i--)
          if(PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
             PositionGetString(POSITION_SYMBOL) == _Symbol)
@@ -112,7 +113,7 @@ public:
          string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
          double price = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
                                                       : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason);
+         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason, 0, basketProfit);
         }
      }
 

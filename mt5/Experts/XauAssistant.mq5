@@ -71,11 +71,12 @@ class CUiSink : public CTradeEventSink
   {
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
-                             double sl, string reason, long ticket = 0)
+                             double sl, string reason, long ticket = 0,
+                             double profit = 0.0)
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
-      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket);
+      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit);
       if(id < 0) return;
       if(event == "open" || event == "close")
          g_ui.UploadScreenshot(id);
@@ -142,6 +143,41 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    g_registry.Clear();
+  }
+
+// Reports broker-side stop-loss / take-profit closes that never pass through
+// TradeManager (e.g. the price touches SL/TP while nothing here calls
+// CloseAll). Every other close reason is already reported by CTradeManager
+// via the sink, so anything not DEAL_REASON_SL/TP is skipped here to avoid
+// double-reporting. Pure telemetry: every path either returns early or ends
+// in a best-effort sink call, never touches trading state or blocks OnTick.
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
+   if((long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != MagicNumber) return;
+   if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) return;
+
+   ENUM_DEAL_REASON dealReason = (ENUM_DEAL_REASON)HistoryDealGetInteger(trans.deal, DEAL_REASON);
+   string reason;
+   if(dealReason == DEAL_REASON_SL)      reason = "stop-loss";
+   else if(dealReason == DEAL_REASON_TP) reason = "profit target";
+   else return;   // every other reason is TradeManager-initiated and already reported
+
+   // The deal that closes a position carries the opposite type of the
+   // position itself — a SELL deal closes a BUY position — so invert it to
+   // report the position's own direction, matching every other trade event.
+   long dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   string dir = (dealType == DEAL_TYPE_SELL) ? "BUY" : "SELL";
+   double price  = HistoryDealGetDouble(trans.deal, DEAL_PRICE);
+   double lots   = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
+   double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+
+   g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit);
   }
 
 void ProcessBar()

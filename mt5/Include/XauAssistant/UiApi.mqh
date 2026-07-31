@@ -11,7 +11,8 @@ class CTradeEventSink
   {
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
-                             double sl, string reason, long ticket = 0) = 0;
+                             double sl, string reason, long ticket = 0,
+                             double profit = 0.0) = 0;
   };
 
 class CUiApi
@@ -138,7 +139,8 @@ public:
    // Returns the trade id on success, or -1 on any failure (no throw, no retry —
    // callers must treat -1 as "skip the screenshot, keep trading").
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
-                       double price, double sl, string reason, long ticket)
+                       double price, double sl, string reason, long ticket,
+                       double profit = 0.0)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -147,7 +149,8 @@ public:
                     ",\"price\":" + DoubleToString(price, _Digits) +
                     ",\"sl\":" + DoubleToString(sl, _Digits) +
                     ",\"reason\":\"" + reason + "\"" +
-                    ",\"ticket\":" + (string)ticket + "}";
+                    ",\"ticket\":" + (string)ticket +
+                    ",\"profit\":" + DoubleToString(profit, 2) + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
