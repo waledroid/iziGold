@@ -279,6 +279,7 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
 
     class StubClient:
         def __init__(self):
+            self.chat_id = "555"  # matches settings.telegram_chat_id here too
             self.calls = 0
 
         def get_updates(self, offset):
@@ -311,6 +312,47 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     assert recorded["get_updates_thread"] != main_thread_name
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
+    assert recorded["sent"] == ["no heartbeat yet"]
+
+
+def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
+    """When Telegram credentials come from the profile (not .env), the
+    poller must filter inbound commands using the *client's* chat_id, not
+    settings.telegram_chat_id -- otherwise every profile-applied command is
+    silently dropped. Regression for that bug: settings carries a stale/
+    different chat id, and the active client carries the real one."""
+    monkeypatch.setattr(app_main.settings, "telegram_chat_id", "999")  # stale .env value
+    recorded = {"sent": []}
+
+    class StubClient:
+        def __init__(self):
+            self.chat_id = "555"  # the profile-applied chat id
+            self.calls = 0
+
+        def get_updates(self, offset):
+            self.calls += 1
+            if self.calls == 1:
+                return [{"update_id": 1,
+                        "message": {"text": "/status", "chat": {"id": 555}}}]
+            return []
+
+        def send_message(self, text):
+            recorded["sent"].append(text)
+            return {"ok": True}
+
+    stub_app = types.SimpleNamespace(state=types.SimpleNamespace(
+        telegram=StubClient(), latest_heartbeat=None, pending_switch=None,
+        db=None))
+
+    async def run():
+        task = asyncio.ensure_future(app_main.telegram_poller(stub_app))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
     assert recorded["sent"] == ["no heartbeat yet"]
 
 

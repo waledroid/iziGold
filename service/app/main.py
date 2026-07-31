@@ -15,7 +15,7 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (TelegramClient, format_report, handle_command,
-                          pinned_tick, send_alert)
+                          pinned_tick, send_alert, set_active_client)
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -31,7 +31,11 @@ async def telegram_poller(app: FastAPI):
     each long-poll, and task.cancel() would be unable to interrupt an
     in-flight call since the block isn't at an await point."""
     offset = 0
-    chat_id = str(settings.telegram_chat_id)
+    # Filter on the ACTIVE client's chat id, not settings/.env directly --
+    # credentials (and thus chat_id) can come from the profile instead, and
+    # _apply_telegram restarts this task on every apply, so the value read
+    # here at task start always reflects whichever client is current.
+    chat_id = str(getattr(app.state.telegram, "chat_id", "") or settings.telegram_chat_id)
     while True:
         try:
             updates = await asyncio.to_thread(app.state.telegram.get_updates, offset)
@@ -101,6 +105,11 @@ async def _apply_telegram(app: FastAPI) -> None:
 
         token, chat_id = _effective_telegram(app)
         app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
+        # Keep app.telegram's module-level active client in sync so
+        # send_alert (used by the sync /analyze endpoint) reaches whichever
+        # client is live -- including profile-only credentials that never
+        # appear in `settings`.
+        set_active_client(app.state.telegram)
         app.state.telegram_task = (
             asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
         app.state.pinned_task = (

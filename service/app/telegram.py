@@ -4,6 +4,18 @@ import httpx
 
 _ICON = {"confirm": "✅", "conflict": "⚠️", "neutral": "➖"}
 
+# The single "live" TelegramClient, kept in sync by app.main._apply_telegram
+# whenever the effective Telegram credentials change (profile or .env).
+# send_alert prefers this over building its own settings-based httpx call so
+# profile-only credentials -- which never appear in `settings` -- still
+# deliver /analyze alerts. None when Telegram isn't configured at all.
+_active_client = None
+
+
+def set_active_client(client) -> None:
+    global _active_client
+    _active_client = client
+
 
 def format_report(req, resp) -> str:
     ai = (f"{resp.direction} {resp.confidence:.0%} — {resp.verdict} {_ICON[resp.verdict]}"
@@ -16,6 +28,11 @@ def format_report(req, resp) -> str:
 
 
 def send_alert(text: str, settings) -> bool:
+    if _active_client is not None:
+        # /analyze is a sync endpoint (runs in a worker thread via FastAPI),
+        # so this direct synchronous send is event-loop-safe.
+        result = _active_client.send_message(text)
+        return bool(result and result.get("ok", True))
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return False
     try:
