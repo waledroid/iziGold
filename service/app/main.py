@@ -1,3 +1,4 @@
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,10 +13,34 @@ from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, TradeEventRequest)
 from app.regime import classify_regime, last_atr
-from app.telegram import format_report, send_alert
+from app.telegram import TelegramClient, format_report, handle_command, send_alert
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
+
+
+async def telegram_poller(app: FastAPI):
+    """Long-poll Telegram for commands and reply. Fail-open: any exception
+    just backs off and continues."""
+    offset = 0
+    chat_id = str(settings.telegram_chat_id)
+    while True:
+        try:
+            updates = app.state.telegram.get_updates(offset)
+            for upd in updates:
+                offset = upd.get("update_id", offset - 1) + 1
+                message = upd.get("message") or {}
+                text = message.get("text") or ""
+                msg_chat_id = str(message.get("chat", {}).get("id"))
+                if text.startswith("/") and msg_chat_id == chat_id:
+                    reply = handle_command(text, app)
+                    if reply is not None:
+                        app.state.telegram.send_message(reply)
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -26,7 +51,18 @@ async def lifespan(app: FastAPI):
     app.state.pending_switch = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
+    app.state.telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.telegram_bot_token and settings.telegram_chat_id else None)
+    app.state.telegram_task = (
+        asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
     yield
+    if app.state.telegram_task is not None:
+        app.state.telegram_task.cancel()
+        try:
+            await app.state.telegram_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="XAU Assistant AI Service", lifespan=lifespan)
