@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,7 +7,7 @@ from app.analysis import analyze_forecast
 from app.config import settings
 from app.db import SignalDb
 from app.forecaster import get_forecaster
-from app.models import AnalyzeRequest, AnalyzeResponse
+from app.models import AnalyzeRequest, AnalyzeResponse, HeartbeatRequest, HeartbeatResponse
 from app.regime import classify_regime, last_atr
 from app.telegram import format_report, send_alert
 from app.verdict import combine
@@ -16,6 +17,8 @@ from app.verdict import combine
 async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
     app.state.db = SignalDb(settings.db_path)
+    app.state.latest_heartbeat = None
+    app.state.pending_switch = None
     yield
 
 
@@ -65,3 +68,22 @@ def analyze(req: AnalyzeRequest):
                             settings.confirm_threshold),
             strategy_id=shadow.strategy_id, is_active=False)
     return resp
+
+
+@app.post("/heartbeat", response_model=HeartbeatResponse)
+def heartbeat(hb: HeartbeatRequest):
+    app.state.latest_heartbeat = (time.time(), hb)
+    app.state.db.insert_heartbeat({**hb.model_dump(exclude={"positions"}),
+                                   "open_count": len(hb.positions)})
+    if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
+        app.state.pending_switch = None
+    return HeartbeatResponse(switch_to=app.state.pending_switch)
+
+
+@app.post("/ui/switch")
+def ui_switch(body: dict):
+    sid = str(body.get("strategy_id", "")).strip()
+    if not sid:
+        return {"pending": None}
+    app.state.pending_switch = sid
+    return {"pending": sid}

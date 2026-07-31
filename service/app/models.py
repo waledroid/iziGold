@@ -33,3 +33,29 @@ class AnalyzeResponse(BaseModel):
     verdict: Literal["confirm", "neutral", "conflict"]
     mode: Literal["grading", "veto"]
     ai_available: bool
+
+
+class Position(BaseModel):
+    ticket: int
+    direction: Literal["BUY", "SELL"]
+    lots: float
+    open_price: float
+    sl: float
+    profit: float
+
+
+class HeartbeatRequest(BaseModel):
+    equity: float
+    balance: float
+    floating_pl: float
+    positions: list[Position] = []
+    kill_switch: bool = False
+    hwm: float = 0.0
+    exposure_min: int = 0
+    window_open: bool = False
+    spread_points: float = 0.0
+    active_strategy: str = "unknown"
+
+
+class HeartbeatResponse(BaseModel):
+    switch_to: str | None = None

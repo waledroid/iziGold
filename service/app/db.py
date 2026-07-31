@@ -14,11 +14,20 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
   strategy_id TEXT, is_active INTEGER DEFAULT 1
 )"""
 
+_HB_SCHEMA = """CREATE TABLE IF NOT EXISTS heartbeats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  equity REAL, balance REAL, floating_pl REAL,
+  open_count INTEGER, kill_switch INTEGER,
+  exposure_min INTEGER, active_strategy TEXT
+)"""
+
 
 class SignalDb:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute(_SCHEMA)
+        self.conn.execute(_HB_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -87,3 +96,23 @@ class SignalDb:
                                 "avg_move": round(avg or 0.0, 2)}
         return {"total": total, "resolved": done[0],
                 "ai_correct_pct": round(done[1], 1), "by_strategy": by_strategy}
+
+    def insert_heartbeat(self, hb: dict) -> bool:
+        now = int(time.time())
+        last = self.conn.execute("SELECT MAX(ts) FROM heartbeats").fetchone()[0]
+        if last is not None and now - last < 60:
+            return False
+        self.conn.execute(
+            "INSERT INTO heartbeats (ts, equity, balance, floating_pl, open_count,"
+            " kill_switch, exposure_min, active_strategy) VALUES (?,?,?,?,?,?,?,?)",
+            (now, hb["equity"], hb["balance"], hb["floating_pl"], hb["open_count"],
+             int(hb["kill_switch"]), hb["exposure_min"], hb["active_strategy"]))
+        self.conn.commit()
+        return True
+
+    def equity_series(self, limit: int = 1440) -> list:
+        rows = self.conn.execute(
+            "SELECT ts, equity, balance, floating_pl FROM heartbeats"
+            " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+        return [{"ts": t, "equity": e, "balance": b, "floating_pl": f}
+                for t, e, b, f in reversed(rows)]
