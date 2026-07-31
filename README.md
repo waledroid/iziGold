@@ -59,7 +59,7 @@ seconds with current equity, floating P/L, active strategy, and kill-switch stat
 
 **Photo alerts:** When a trade opens or closes, the bot sends:
 - **EA screenshot** (MetaTrader chart at the moment of execution)
-- **Rendered chart** (Python matplotlib chart overlaying the last 50 candles with
+- **Rendered chart** (Python matplotlib chart overlaying the last 100 candles with
   entry/exit markers)
 
 Note: `pip install -r requirements.txt` now includes matplotlib for chart rendering.

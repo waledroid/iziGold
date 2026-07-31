@@ -88,8 +88,13 @@ async def lifespan(app: FastAPI):
         if task is not None:
             task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
+                # The underlying TelegramClient call runs in a worker thread
+                # (asyncio.to_thread) which task.cancel() cannot interrupt
+                # mid-call, so an in-flight ~30s long-poll would otherwise
+                # make a bare `await task` hang shutdown for up to 30s.
+                # Bound the wait instead and move on regardless.
+                await asyncio.wait_for(task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
 
 
@@ -225,9 +230,12 @@ async def screenshot(event: int, request: Request):
     body = await request.body()
     dir_path = app.state.screenshot_dir
     file_path = dir_path / f"{event}.png"
-    file_path.write_bytes(body)
+    # Dispatch the blocking file write and directory scan/prune via
+    # asyncio.to_thread so they run off the event loop instead of stalling
+    # every other request while they hit disk.
+    await asyncio.to_thread(file_path.write_bytes, body)
     app.state.db.set_screenshot(event, str(file_path))
-    _prune_screenshots(dir_path)
+    await asyncio.to_thread(_prune_screenshots, dir_path)
     if app.state.telegram is not None:
         try:
             row = app.state.db.conn.execute(

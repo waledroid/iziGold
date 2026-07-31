@@ -76,14 +76,22 @@ public:
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
-      // Sync hook: every "close" event (TradeManager closes AND Task-5's
-      // stop-loss/TP OnTradeTransaction reports) tells the active strategy
-      // which basket direction just closed, regardless of whether the UI
-      // post below succeeds — this is local state, not network-dependent.
+      // A "close" event fires once per closed position/deal, but a
+      // pyramided basket can stop out ONE LEG AT A TIME — each own
+      // position carries its own broker-side breakeven SL (see
+      // OnTradeTransaction below) — so a "close" here does not always mean
+      // the whole basket is gone. Gate the sync hook and the screenshot on
+      // g_trades.OpenCount() == 0 (no own positions left) so a partial
+      // stop-out doesn't prematurely reset the active strategy's virtual
+      // position or screenshot a basket that is still open; the final leg's
+      // close event still fires the hook/screenshot once the basket is
+      // actually empty. Every close event is still posted to the UI below
+      // regardless of this gate, so per-deal telemetry/P&L is never lost.
       // Direction-matched (not unconditional) so a reversal's synchronous
       // close of the OLD basket can't clobber a virtual position a
       // strategy already flipped to the NEW direction this same bar.
-      if(event == "close" && active != NULL)
+      bool basketGone = (event != "close") || (g_trades.OpenCount() == 0);
+      if(event == "close" && active != NULL && basketGone)
         {
          ENUM_SIGNAL closedDir = (dir == "BUY")  ? SIGNAL_BUY  :
                                  (dir == "SELL") ? SIGNAL_SELL : SIGNAL_NONE;
@@ -91,7 +99,7 @@ public:
         }
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit);
       if(id < 0) return;
-      if(event == "open" || event == "close")
+      if(event == "open" || (event == "close" && basketGone))
          g_ui.UploadScreenshot(id);
      }
   };
@@ -164,6 +172,11 @@ void OnDeinit(const int reason)
 // via the sink, so anything not DEAL_REASON_SL/TP is skipped here to avoid
 // double-reporting. Pure telemetry: every path either returns early or ends
 // in a best-effort sink call, never touches trading state or blocks OnTick.
+// Scope: this handler only recognizes DEAL_ENTRY_OUT (hedging-mode closing
+// deals, one per own position). DEAL_ENTRY_OUT_BY (netting-mode offsetting
+// deals) is out of scope — this EA's own positions are opened/managed under
+// hedging accounting, so OUT_BY deals should not occur here; if netting
+// support is ever added, this handler needs a matching branch for it.
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
