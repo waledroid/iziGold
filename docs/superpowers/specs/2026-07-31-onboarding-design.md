@@ -25,11 +25,14 @@ without rework (stepping-stone model).
   2. *Telegram setup* — telegram_bot_token, telegram_chat_id. Applied
      **live** on save (see §4).
   3. *Risk profile* — risk_per_trade_pct, max_drawdown_pct,
-     profit_target_pct, window_start_hour, window_end_hour. These are the
-     client's **declared preferences**; the EA inputs remain the enforcer.
+     profit_target_pct, prefilled with safe recommended defaults
+     (0.5 / 10 / 2, matching the EA defaults). Declared preferences only;
+     the EA inputs remain the enforcer. (Window hours were removed from
+     the form 2026-07-31 for simplicity; columns remain in the schema.)
   4. *Account & consent* — broker_name, account_login, account_type
-     (demo/live), experience_level (beginner/intermediate/advanced),
-     risk_ack (checkbox; stores boolean + timestamp when first checked).
+     (demo/live), risk_ack (checkbox; stores boolean + timestamp when
+     first checked). (experience_level removed from the form for
+     simplicity; column remains.)
      Plain-language acknowledgment of automated-trading risk.
 
 ## 3. Storage

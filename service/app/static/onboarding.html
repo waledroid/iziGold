@@ -35,26 +35,19 @@
   </fieldset>
   <fieldset><legend>Risk profile (your declared preferences — the EA enforces its own inputs)</legend>
    <div class="row">
-    <div><label>Risk % per trade</label><input name="risk_per_trade_pct" type="number" step="0.1"></div>
-    <div><label>Max drawdown %</label><input name="max_drawdown_pct" type="number" step="0.5"></div>
-    <div><label>Profit target %</label><input name="profit_target_pct" type="number" step="0.5"></div>
+    <div><label>Risk % per trade</label><input name="risk_per_trade_pct" type="number" step="0.1" value="0.5"></div>
+    <div><label>Max drawdown %</label><input name="max_drawdown_pct" type="number" step="0.5" value="10"></div>
+    <div><label>Profit target %</label><input name="profit_target_pct" type="number" step="0.5" value="2"></div>
    </div>
-   <div class="row">
-    <div><label>Window start (h)</label><input name="window_start_hour" type="number" min="0" max="23"></div>
-    <div><label>Window end (h)</label><input name="window_end_hour" type="number" min="0" max="23"></div>
-   </div>
+   <p class="note">Prefilled with safe recommended values — keep them unless you know why not.</p>
   </fieldset>
   <fieldset><legend>Account &amp; consent</legend>
    <div class="row">
     <div><label>Broker</label><input name="broker_name"></div>
     <div><label>Account login</label><input name="account_login"></div>
    </div>
-   <div class="row">
-    <div><label>Account type</label><select name="account_type">
-     <option value="">—</option><option>demo</option><option>live</option></select></div>
-    <div><label>Experience</label><select name="experience_level">
-     <option value="">—</option><option>beginner</option><option>intermediate</option><option>advanced</option></select></div>
-   </div>
+   <label>Account type</label><select name="account_type">
+    <option value="">—</option><option>demo</option><option>live</option></select>
    <div class="ack"><input type="checkbox" name="risk_ack" id="ack">
     <label for="ack" style="margin:0">I understand automated trading can lose money,
     past results don't guarantee future ones, and I remain responsible for this

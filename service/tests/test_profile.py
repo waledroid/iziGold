@@ -41,8 +41,8 @@ def test_completion_percent(tmp_path):
     assert profile_completion(None) == 0
     assert profile_completion(db.save_profile({})) == 0
     row = db.save_profile({"name": "W", "email": "e", "phone": "p"})
-    assert profile_completion(row) == 20            # 3 of 15
-    assert profile_completion(db.save_profile({"name": ""})) == 13  # empty string unsets → 2/15
+    assert profile_completion(row) == 25            # 3 of 12
+    assert profile_completion(db.save_profile({"name": ""})) == 17  # empty string unsets → 2/12
 
 
 @pytest.fixture()
@@ -67,7 +67,7 @@ def test_profile_roundtrip_and_completion(client):
     assert client.get("/ui/profile").json() == {"profile": None, "completion_pct": 0}
     body = client.post("/ui/profile", json={"name": "Wale", "risk_ack": 1}).json()
     assert body["profile"]["name"] == "Wale"
-    assert body["completion_pct"] == 13          # 2 of 15
+    assert body["completion_pct"] == 17          # 2 of 12
 
 
 def test_telegram_live_apply(client, monkeypatch):

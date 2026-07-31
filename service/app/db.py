@@ -56,9 +56,8 @@ _PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
 
 PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
                   "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
-                  "profit_target_pct", "window_start_hour", "window_end_hour",
-                  "broker_name", "account_login", "account_type",
-                  "experience_level", "risk_ack"]
+                  "profit_target_pct", "broker_name", "account_login",
+                  "account_type", "risk_ack"]
 
 
 def profile_completion(profile) -> int:

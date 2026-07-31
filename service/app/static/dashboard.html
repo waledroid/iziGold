@@ -46,8 +46,6 @@ async function state(){
   a.href='/ui/onboarding'; a.style.color='#f5c542';
   a.textContent=`profile ${completion_pct}%`;
   prof.appendChild(a);
-  if(profile&&profile.window_start_hour!=null&&profile.window_end_hour!=null)
-   prof.appendChild(document.createTextNode(` · declared window ${profile.window_start_hour}–${profile.window_end_hour}h`));
  });
 }
 async function equity(){
