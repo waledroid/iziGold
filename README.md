@@ -47,6 +47,23 @@ Notes:
    `TELEGRAM_CHAT_ID`.
 3. Restart the service. Every non-NONE signal now sends a report.
 
+**Commands:** Send any of the following to the bot:
+- `/status` — show current positions, equity, kill-switch state
+- `/stats` — strategy performance summary (signals, hit rate, avg move)
+- `/history` — last 10 trades with timestamps and P/L
+- `/switch <strategy_id>` — request an active-strategy switch (e.g., `/switch boll_stochrsi_v1`)
+- `/switch cancel` — cancel a pending strategy switch
+
+**Live pinned message:** The bot pins a live status message to the chat, updated every 60
+seconds with current equity, floating P/L, active strategy, and kill-switch state.
+
+**Photo alerts:** When a trade opens or closes, the bot sends:
+- **EA screenshot** (MetaTrader chart at the moment of execution)
+- **Rendered chart** (Python matplotlib chart overlaying the last 50 candles with
+  entry/exit markers)
+
+Note: `pip install -r requirements.txt` now includes matplotlib for chart rendering.
+
 ## 3. Dashboard & heartbeat
 
 The dashboard is live at `http://127.0.0.1:9000/ui` (adjust port if you

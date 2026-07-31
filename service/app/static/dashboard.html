@@ -39,13 +39,25 @@ async function state(){
   `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
 }
 async function equity(){
- const {series}=await j('/ui/equity'); const c=$('eq').getContext('2d');
+ const {series}=await j('/ui/equity');
+ const {trades}=await j('/ui/trades');
+ const c=$('eq').getContext('2d');
  c.clearRect(0,0,1100,220); if(series.length<2)return;
  const xs=series.map(p=>p.ts), ys=series.map(p=>p.equity);
  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys)||1;
  c.strokeStyle='#f5c542';c.beginPath();
  series.forEach((p,i)=>{const x=(p.ts-x0)/(x1-x0||1)*1080+10,y=210-(p.equity-y0)/(y1-y0||1)*190;i?c.lineTo(x,y):c.moveTo(x,y)});
  c.stroke();
+ trades.forEach(t=>{
+  if((t.event==='open'||t.event==='close')&&t.ts>=x0&&t.ts<=x1){
+   const x=(t.ts-x0)/(x1-x0||1)*1080+10;
+   const pt=series.reduce((a,b)=>Math.abs(b.ts-t.ts)<Math.abs(a.ts-t.ts)?b:a);
+   const y=210-(pt.equity-y0)/(y1-y0||1)*190;
+   const sz=4;
+   if(t.event==='open'){c.fillStyle='#5c5';c.beginPath();c.moveTo(x,y-sz);c.lineTo(x-sz,y+sz);c.lineTo(x+sz,y+sz);c.fill()}
+   else{c.fillStyle=t.reason==='stop-loss'?'#fa8':'e66';c.beginPath();c.moveTo(x,y+sz);c.lineTo(x-sz,y-sz);c.lineTo(x+sz,y-sz);c.fill()}
+  }
+ });
 }
 async function stats(){
  const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
