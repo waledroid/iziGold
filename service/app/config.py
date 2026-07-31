@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     db_path: str = "xau_assistant.db"
+    screenshot_dir: str = "screenshots"
 
 
 settings = Settings()

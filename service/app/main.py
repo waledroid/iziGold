@@ -2,17 +2,20 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.analysis import analyze_forecast
 from app.config import settings
 from app.db import SignalDb
 from app.forecaster import get_forecaster
-from app.models import AnalyzeRequest, AnalyzeResponse, HeartbeatRequest, HeartbeatResponse
+from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
+                        HeartbeatResponse, TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.telegram import format_report, send_alert
 from app.verdict import combine
+
+_SCREENSHOT_RETENTION = 500
 
 
 @asynccontextmanager
@@ -21,6 +24,8 @@ async def lifespan(app: FastAPI):
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
     app.state.pending_switch = None
+    app.state.screenshot_dir = Path(settings.screenshot_dir)
+    app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -122,3 +127,44 @@ def ui_signals(limit: int = 50):
 def ui_page():
     return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
                         media_type="text/html")
+
+
+@app.post("/trade-event")
+def trade_event(ev: TradeEventRequest):
+    trade_id = app.state.db.insert_trade(ev.model_dump())
+    return {"id": trade_id}
+
+
+@app.post("/screenshot")
+async def screenshot(event: int, request: Request):
+    body = await request.body()
+    dir_path = app.state.screenshot_dir
+    file_path = dir_path / f"{event}.png"
+    file_path.write_bytes(body)
+    app.state.db.set_screenshot(event, str(file_path))
+    _prune_screenshots(dir_path)
+    return {"saved": str(file_path)}
+
+
+def _prune_screenshots(dir_path: Path, keep: int = _SCREENSHOT_RETENTION) -> None:
+    files = sorted(dir_path.glob("*.png"), key=lambda p: p.stat().st_mtime,
+                   reverse=True)
+    for stale in files[keep:]:
+        stale.unlink()
+
+
+@app.get("/ui/trades")
+def ui_trades(limit: int = 50):
+    return {"trades": app.state.db.recent_trades(limit)}
+
+
+@app.get("/ui/screenshot/{trade_id}")
+def ui_screenshot(trade_id: int):
+    row = app.state.db.conn.execute(
+        "SELECT screenshot_path FROM trades WHERE id=?", (trade_id,)).fetchone()
+    if not row or not row[0]:
+        return JSONResponse(status_code=404, content={"detail": "screenshot not found"})
+    path = Path(row[0])
+    if not path.exists():
+        return JSONResponse(status_code=404, content={"detail": "screenshot not found"})
+    return FileResponse(path, media_type="image/png")

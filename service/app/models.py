@@ -59,3 +59,14 @@ class HeartbeatRequest(BaseModel):
 
 class HeartbeatResponse(BaseModel):
     switch_to: str | None = None
+
+
+class TradeEventRequest(BaseModel):
+    event: Literal["open", "add", "close"]
+    strategy_id: str = "unknown"
+    direction: Literal["BUY", "SELL"]
+    lots: float
+    price: float
+    sl: float = 0.0
+    reason: str = ""
+    ticket: int = 0

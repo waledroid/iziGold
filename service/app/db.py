@@ -22,12 +22,27 @@ _HB_SCHEMA = """CREATE TABLE IF NOT EXISTS heartbeats (
   exposure_min INTEGER, active_strategy TEXT
 )"""
 
+_TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  event TEXT NOT NULL,
+  strategy_id TEXT,
+  direction TEXT,
+  lots REAL,
+  price REAL,
+  sl REAL,
+  reason TEXT,
+  ticket INTEGER,
+  screenshot_path TEXT
+)"""
+
 
 class SignalDb:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute(_SCHEMA)
         self.conn.execute(_HB_SCHEMA)
+        self.conn.execute(_TRADES_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -125,3 +140,26 @@ class SignalDb:
             f"SELECT {', '.join(cols)} FROM signals ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
         return [dict(zip(cols, r)) for r in rows]
+
+    def insert_trade(self, ev: dict) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
+            " sl, reason, ticket) VALUES (?,?,?,?,?,?,?,?,?)",
+            (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
+             ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
+             ev.get("reason", ""), ev.get("ticket", 0)))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def recent_trades(self, limit: int = 50) -> list:
+        cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
+                "sl", "reason", "ticket", "screenshot_path"]
+        rows = self.conn.execute(
+            f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+
+    def set_screenshot(self, trade_id: int, path: str) -> None:
+        self.conn.execute(
+            "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
+        self.conn.commit()
