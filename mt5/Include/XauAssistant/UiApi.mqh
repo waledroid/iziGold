@@ -185,7 +185,7 @@ public:
 
       uchar raw[];
       ArrayResize(raw, size);
-      int readCount = FileReadArray(fh, raw, 0, size);
+      int readCount = (int)FileReadArray(fh, raw, 0, size);
       FileClose(fh);
       FileDelete(filename);
       if(readCount <= 0) return;
