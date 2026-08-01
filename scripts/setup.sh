@@ -92,3 +92,13 @@ if grep -q '^FORECASTER=chronos' "$SERVICE_DIR/.env" \
   "$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements-model.txt"
   ok "model requirements installed"
 fi
+
+# ------------------------------------------------------------------ 3. Test gate
+phase 3 "Test gate (fast pytest suite)"
+pytest_log="$(mktemp)"
+if (cd "$SERVICE_DIR" && FORECASTER=fake "$VENV/bin/pytest" -q >"$pytest_log" 2>&1); then
+  ok "$(tail -1 "$pytest_log")"
+else
+  tail -25 "$pytest_log" >&2
+  fail "tests failed — nothing was installed into MT5. Fix and re-run."
+fi
