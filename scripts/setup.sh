@@ -192,3 +192,29 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
     || fail "test message failed to send"
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
+
+# ------------------------------------------------------ 6. MT5 install + compile
+phase 6 "MT5 install + compile"
+mql5="$MT5_DIR/MQL5"
+mkdir -p "$mql5/Experts" "$mql5/Include"
+cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
+rm -rf "$mql5/Include/XauAssistant"
+cp -r "$REPO_ROOT/mt5/Include/XauAssistant" "$mql5/Include/XauAssistant"
+ok "sources copied into $mql5 (Include/XauAssistant fully replaced)"
+
+compile_log="$mql5/Experts/XauAssistant.setup-compile.log"
+: >"$compile_log"   # must exist before wslpath -w can translate it
+win_src="$(wslpath -w "$mql5/Experts/XauAssistant.mq5")"
+win_log="$(wslpath -w "$compile_log")"
+echo "  compiling via MetaEditor CLI..."
+"$METAEDITOR" /compile:"$win_src" /log:"$win_log" || true   # exit code is unreliable by design
+read_log() { iconv -f UTF-16LE -t UTF-8 "$compile_log" 2>/dev/null || cat "$compile_log"; }
+result_line="$(read_log | grep -iE '[0-9]+ error' | tail -1 || true)"
+[[ -n "$result_line" ]] || { read_log >&2; fail "could not find a result line in the compile log"; }
+errors="$(echo "$result_line" | grep -oiE '[0-9]+ error' | grep -oE '[0-9]+')"
+if [[ "$errors" != 0 ]]; then
+  read_log | tail -30 >&2
+  fail "compilation failed: $result_line"
+fi
+[[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
+ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
