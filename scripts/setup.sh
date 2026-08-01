@@ -7,10 +7,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
-# shellcheck disable=SC2034
-VENV="$SERVICE_DIR/.venv"  # consumed by later phases
-# shellcheck disable=SC2034
-BASE_URL="http://127.0.0.1:9000"  # consumed by later phases
+VENV="$SERVICE_DIR/.venv"
+BASE_URL="http://127.0.0.1:9000"
 TOTAL=7
 MT5_DIR=""
 METAEDITOR=""
@@ -102,3 +100,45 @@ else
   tail -25 "$pytest_log" >&2
   fail "tests failed — nothing was installed into MT5. Fix and re-run."
 fi
+
+# -------------------------------------------------------- 4. Service up + smoke
+phase 4 "Service"
+health() { curl -sf -m 3 "$BASE_URL/health" 2>/dev/null; }
+if health >/dev/null; then
+  skip "already running at $BASE_URL"
+else
+  (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.main:app --host 127.0.0.1 --port 9000 \
+      >>"$SERVICE_DIR/service.log" 2>&1 &)
+  up=""
+  for _ in $(seq 1 60); do
+    if health >/dev/null; then up=yes; break; fi
+    sleep 1
+  done
+  if [[ -z "$up" ]]; then
+    tail -25 "$SERVICE_DIR/service.log" >&2
+    fail "service did not come up in 60s — see service/service.log"
+  fi
+  ok "started in background (logs: service/service.log)"
+fi
+
+smoke_payload="$("$VENV/bin/python" - <<'PY'
+import json
+candles = [{"t": 1754000000 + i * 300, "o": 2400 + i * 0.1, "h": 2401 + i * 0.1,
+            "l": 2399 + i * 0.1, "c": 2400.5 + i * 0.1, "v": 100.0} for i in range(200)]
+print(json.dumps({"symbol": "XAUUSD", "timeframe": "M5", "signal": "NONE",
+                  "strategy_id": "setup_smoke", "shadows": [], "candles": candles}))
+PY
+)"
+echo "  smoke POST /analyze (first call may load the model — up to 3 min)..."
+smoke_resp="$(curl -sf -m 180 -X POST "$BASE_URL/analyze" \
+    -H 'Content-Type: application/json' -d "$smoke_payload")" \
+  || fail "POST /analyze smoke call failed — see service/service.log"
+echo "$smoke_resp" | "$VENV/bin/python" -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["verdict"] in ("confirm", "neutral", "conflict"), d
+assert d["direction"] in ("bullish", "bearish", "neutral"), d
+print("  analyze ok: %s conf=%s regime=%s ai=%s"
+      % (d["direction"], d["confidence"], d["regime"], d["ai_available"]))' \
+  || fail "/analyze returned an unexpected body: $smoke_resp"
+ok "service healthy + /analyze smoke passed"
