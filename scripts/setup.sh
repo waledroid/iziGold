@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# One-shot setup for the XAU assistant: venv -> tests -> service -> Telegram -> MT5 EA.
+# Usage: scripts/setup.sh [--mt5-dir /mnt/c/Users/<you>/AppData/Roaming/MetaQuotes/Terminal/<id>]
+#                         [--metaeditor '/mnt/c/Program Files/MetaTrader 5/MetaEditor64.exe']
+# Spec: docs/superpowers/specs/2026-08-01-setup-script-design.md
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE_DIR="$REPO_ROOT/service"
+VENV="$SERVICE_DIR/.venv"
+BASE_URL="http://127.0.0.1:9000"
+TOTAL=7
+MT5_DIR=""
+METAEDITOR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mt5-dir)    MT5_DIR="$2"; shift 2 ;;
+    --metaeditor) METAEDITOR="$2"; shift 2 ;;
+    -h|--help)    sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
+CURRENT_PHASE="startup"
+phase() { CURRENT_PHASE="$2"; printf '\n[%d/%d] %s\n' "$1" "$TOTAL" "$2"; }
+ok()    { printf '  %sOK%s %s\n' "$C_GREEN" "$C_RESET" "${1:-}"; }
+skip()  { printf '  %sSKIP%s %s\n' "$C_YELLOW" "$C_RESET" "${1:-}"; }
+fail()  { printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
+trap 'st=$?; if [[ $st -ne 0 ]]; then printf "%sABORTED%s during: %s\n" "$C_RED" "$C_RESET" "$CURRENT_PHASE" >&2; fi' EXIT
+
+# ---------------------------------------------------------------- 1. Preflight
+phase 1 "Preflight"
+grep -qi microsoft /proc/version || fail "not running under WSL"
+[[ -d /mnt/c ]] || fail "/mnt/c is not mounted"
+[[ -d "$SERVICE_DIR" && -d "$REPO_ROOT/mt5" ]] || fail "repo layout wrong: expected service/ and mt5/ under $REPO_ROOT"
+command -v curl >/dev/null || fail "curl not found (sudo apt install curl)"
+command -v python3 >/dev/null || fail "python3 not found"
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+  || fail "python3 >= 3.11 required (found: $(python3 -V 2>&1))"
+
+if [[ -z "$MT5_DIR" ]]; then
+  for mql5 in /mnt/c/Users/*/AppData/Roaming/MetaQuotes/Terminal/*/MQL5; do
+    [[ -d "$mql5" ]] || continue
+    term="$(dirname "$mql5")"
+    if [[ -z "$MT5_DIR" || "$term" -nt "$MT5_DIR" ]]; then MT5_DIR="$term"; fi
+  done
+fi
+[[ -n "$MT5_DIR" && -d "$MT5_DIR/MQL5" ]] \
+  || fail "MT5 data folder not found. In MT5: File > Open Data Folder, then re-run with --mt5-dir '<that path as /mnt/c/...>'"
+
+if [[ -z "$METAEDITOR" ]]; then
+  for cand in "/mnt/c/Program Files/MetaTrader 5/MetaEditor64.exe" \
+              "/mnt/c/Program Files/MetaTrader 5 EXNESS/MetaEditor64.exe" \
+              "/mnt/c/Program Files (x86)/MetaTrader 5/MetaEditor64.exe"; do
+    if [[ -f "$cand" ]]; then METAEDITOR="$cand"; break; fi
+  done
+fi
+[[ -n "$METAEDITOR" && -f "$METAEDITOR" ]] \
+  || fail "MetaEditor64.exe not found — re-run with --metaeditor '/mnt/c/.../MetaEditor64.exe'"
+ok "MT5 data folder: $MT5_DIR"
+ok "MetaEditor:      $METAEDITOR"
