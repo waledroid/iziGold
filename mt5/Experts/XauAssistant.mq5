@@ -1,5 +1,5 @@
 #property copyright "xau-assistant"
-#property version   "0.10"
+#property version   "1.00"
 #property strict
 
 #include <XauAssistant/Strategy.mqh>
