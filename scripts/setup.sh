@@ -69,3 +69,26 @@ fi
   || fail "MetaEditor64.exe not found — re-run with --metaeditor '/mnt/c/.../MetaEditor64.exe'"
 ok "MT5 data folder: $MT5_DIR"
 ok "MetaEditor:      $METAEDITOR"
+
+# ------------------------------------------------------- 2. Python environment
+phase 2 "Python environment"
+if [[ -x "$VENV/bin/python" ]]; then
+  skip ".venv exists"
+else
+  python3 -m venv "$VENV"
+  ok "created service/.venv"
+fi
+"$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements.txt"
+ok "core requirements installed"
+if [[ -f "$SERVICE_DIR/.env" ]]; then
+  skip ".env exists"
+else
+  cp "$SERVICE_DIR/.env.example" "$SERVICE_DIR/.env"
+  ok "created .env from .env.example"
+fi
+if grep -q '^FORECASTER=chronos' "$SERVICE_DIR/.env" \
+   && ! "$VENV/bin/python" -c 'import torch' >/dev/null 2>&1; then
+  echo "  installing torch + chronos (first time can take several minutes)..."
+  "$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements-model.txt"
+  ok "model requirements installed"
+fi
