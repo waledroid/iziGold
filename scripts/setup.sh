@@ -142,3 +142,53 @@ print("  analyze ok: %s conf=%s regime=%s ai=%s"
       % (d["direction"], d["confidence"], d["regime"], d["ai_available"]))' \
   || fail "/analyze returned an unexpected body: $smoke_resp"
 ok "service healthy + /analyze smoke passed"
+
+# ----------------------------------------------------------------- 5. Telegram
+phase 5 "Telegram"
+profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
+import json, sys
+p = json.load(sys.stdin).get("profile") or {}
+print("yes" if p.get("telegram_bot_token") and p.get("telegram_chat_id") else "no")')"
+env_token="$(grep -oP '^TELEGRAM_BOT_TOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
+env_chat="$(grep -oP '^TELEGRAM_CHAT_ID=\K.+' "$SERVICE_DIR/.env" || true)"
+
+if [[ "$profile_has_tg" == yes ]]; then
+  skip "credentials already in service profile"
+elif [[ -n "$env_token" && -n "$env_chat" ]]; then
+  curl -sf -m 10 "https://api.telegram.org/bot$env_token/getMe" >/dev/null \
+    || fail ".env TELEGRAM_BOT_TOKEN was rejected by Telegram (getMe failed)"
+  skip ".env credentials present and token valid"
+else
+  echo "  No Telegram credentials found. Create a bot with @BotFather (/newbot) first."
+  token=""
+  me_json=""
+  for attempt in 1 2 3; do
+    read -rsp "  Paste the bot token (input hidden, attempt $attempt/3): " token; echo
+    me_json="$(curl -sf -m 10 "https://api.telegram.org/bot$token/getMe" || true)"
+    if [[ -n "$me_json" ]]; then break; fi
+    echo "  Telegram rejected that token."
+    token=""
+  done
+  [[ -n "$token" ]] || fail "could not validate a bot token"
+  bot_user="$(echo "$me_json" | "$VENV/bin/python" -c 'import json,sys; print(json.load(sys.stdin)["result"]["username"])')"
+  echo "  Open https://t.me/$bot_user and send the bot any message. Waiting up to 120s..."
+  chat_id=""
+  for _ in $(seq 1 40); do
+    chat_id="$(curl -sf -m 10 "https://api.telegram.org/bot$token/getUpdates" | "$VENV/bin/python" -c '
+import json, sys
+for u in reversed(json.load(sys.stdin).get("result", [])):
+    chat = (u.get("message") or {}).get("chat") or {}
+    if chat.get("type") == "private":
+        print(chat["id"]); break' || true)"
+    [[ -n "$chat_id" ]] && break
+    sleep 3
+  done
+  [[ -n "$chat_id" ]] || fail "the bot received no message in 120s — message it, then re-run (earlier phases will SKIP)"
+  curl -sf -X POST "$BASE_URL/ui/profile" -H 'Content-Type: application/json' \
+      -d "{\"telegram_bot_token\":\"$token\",\"telegram_chat_id\":\"$chat_id\"}" >/dev/null \
+    || fail "saving credentials to the service profile failed"
+  curl -sf -m 10 -X POST "https://api.telegram.org/bot$token/sendMessage" \
+      -d "chat_id=$chat_id" --data-urlencode "text=✅ XAU Assistant setup: Telegram connected." >/dev/null \
+    || fail "test message failed to send"
+  ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
+fi
