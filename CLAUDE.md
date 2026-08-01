@@ -33,6 +33,8 @@ Use `--host 127.0.0.1` unless you specifically accept exposing the dashboard
 and stored credentials (e.g. the Telegram bot token) to your LAN via
 `--host 0.0.0.0`.
 
+`scripts/setup.sh` — one-shot idempotent setup (venv → tests → service → Telegram → MT5 compile); safe to re-run any time.
+
 Set `FORECASTER=fake` in `.env` to develop/run without torch or the model — `FakeForecaster` is a deterministic linear extrapolation used by the fast tests.
 
 The MQL5 side (`mt5/`) **cannot be compiled or tested from this environment** — it compiles in MetaEditor on Windows. Verify MQL5 changes by careful reading; flag that the user must compile in MetaEditor (expect 0 errors) and re-copy files into the MT5 data folder.
