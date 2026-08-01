@@ -7,8 +7,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
-VENV="$SERVICE_DIR/.venv"
-BASE_URL="http://127.0.0.1:9000"
+# shellcheck disable=SC2034
+VENV="$SERVICE_DIR/.venv"  # consumed by later phases
+# shellcheck disable=SC2034
+BASE_URL="http://127.0.0.1:9000"  # consumed by later phases
 TOTAL=7
 MT5_DIR=""
 METAEDITOR=""
@@ -28,7 +30,13 @@ phase() { CURRENT_PHASE="$2"; printf '\n[%d/%d] %s\n' "$1" "$TOTAL" "$2"; }
 ok()    { printf '  %sOK%s %s\n' "$C_GREEN" "$C_RESET" "${1:-}"; }
 skip()  { printf '  %sSKIP%s %s\n' "$C_YELLOW" "$C_RESET" "${1:-}"; }
 fail()  { printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
-trap 'st=$?; if [[ $st -ne 0 ]]; then printf "%sABORTED%s during: %s\n" "$C_RED" "$C_RESET" "$CURRENT_PHASE" >&2; fi' EXIT
+on_exit() {
+  local st=$?
+  if [[ $st -ne 0 ]]; then
+    printf '%sABORTED%s during: %s\n' "$C_RED" "$C_RESET" "$CURRENT_PHASE" >&2
+  fi
+}
+trap on_exit EXIT
 
 # ---------------------------------------------------------------- 1. Preflight
 phase 1 "Preflight"
