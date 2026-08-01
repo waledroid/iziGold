@@ -218,3 +218,52 @@ if [[ "$errors" != 0 ]]; then
 fi
 [[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
+
+# ------------------------------------------- 7. Handoff + end-to-end verification
+phase 7 "Handoff + end-to-end verify"
+cat <<'EOF'
+
+  Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
+
+    1. Tools > Options > Expert Advisors:
+         tick "Allow WebRequest for listed URL" and add exactly:  http://127.0.0.1:9000
+    2. Drag XauAssistant (Navigator > Expert Advisors) onto a XAUUSD M5 chart,
+         tick "Allow Algo Trading" in the dialog, press OK.
+       (If the EA was already on the chart, remove and re-attach it.)
+
+  Waiting up to 5 minutes for the EA heartbeat (fires every 5s, even with markets closed)...
+EOF
+deadline=$((SECONDS + 300))
+beat=""
+while (( SECONDS < deadline )); do
+  beat="$(curl -sf -m 3 "$BASE_URL/ui/state" | "$VENV/bin/python" -c '
+import json, sys
+d = json.load(sys.stdin)
+a = d.get("age_s")
+print("yes" if a is not None and a < 30 else "")' || true)"
+  [[ -n "$beat" ]] && break
+  sleep 5
+done
+if [[ -n "$beat" ]]; then
+  ok "EA heartbeat received — end-to-end wiring confirmed"
+  cat <<EOF
+
+  ✅ Setup complete.
+     Dashboard:   $BASE_URL/ui
+     Service log: service/service.log
+     Stop:        pkill -f 'uvicorn app.main:app'
+     Restart:     re-run scripts/setup.sh (completed phases SKIP)
+     Signals & Telegram alerts flow on closed M5 bars once the market is open.
+EOF
+else
+  cat <<EOF >&2
+
+  No heartbeat within 5 minutes. Checklist:
+    - Options > Expert Advisors: URL is exactly http://127.0.0.1:9000 (no trailing slash)
+    - The toolbar "Algo Trading" button is ON (green) and the chart smiley is smiling
+    - MT5 Toolbox > Experts tab: look for "WebRequest error 4014" or similar
+    - Remove the EA from the chart and re-attach it (options load at EA init)
+  Re-run scripts/setup.sh afterwards — phases 1-6 will SKIP and the wait restarts.
+EOF
+  fail "EA heartbeat not observed"
+fi
