@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
     app.state.latest_heartbeat = None
     app.state.pending_switch = None
     app.state.last_candles = None
+    app.state.recent_candles = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     app.state.telegram = None
@@ -168,6 +169,11 @@ def health():
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
     app.state.last_candles = req.candles
+    app.state.recent_candles = {
+        "symbol": req.symbol,
+        "timeframe": req.timeframe,
+        "candles": req.candles[-300:],
+    }
     regime = classify_regime(req.candles)
     atr_value = last_atr(req.candles)
     closes = [x.c for x in req.candles]
@@ -256,6 +262,15 @@ def ui_stats():
 @app.get("/ui/signals")
 def ui_signals(limit: int = 50):
     return {"signals": app.state.db.recent_signals(limit)}
+
+
+@app.get("/ui/candles")
+def ui_candles():
+    rc = app.state.recent_candles
+    if not rc:
+        return {"symbol": "", "timeframe": "", "candles": []}
+    return {"symbol": rc["symbol"], "timeframe": rc["timeframe"],
+            "candles": [c.model_dump() for c in rc["candles"]]}
 
 
 def _mask_secret(value: str) -> str:

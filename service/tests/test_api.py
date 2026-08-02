@@ -92,3 +92,37 @@ def test_analyze_records_timeframe(client):
         "SELECT strategy_id, timeframe FROM signals ORDER BY id").fetchall()
     assert rows == [("halftrend_ema_v1", "M5"), ("stub", "M5")]
     assert "halftrend_ema_v1 @M5" in main.app.state.db.stats()["by_strategy"]
+
+
+@pytest.fixture
+def analyze_payload():
+    return _payload("NONE")
+
+
+def test_ui_candles_empty_before_analyze(client):
+    r = client.get("/ui/candles")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"symbol": "", "timeframe": "", "candles": []}
+
+
+def test_ui_candles_returns_last_analyze_window(client, analyze_payload):
+    # analyze_payload: reuse/extend the file's existing valid /analyze payload
+    client.post("/analyze", json=analyze_payload)
+    r = client.get("/ui/candles")
+    body = r.json()
+    assert body["symbol"] == analyze_payload["symbol"]
+    assert body["timeframe"] == analyze_payload["timeframe"]
+    assert len(body["candles"]) == min(len(analyze_payload["candles"]), 300)
+    assert body["candles"][-1]["c"] == analyze_payload["candles"][-1]["c"]
+
+
+def test_ui_candles_window_capped_at_300(client, analyze_payload):
+    base = analyze_payload["candles"][0]
+    analyze_payload["candles"] = [
+        {**base, "t": base["t"] + i * 300} for i in range(350)
+    ]
+    client.post("/analyze", json=analyze_payload)
+    r = client.get("/ui/candles")
+    assert len(r.json()["candles"]) == 300
+    assert r.json()["candles"][-1]["t"] == base["t"] + 349 * 300
