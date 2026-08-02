@@ -45,6 +45,17 @@ def test_signals_endpoint(client):
     assert body["signals"][0]["signal"] == "BUY"
 
 
+def test_switch_rejects_invalid_strategy_id(client):
+    r = client.post("/ui/switch", json={"strategy_id": "<script>x</script>"})
+    assert r.status_code == 400
+
+
+def test_switch_accepts_valid_strategy_id(client):
+    r = client.post("/ui/switch", json={"strategy_id": "halftrend_ema_v1"})
+    assert r.status_code == 200
+    assert r.json()["pending"] == "halftrend_ema_v1"
+
+
 def test_dashboard_served(client):
     client.post("/ui/profile", json={})  # Skip: profile row must exist for /ui to serve the dashboard
     r = client.get("/ui")

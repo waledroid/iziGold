@@ -413,6 +413,7 @@ button.btn-cancel:hover {
 <script>
 const $=id=>document.getElementById(id);
 const fmt=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function j(u){const r=await fetch(u);return r.json()}
 
 function openLightbox(src){
@@ -438,8 +439,8 @@ async function state(){
   ? '<span class="badge badge-neg">⛔ TRIPPED</span>' 
   : (h.hwm>0 ? `<span class="badge badge-pos">ok</span> <span style="font-size:11px;color:var(--text-muted);">(${fmt(100*(h.equity/h.hwm-1),1)}% off peak)</span>` : '<span class="badge badge-pos">ok</span>');
 
- const pendingSwitch = s.pending_switch 
-  ? ` → ${s.pending_switch} <button class="btn-sm btn-cancel" onclick="sw('')">cancel</button>` 
+ const pendingSwitch = s.pending_switch
+  ? ` → ${esc(s.pending_switch)} <button class="btn-sm btn-cancel" onclick="sw('')">cancel</button>`
   : '';
 
  $('strip').innerHTML= `
@@ -457,7 +458,7 @@ async function state(){
   </div>
   <div class="stat-card">
     <div class="stat-label">Active</div>
-    <div class="stat-value" style="font-size:14px;color:var(--gold-primary);">${h.active_strategy}${pendingSwitch}</div>
+    <div class="stat-value" style="font-size:14px;color:var(--gold-primary);">${esc(h.active_strategy)}${pendingSwitch}</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Kill switch</div>
@@ -564,7 +565,7 @@ async function signals(){
  $('sig').innerHTML='<thead><tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr></thead><tbody>'+
   signals.map(s=>{
     const vBadge = s.verdict === 'CONFIRMED' ? 'badge-pos' : (s.verdict === 'VETO' ? 'badge-neg' : 'badge-gold');
-    return `<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td><b>${s.strategy_id||'—'}</b>${s.timeframe?' @'+s.timeframe:''}${s.is_active?'':' <span class="badge badge-muted">(shadow)</span>'}</td>`+
+    return `<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td><b>${esc(s.strategy_id||'—')}</b>${s.timeframe?' @'+esc(s.timeframe):''}${s.is_active?'':' <span class="badge badge-muted">(shadow)</span>'}</td>`+
     `<td><span class="badge ${s.signal==='BUY'?'badge-pos':(s.signal==='SELL'?'badge-neg':'badge-muted')}">${s.signal}</span></td>`+
     `<td>${s.direction} <span class="badge badge-gold">${fmt(100*s.confidence,0)}%</span></td>`+
     `<td><span class="badge ${vBadge}">${s.verdict}</span></td>`+
@@ -577,8 +578,8 @@ async function trades(){
  $('tr').innerHTML='<thead><tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
   trades.map(t=>{
    const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${t.profit>=0?'+':''}${fmt(t.profit)}</span>`:'';
-   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${t.event}</span></td><td><b>${t.strategy_id||'—'}</b></td><td>${t.direction||'—'}</td>`+
-    `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${t.reason||'—'}</span></td>`+
+   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${esc(t.event)}</span></td><td><b>${esc(t.strategy_id||'—')}</b></td><td>${esc(t.direction||'—')}</td>`+
+    `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${esc(t.reason||'—')}</span></td>`+
     `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
     `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
   }).join('')+'</tbody>';

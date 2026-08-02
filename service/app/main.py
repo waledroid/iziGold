@@ -1,9 +1,10 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app.analysis import analyze_forecast
@@ -215,12 +216,17 @@ def heartbeat(hb: HeartbeatRequest):
     return HeartbeatResponse(switch_to=app.state.pending_switch)
 
 
+_STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
 @app.post("/ui/switch")
 def ui_switch(body: dict):
     sid = str(body.get("strategy_id", "")).strip()
     if not sid:
         app.state.pending_switch = None
         return {"pending": None}
+    if not _STRATEGY_ID_RE.match(sid):
+        raise HTTPException(status_code=400, detail="invalid strategy_id")
     app.state.pending_switch = sid
     return {"pending": sid}
 
