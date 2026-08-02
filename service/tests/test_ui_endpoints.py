@@ -61,5 +61,5 @@ def test_dashboard_served(client):
     r = client.get("/ui")
     assert r.status_code == 200
     assert "XAU Assistant" in r.text
-    for needle in ("/ui/state", "/ui/equity", "/ui/stats", "/ui/signals", "/ui/switch", "/ui/trades"):
+    for needle in ("/ui/state", "/ui/candles", "/ui/stats", "/ui/signals", "/ui/switch", "/ui/trades"):
         assert needle in r.text
