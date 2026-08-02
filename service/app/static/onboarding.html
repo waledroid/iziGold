@@ -1,64 +1,241 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>iziGold — setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
- body{font:14px system-ui;margin:0;background:#111;color:#ddd}
- .wrap{max-width:640px;margin:0 auto;padding:24px}
- fieldset{border:1px solid #333;border-radius:8px;margin:0 0 16px;padding:12px 16px}
- legend{padding:0 6px;color:#f5c542}
- label{display:block;margin:8px 0 2px;font-size:13px;color:#aaa}
- input,select{width:100%;box-sizing:border-box;background:#1a1a1a;color:#ddd;border:1px solid #333;border-radius:4px;padding:7px}
- .row{display:flex;gap:12px}.row>div{flex:1}
- .ack{display:flex;gap:8px;align-items:flex-start;margin-top:10px}
- .ack input{width:auto;margin-top:3px}
- .btns{display:flex;gap:12px;margin-top:8px}
- button{border:0;border-radius:6px;padding:10px 22px;cursor:pointer;font-size:14px}
- .save{background:#2a4d69;color:#fff}.skip{background:#222;color:#999}
- .note{font-size:12px;color:#777;margin:4px 0 16px}
+:root {
+  --bg-dark: #090d14;
+  --bg-card: rgba(18, 24, 38, 0.85);
+  --border-card: rgba(255, 255, 255, 0.08);
+  --gold-primary: #f5c542;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 50% 10%, rgba(245, 197, 66, 0.05) 0%, transparent 50%);
+  color: var(--text-main);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  line-height: 1.5;
+}
+
+.wrap {
+  width: 100%;
+  max-width: 680px;
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-card);
+  border-radius: 20px;
+  padding: 32px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+.header-logo {
+  font-size: 36px;
+  margin-bottom: 8px;
+}
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 6px;
+}
+.note {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+fieldset {
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+  margin: 0 0 20px;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.02);
+}
+legend {
+  padding: 0 8px;
+  color: var(--gold-primary);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+input, select {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(9, 13, 20, 0.7);
+  color: var(--text-main);
+  border: 1px solid var(--border-card);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--gold-primary);
+  box-shadow: 0 0 10px rgba(245, 197, 66, 0.2);
+}
+
+.row { display: flex; gap: 14px; }
+.row > div { flex: 1; }
+
+.ack {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 14px;
+  background: rgba(245, 197, 66, 0.05);
+  border: 1px solid rgba(245, 197, 66, 0.15);
+  padding: 12px;
+  border-radius: 8px;
+}
+.ack input {
+  width: auto;
+  margin-top: 3px;
+  cursor: pointer;
+}
+.ack label {
+  text-transform: none;
+  font-size: 12px;
+  color: var(--text-main);
+  letter-spacing: 0;
+  font-weight: 400;
+  margin: 0;
+}
+
+.btns {
+  display: flex;
+  gap: 14px;
+  margin-top: 24px;
+}
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 28px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  flex: 1;
+}
+.save {
+  background: linear-gradient(135deg, #f5c542 0%, #d4af37 100%);
+  color: #090d14;
+  box-shadow: 0 4px 15px rgba(245, 197, 66, 0.3);
+}
+.save:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(245, 197, 66, 0.4);
+}
+.skip {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  border: 1px solid var(--border-card);
+}
+.skip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+}
 </style>
+</head>
+<body>
+
 <div class="wrap">
- <h1 style="font-size:20px">🥇 Welcome to iziGold</h1>
- <p class="note">Everything below is optional — save what you have, skip the rest,
- and finish anytime from the dashboard's profile badge. Nothing here blocks or
- alters trading.</p>
- <form id="f" novalidate>
-  <fieldset><legend>Identity &amp; contact</legend>
-   <label>Name</label><input name="name">
-   <div class="row"><div><label>Email</label><input name="email" type="email"></div>
-   <div><label>Phone</label><input name="phone"></div></div>
-  </fieldset>
-  <fieldset><legend>Telegram (applied live)</legend>
-   <label>Bot token</label><input name="telegram_bot_token">
-   <label>Chat ID</label><input name="telegram_chat_id">
-   <p class="note">From @BotFather; alerts, /status, /switch and the pinned live
-   message activate as soon as you save.</p>
-  </fieldset>
-  <fieldset><legend>Risk profile (your declared preferences — the EA enforces its own inputs)</legend>
-   <div class="row">
-    <div><label>Risk % per trade</label><input name="risk_per_trade_pct" type="number" step="0.1" value="0.5"></div>
-    <div><label>Max drawdown %</label><input name="max_drawdown_pct" type="number" step="0.5" value="10"></div>
-    <div><label>Profit target %</label><input name="profit_target_pct" type="number" step="0.5" value="2"></div>
-   </div>
-   <p class="note">Prefilled with safe recommended values — keep them unless you know why not.</p>
-  </fieldset>
-  <fieldset><legend>Account &amp; consent</legend>
-   <div class="row">
-    <div><label>Broker</label><input name="broker_name"></div>
-    <div><label>Account login</label><input name="account_login"></div>
-   </div>
-   <label>Account type</label><select name="account_type">
-    <option value="">—</option><option>demo</option><option>live</option></select>
-   <div class="ack"><input type="checkbox" name="risk_ack" id="ack">
-    <label for="ack" style="margin:0">I understand automated trading can lose money,
-    past results don't guarantee future ones, and I remain responsible for this
-    account.</label></div>
-  </fieldset>
-  <div class="btns">
-   <button type="submit" class="save">Save</button>
-   <button type="button" class="skip" id="skip">Skip for now</button>
+  <div class="header">
+    <div class="header-logo">🥇</div>
+    <h1>Welcome to iziGold</h1>
+    <p class="note">Everything below is optional — save what you have, skip the rest,
+    and finish anytime from the dashboard's profile badge. Nothing here blocks or
+    alters trading.</p>
   </div>
- </form>
+
+  <form id="f" novalidate>
+    <fieldset>
+      <legend>Identity &amp; contact</legend>
+      <label>Name</label><input name="name">
+      <div class="row">
+        <div><label>Email</label><input name="email" type="email"></div>
+        <div><label>Phone</label><input name="phone"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Telegram (applied live)</legend>
+      <label>Bot token</label><input name="telegram_bot_token">
+      <label>Chat ID</label><input name="telegram_chat_id">
+      <p class="note" style="margin-top:6px;">From @BotFather; alerts, /status, /switch and the pinned live
+      message activate as soon as you save.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Risk profile (your declared preferences — the EA enforces its own inputs)</legend>
+      <div class="row">
+        <div><label>Risk % per trade</label><input name="risk_per_trade_pct" type="number" step="0.1" value="0.5"></div>
+        <div><label>Max drawdown %</label><input name="max_drawdown_pct" type="number" step="0.5" value="10"></div>
+        <div><label>Profit target %</label><input name="profit_target_pct" type="number" step="0.5" value="2"></div>
+      </div>
+      <p class="note" style="margin-top:6px;">Prefilled with safe recommended values — keep them unless you know why not.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Account &amp; consent</legend>
+      <div class="row">
+        <div><label>Broker</label><input name="broker_name"></div>
+        <div><label>Account login</label><input name="account_login"></div>
+      </div>
+      <label>Account type</label>
+      <select name="account_type">
+        <option value="">—</option>
+        <option>demo</option>
+        <option>live</option>
+      </select>
+      <div class="ack">
+        <input type="checkbox" name="risk_ack" id="ack">
+        <label for="ack">I understand automated trading can lose money,
+        past results don't guarantee future ones, and I remain responsible for this
+        account.</label>
+      </div>
+    </fieldset>
+
+    <div class="btns">
+      <button type="submit" class="save">Save</button>
+      <button type="button" class="skip" id="skip">Skip for now</button>
+    </div>
+  </form>
 </div>
+
 <script>
 const f=document.getElementById('f');
 fetch('/ui/profile').then(r=>r.json()).then(({profile})=>{
@@ -72,10 +249,6 @@ f.onsubmit=async e=>{e.preventDefault();
  for(const el of f.elements){ if(!el.name) continue;
   if(el.type==='checkbox') body[el.name]=el.checked?1:0;
   else if(el.value!=='') body[el.name]=el.type==='number'?Number(el.value):el.value; }
- // The bot token field is pre-filled with a masked "••••1234" placeholder
- // when a token is already stored (see the profile-load block above); if
- // the user never touched it, don't send the mask back -- it would
- // overwrite the real stored token with garbage.
  if(typeof body.telegram_bot_token==='string' && body.telegram_bot_token.startsWith('•')) delete body.telegram_bot_token;
  await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  location.href='/ui';};
@@ -83,3 +256,5 @@ document.getElementById('skip').onclick=async()=>{
  await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  location.href='/ui';};
 </script>
+</body>
+</html>

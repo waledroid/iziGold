@@ -1,99 +1,594 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>XAU Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iziGold — XAU Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
- body{font:14px system-ui;margin:0;background:#111;color:#ddd}
- .wrap{max-width:1100px;margin:0 auto;padding:16px}
- .strip{display:flex;gap:24px;flex-wrap:wrap;background:#1a1a1a;border-radius:8px;padding:12px 16px}
- .strip b{display:block;font-size:18px}
- .stale{background:#5a1111;color:#fff;padding:8px 16px;border-radius:8px;margin:8px 0;display:none}
- table{border-collapse:collapse;width:100%;margin:8px 0}
- th,td{border-bottom:1px solid #333;padding:6px 8px;text-align:left;font-size:13px}
- h2{font-size:15px;margin:20px 0 4px}
- canvas{width:100%;height:220px;background:#1a1a1a;border-radius:8px}
- button{background:#2a4d69;color:#fff;border:0;border-radius:4px;padding:4px 10px;cursor:pointer}
- .pos{color:#5c5}.neg{color:#e66}
+:root {
+  --bg-dark: #090d14;
+  --bg-card: rgba(18, 24, 38, 0.75);
+  --bg-card-hover: rgba(26, 35, 54, 0.85);
+  --border-card: rgba(255, 255, 255, 0.08);
+  --gold-primary: #f5c542;
+  --gold-glow: rgba(245, 197, 66, 0.15);
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --pos-green: #10b981;
+  --pos-bg: rgba(16, 185, 129, 0.12);
+  --neg-red: #ef4444;
+  --neg-bg: rgba(239, 68, 68, 0.12);
+  --accent-blue: #3b82f6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 15% 15%, rgba(245, 197, 66, 0.04) 0%, transparent 40%),
+    radial-gradient(circle at 85% 85%, rgba(59, 130, 246, 0.03) 0%, transparent 40%);
+  color: var(--text-main);
+  min-height: 100vh;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-card);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #f5c542 0%, #b48811 100%);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px rgba(245, 197, 66, 0.25);
+}
+.brand-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.brand-subtitle {
+  font-size: 12px;
+  color: var(--gold-primary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.prof-badge {
+  font-size: 13px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border-card);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prof-badge a {
+  color: var(--gold-primary);
+  text-decoration: none;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+.prof-badge a:hover {
+  text-shadow: 0 0 8px rgba(245, 197, 66, 0.5);
+}
+
+/* Stale Banner */
+.stale {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.2) 0%, rgba(185, 28, 28, 0.3) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  padding: 12px 20px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  display: none;
+  font-weight: 600;
+  font-size: 14px;
+  align-items: center;
+  gap: 10px;
+  animation: pulse-border 2s infinite;
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(239, 68, 68, 0.4); }
+  50% { border-color: rgba(239, 68, 68, 0.8); }
+}
+
+/* Live Strip Grid */
+.strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.stat-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+  border-radius: 14px;
+  padding: 16px 18px;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+.stat-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(245, 197, 66, 0.3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 12px var(--gold-glow);
+}
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: block;
+}
+.stat-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Section Cards */
+.card-section {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+  border-radius: 16px;
+  padding: 20px 24px;
+  margin-bottom: 28px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+h2::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 16px;
+  background: var(--gold-primary);
+  border-radius: 2px;
+}
+
+/* Equity Canvas */
+.canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 240px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(9, 13, 20, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Custom Table Design */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+}
+th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  vertical-align: middle;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Badges & Buttons */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-pos { background: var(--pos-bg); color: var(--pos-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+.badge-neg { background: var(--neg-bg); color: var(--neg-red); border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-gold { background: rgba(245, 197, 66, 0.15); color: var(--gold-primary); border: 1px solid rgba(245, 197, 66, 0.3); }
+.badge-muted { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid rgba(255, 255, 255, 0.1); }
+
+button {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+button.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+button.btn-cancel {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  box-shadow: none;
+}
+button.btn-cancel:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.pos { color: var(--pos-green); font-weight: 600; }
+.neg { color: var(--neg-red); font-weight: 600; }
+
+.thumb-img {
+  height: 42px;
+  border-radius: 6px;
+  border: 1px solid var(--border-card);
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.thumb-img:hover {
+  transform: scale(1.08);
+  border-color: var(--gold-primary);
+  box-shadow: 0 0 10px rgba(245, 197, 66, 0.3);
+}
+
+/* Lightbox */
+.lightbox-overlay {
+  position: fixed;
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.lightbox-content {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+}
 </style>
+</head>
+<body>
+
 <div class="wrap">
- <h1 style="font-size:18px">🥇 XAU Assistant</h1>
- <span id="prof" style="font-size:13px;color:#888"></span>
- <div id="stale" class="stale">EA not reporting (heartbeat stale)</div>
- <div class="strip" id="strip">waiting for first heartbeat…</div>
- <h2>Equity</h2><canvas id="eq" width="1100" height="220"></canvas>
- <h2>Strategy comparison</h2><table id="cmp"></table>
- <h2>Trade history</h2><table id="tr"></table>
- <h2>Signal log</h2><table id="sig"></table>
+  <!-- Header -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-logo">🥇</div>
+      <div>
+        <h1 class="brand-title">XAU Assistant</h1>
+        <div class="brand-subtitle">iziGold Trading Console</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="prof" class="prof-badge"></span>
+    </div>
+  </header>
+
+  <!-- Heartbeat Stale Alert -->
+  <div id="stale" class="stale">
+    <span>⚠️</span> EA not reporting (heartbeat stale)
+  </div>
+
+  <!-- Live Metrics Strip -->
+  <div class="strip" id="strip">
+    <div class="stat-card">
+      <div class="stat-label">System Status</div>
+      <div class="stat-value">Connecting...</div>
+    </div>
+  </div>
+
+  <!-- Equity Chart -->
+  <div class="card-section">
+    <div class="section-header">
+      <h2>Equity</h2>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="eq"></canvas>
+    </div>
+  </div>
+
+  <!-- Strategy Matrix -->
+  <div class="card-section">
+    <div class="section-header">
+      <h2>Strategy comparison</h2>
+    </div>
+    <div class="table-wrap">
+      <table id="cmp"></table>
+    </div>
+  </div>
+
+  <!-- Trade History -->
+  <div class="card-section">
+    <div class="section-header">
+      <h2>Trade history</h2>
+    </div>
+    <div class="table-wrap">
+      <table id="tr"></table>
+    </div>
+  </div>
+
+  <!-- Signal Log -->
+  <div class="card-section">
+    <div class="section-header">
+      <h2>Signal log</h2>
+    </div>
+    <div class="table-wrap">
+      <table id="sig"></table>
+    </div>
+  </div>
 </div>
+
+<!-- Image Lightbox Modal -->
+<div id="lightbox" class="lightbox-overlay" onclick="closeLightbox(event)">
+  <img id="lightbox-img" class="lightbox-content" src="" alt="Enlarged chart">
+</div>
+
 <script>
 const $=id=>document.getElementById(id);
 const fmt=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
 async function j(u){const r=await fetch(u);return r.json()}
+
+function openLightbox(src){
+  $('lightbox-img').src=src;
+  $('lightbox').style.display='flex';
+}
+function closeLightbox(e){
+  if(e.target===$('lightbox')||e.target===$('lightbox-img')) {
+    $('lightbox').style.display='none';
+  }
+}
+
 async function state(){
  const s=await j('/ui/state');
- $('stale').style.display=(s.age_s==null||s.age_s>30)?'block':'none';
+ $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
  const h=s.heartbeat; if(!h) return;
- const pos=h.positions.map(p=>`${p.direction} ${p.lots}@${fmt(p.open_price)} <span class="${p.profit>=0?'pos':'neg'}">${fmt(p.profit)}</span>`).join('<br>')||'flat';
- $('strip').innerHTML=
-  `<div>Equity<b>${fmt(h.equity)}</b></div><div>Floating P/L<b class="${h.floating_pl>=0?'pos':'neg'}">${fmt(h.floating_pl)}</b></div>`+
-  `<div>Positions<b>${pos}</b></div><div>Active<b>${h.active_strategy}${s.pending_switch?' → '+s.pending_switch+' <button onclick="sw(\'\')">cancel</button>':''}</b></div>`+
-  `<div>Kill switch<b>${h.kill_switch?'⛔ TRIPPED':(h.hwm>0?'ok ('+fmt(100*(h.equity/h.hwm-1),1)+'% off peak)':'ok')}</b></div>`+
-  `<div>Window<b>${h.window_open?'open':'closed'} · ${h.exposure_min}m used</b></div>`;
+ 
+ const posStr = h.positions && h.positions.length > 0 
+  ? h.positions.map(p=>`<div style="font-size:12px;margin-top:2px;"><b>${p.direction}</b> ${fmt(p.lots,2)}@${fmt(p.open_price,2)} <span class="${p.profit>=0?'pos':'neg'}">$${fmt(p.profit,2)}</span></div>`).join('') 
+  : '<span class="badge badge-muted">flat</span>';
+
+ const killSwitchStatus = h.kill_switch 
+  ? '<span class="badge badge-neg">⛔ TRIPPED</span>' 
+  : (h.hwm>0 ? `<span class="badge badge-pos">ok</span> <span style="font-size:11px;color:var(--text-muted);">(${fmt(100*(h.equity/h.hwm-1),1)}% off peak)</span>` : '<span class="badge badge-pos">ok</span>');
+
+ const pendingSwitch = s.pending_switch 
+  ? ` → ${s.pending_switch} <button class="btn-sm btn-cancel" onclick="sw('')">cancel</button>` 
+  : '';
+
+ $('strip').innerHTML= `
+  <div class="stat-card">
+    <div class="stat-label">Equity</div>
+    <div class="stat-value">$${fmt(h.equity,2)}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Floating P/L</div>
+    <div class="stat-value ${h.floating_pl>=0?'pos':'neg'}">${h.floating_pl>=0?'+':''}$${fmt(h.floating_pl,2)}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Positions</div>
+    <div class="stat-value" style="font-size:14px;font-weight:500;">${posStr}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active</div>
+    <div class="stat-value" style="font-size:14px;color:var(--gold-primary);">${h.active_strategy}${pendingSwitch}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Kill switch</div>
+    <div class="stat-value" style="font-size:14px;">${killSwitchStatus}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Window</div>
+    <div class="stat-value" style="font-size:14px;"><span class="badge ${h.window_open?'badge-pos':'badge-muted'}">${h.window_open?'open':'closed'}</span></div>
+    <div class="stat-sub">${h.exposure_min}m used</div>
+  </div>
+ `;
+
  fetch('/ui/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
   const prof=$('prof');
   prof.textContent='';
   if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
   const a=document.createElement('a');
-  a.href='/ui/onboarding'; a.style.color='#f5c542';
+  a.href='/ui/onboarding';
   a.textContent=`profile ${completion_pct}%`;
   prof.appendChild(a);
  });
 }
+
 async function equity(){
  const {series}=await j('/ui/equity');
  const {trades}=await j('/ui/trades');
- const c=$('eq').getContext('2d');
- c.clearRect(0,0,1100,220); if(series.length<2)return;
+ const canvas=$('eq');
+ const rect=canvas.getBoundingClientRect();
+ const dpr=window.devicePixelRatio||1;
+ canvas.width=rect.width*dpr;
+ canvas.height=rect.height*dpr;
+ const c=canvas.getContext('2d');
+ c.scale(dpr,dpr);
+ const w=rect.width, h=rect.height;
+ 
+ c.clearRect(0,0,w,h); 
+ if(series.length<2) return;
+
  const xs=series.map(p=>p.ts), ys=series.map(p=>p.equity);
  const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys)||1;
- c.strokeStyle='#f5c542';c.beginPath();
- series.forEach((p,i)=>{const x=(p.ts-x0)/(x1-x0||1)*1080+10,y=210-(p.equity-y0)/(y1-y0||1)*190;i?c.lineTo(x,y):c.moveTo(x,y)});
+ const padX=20, padY=25;
+ const graphW=w-padX*2, graphH=h-padY*2;
+
+ // Subtle grid lines
+ c.strokeStyle='rgba(255,255,255,0.04)';
+ c.lineWidth=1;
+ for(let i=0;i<4;i++){
+   const gy=padY + (graphH/3)*i;
+   c.beginPath(); c.moveTo(padX, gy); c.lineTo(w-padX, gy); c.stroke();
+ }
+
+ // Path coordinates
+ const points=series.map(p=>({
+   x: padX + (p.ts-x0)/(x1-x0||1)*graphW,
+   y: (h-padY) - (p.equity-y0)/(y1-y0||1)*graphH
+ }));
+
+ // Fill area gradient
+ const grad=c.createLinearGradient(0, padY, 0, h-padY);
+ grad.addColorStop(0, 'rgba(245, 197, 66, 0.25)');
+ grad.addColorStop(1, 'rgba(245, 197, 66, 0.0)');
+ c.fillStyle=grad;
+ c.beginPath();
+ c.moveTo(points[0].x, h-padY);
+ points.forEach(pt=>c.lineTo(pt.x, pt.y));
+ c.lineTo(points[points.length-1].x, h-padY);
+ c.closePath();
+ c.fill();
+
+ // Main curve line
+ c.strokeStyle='#f5c542';
+ c.lineWidth=2;
+ c.beginPath();
+ points.forEach((pt,i)=>i?c.lineTo(pt.x,pt.y):c.moveTo(pt.x,pt.y));
  c.stroke();
+
+ // Plot trade events
  trades.forEach(t=>{
   if((t.event==='open'||t.event==='close')&&t.ts>=x0&&t.ts<=x1){
-   const x=(t.ts-x0)/(x1-x0||1)*1080+10;
+   const x=padX + (t.ts-x0)/(x1-x0||1)*graphW;
    const pt=series.reduce((a,b)=>Math.abs(b.ts-t.ts)<Math.abs(a.ts-t.ts)?b:a);
-   const y=210-(pt.equity-y0)/(y1-y0||1)*190;
-   const sz=4;
-   if(t.event==='open'){c.fillStyle='#5c5';c.beginPath();c.moveTo(x,y-sz);c.lineTo(x-sz,y+sz);c.lineTo(x+sz,y+sz);c.fill()}
-   else{c.fillStyle=t.reason==='stop-loss'?'#fa8':'#e66';c.beginPath();c.moveTo(x,y+sz);c.lineTo(x-sz,y-sz);c.lineTo(x+sz,y-sz);c.fill()}
+   const y=(h-padY) - (pt.equity-y0)/(y1-y0||1)*graphH;
+   const sz=5;
+   if(t.event==='open'){
+     c.fillStyle='#10b981';
+     c.beginPath();c.moveTo(x,y-sz*1.2);c.lineTo(x-sz,y+sz);c.lineTo(x+sz,y+sz);c.fill();
+   } else {
+     c.fillStyle=t.reason==='stop-loss'?'#ef4444':'#f5c542';
+     c.beginPath();c.moveTo(x,y+sz*1.2);c.lineTo(x-sz,y-sz);c.lineTo(x+sz,y-sz);c.fill();
+   }
   }
  });
 }
+
 async function stats(){
  const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
- $('cmp').innerHTML='<tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr>'+
-  rows.map(([id,v])=>`<tr><td>${id}</td><td>${v.signals}</td><td>${v.resolved}</td><td>${fmt(v.hit_pct,1)}</td><td>${fmt(v.avg_move)}</td>`+
-  `<td>${id==='pre-framework'?'':'<button onclick="sw(\''+id+'\')">switch to this</button>'}</td></tr>`).join('');
+ $('cmp').innerHTML='<thead><tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr></thead><tbody>'+
+  rows.map(([id,v])=>`<tr><td><b>${id}</b></td><td>${v.signals}</td><td>${v.resolved}</td><td><span class="badge ${v.hit_pct>=50?'badge-pos':'badge-neg'}">${fmt(v.hit_pct,1)}%</span></td><td>${fmt(v.avg_move)}</td>`+
+  `<td>${id==='pre-framework'?'':'<button class="btn-sm" onclick="sw(\''+id+'\')">switch to this</button>'}</td></tr>`).join('')+'</tbody>';
 }
+
 async function signals(){
  const {signals}=await j('/ui/signals');
- $('sig').innerHTML='<tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr>'+
-  signals.map(s=>`<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td>${s.strategy_id||'—'}${s.timeframe?' @'+s.timeframe:''}${s.is_active?'':' (shadow)'}</td>`+
-  `<td>${s.signal}</td><td>${s.direction} ${fmt(100*s.confidence,0)}%</td><td>${s.verdict}</td>`+
-  `<td>${s.outcome_move==null?'pending':fmt(s.outcome_move)}</td></tr>`).join('');
+ $('sig').innerHTML='<thead><tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr></thead><tbody>'+
+  signals.map(s=>{
+    const vBadge = s.verdict === 'CONFIRMED' ? 'badge-pos' : (s.verdict === 'VETO' ? 'badge-neg' : 'badge-gold');
+    return `<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td><b>${s.strategy_id||'—'}</b>${s.timeframe?' @'+s.timeframe:''}${s.is_active?'':' <span class="badge badge-muted">(shadow)</span>'}</td>`+
+    `<td><span class="badge ${s.signal==='BUY'?'badge-pos':(s.signal==='SELL'?'badge-neg':'badge-muted')}">${s.signal}</span></td>`+
+    `<td>${s.direction} <span class="badge badge-gold">${fmt(100*s.confidence,0)}%</span></td>`+
+    `<td><span class="badge ${vBadge}">${s.verdict}</span></td>`+
+    `<td>${s.outcome_move==null?'<span style="color:var(--text-muted)">pending</span>':fmt(s.outcome_move)}</td></tr>`;
+  }).join('')+'</tbody>';
 }
+
 async function trades(){
  const {trades}=await j('/ui/trades');
- $('tr').innerHTML='<tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr>'+
+ $('tr').innerHTML='<thead><tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
   trades.map(t=>{
-   const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${fmt(t.profit)}</span>`:'';
-   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td>${t.event}</td><td>${t.strategy_id||'—'}</td><td>${t.direction||'—'}</td>`+
-    `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td>${t.reason||'—'}</td>`+
-    `<td><img src="/ui/screenshot/${t.id}" height="40" onerror="this.style.display='none'" onclick="window.open(this.src)"></td>`+
-    `<td><img src="/ui/render/${t.id}" height="40" onerror="this.style.display='none'" onclick="window.open(this.src)"></td></tr>`;
-  }).join('');
+   const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${t.profit>=0?'+':''}${fmt(t.profit)}</span>`:'';
+   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${t.event}</span></td><td><b>${t.strategy_id||'—'}</b></td><td>${t.direction||'—'}</td>`+
+    `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${t.reason||'—'}</span></td>`+
+    `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
+    `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
+  }).join('')+'</tbody>';
 }
+
 async function sw(id){await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});state()}
+
 state();equity();stats();signals();trades();
 setInterval(state,5000);setInterval(equity,30000);setInterval(stats,30000);setInterval(signals,30000);setInterval(trades,30000);
+window.addEventListener('resize', equity);
 </script>
+</body>
+</html>
