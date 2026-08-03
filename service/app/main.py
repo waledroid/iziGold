@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
-                        HeartbeatResponse, TradeEventRequest)
+                        HeartbeatResponse, ProposalResultRequest, TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (TelegramClient, format_report, handle_command,
@@ -219,7 +219,11 @@ def heartbeat(hb: HeartbeatRequest):
                                    "open_count": len(hb.positions)})
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
-    return HeartbeatResponse(switch_to=app.state.pending_switch)
+    return HeartbeatResponse(
+        switch_to=app.state.pending_switch,
+        mode=app.state.db.exec_mode(),
+        command=None
+    )
 
 
 _STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")

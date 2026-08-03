@@ -99,6 +99,11 @@ def analyze_payload():
     return _payload("NONE")
 
 
+@pytest.fixture
+def heartbeat_payload():
+    return {"equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}
+
+
 def test_ui_candles_empty_before_analyze(client):
     r = client.get("/ui/candles")
     assert r.status_code == 200
@@ -126,3 +131,10 @@ def test_ui_candles_window_capped_at_300(client, analyze_payload):
     r = client.get("/ui/candles")
     assert len(r.json()["candles"]) == 300
     assert r.json()["candles"][-1]["t"] == base["t"] + 349 * 300
+
+
+def test_heartbeat_response_carries_mode_and_command(client, heartbeat_payload):
+    r = client.post("/heartbeat", json=heartbeat_payload)
+    body = r.json()
+    assert body["mode"] in ("auto", "manual")
+    assert "command" in body

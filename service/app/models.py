@@ -59,6 +59,8 @@ class HeartbeatRequest(BaseModel):
 
 class HeartbeatResponse(BaseModel):
     switch_to: str | None = None
+    mode: Literal["auto", "manual"] = "manual"
+    command: dict | None = None
 
 
 class TradeEventRequest(BaseModel):
@@ -71,3 +73,9 @@ class TradeEventRequest(BaseModel):
     reason: str = ""
     ticket: int = 0
     profit: float = 0.0
+
+
+class ProposalResultRequest(BaseModel):
+    proposal_id: int
+    ok: bool
+    detail: str = ""
