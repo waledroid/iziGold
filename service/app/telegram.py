@@ -4,6 +4,33 @@ import httpx
 
 _ICON = {"confirm": "✅", "conflict": "⚠️", "neutral": "➖"}
 
+
+def kb(rows: list[list[tuple[str, str]]]) -> dict:
+    """Build an inline keyboard from rows of (text, callback_data) tuples.
+
+    Args:
+        rows: list of rows, each row is list of (text, callback_data) tuples
+
+    Returns:
+        dict with "inline_keyboard" key containing the structure expected by Telegram API
+    """
+    return {
+        "inline_keyboard": [
+            [{"text": text, "callback_data": data} for text, data in row]
+            for row in rows
+        ]
+    }
+
+
+def PROPOSAL_KB(pid):
+    """Keyboard for taking or skipping a trade proposal."""
+    return kb([[("🟢 Take trade", f"prop:{pid}:take"), ("🔴 Skip", f"prop:{pid}:skip")]])
+
+
+def EXIT_KB(pid):
+    """Keyboard for exiting or holding a position."""
+    return kb([[("🔴 Exit now", f"prop:{pid}:take"), ("⏸ Hold", f"prop:{pid}:skip")]])
+
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
 # send_alert prefers this over building its own settings-based httpx call so
@@ -74,19 +101,28 @@ class TelegramClient:
         self.chat_id = chat_id
         self.transport = transport or _default_transport(token)
 
-    def send_message(self, text: str):
-        return self.transport("sendMessage",
-                              {"chat_id": self.chat_id, "text": text}, None)
+    def send_message(self, text: str, reply_markup: dict | None = None):
+        payload = {"chat_id": self.chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return self.transport("sendMessage", payload, None)
 
     def send_photo(self, caption: str, png_bytes: bytes):
         return self.transport(
             "sendPhoto", {"chat_id": self.chat_id, "caption": caption},
             {"photo": ("chart.png", png_bytes, "image/png")})
 
-    def edit_message(self, message_id, text: str):
+    def edit_message(self, message_id, text: str, reply_markup: dict | None = None):
+        payload = {"chat_id": self.chat_id, "message_id": message_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         return self.transport(
-            "editMessageText",
-            {"chat_id": self.chat_id, "message_id": message_id, "text": text}, None)
+            "editMessageText", payload, None)
+
+    def answer_callback(self, callback_id: str, text: str = "") -> dict | None:
+        return self.transport(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": text}, None)
 
     def pin_message(self, message_id) -> bool:
         result = self.transport(
