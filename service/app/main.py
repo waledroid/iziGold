@@ -16,7 +16,7 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (EXIT_KB, PROPOSAL_KB, TelegramClient, format_proposal,
-                          handle_command, pinned_tick, set_active_client)
+                          handle_callback, handle_command, pinned_tick, set_active_client)
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -42,12 +42,27 @@ async def telegram_poller(app: FastAPI):
             updates = await asyncio.to_thread(app.state.telegram.get_updates, offset)
             for upd in updates:
                 offset = upd.get("update_id", offset - 1) + 1
+                cq = upd.get("callback_query")
+                if cq is not None:
+                    from_id = str((cq.get("from") or {}).get("id"))
+                    if from_id == chat_id:
+                        edit_text, toast = handle_callback(cq.get("data", ""), app)
+                        await asyncio.to_thread(app.state.telegram.answer_callback,
+                                                cq.get("id", ""), toast)
+                        msg = cq.get("message") or {}
+                        if edit_text and msg.get("message_id"):
+                            await asyncio.to_thread(app.state.telegram.edit_message,
+                                                    msg["message_id"], edit_text)
+                    continue
                 message = upd.get("message") or {}
                 text = message.get("text") or ""
                 msg_chat_id = str(message.get("chat", {}).get("id"))
                 if text.startswith("/") and msg_chat_id == chat_id:
                     reply = handle_command(text, app)
-                    if reply is not None:
+                    if isinstance(reply, tuple):
+                        await asyncio.to_thread(app.state.telegram.send_message,
+                                                reply[0], reply[1])
+                    elif reply is not None:
                         await asyncio.to_thread(app.state.telegram.send_message, reply)
             await asyncio.sleep(1)
         except asyncio.CancelledError:

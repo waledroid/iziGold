@@ -288,4 +288,58 @@ def handle_command(text: str, app) -> str | None:
         return _format_history(app)
     if cmd == "/switch":
         return _format_switch(app, parts[1:])
+    if cmd == "/mode":
+        mode = app.state.db.exec_mode()
+        return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
+                f"immediately; MANUAL sends proposals with buttons.",
+                kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")]]))
+    if cmd == "/strategy":
+        rows = app.state.db.strategy_ids()
+        latest = app.state.latest_heartbeat
+        active = latest[1].active_strategy if latest else ""
+        buttons = [[(("● " if s == active else "") + s, f"strat:{s}")] for s in rows]
+        return ("Switch active strategy (applies at next bar):",
+                kb(buttons) if buttons else None)
+    if cmd == "/config":
+        db = app.state.db
+        from app.config import settings
+        latest = app.state.latest_heartbeat
+        hb = latest[1] if latest else None
+        return (
+            "⚙️ Config\n"
+            f"mode: {db.exec_mode()}\n"
+            f"strategy: {hb.active_strategy if hb else '?'}\n"
+            f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
+            f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
+            f"balance: {hb.balance if hb else '?'} | equity: {hb.equity if hb else '?'}\n"
+            f"kill switch: {hb.kill_switch if hb else '?'} | "
+            f"window open: {hb.window_open if hb else '?'}\n"
+            f"spread: {hb.spread_points if hb else '?'}pt")
     return None
+
+
+def handle_callback(data: str, app) -> tuple:
+    """Pure function mapping a callback_query's data to (edit_text_or_None,
+    toast). The poller edits the tapped message when edit_text is not None
+    and always answers the callback with toast (fail-open UX)."""
+    db = app.state.db
+    parts = data.split(":")
+    if parts[0] == "mode" and len(parts) > 1 and parts[1] in ("auto", "manual"):
+        db.set_exec_mode(parts[1])
+        return (f"Execution mode → {parts[1].upper()}", f"mode: {parts[1]}")
+    if parts[0] == "strat" and len(parts) > 1:
+        sid = parts[1]
+        app.state.pending_switch = sid
+        return (f"Switching to {sid} at next bar.", f"→ {sid}")
+    if parts[0] == "prop" and len(parts) > 2:
+        pid, action = int(parts[1]), parts[2]
+        row = db.get_proposal(pid)
+        if row is None or row["status"] != "pending":
+            return (None, f"already {row['status'] if row else 'gone'}")
+        if action == "take":
+            db.set_proposal_status(pid, "approved")
+            return (f"{row['direction']} @ {row['price']} — 👍 approved, "
+                    f"executing on next heartbeat…", "approved")
+        db.set_proposal_status(pid, "skipped")
+        return (f"{row['direction']} @ {row['price']} — ❌ skipped", "skipped")
+    return (None, "unknown")

@@ -6,7 +6,9 @@ import types
 
 from app import main as app_main
 from app.db import SignalDb
-from app.telegram import TelegramClient, format_live_status, handle_command, pinned_tick
+from app.telegram import (TelegramClient, format_live_status, handle_callback,
+                          handle_command, pinned_tick)
+from tests.test_proposals_flow import _post_signal, client, fake_tg  # noqa: F401
 
 
 class FakeTransport:
@@ -503,3 +505,68 @@ def test_pinned_editor_dispatches_client_calls_off_event_loop(tmp_path):
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
     assert db.get_kv("pinned_message_id") == "42"
+
+
+# ---------------------------------------------------------------------------
+# /mode, /strategy, /config commands + callback_query handling
+# ---------------------------------------------------------------------------
+
+def test_mode_command_returns_buttons(client):
+    out = handle_command("/mode", client.app)
+    assert isinstance(out, tuple)
+    text, markup = out
+    assert "manual" in text.lower()
+    datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert set(datas) == {"mode:auto", "mode:manual"}
+
+
+def test_mode_callback_switches(client):
+    edit, toast = handle_callback("mode:auto", client.app)
+    assert client.app.state.db.exec_mode() == "auto"
+    assert "auto" in (edit or "").lower() or "auto" in toast.lower()
+
+
+def test_strategy_command_lists_known_strategies(client):
+    # NB: /analyze only inserts into `signals` for non-NONE signals (see
+    # app/main.py::analyze), so a real BUY/SELL is needed to seed strategy_ids().
+    _post_signal(client, "BUY")
+    out = handle_command("/strategy", client.app)
+    text, markup = out
+    datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert any(d.startswith("strat:") for d in datas)
+
+
+def test_strategy_command_empty_signals_table_has_no_buttons(client):
+    out = handle_command("/strategy", client.app)
+    text, markup = out
+    assert markup is None
+
+
+def test_strategy_callback_sets_pending_switch(client):
+    edit, toast = handle_callback("strat:boll_stochrsi_v1", client.app)
+    assert client.app.state.pending_switch == "boll_stochrsi_v1"
+
+
+def test_config_command_reports_mode_and_settings(client):
+    out = handle_command("/config", client.app)
+    text = out if isinstance(out, str) else out[0]
+    assert "mode" in text.lower() and "strategy" in text.lower()
+
+
+def test_proposal_callback_take_and_skip(client, fake_tg):
+    pid = client.app.state.db.create_proposal("entry", "BUY", "s", 1.0, None)
+    edit, toast = handle_callback(f"prop:{pid}:take", client.app)
+    assert client.app.state.db.get_proposal(pid)["status"] == "approved"
+    pid2 = client.app.state.db.create_proposal("entry", "SELL", "s", 1.0, None)
+    edit, toast = handle_callback(f"prop:{pid2}:skip", client.app)
+    assert client.app.state.db.get_proposal(pid2)["status"] == "skipped"
+    # acting on a decided proposal is a no-op with an informative toast
+    edit, toast = handle_callback(f"prop:{pid}:take", client.app)
+    assert "already" in toast.lower()
+    assert edit is None
+
+
+def test_unknown_callback_returns_none_edit_and_unknown_toast(client):
+    edit, toast = handle_callback("bogus:data", client.app)
+    assert edit is None
+    assert toast == "unknown"

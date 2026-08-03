@@ -268,6 +268,12 @@ class SignalDb:
         cols = [d[0] for d in cur.description]
         return dict(zip(cols, row))
 
+    def strategy_ids(self) -> list:
+        rows = self.conn.execute(
+            "SELECT DISTINCT strategy_id FROM signals WHERE strategy_id IS NOT NULL"
+            " ORDER BY strategy_id").fetchall()
+        return [r[0] for r in rows]
+
     def exec_mode(self) -> str:
         val = self.get_kv("exec_mode")
         return val if val else "manual"
