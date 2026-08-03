@@ -1,5 +1,6 @@
 import pytest
 import threading
+import sqlite3
 from app.db import SignalDb
 
 
@@ -72,3 +73,28 @@ def test_pop_approved_command_concurrent_exactly_once(tmp_path):
         assert len(got_none) == 1, f"Expected 1 None got by thread, got {len(got_none)}"
         assert got_row[0]["id"] == pid
         assert got_row[0]["status"] == "dispatched"
+
+
+def test_pop_approved_command_durability(tmp_path):
+    """Durability check: pop_approved_command must commit to disk, not just memory.
+    After a pop, a separate sqlite3 connection to the same file must see status='dispatched'.
+    Without commit(), a crash/restart would revert the change and re-deliver the command."""
+    db_path = str(tmp_path / "durability.db")
+    db = SignalDb(db_path)
+    pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
+    db.set_proposal_status(pid, "approved")
+
+    # Pop the command (should update status to 'dispatched' and commit)
+    cmd = db.pop_approved_command()
+    assert cmd is not None
+    assert cmd["status"] == "dispatched"
+
+    # Open a NEW connection to verify the change is on disk
+    verify_conn = sqlite3.connect(db_path)
+    row = verify_conn.execute(
+        "SELECT status FROM proposals WHERE id=?", (pid,)).fetchone()
+    verify_conn.close()
+
+    # Assert the change is persisted (if not committed, this would still be 'approved')
+    assert row[0] == "dispatched", \
+        f"Status not durably committed to disk; got {row[0]}"

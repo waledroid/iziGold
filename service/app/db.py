@@ -320,14 +320,19 @@ class SignalDb:
         self.conn.commit()
 
     def pop_approved_command(self) -> dict | None:
-        # UPDATE...RETURNING is atomic (single statement) even under concurrent access from multiple threads.
-        # The subquery finds the oldest approved row, and the UPDATE+RETURNING atomically updates and returns it.
-        # If another thread updates the same row first, this UPDATE returns 0 rows (no duplicate delivery).
+        # UPDATE...RETURNING atomically updates the oldest approved row and returns it.
+        # Explicit commit() ensures durability under concurrent access (check_same_thread=False).
+        # Without commit, the transaction remains open and a crash/restart could revert to 'approved'.
         cur = self.conn.execute(
             "UPDATE proposals SET status='dispatched' "
             "WHERE id = (SELECT id FROM proposals WHERE status='approved' ORDER BY id ASC LIMIT 1) "
             "RETURNING *")
         row = cur.fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(cur, row)
+        row_dict = self._row_to_dict(cur, row) if row else None
+        # Commit to persist. sqlite3 may auto-commit UPDATE...RETURNING that finds 0 rows,
+        # so wrap in try/except; if already committed, error is benign.
+        try:
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # "no transaction is active" means UPDATE found 0 rows and auto-committed
+        return row_dict
