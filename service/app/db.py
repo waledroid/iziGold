@@ -320,14 +320,14 @@ class SignalDb:
         self.conn.commit()
 
     def pop_approved_command(self) -> dict | None:
-        with self.conn:
-            cur = self.conn.execute(
-                "SELECT * FROM proposals WHERE status='approved' "
-                "ORDER BY id ASC LIMIT 1")
-            row = cur.fetchone()
-            if row is None:
-                return None
-            row_dict = self._row_to_dict(cur, row)
-            self.conn.execute(
-                "UPDATE proposals SET status='dispatched' WHERE id=?", (row_dict["id"],))
-            return row_dict
+        # UPDATE...RETURNING is atomic (single statement) even under concurrent access from multiple threads.
+        # The subquery finds the oldest approved row, and the UPDATE+RETURNING atomically updates and returns it.
+        # If another thread updates the same row first, this UPDATE returns 0 rows (no duplicate delivery).
+        cur = self.conn.execute(
+            "UPDATE proposals SET status='dispatched' "
+            "WHERE id = (SELECT id FROM proposals WHERE status='approved' ORDER BY id ASC LIMIT 1) "
+            "RETURNING *")
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(cur, row)

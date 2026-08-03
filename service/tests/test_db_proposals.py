@@ -1,4 +1,5 @@
 import pytest
+import threading
 from app.db import SignalDb
 
 
@@ -39,3 +40,35 @@ def test_pending_is_newest_and_single_query(db):
     assert db.pending_proposal()["id"] == b
     db.set_proposal_status(b, "expired")
     assert db.pending_proposal()["id"] == a
+
+
+def test_pop_approved_command_concurrent_exactly_once(tmp_path):
+    """Regression: two threads calling pop_approved_command on same DB must not both get the row.
+    Without proper locking, both threads could SELECT the same approved row before either UPDATEs it.
+    Uses threading.Barrier to synchronize concurrent access and verifies exactly-once delivery."""
+    for iteration in range(10):  # Loop to catch race conditions that might be intermittent
+        db = SignalDb(str(tmp_path / f"t_{iteration}.db"))
+        pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
+        db.set_proposal_status(pid, "approved")
+
+        results = {}
+        barrier = threading.Barrier(2)
+
+        def pop_in_thread(thread_id):
+            barrier.wait()  # Synchronize both threads to start at same time
+            results[thread_id] = db.pop_approved_command()
+
+        t1 = threading.Thread(target=pop_in_thread, args=(1,))
+        t2 = threading.Thread(target=pop_in_thread, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactly one thread should get a row, the other None
+        got_row = [r for r in results.values() if r is not None]
+        got_none = [r for r in results.values() if r is None]
+        assert len(got_row) == 1, f"Expected 1 row got by thread, got {len(got_row)}"
+        assert len(got_none) == 1, f"Expected 1 None got by thread, got {len(got_none)}"
+        assert got_row[0]["id"] == pid
+        assert got_row[0]["status"] == "dispatched"
