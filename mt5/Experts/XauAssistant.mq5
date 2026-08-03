@@ -28,7 +28,9 @@ input double         MaxDrawdownPct         = 10.0;
 input bool           EnablePyramiding       = true;
 input int            MaxPositions           = 3;
 input double         AddTriggerATR          = 1.0;
-input double         ProfitTargetPct        = 2.0;
+input double         ProfitTargetPct        = 3.0;
+input double         TrailLockPct           = 50;  // keep this % of peak basket profit once armed; 0 = off
+input double         TrailActivateR         = 1.0; // arm lock when peak profit >= this multiple of the per-trade risk budget
 input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
 input int            TradingWindowStartHour = 9;   // server time (GMT+3 summer) = 08:00 CEST
@@ -162,7 +164,8 @@ int OnInit()
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
-                 AddTriggerATR, ProfitTargetPct, StopAtrMult, &g_uiSink);
+                 AddTriggerATR, ProfitTargetPct, StopAtrMult,
+                 TrailLockPct, TrailActivateR, &g_uiSink);
    // Re-arm chart box tracking if a basket was already open before this
    // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
    // otherwise the live box would never receive its final OnClose.

@@ -15,10 +15,12 @@ private:
    bool          m_pyramid;
    int           m_maxPos;
    double        m_addTriggerAtr, m_targetPct, m_stopAtrMult;
+   double        m_trailLockPct, m_trailActivateR;
    double        m_lastEntryPrice;
    double        m_ratios[3];
 
    string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN); }
+   string PeakKey() { return "XAU_PEAK_" + (string)AccountInfoInteger(ACCOUNT_LOGIN); }
 
    int CountOwn()
      {
@@ -66,10 +68,12 @@ private:
 public:
    void Init(CRiskManager *risk, long magic, bool pyramid, int maxPos,
              double addAtr, double targetPct, double stopAtrMult,
+             double trailLockPct, double trailActivateR,
              CTradeEventSink *sink = NULL)
      {
       m_risk = risk; m_magic = magic; m_pyramid = pyramid; m_maxPos = maxPos;
       m_addTriggerAtr = addAtr; m_targetPct = targetPct; m_stopAtrMult = stopAtrMult;
+      m_trailLockPct = trailLockPct; m_trailActivateR = trailActivateR;
       m_sink = sink;
       m_trade.SetExpertMagicNumber(magic);
       m_ratios[0] = 1.0; m_ratios[1] = 0.7; m_ratios[2] = 0.4;
@@ -104,6 +108,7 @@ public:
             PositionGetString(POSITION_SYMBOL) == _Symbol)
             m_trade.PositionClose(tk);
         }
+      GlobalVariableSet(PeakKey(), 0);
       Print("TradeManager: closed all (", reason, ")");
 
       // One "close" event per CloseAll call (not per ticket), only when there
@@ -156,6 +161,7 @@ public:
         {
          m_lastEntryPrice = price;
          GlobalVariableSet(CycleKey(), AccountInfoDouble(ACCOUNT_BALANCE));
+         GlobalVariableSet(PeakKey(), 0);
          if(m_sink != NULL)
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
@@ -173,8 +179,21 @@ public:
       if(n == 0) return;
       // profit target: close everything at +targetPct of cycle-start balance
       double cycleBal = GlobalVariableGet(CycleKey());
-      if(cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
+      if(m_targetPct > 0 && cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
         { CloseAll("profit target"); return; }
+      // proportional profit lock: once peak basket profit reaches TrailActivateR
+      // times the per-trade risk budget, close the basket if profit falls back
+      // to TrailLockPct% of that peak — locks in gains without a fixed target.
+      if(m_trailLockPct > 0)
+        {
+         double profit = BasketProfit();
+         double peak = GlobalVariableGet(PeakKey());
+         if(profit > peak) { peak = profit; GlobalVariableSet(PeakKey(), peak); }
+         double riskBudget = GlobalVariableGet(CycleKey()) * m_risk.RiskPct() / 100.0;
+         if(riskBudget > 0 && peak >= m_trailActivateR * riskBudget &&
+            profit <= peak * m_trailLockPct / 100.0)
+           { CloseAll("profit lock"); return; }
+        }
       // pyramid: add only in profit, only while condition true, shrinking size
       if(!m_pyramid || !conditionStillTrue || n >= m_maxPos) return;
       if(BasketProfit() <= 0) return;               // never add in loss

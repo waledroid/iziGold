@@ -48,6 +48,7 @@ public:
    // changing risk-decision behavior.
    double HighWaterMark()      { return GlobalVariableGet(Key("HWM")); }
    int    ExposureMinutesUsed(){ return (int)GlobalVariableGet(ExpoKey()); }
+   double RiskPct()             { return m_riskPct; }
    bool   InTradingWindow()
      {
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
