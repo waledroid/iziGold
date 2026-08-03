@@ -66,6 +66,8 @@ EA structure: `Experts/XauAssistant.mq5` is event loop + wiring only; all logic 
 
 Tests use synthetic candle fixtures (`tests/fixtures.py`: known trend, known range, known vol spike) so analysis/regime/verdict logic is validated without loading the model. The API contract (spec §7) is covered by contract tests — keep request/response schema changes in sync with `models.py`, the tests, and `AiApi.mqh` on the EA side.
 
+Known flake: `test_pop_approved_command_concurrent_exactly_once` is a deliberately timing-sensitive two-thread probe and can rarely fail under heavy machine load (slow /mnt/c filesystem); a failure there alone → re-run before treating it as a regression.
+
 ## Current status
 
 Strategy layer is modular: strategies live in `mt5/Include/XauAssistant/Strategies/` behind `CStrategy` (with `Id()` and `StopPrice()`), registered in the EA's `OnInit`, all shadow-evaluated per bar (only `ActiveStrategy` trades/alerts). First real strategy: `halftrend_ema_v1`. The `/analyze` request carries `strategy_id` + `shadows`; SQLite tags every row and `stats()` reports per-strategy hit-rates. Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.
