@@ -149,6 +149,20 @@ def test_trade_event_profit_persists_and_returned_by_ui_trades(client):
     assert trade["profit"] == 42.5
 
 
+def test_trade_event_sl_persists_and_returned_by_ui_trades(client):
+    r = client.post("/trade-event", json=_trade(event="open", sl=2385.5))
+    trade_id = r.json()["id"]
+
+    from app import main
+    row = main.app.state.db.conn.execute(
+        "SELECT sl FROM trades WHERE id=?", (trade_id,)).fetchone()
+    assert row[0] == 2385.5
+
+    body = client.get("/ui/trades").json()
+    trade = next(t for t in body["trades"] if t["id"] == trade_id)
+    assert trade["sl"] == 2385.5
+
+
 # ---------------------------------------------------------------------------
 # Screenshot photo alerts
 # ---------------------------------------------------------------------------

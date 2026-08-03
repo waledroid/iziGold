@@ -407,7 +407,7 @@ button.btn-cancel:hover {
 
 <!-- Image Lightbox Modal -->
 <div id="lightbox" class="lightbox-overlay" onclick="closeLightbox(event)">
-  <img id="lightbox-img" class="lightbox-content" src="" alt="Enlarged chart">
+  <img id="lightbox-img" class="lightbox-content" src="" alt="Enlarged chart" onerror="this.closest('.lightbox-overlay').style.display='none'">
 </div>
 
 <script>
@@ -483,6 +483,18 @@ async function state(){
 }
 
 let _pcTrades = [];   // click hit-testing: {x1,x2,tradeId}
+let _tip=null, _tipLastIdx=-1;
+function tipEl(){
+ if(!_tip){
+   _tip=document.createElement('div');
+   _tip.style.cssText='position:absolute;display:none;pointer-events:none;z-index:20;'
+    +'background:rgba(9,13,20,0.95);border:1px solid rgba(255,255,255,0.15);border-radius:6px;'
+    +'padding:6px 10px;font-size:11px;line-height:1.4;color:var(--text-main);white-space:nowrap;'
+    +'box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+   document.body.appendChild(_tip);
+ }
+ return _tip;
+}
 async function priceChart(){
  const {candles}=await j('/ui/candles');
  const cv=$('eq');
@@ -504,14 +516,18 @@ async function priceChart(){
  // trades overlay first (bands under candles)
  let tr=[];
  try{ tr=(await j('/ui/trades?limit=50')).trades||[]; }catch(e){}
- const t0=win[0].t, t1=win[win.length-1].t, barS=win[1]?win[1].t-win[0].t:300;
- const TX=ts=>X(Math.max(0,Math.min(win.length-1,(ts-t0)/barS)));
+ // Candles are positioned by array INDEX, not by linear time -- the live
+ // window can contain a multi-hour weekend gap, so a trade timestamp must be
+ // mapped to the index of the nearest candle at/after it (not interpolated
+ // linearly from t0/barS, which overshoots past any gap and clamps every
+ // post-gap trade onto the last candle).
+ const idxOf=ts=>{let i=win.findIndex(c=>c.t>=ts); if(i<0) i=win.length-1; return Math.max(0,Math.min(win.length-1,i));};
  _pcTrades=[];
  const opens=tr.filter(t=>t.event==='open').reverse();
  const closes=tr.filter(t=>t.event==='close').reverse();
  for(const o of opens){
    const c=closes.find(cl=>cl.ts>=o.ts);           // first close at/after open
-   const x1=TX(o.ts), x2=c?TX(c.ts):X(win.length-1);
+   const x1=X(idxOf(o.ts)), x2=c?X(idxOf(c.ts)):X(win.length-1);
    if(x2<padX||x1>w-padX) continue;
    const pnl=c?(c.profit||0):0;
    ctx.fillStyle=c?(pnl>=0?'rgba(46,204,113,.12)':'rgba(231,76,60,.12)'):'rgba(241,196,15,.10)';
@@ -522,6 +538,13 @@ async function priceChart(){
    ctx.beginPath();ctx.moveTo(x1,ey-6);ctx.lineTo(x1-4,ey+3);ctx.lineTo(x1+4,ey+3);ctx.closePath();ctx.fill();
    if(c){const cy=Y(c.price);ctx.fillStyle='#aaa';
      ctx.beginPath();ctx.moveTo(x2,cy+6);ctx.lineTo(x2-4,cy-3);ctx.lineTo(x2+4,cy-3);ctx.closePath();ctx.fill();}
+   else if(o.sl>0){                                 // open trade: dashed SL line across its band
+     const slY=Y(o.sl);
+     ctx.setLineDash([4,3]);
+     ctx.strokeStyle='rgba(245,197,66,.7)';
+     ctx.beginPath();ctx.moveTo(x1,slY);ctx.lineTo(x2,slY);ctx.stroke();
+     ctx.setLineDash([]);
+   }
  }
  // candles
  for(let i=0;i<win.length;i++){const c=win[i];
@@ -535,14 +558,46 @@ async function priceChart(){
  cv.onclick=e=>{const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
    const hit=_pcTrades.find(t=>x>=t.x1-5&&x<=t.x2+5);
    if(hit) openLightbox('/ui/render/'+hit.tradeId);};
+ cv.onmousemove=e=>{
+   const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
+   let idx=Math.round((x-padX-cw/2)/cw);
+   idx=Math.max(0,Math.min(win.length-1,idx));
+   const tip=tipEl();
+   tip.style.left=(e.pageX+12)+'px';
+   tip.style.top=(e.pageY+12)+'px';
+   tip.style.display='block';
+   if(idx!==_tipLastIdx){                  // throttle: only rebuild content when the hovered candle changes
+     _tipLastIdx=idx;
+     const c=win[idx], d=new Date(c.t*1000);
+     const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0');
+     tip.innerHTML=`${hh}:${mm}<br>O ${fmt(c.o)} H ${fmt(c.h)}<br>L ${fmt(c.l)} C ${fmt(c.c)}`;
+   }
+ };
+ cv.onmouseleave=()=>{tipEl().style.display='none';_tipLastIdx=-1;};
 }
 
 async function stats(){
  const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
  $('cmp').innerHTML='<thead><tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr></thead><tbody>'+
-  rows.map(([id,v])=>`<tr><td><b>${id}</b></td><td>${v.signals}</td><td>${v.resolved}</td><td><span class="badge ${v.hit_pct>=50?'badge-pos':'badge-neg'}">${fmt(v.hit_pct,1)}%</span></td><td>${fmt(v.avg_move)}</td>`+
-  `<td>${id==='pre-framework'?'':'<button class="btn-sm" onclick="sw(\''+id+'\')">switch to this</button>'}</td></tr>`).join('')+'</tbody>';
+  rows.map(([key,v])=>{
+    // key is "<strategy_id> @<timeframe>" (display only) -- /ui/switch takes the
+    // bare strategy_id, so strip the " @<tf>" suffix for the button's payload.
+    const bareId=key.split(' @')[0];
+    const btn=key==='pre-framework'?''
+     :`<button class="btn-sm" data-sid="${esc(bareId)}">switch to this</button>`;
+    return `<tr><td><b>${esc(key)}</b></td><td>${v.signals}</td><td>${v.resolved}</td>`
+     +`<td><span class="badge ${v.hit_pct>=50?'badge-pos':'badge-neg'}">${fmt(v.hit_pct,1)}%</span></td>`
+     +`<td>${fmt(v.avg_move)}</td><td>${btn}</td></tr>`;
+  }).join('')+'</tbody>';
 }
+// Delegated listener: the "switch to this" buttons carry their target id in a
+// data-attribute (never spliced into an onclick string) so a strategy_id
+// containing HTML/JS-meaningful characters (strategy_id is unconstrained on
+// /analyze, which must stay fail-open for EA posts) can't execute here.
+$('cmp').addEventListener('click', e=>{
+ const btn=e.target.closest('[data-sid]');
+ if(btn) sw(btn.dataset.sid);
+});
 
 async function signals(){
  const {signals}=await j('/ui/signals');
@@ -569,7 +624,18 @@ async function trades(){
   }).join('')+'</tbody>';
 }
 
-async function sw(id){await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});state()}
+async function sw(id){
+ try{
+   const r=await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});
+   if(!r.ok){
+     const detail=await r.text().catch(()=>'');
+     alert(`Switch request failed (${r.status}): ${detail||'see server log'}`);
+   }
+ }catch(e){
+   alert('Switch request failed: '+e);
+ }
+ state();
+}
 
 state();priceChart();stats();signals();trades();
 setInterval(state,5000);setInterval(priceChart,30000);setInterval(stats,30000);setInterval(signals,30000);setInterval(trades,30000);
