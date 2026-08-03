@@ -546,6 +546,7 @@ async function priceChart(){
  // linearly from t0/barS, which overshoots past any gap and clamps every
  // post-gap trade onto the last candle).
  const idxOf=ts=>{let i=win.findIndex(c=>c.t>=ts); if(i<0) i=win.length-1; return Math.max(0,Math.min(win.length-1,i));};
+ const lastClose=win[win.length-1].c;
  _pcTrades=[];
  const opens=tr.filter(t=>t.event==='open').reverse();
  const closes=tr.filter(t=>t.event==='close').reverse();
@@ -553,12 +554,27 @@ async function priceChart(){
    const c=closes.find(cl=>cl.ts>=o.ts);           // first close at/after open
    const x1=X(idxOf(o.ts)), x2=c?X(idxOf(c.ts)):X(win.length-1);
    if(x2<padX||x1>w-padX) continue;
-   const pnl=c?(c.profit||0):0;
-   ctx.fillStyle=c?(pnl>=0?'rgba(46,204,113,.12)':'rgba(231,76,60,.12)'):'rgba(241,196,15,.10)';
-   ctx.fillRect(x1,padY,Math.max(x2-x1,3),h-2*padY);
+   const boxW=Math.max(x2-x1,3);
+   const entryY=Y(o.price);
+   // red risk box: entry <-> stop-loss span; skipped when sl missing/0
+   if(o.sl>0){
+     const slY=Y(o.sl);
+     ctx.fillStyle='rgba(231,76,60,.14)';
+     ctx.fillRect(x1,Math.min(entryY,slY),boxW,Math.max(Math.abs(slY-entryY),1));
+   }
+   // green profit box: entry <-> exit (closed) or entry <-> last close (open,
+   // recomputed every refresh) -- drawn only when the exit/current price is
+   // on the favorable side of entry (BUY exit>entry, SELL exit<entry).
+   const exitPrice=c?c.price:lastClose;
+   const favorable=o.direction==='BUY'?exitPrice>o.price:exitPrice<o.price;
+   if(favorable){
+     const exitY=Y(exitPrice);
+     ctx.fillStyle='rgba(46,204,113,.14)';
+     ctx.fillRect(x1,Math.min(entryY,exitY),boxW,Math.max(Math.abs(exitY-entryY),1));
+   }
    _pcTrades.push({x1,x2,tradeId:o.id});
    ctx.fillStyle=o.direction==='BUY'?'#2ecc71':'#e74c3c';
-   const ey=Y(o.price);
+   const ey=entryY;
    ctx.beginPath();ctx.moveTo(x1,ey-6);ctx.lineTo(x1-4,ey+3);ctx.lineTo(x1+4,ey+3);ctx.closePath();ctx.fill();
    if(c){const cy=Y(c.price);ctx.fillStyle='#aaa';
      ctx.beginPath();ctx.moveTo(x2,cy+6);ctx.lineTo(x2-4,cy-3);ctx.lineTo(x2+4,cy-3);ctx.closePath();ctx.fill();}
