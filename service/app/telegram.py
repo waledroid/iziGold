@@ -1,8 +1,37 @@
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
 _ICON = {"confirm": "✅", "conflict": "⚠️", "neutral": "➖"}
+
+_PARIS_TZ = ZoneInfo("Europe/Paris")
+
+
+def market_session(dt: datetime | None = None) -> str:
+    """Label the current market session by Europe/Paris local time (DST-proof
+    via zoneinfo). `dt` (aware datetime) is injectable for tests; defaults to
+    now."""
+    if dt is None:
+        dt = datetime.now(_PARIS_TZ)
+    else:
+        dt = dt.astimezone(_PARIS_TZ)
+    minutes = dt.hour * 60 + dt.minute
+    bands = [
+        (60, 540, "Asian session"),            # 01:00-09:00
+        (540, 600, "London open"),              # 09:00-10:00
+        (600, 840, "London morning"),            # 10:00-14:00
+        (840, 930, "London+NY overlap · US data window"),  # 14:00-15:30
+        (930, 1080, "London+NY overlap"),        # 15:30-18:00
+        (1080, 1200, "New York afternoon"),      # 18:00-20:00
+        (1200, 1320, "Late New York"),           # 20:00-22:00
+        (1320, 1380, "NY close / pre-rollover"),  # 22:00-23:00
+    ]
+    for start, end, label in bands:
+        if start <= minutes < end:
+            return label
+    return "Rollover — thin market"  # 23:00-01:00, wraps midnight
 
 
 def kb(rows: list[list[tuple[str, str]]]) -> dict:
@@ -60,9 +89,12 @@ def format_proposal(kind, direction, price, resp) -> str:
     ai = (f"{resp.direction} {resp.confidence:.0%} — {resp.verdict} {_ICON[resp.verdict]}"
           if resp.ai_available else "AI unavailable ❌")
     head = "📥 Entry proposal" if kind == "entry" else "📤 Exit proposal"
-    return (f"{head}: {direction} @ {price}\n"
+    body = (f"{head}: {direction} @ {price}\n"
             f"AI: {ai}\nRegime: {resp.regime}\n"
             f"Valid while the strategy holds this stance.")
+    if kind == "entry":
+        return f"🕒 {market_session()}\n{body}"
+    return body
 
 
 def send_alert(text: str, settings) -> bool:
@@ -168,14 +200,16 @@ def _ea_connection_line(app) -> str:
 def _format_status(app) -> str:
     latest = app.state.latest_heartbeat
     connection = _ea_connection_line(app)
+    session_line = f"🕒 {market_session()}"
     if latest is None:
-        return f"{connection}\nno heartbeat yet"
+        return f"{session_line}\n{connection}\nno heartbeat yet"
     _, hb = latest
     pending = app.state.pending_switch
     strategy = hb.active_strategy
     if pending and pending != strategy:
         strategy = f"{strategy} → {pending}"
     lines = [
+        session_line,
         connection,
         "📊 Status",
         f"Equity: {hb.equity} Balance: {hb.balance} Floating P/L: {hb.floating_pl}",

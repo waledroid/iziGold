@@ -4,12 +4,21 @@ import importlib
 import threading
 import time
 import types
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app import main as app_main
 from app.db import SignalDb
 from app.telegram import (PINNED_HELP_VERSION, TelegramClient, format_pinned_help,
-                          handle_callback, handle_command, pinned_tick)
+                          format_proposal, handle_callback, handle_command,
+                          market_session, pinned_tick)
 from tests.test_proposals_flow import _post_signal, client, fake_tg  # noqa: F401
+
+_PARIS = ZoneInfo("Europe/Paris")
+
+
+def _paris(hour, minute):
+    return datetime(2026, 6, 15, hour, minute, tzinfo=_PARIS)
 
 
 class FakeTransport:
@@ -126,6 +135,85 @@ def test_get_updates_empty_list_when_transport_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# market_session
+# ---------------------------------------------------------------------------
+
+def test_market_session_asian():
+    assert market_session(_paris(8, 59)) == "Asian session"
+
+
+def test_market_session_london_open_lower_edge():
+    assert market_session(_paris(9, 0)) == "London open"
+
+
+def test_market_session_london_open_upper_edge_rolls_to_morning():
+    assert market_session(_paris(10, 0)) == "London morning"
+
+
+def test_market_session_overlap_us_data_window_before_1530():
+    assert market_session(_paris(15, 29)) == "London+NY overlap · US data window"
+
+
+def test_market_session_overlap_at_1530_boundary():
+    assert market_session(_paris(15, 30)) == "London+NY overlap"
+
+
+def test_market_session_new_york_afternoon():
+    assert market_session(_paris(19, 0)) == "New York afternoon"
+
+
+def test_market_session_late_new_york():
+    assert market_session(_paris(21, 0)) == "Late New York"
+
+
+def test_market_session_ny_close_pre_rollover():
+    assert market_session(_paris(22, 30)) == "NY close / pre-rollover"
+
+
+def test_market_session_rollover_thin_market_after_2300():
+    assert market_session(_paris(23, 30)) == "Rollover — thin market"
+
+
+def test_market_session_rollover_thin_market_before_0100():
+    assert market_session(_paris(0, 30)) == "Rollover — thin market"
+
+
+def test_market_session_converts_non_paris_tz_to_paris_local():
+    # 07:00 UTC in summer (Paris = UTC+2) is 09:00 Paris local -> London open.
+    utc_dt = datetime(2026, 6, 15, 7, 0, tzinfo=ZoneInfo("UTC"))
+    assert market_session(utc_dt) == "London open"
+
+
+def test_market_session_default_now_returns_a_string():
+    assert isinstance(market_session(), str)
+
+
+# ---------------------------------------------------------------------------
+# format_proposal — session line on entry only
+# ---------------------------------------------------------------------------
+
+class _FakeAnalyzeResp:
+    def __init__(self):
+        self.direction = "long"
+        self.confidence = 0.72
+        self.verdict = "confirm"
+        self.ai_available = True
+        self.regime = "trend"
+
+
+def test_format_proposal_entry_starts_with_session_line():
+    text = format_proposal("entry", "BUY", 2400.0, _FakeAnalyzeResp())
+    assert text.splitlines()[0].startswith("🕒 ")
+    assert "📥 Entry proposal" in text
+
+
+def test_format_proposal_exit_has_no_session_line():
+    text = format_proposal("exit", "SELL", 2400.0, _FakeAnalyzeResp())
+    assert not text.splitlines()[0].startswith("🕒 ")
+    assert text.splitlines()[0].startswith("📤 Exit proposal")
+
+
+# ---------------------------------------------------------------------------
 # handle_command
 # ---------------------------------------------------------------------------
 
@@ -147,21 +235,27 @@ def test_status_with_heartbeat_contains_equity_and_strategy():
 def test_status_ea_connection_fresh_heartbeat_shows_connected():
     app = _app(latest_heartbeat=_hb(ts=time.time() - 5))
     reply = handle_command("/status", app)
-    assert reply.splitlines()[0].startswith("EA: 🟢 connected")
-    assert "5s ago" in reply.splitlines()[0]
+    assert reply.splitlines()[1].startswith("EA: 🟢 connected")
+    assert "5s ago" in reply.splitlines()[1]
 
 
 def test_status_ea_connection_stale_heartbeat_shows_disconnected():
     app = _app(latest_heartbeat=_hb(ts=time.time() - 300))
     reply = handle_command("/status", app)
-    assert reply.splitlines()[0].startswith("EA: 🔴 disconnected")
-    assert "5m ago" in reply.splitlines()[0]
+    assert reply.splitlines()[1].startswith("EA: 🔴 disconnected")
+    assert "5m ago" in reply.splitlines()[1]
 
 
 def test_status_ea_connection_never_connected_when_no_heartbeat():
     app = _app(latest_heartbeat=None)
     reply = handle_command("/status", app)
-    assert reply.splitlines()[0] == "EA: 🔴 never connected"
+    assert reply.splitlines()[1] == "EA: 🔴 never connected"
+
+
+def test_status_first_line_is_market_session():
+    app = _app(latest_heartbeat=None)
+    reply = handle_command("/status", app)
+    assert reply.splitlines()[0].startswith("🕒 ")
 
 
 def test_switch_with_id_sets_pending_and_names_it_in_reply():
@@ -336,7 +430,9 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     assert recorded["get_updates_thread"] != main_thread_name
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
-    assert recorded["sent"] == ["EA: 🔴 never connected\nno heartbeat yet"]
+    assert len(recorded["sent"]) == 1
+    assert recorded["sent"][0].endswith("EA: 🔴 never connected\nno heartbeat yet")
+    assert recorded["sent"][0].splitlines()[0].startswith("🕒 ")
 
 
 def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
@@ -377,7 +473,9 @@ def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
 
     asyncio.run(run())
 
-    assert recorded["sent"] == ["EA: 🔴 never connected\nno heartbeat yet"]
+    assert len(recorded["sent"]) == 1
+    assert recorded["sent"][0].endswith("EA: 🔴 never connected\nno heartbeat yet")
+    assert recorded["sent"][0].splitlines()[0].startswith("🕒 ")
 
 
 # ---------------------------------------------------------------------------
