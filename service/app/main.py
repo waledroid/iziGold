@@ -278,11 +278,39 @@ def heartbeat(hb: HeartbeatRequest):
                                    "open_count": len(hb.positions)})
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
+    cmd_row = app.state.db.pop_approved_command()
+    command = None
+    if cmd_row is not None:
+        if cmd_row["kind"] == "entry":
+            command = {"cmd": "execute", "proposal_id": cmd_row["id"],
+                       "direction": cmd_row["direction"]}
+        else:
+            command = {"cmd": "close_all", "proposal_id": cmd_row["id"]}
     return HeartbeatResponse(
         switch_to=app.state.pending_switch,
         mode=app.state.db.exec_mode(),
-        command=None
+        command=command
     )
+
+
+@app.post("/proposal-result")
+async def proposal_result(res: ProposalResultRequest):
+    db = app.state.db
+    row = db.get_proposal(res.proposal_id)
+    if row is None:
+        return {"ok": False}
+    db.set_proposal_status(res.proposal_id, "executed" if res.ok else "blocked")
+    tg = getattr(app.state, "telegram", None)
+    if tg is not None and row["tg_message_id"] is not None:
+        mark = "✅ executed" if res.ok else "🚫 blocked"
+        try:
+            await asyncio.to_thread(
+                tg.edit_message, row["tg_message_id"],
+                f"{'📥' if row['kind']=='entry' else '📤'} {row['direction']} "
+                f"@ {row['price']} — {mark}: {res.detail}")
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 _STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
