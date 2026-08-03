@@ -54,6 +54,20 @@ _PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
   created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER
 )"""
 
+_PROPOSALS_SCHEMA = """CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_ts INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  price REAL NOT NULL,
+  signal_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending',
+  tg_message_id INTEGER,
+  decided_ts INTEGER,
+  executed_ts INTEGER
+)"""
+
 PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
                   "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
                   "profit_target_pct", "broker_name", "account_login",
@@ -76,6 +90,7 @@ class SignalDb:
         self.conn.execute(_TRADES_SCHEMA)
         self.conn.execute(_KV_SCHEMA)
         self.conn.execute(_PROFILE_SCHEMA)
+        self.conn.execute(_PROPOSALS_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -245,3 +260,74 @@ class SignalDb:
                           tuple(updates.values()))
         self.conn.commit()
         return self.get_profile()
+
+    def _row_to_dict(self, cur, row):
+        """Convert sqlite3 tuple row to dict using cursor description."""
+        if row is None:
+            return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, row))
+
+    def exec_mode(self) -> str:
+        val = self.get_kv("exec_mode")
+        return val if val else "manual"
+
+    def set_exec_mode(self, mode: str) -> None:
+        if mode not in ("auto", "manual"):
+            raise ValueError(f"invalid exec mode: {mode}")
+        self.set_kv("exec_mode", mode)
+
+    def create_proposal(self, kind: str, direction: str, strategy_id: str,
+                       price: float, signal_id: int | None) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO proposals(created_ts, kind, direction, strategy_id,"
+            " price, signal_id) VALUES(?,?,?,?,?,?)",
+            (int(time.time()), kind, direction, strategy_id, price, signal_id))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_proposal(self, pid: int) -> dict | None:
+        cur = self.conn.execute(
+            "SELECT * FROM proposals WHERE id=?", (pid,))
+        row = cur.fetchone()
+        return self._row_to_dict(cur, row)
+
+    def pending_proposal(self, kind: str | None = None) -> dict | None:
+        q = "SELECT * FROM proposals WHERE status='pending'"
+        args = ()
+        if kind:
+            q += " AND kind=?"
+            args = (kind,)
+        cur = self.conn.execute(q + " ORDER BY id DESC LIMIT 1", args)
+        row = cur.fetchone()
+        return self._row_to_dict(cur, row)
+
+    def set_proposal_status(self, pid: int, status: str) -> None:
+        now = int(time.time())
+        with self.conn:
+            self.conn.execute("UPDATE proposals SET status=? WHERE id=?", (status, pid))
+            if status in ("approved", "skipped", "expired", "blocked"):
+                self.conn.execute(
+                    "UPDATE proposals SET decided_ts=? WHERE id=? AND decided_ts IS NULL",
+                    (now, pid))
+            if status == "executed":
+                self.conn.execute(
+                    "UPDATE proposals SET executed_ts=? WHERE id=?", (now, pid))
+
+    def set_proposal_message(self, pid: int, tg_message_id: int) -> None:
+        self.conn.execute(
+            "UPDATE proposals SET tg_message_id=? WHERE id=?", (tg_message_id, pid))
+        self.conn.commit()
+
+    def pop_approved_command(self) -> dict | None:
+        with self.conn:
+            cur = self.conn.execute(
+                "SELECT * FROM proposals WHERE status='approved' "
+                "ORDER BY id ASC LIMIT 1")
+            row = cur.fetchone()
+            if row is None:
+                return None
+            row_dict = self._row_to_dict(cur, row)
+            self.conn.execute(
+                "UPDATE proposals SET status='dispatched' WHERE id=?", (row_dict["id"],))
+            return row_dict
