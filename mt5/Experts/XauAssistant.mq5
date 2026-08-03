@@ -165,8 +165,11 @@ void OnTick()
    ProcessBar();
   }
 
-// Fires every HeartbeatSec seconds regardless of bar boundaries; only ever
-// posts state and stashes a pending switch id — never touches trading state.
+// Fires every HeartbeatSec seconds regardless of bar boundaries: posts
+// state, stashes a pending switch id, and — when the service hands back a
+// MANUAL-mode command approved over Telegram ("execute"/"close_all") —
+// executes it (guarded by the same live-account check OnInit enforces for
+// AUTO) and reports the outcome back via PostProposalResult.
 void OnTimer()
   {
    double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -204,16 +207,27 @@ void OnTimer()
 
    if(cmd == "execute" && (cmdDir == "BUY" || cmdDir == "SELL"))
      {
-      ENUM_SIGNAL dir = (cmdDir == "BUY") ? SIGNAL_BUY : SIGNAL_SELL;
-      double atrBuf[];
-      double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
-      CStrategy *act = g_registry.Active();
-      bool opened = false;
-      if(atrVal > 0 && act != NULL)
-         opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
-      bool ok = opened || g_trades.BasketDirection() == dir;
-      g_ui.PostProposalResult(cmdId, ok,
-                              ok ? "opened" : "blocked by risk checks");
+      // Mirrors the OnInit/OnTimer-mode-switch live-account guard: a
+      // Telegram-approved MANUAL command must not be able to open a
+      // real-money order when the account is real and AllowLiveTrading is
+      // off, regardless of what the service side thinks the exec mode is.
+      if(!AllowLiveTrading && AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL)
+        {
+         g_ui.PostProposalResult(cmdId, false, "live trading not allowed");
+        }
+      else
+        {
+         ENUM_SIGNAL dir = (cmdDir == "BUY") ? SIGNAL_BUY : SIGNAL_SELL;
+         double atrBuf[];
+         double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
+         CStrategy *act = g_registry.Active();
+         bool opened = false;
+         if(atrVal > 0 && act != NULL)
+            opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
+         bool ok = opened || g_trades.BasketDirection() == dir;
+         g_ui.PostProposalResult(cmdId, ok,
+                                 ok ? "opened" : "blocked by risk checks");
+        }
      }
    else if(cmd == "close_all")
      {
@@ -333,6 +347,16 @@ void ProcessBar()
          active.OnEntryRejected(sig);
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
       g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
+     }
+   // MANUAL-mode baskets (opened via a Telegram-approved "execute" command
+   // in OnTimer) never pass through the AUTO branch above, so without this
+   // they'd get no profit-target close, no breakeven-on-add, and no
+   // pyramiding — Manage() must still run for them every bar. Note this can
+   // pyramid-add into a winning MANUAL basket just like AUTO does; that's
+   // existing, accepted Manage() behavior, not new risk introduced here.
+   else if(g_execMode == EXEC_MANUAL && g_trades.OpenCount() > 0 && atrVal > 0)
+     {
+      g_trades.Manage(atrVal, active.ConditionStillTrue(g_trades.BasketDirection()));
      }
 
    if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)

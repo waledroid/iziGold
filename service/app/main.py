@@ -21,6 +21,22 @@ from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
 
+# An approved-but-not-yet-dispatched proposal older than this is expired
+# rather than delivered on the next heartbeat -- a stale "yes" tapped
+# minutes ago (EA offline, terminal closed, etc.) should not suddenly fire.
+PROPOSAL_APPROVAL_TTL_S = 120
+
+# A dispatched command the EA never confirmed (no /proposal-result) within
+# this window is reconciled to 'blocked' so it stops showing as in-flight.
+# Approximation: the proposals table has no dispatched_ts column, and
+# pop_approved_command() intentionally doesn't touch decided_ts (only the
+# 'approved'/'skipped'/'expired'/'blocked' transitions do -- see
+# set_proposal_status), so decided_ts still holds the *approval* time, which
+# predates the actual dispatch. Reusing it as a lower bound on dispatch time
+# means this window is deliberately generous (180s, vs. the 120s approval
+# TTL above) to avoid mistaking a slow-but-fine dispatch for a lost one.
+COMMAND_RESULT_TTL_S = 180
+
 
 async def telegram_poller(app: FastAPI):
     """Long-poll Telegram for commands and reply. Fail-open: any exception
@@ -128,7 +144,9 @@ async def _apply_telegram(app: FastAPI) -> None:
             token, chat_id = _effective_telegram(app)
             app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
             # Keep app.telegram's module-level active client in sync so
-            # send_alert (used by the sync /analyze endpoint) reaches whichever
+            # send_alert (still unit-tested directly, but no longer wired
+            # into the /analyze path -- that alert diet now flows through
+            # maybe_propose's per-proposal messages) reaches whichever
             # client is live -- including profile-only credentials that never
             # appear in `settings`.
             set_active_client(app.state.telegram)
@@ -195,19 +213,35 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
                         f"{'📥' if pid_row['kind']=='entry' else '📤'} "
                         f"{pid_row['direction']} @ {pid_row['price']} — {suffix}")
 
+    def is_stale(row) -> bool:
+        return (
+            (row["kind"] == "entry" and (
+                req.signal == "EXIT" or
+                (req.signal in ("BUY", "SELL") and req.signal != row["direction"])))
+            or (row["kind"] == "exit" and req.signal in ("BUY", "SELL"))
+        )
+
     # 1. expiry: does the active strategy still hold the pending stance?
     pending = db.pending_proposal()
-    if pending is not None:
-        stale = (
-            (pending["kind"] == "entry" and (
-                req.signal == "EXIT" or
-                (req.signal in ("BUY", "SELL") and req.signal != pending["direction"])))
-            or (pending["kind"] == "exit" and req.signal in ("BUY", "SELL"))
-        )
-        if stale:
-            db.set_proposal_status(pending["id"], "expired")
+    if pending is not None and is_stale(pending):
+        # Guarded: a concurrent Telegram tap (or the /heartbeat TTL sweep)
+        # may have already moved this row off 'pending' between our read
+        # and this write -- e.g. approved right as the stance broke. If so,
+        # skip the ⌛ edit (whatever landed the other transition owns the
+        # message now) but still drop `pending` below so the create-new-
+        # proposal step isn't blocked by a row that is no longer pending.
+        if db.set_proposal_status(pending["id"], "expired", expected="pending"):
             edit(pending, "⌛ expired (strategy stance changed)")
-            pending = None
+        pending = None
+
+    # 1b. same stance-expiry check for an APPROVED-but-not-yet-dispatched
+    # proposal (I1a): a Telegram "Take trade" tap doesn't freeze the
+    # strategy's stance -- it can still flip before the next heartbeat
+    # dispatches the command.
+    approved = db.pending_proposal(status="approved")
+    if approved is not None and is_stale(approved):
+        if db.set_proposal_status(approved["id"], "expired", expected="approved"):
+            edit(approved, "⌛ expired before execution (stance changed)")
 
     # 2. new proposals: manual mode only, entry/exit signals only
     if req.signal not in ("BUY", "SELL", "EXIT"):
@@ -215,6 +249,13 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
     if db.exec_mode() != "manual":
         return
     kind = "exit" if req.signal == "EXIT" else "entry"
+    if kind == "exit":
+        # M1: only propose an exit when the latest heartbeat actually shows
+        # an open position -- otherwise there's nothing for "Exit now" to
+        # close, and close_all would be a silent no-op.
+        latest = app.state.latest_heartbeat
+        if latest is None or not latest[1].positions:
+            return
     price = req.candles[-1].c if req.candles else 0.0
     if pending is not None and pending["kind"] == kind and \
        (kind == "exit" or pending["direction"] == req.signal):
@@ -286,6 +327,35 @@ def analyze(req: AnalyzeRequest):
     return resp
 
 
+def _sweep_stale_proposals(app: FastAPI) -> None:
+    """Runs at the top of every /heartbeat, before pop_approved_command.
+    Two independent TTL reconciliations (I1b, I4), both fail-open and both
+    guarded (expected=...) so a proposal that transitioned concurrently
+    (e.g. the EA's /proposal-result landing in the same instant) is left
+    alone rather than double-edited or double-transitioned."""
+    db = app.state.db
+    tg = getattr(app.state, "telegram", None)
+
+    def edit(row, suffix):
+        if tg is None or row["tg_message_id"] is None:
+            return
+        tg.edit_message(row["tg_message_id"],
+                        f"{'📥' if row['kind']=='entry' else '📤'} "
+                        f"{row['direction']} @ {row['price']} — {suffix}")
+
+    # I1b: approved-but-undispatched proposals older than the approval TTL
+    # never reach the EA -- expire them instead of dispatching a stale "yes".
+    for row in db.stale_approved(PROPOSAL_APPROVAL_TTL_S):
+        if db.set_proposal_status(row["id"], "expired", expected="approved"):
+            edit(row, "⌛ expired before execution (approval timed out)")
+
+    # I4: dispatched commands the EA never confirmed are reconciled to
+    # 'blocked' so they stop looking in-flight forever.
+    for row in db.stale_dispatched(COMMAND_RESULT_TTL_S):
+        if db.set_proposal_status(row["id"], "blocked", expected="dispatched"):
+            edit(row, "🚫 no confirmation from EA — check the terminal")
+
+
 @app.post("/heartbeat", response_model=HeartbeatResponse)
 def heartbeat(hb: HeartbeatRequest):
     app.state.latest_heartbeat = (time.time(), hb)
@@ -293,6 +363,10 @@ def heartbeat(hb: HeartbeatRequest):
                                    "open_count": len(hb.positions)})
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
+    try:
+        _sweep_stale_proposals(app)
+    except Exception:
+        pass  # fail-open: a sweep bug must never block command delivery
     cmd_row = app.state.db.pop_approved_command()
     command = None
     if cmd_row is not None:
@@ -314,7 +388,12 @@ async def proposal_result(res: ProposalResultRequest):
     row = db.get_proposal(res.proposal_id)
     if row is None:
         return {"ok": False}
-    db.set_proposal_status(res.proposal_id, "executed" if res.ok else "blocked")
+    # Guarded on the row still being 'dispatched': if the /heartbeat TTL
+    # sweep already reconciled it to 'blocked' (I4) before this callback
+    # arrived, don't let a late result silently overwrite that outcome.
+    status = "executed" if res.ok else "blocked"
+    if not db.set_proposal_status(res.proposal_id, status, expected="dispatched"):
+        return {"ok": False}
     tg = getattr(app.state, "telegram", None)
     if tg is not None and row["tg_message_id"] is not None:
         mark = "✅ executed" if res.ok else "🚫 blocked"

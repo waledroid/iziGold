@@ -33,9 +33,11 @@ def EXIT_KB(pid):
 
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
-# send_alert prefers this over building its own settings-based httpx call so
+# send_alert (still unit-tested directly, but no longer called from the
+# /analyze path -- proposal messages via maybe_propose replaced it there)
+# prefers this over building its own settings-based httpx call so
 # profile-only credentials -- which never appear in `settings` -- still
-# deliver /analyze alerts. None when Telegram isn't configured at all.
+# work. None when Telegram isn't configured at all.
 _active_client = None
 
 
@@ -336,10 +338,17 @@ def handle_callback(data: str, app) -> tuple:
         row = db.get_proposal(pid)
         if row is None or row["status"] != "pending":
             return (None, f"already {row['status'] if row else 'gone'}")
+        status = "approved" if action == "take" else "skipped"
+        # Guarded on the row still being 'pending': it read as pending just
+        # above, but a concurrent /analyze stance-expiry (maybe_propose) or
+        # the /heartbeat TTL sweep may have moved it in between. If the
+        # guarded UPDATE lost that race, re-read the row and report whatever
+        # it actually became instead of silently "succeeding".
+        if not db.set_proposal_status(pid, status, expected="pending"):
+            current = db.get_proposal(pid)
+            return (None, f"already {current['status'] if current else 'gone'}")
         if action == "take":
-            db.set_proposal_status(pid, "approved")
             return (f"{row['direction']} @ {row['price']} — 👍 approved, "
                     f"executing on next heartbeat…", "approved")
-        db.set_proposal_status(pid, "skipped")
         return (f"{row['direction']} @ {row['price']} — ❌ skipped", "skipped")
     return (None, "unknown")

@@ -566,6 +566,29 @@ def test_proposal_callback_take_and_skip(client, fake_tg):
     assert edit is None
 
 
+def test_proposal_callback_race_after_expiry_returns_already_toast(client, fake_tg, monkeypatch):
+    """Guarded-transition race (I2): handle_callback reads the row as
+    'pending', but between that read and the guarded UPDATE, a concurrent
+    /analyze stance-expiry (or the /heartbeat TTL sweep) flips it first.
+    The guarded UPDATE must lose gracefully and report the row's real
+    current status instead of claiming "approved"."""
+    db = client.app.state.db
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    real_set = db.set_proposal_status
+
+    def racing_set(pid_, status, expected=None):
+        if pid_ == pid and status == "approved" and expected == "pending":
+            db.conn.execute("UPDATE proposals SET status='expired' WHERE id=?", (pid_,))
+            db.conn.commit()
+        return real_set(pid_, status, expected=expected)
+
+    monkeypatch.setattr(db, "set_proposal_status", racing_set)
+    edit, toast = handle_callback(f"prop:{pid}:take", client.app)
+    assert edit is None
+    assert toast == "already expired"
+    assert db.get_proposal(pid)["status"] == "expired"   # the race's winner stands
+
+
 def test_unknown_callback_returns_none_edit_and_unknown_toast(client):
     edit, toast = handle_callback("bogus:data", client.app)
     assert edit is None

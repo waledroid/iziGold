@@ -1,5 +1,6 @@
 import pytest
 import threading
+import time
 import sqlite3
 from app.db import SignalDb
 
@@ -45,6 +46,59 @@ def test_last_executed_entry_returns_newest_executed_entry(db):
     db.set_proposal_status(b, "executed")
     assert db.last_executed_entry()["id"] == b
     assert db.last_executed_entry()["direction"] == "SELL"
+
+
+def test_set_proposal_status_guarded_transition_succeeds_when_status_matches(db):
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    ok = db.set_proposal_status(pid, "approved", expected="pending")
+    assert ok is True
+    assert db.get_proposal(pid)["status"] == "approved"
+
+
+def test_set_proposal_status_guarded_transition_fails_on_mismatch(db):
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    db.set_proposal_status(pid, "expired")   # unconditional -- row is now 'expired'
+    ok = db.set_proposal_status(pid, "approved", expected="pending")
+    assert ok is False
+    # the row must be untouched by the failed guarded transition
+    assert db.get_proposal(pid)["status"] == "expired"
+
+
+def test_set_proposal_status_unconditional_when_no_expected(db):
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    ok = db.set_proposal_status(pid, "approved")
+    assert ok is True
+    assert db.get_proposal(pid)["status"] == "approved"
+
+
+def test_pending_proposal_status_param_selects_approved(db):
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    assert db.pending_proposal(status="approved") is None
+    db.set_proposal_status(pid, "approved")
+    assert db.pending_proposal() is None            # no longer pending
+    assert db.pending_proposal(status="approved")["id"] == pid
+
+
+def test_stale_approved_and_stale_dispatched_use_decided_ts_cutoff(db):
+    pid = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    db.set_proposal_status(pid, "approved")
+    now = int(time.time())
+    db.conn.execute("UPDATE proposals SET decided_ts=? WHERE id=?", (now - 121, pid))
+    db.conn.commit()
+    assert [r["id"] for r in db.stale_approved(120)] == [pid]
+    assert db.stale_approved(130) == []              # not old enough for a wider window
+    assert db.stale_dispatched(120) == []             # wrong status entirely
+    # Move pid out of the 'approved' pool so pop_approved_command (oldest-first)
+    # below picks pid2, not pid.
+    db.set_proposal_status(pid, "expired", expected="approved")
+
+    pid2 = db.create_proposal("entry", "SELL", "s", 2.0, None)
+    db.set_proposal_status(pid2, "approved")
+    db.pop_approved_command()                         # -> 'dispatched'; decided_ts untouched
+    db.conn.execute("UPDATE proposals SET decided_ts=? WHERE id=?", (now - 181, pid2))
+    db.conn.commit()
+    assert [r["id"] for r in db.stale_dispatched(180)] == [pid2]
+    assert db.stale_dispatched(200) == []
 
 
 def test_pending_is_newest_and_single_query(db):

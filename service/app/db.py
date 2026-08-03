@@ -298,20 +298,35 @@ class SignalDb:
         row = cur.fetchone()
         return self._row_to_dict(cur, row)
 
-    def pending_proposal(self, kind: str | None = None) -> dict | None:
-        q = "SELECT * FROM proposals WHERE status='pending'"
-        args = ()
+    def pending_proposal(self, kind: str | None = None, status: str = "pending") -> dict | None:
+        q = "SELECT * FROM proposals WHERE status=?"
+        args = [status]
         if kind:
             q += " AND kind=?"
-            args = (kind,)
-        cur = self.conn.execute(q + " ORDER BY id DESC LIMIT 1", args)
+            args.append(kind)
+        cur = self.conn.execute(q + " ORDER BY id DESC LIMIT 1", tuple(args))
         row = cur.fetchone()
         return self._row_to_dict(cur, row)
 
-    def set_proposal_status(self, pid: int, status: str) -> None:
+    def set_proposal_status(self, pid: int, status: str, expected: str | None = None) -> bool:
+        """Unconditional UPDATE when `expected` is None (default) -- existing
+        callers keep their old semantics unchanged. When `expected` is
+        given, the UPDATE is guarded on the row's CURRENT status
+        (WHERE id=? AND status=?) to close a TOCTOU race -- e.g. a Telegram
+        approve tap landing after /analyze already expired the same row, or
+        the /heartbeat TTL sweep racing the EA's /proposal-result callback.
+        Returns whether the transition actually applied (always True when
+        expected is None, since that path is unconditional by design)."""
         now = int(time.time())
         with self.conn:
-            self.conn.execute("UPDATE proposals SET status=? WHERE id=?", (status, pid))
+            if expected is not None:
+                cur = self.conn.execute(
+                    "UPDATE proposals SET status=? WHERE id=? AND status=?",
+                    (status, pid, expected))
+                if cur.rowcount != 1:
+                    return False
+            else:
+                self.conn.execute("UPDATE proposals SET status=? WHERE id=?", (status, pid))
             if status in ("approved", "skipped", "expired", "blocked"):
                 self.conn.execute(
                     "UPDATE proposals SET decided_ts=? WHERE id=? AND decided_ts IS NULL",
@@ -319,6 +334,7 @@ class SignalDb:
             if status == "executed":
                 self.conn.execute(
                     "UPDATE proposals SET executed_ts=? WHERE id=?", (now, pid))
+        return True
 
     def set_proposal_message(self, pid: int, tg_message_id: int) -> None:
         self.conn.execute(
@@ -351,3 +367,24 @@ class SignalDb:
         except sqlite3.OperationalError:
             pass  # "no transaction is active" means UPDATE found 0 rows and auto-committed
         return row_dict
+
+    def _rows_older_than(self, status: str, older_than_s: int) -> list:
+        """Rows in `status` whose decided_ts is more than `older_than_s`
+        seconds old. Used by the /heartbeat TTL sweeps (I1/I4): 'approved'
+        rows use decided_ts as the approval time; 'dispatched' rows have no
+        dedicated dispatch timestamp, so decided_ts (set once, at approval,
+        and never touched again by pop_approved_command) is reused as a
+        lower bound -- see the COMMAND_RESULT_TTL_S comment in main.py."""
+        cutoff = int(time.time()) - older_than_s
+        cur = self.conn.execute(
+            "SELECT * FROM proposals WHERE status=? AND decided_ts IS NOT NULL"
+            " AND decided_ts < ? ORDER BY id ASC", (status, cutoff))
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def stale_approved(self, older_than_s: int) -> list:
+        return self._rows_older_than("approved", older_than_s)
+
+    def stale_dispatched(self, older_than_s: int) -> list:
+        return self._rows_older_than("dispatched", older_than_s)
