@@ -75,8 +75,10 @@ private:
       DrawSeg("xau_ht_", m_prevPaintBar, m_prevHt, bt, ht, htClr, 2);
       if(emaVal > 0)
          DrawSeg("xau_ema_", m_prevPaintBar, m_prevEma, bt, emaVal, clrLimeGreen, 2);
-      PaintContextEma(m_ema9Handle,   "xau_ema9_",   clrOrange, shift, bt, m_prevEma9);
-      PaintContextEma(m_ema21Handle,  "xau_ema21_",  clrRed,    shift, bt, m_prevEma21);
+      // 9/21 are context-only: near-background tints (dark theme) so they
+      // read on inspection without cluttering the chart
+      PaintContextEma(m_ema9Handle,   "xau_ema9_",   C'82,72,48', shift, bt, m_prevEma9);
+      PaintContextEma(m_ema21Handle,  "xau_ema21_",  C'82,52,52', shift, bt, m_prevEma21);
       PaintContextEma(m_ema200Handle, "xau_ema200_", clrWhite,  shift, bt, m_prevEma200);
       m_prevPaintBar = bt; m_prevHt = ht;
       if(emaVal > 0) m_prevEma = emaVal;
