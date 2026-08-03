@@ -56,10 +56,12 @@ def test_fail_open_on_model_error(client):
     assert body["direction"] == "neutral" and body["confidence"] == 0.0
 
 
-def test_shadows_logged_active_alerted_once(client, monkeypatch):
+def test_shadows_logged_active_proposed_once(client):
+    # Updated for the alert-diet contract (Task 4): /analyze no longer sends
+    # a per-bar text alert via send_alert. Instead, the active signal alone
+    # may raise a pending proposal (default exec_mode is manual); shadow
+    # signals are logged but never drive proposals.
     from app import main
-    alerts = []
-    monkeypatch.setattr(main, "send_alert", lambda text, settings: alerts.append(text))
     payload = _payload("BUY")
     payload["strategy_id"] = "halftrend_ema_v1"
     payload["shadows"] = [{"strategy_id": "stub", "signal": "SELL"},
@@ -69,7 +71,9 @@ def test_shadows_logged_active_alerted_once(client, monkeypatch):
     rows = main.app.state.db.conn.execute(
         "SELECT strategy_id, signal, is_active FROM signals ORDER BY id").fetchall()
     assert rows == [("halftrend_ema_v1", "BUY", 1), ("stub", "SELL", 0)]
-    assert len(alerts) == 1          # active signal only; shadows are silent
+    proposals = main.app.state.db.conn.execute(
+        "SELECT strategy_id FROM proposals").fetchall()
+    assert proposals == [("halftrend_ema_v1",)]   # active signal only; shadows never propose
 
 
 def test_old_style_request_tagged_unknown(client):

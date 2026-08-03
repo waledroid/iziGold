@@ -15,8 +15,8 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, ProposalResultRequest, TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
-from app.telegram import (TelegramClient, format_report, handle_command,
-                          pinned_tick, send_alert, set_active_client)
+from app.telegram import (EXIT_KB, PROPOSAL_KB, TelegramClient, format_proposal,
+                          handle_command, pinned_tick, set_active_client)
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -166,6 +166,62 @@ def health():
             "db": settings.db_path}
 
 
+def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
+    """Proposal lifecycle + alert diet. Never raises (telegram fail-open;
+    db errors are logged by db layer conventions) -- the caller wraps this
+    in try/except as an extra belt-and-braces guard."""
+    db = app.state.db
+    tg = getattr(app.state, "telegram", None)
+
+    def edit(pid_row, suffix):
+        if tg is None or pid_row["tg_message_id"] is None:
+            return
+        tg.edit_message(pid_row["tg_message_id"],
+                        f"{'📥' if pid_row['kind']=='entry' else '📤'} "
+                        f"{pid_row['direction']} @ {pid_row['price']} — {suffix}")
+
+    # 1. expiry: does the active strategy still hold the pending stance?
+    pending = db.pending_proposal()
+    if pending is not None:
+        stale = (
+            (pending["kind"] == "entry" and (
+                req.signal == "EXIT" or
+                (req.signal in ("BUY", "SELL") and req.signal != pending["direction"])))
+            or (pending["kind"] == "exit" and req.signal in ("BUY", "SELL"))
+        )
+        if stale:
+            db.set_proposal_status(pending["id"], "expired")
+            edit(pending, "⌛ expired (strategy stance changed)")
+            pending = None
+
+    # 2. new proposals: manual mode only, entry/exit signals only
+    if req.signal not in ("BUY", "SELL", "EXIT"):
+        return
+    if db.exec_mode() != "manual":
+        return
+    kind = "exit" if req.signal == "EXIT" else "entry"
+    price = req.candles[-1].c if req.candles else 0.0
+    if pending is not None and pending["kind"] == kind and \
+       (kind == "exit" or pending["direction"] == req.signal):
+        return  # one pending proposal per stance
+    if kind == "entry":
+        direction = req.signal
+    else:
+        # An exit proposal's direction is informational only (the EA's
+        # close_all closes the whole basket regardless of what we display
+        # here). Best-effort source: the newest proposal row with
+        # kind='entry' and status='executed'; fall back to "BUY".
+        last = db.last_executed_entry()
+        direction = last["direction"] if last else "BUY"
+    pid = db.create_proposal(kind, direction, req.strategy_id, price, None)
+    if tg is not None:
+        markup = (PROPOSAL_KB(pid) if kind == "entry" else EXIT_KB(pid))
+        sent = tg.send_message(format_proposal(kind, direction, price, resp),
+                               reply_markup=markup)
+        if sent and sent.get("result", {}).get("message_id"):
+            db.set_proposal_message(pid, sent["result"]["message_id"])
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
     app.state.last_candles = req.candles
@@ -197,7 +253,10 @@ def analyze(req: AnalyzeRequest):
             regime=regime, verdict=resp.verdict, mode=settings.mode,
             ai_available=ai_available, strategy_id=req.strategy_id, is_active=True,
             timeframe=req.timeframe)
-        send_alert(format_report(req, resp), settings)
+    try:
+        maybe_propose(req, resp)
+    except Exception:
+        pass
     for shadow in req.shadows:
         if shadow.signal == "NONE":
             continue

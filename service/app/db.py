@@ -319,6 +319,15 @@ class SignalDb:
             "UPDATE proposals SET tg_message_id=? WHERE id=?", (tg_message_id, pid))
         self.conn.commit()
 
+    def last_executed_entry(self) -> dict | None:
+        """Newest executed entry proposal -- used to resolve an exit
+        proposal's (informational-only) direction."""
+        cur = self.conn.execute(
+            "SELECT * FROM proposals WHERE kind='entry' AND status='executed'"
+            " ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        return self._row_to_dict(cur, row)
+
     def pop_approved_command(self) -> dict | None:
         # UPDATE...RETURNING atomically updates the oldest approved row and returns it.
         # Explicit commit() ensures durability under concurrent access (check_same_thread=False).

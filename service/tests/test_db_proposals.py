@@ -35,6 +35,18 @@ def test_proposal_lifecycle(db):
     assert db.get_proposal(pid)["executed_ts"] is not None
 
 
+def test_last_executed_entry_returns_newest_executed_entry(db):
+    assert db.last_executed_entry() is None
+    a = db.create_proposal("entry", "BUY", "s", 1.0, None)
+    db.set_proposal_status(a, "executed")
+    b = db.create_proposal("entry", "SELL", "s", 2.0, None)
+    # b is still pending -- not executed -- so a remains the newest match
+    assert db.last_executed_entry()["id"] == a
+    db.set_proposal_status(b, "executed")
+    assert db.last_executed_entry()["id"] == b
+    assert db.last_executed_entry()["direction"] == "SELL"
+
+
 def test_pending_is_newest_and_single_query(db):
     a = db.create_proposal("entry", "BUY", "s", 1.0, None)
     b = db.create_proposal("entry", "SELL", "s", 2.0, None)

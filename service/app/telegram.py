@@ -54,6 +54,15 @@ def format_report(req, resp) -> str:
             f"Mode: {resp.mode}")
 
 
+def format_proposal(kind, direction, price, resp) -> str:
+    ai = (f"{resp.direction} {resp.confidence:.0%} — {resp.verdict} {_ICON[resp.verdict]}"
+          if resp.ai_available else "AI unavailable ❌")
+    head = "📥 Entry proposal" if kind == "entry" else "📤 Exit proposal"
+    return (f"{head}: {direction} @ {price}\n"
+            f"AI: {ai}\nRegime: {resp.regime}\n"
+            f"Valid while the strategy holds this stance.")
+
+
 def send_alert(text: str, settings) -> bool:
     if _active_client is not None:
         # /analyze is a sync endpoint (runs in a worker thread via FastAPI),
