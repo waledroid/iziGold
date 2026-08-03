@@ -2,6 +2,8 @@
 // Adapted from the Crypto9ite TradingView strategy for XAUUSD M15.
 // Entry: Half Trend color + ConfirmCloses consecutive closes beyond the EMA,
 // fired once per Half Trend flip. Stop: wick extreme since the flip.
+// Paints the trading 55 EMA (green) plus context EMAs 9/21/200 — the context
+// lines are display-only and never touch signal logic.
 #ifndef XAU_STRAT_HALFTREND_EMA_MQH
 #define XAU_STRAT_HALFTREND_EMA_MQH
 #include <XauAssistant/Strategy.mqh>
@@ -25,19 +27,26 @@ private:
    bool     m_fired;         // one entry per Half Trend flip
    datetime m_lastProcessed;
 
+   int      m_ema9Handle;
+   int      m_ema21Handle;
+   int      m_ema200Handle;
+
    datetime m_prevPaintBar;
    double   m_prevHt;
    double   m_prevEma;
+   double   m_prevEma9;
+   double   m_prevEma21;
+   double   m_prevEma200;
 
    void DrawSeg(string prefix, datetime t1, double v1, datetime t2, double v2,
-                color clr)
+                color clr, int width)
      {
       if(t1 == 0 || v1 == 0 || v2 == 0) return;
       string name = prefix + (string)(long)t2;
       if(ObjectFind(0, name) >= 0) return;
       if(!ObjectCreate(0, name, OBJ_TREND, 0, t1, v1, t2, v2)) return;
       ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, prefix == "xau_ht_" ? 2 : 1);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
       ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
       ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
@@ -47,15 +56,28 @@ private:
       ObjectDelete(0, prefix + (string)(long)old);
      }
 
+   void PaintContextEma(int handle, string prefix, color clr, int shift,
+                        datetime bt, double &prevVal)
+     {
+      double buf[];
+      if(CopyBuffer(handle, 0, shift, 1, buf) != 1) return;
+      if(buf[0] <= 0 || buf[0] == EMPTY_VALUE) return;   // MA not yet formed
+      DrawSeg(prefix, m_prevPaintBar, prevVal, bt, buf[0], clr, 1);
+      prevVal = buf[0];
+     }
+
    void PaintBar(int shift, double emaVal)
      {
       if(!m_paint) return;
       datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
       double ht = (m_trend == 0) ? m_maxLowPrice : m_minHighPrice;
       color htClr = (m_trend == 0) ? clrDodgerBlue : clrOrangeRed;
-      DrawSeg("xau_ht_", m_prevPaintBar, m_prevHt, bt, ht, htClr);
+      DrawSeg("xau_ht_", m_prevPaintBar, m_prevHt, bt, ht, htClr, 2);
       if(emaVal > 0)
-         DrawSeg("xau_ema_", m_prevPaintBar, m_prevEma, bt, emaVal, clrGold);
+         DrawSeg("xau_ema_", m_prevPaintBar, m_prevEma, bt, emaVal, clrLimeGreen, 2);
+      PaintContextEma(m_ema9Handle,   "xau_ema9_",   clrOrange, shift, bt, m_prevEma9);
+      PaintContextEma(m_ema21Handle,  "xau_ema21_",  clrRed,    shift, bt, m_prevEma21);
+      PaintContextEma(m_ema200Handle, "xau_ema200_", clrWhite,  shift, bt, m_prevEma200);
       m_prevPaintBar = bt; m_prevHt = ht;
       if(emaVal > 0) m_prevEma = emaVal;
      }
@@ -125,9 +147,13 @@ public:
         m_warmupBars(600), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
-        m_prevPaintBar(0), m_prevHt(0), m_prevEma(0)
+        m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
+        m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
-      m_emaHandle = iMA(_Symbol, PERIOD_CURRENT, m_emaLen, 0, MODE_EMA, PRICE_CLOSE);
+      m_emaHandle    = iMA(_Symbol, PERIOD_CURRENT, m_emaLen, 0, MODE_EMA, PRICE_CLOSE);
+      m_ema9Handle   = iMA(_Symbol, PERIOD_CURRENT, 9,   0, MODE_EMA, PRICE_CLOSE);
+      m_ema21Handle  = iMA(_Symbol, PERIOD_CURRENT, 21,  0, MODE_EMA, PRICE_CLOSE);
+      m_ema200Handle = iMA(_Symbol, PERIOD_CURRENT, 200, 0, MODE_EMA, PRICE_CLOSE);
      }
 
    virtual string Id() { return "halftrend_ema_v1"; }
@@ -183,6 +209,9 @@ public:
      {
       ObjectsDeleteAll(0, "xau_ht_");
       ObjectsDeleteAll(0, "xau_ema_");
+      ObjectsDeleteAll(0, "xau_ema9_");
+      ObjectsDeleteAll(0, "xau_ema21_");
+      ObjectsDeleteAll(0, "xau_ema200_");
       ChartRedraw();
      }
 
@@ -192,7 +221,11 @@ public:
    virtual void EnablePaint(bool on)
      {
       CStrategy::EnablePaint(on);
-      if(on) { m_prevPaintBar = 0; m_prevHt = 0; m_prevEma = 0; }
+      if(on)
+        {
+         m_prevPaintBar = 0; m_prevHt = 0; m_prevEma = 0;
+         m_prevEma9 = 0; m_prevEma21 = 0; m_prevEma200 = 0;
+        }
      }
   };
 #endif
