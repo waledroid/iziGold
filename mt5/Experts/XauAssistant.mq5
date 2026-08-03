@@ -217,16 +217,24 @@ void OnTimer()
         }
       else
         {
-         ENUM_SIGNAL dir = (cmdDir == "BUY") ? SIGNAL_BUY : SIGNAL_SELL;
-         double atrBuf[];
-         double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
-         CStrategy *act = g_registry.Active();
-         bool opened = false;
-         if(atrVal > 0 && act != NULL)
-            opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
-         bool ok = opened || g_trades.BasketDirection() == dir;
-         g_ui.PostProposalResult(cmdId, ok,
-                                 ok ? "opened" : "blocked by risk checks");
+         string why = "";
+         if(!g_risk.CanEnter(why))
+           {
+            g_ui.PostProposalResult(cmdId, false, why);
+           }
+         else
+           {
+            ENUM_SIGNAL dir = (cmdDir == "BUY") ? SIGNAL_BUY : SIGNAL_SELL;
+            double atrBuf[];
+            double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
+            CStrategy *act = g_registry.Active();
+            bool opened = false;
+            if(atrVal > 0 && act != NULL)
+               opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
+            bool ok = opened || g_trades.BasketDirection() == dir;
+            g_ui.PostProposalResult(cmdId, ok,
+                                    ok ? "opened" : "blocked by risk checks");
+           }
         }
      }
    else if(cmd == "close_all")
