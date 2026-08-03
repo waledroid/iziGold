@@ -89,6 +89,27 @@ private:
       Print(msg);
      }
 
+   // Shared WebRequest POST plumbing for the fire-and-forget JSON endpoints
+   // (heartbeat excluded — it needs the response body back for parsing).
+   // Returns true on HTTP 200, false (with a throttled warning) otherwise.
+   bool Post(string path, string json)
+     {
+      char req[], res[];
+      StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
+      string resp_headers;
+      ResetLastError();
+      int code = WebRequest("POST", m_baseUrl + path, "Content-Type: application/json\r\n",
+                            m_timeout, req, res, resp_headers);
+      if(code != 200)
+        {
+         WarnThrottled(StringFormat(
+            "UiApi: %s WebRequest failed code=%d err=%d (is the URL whitelisted in Tools>Options>Expert Advisors?)",
+            path, code, GetLastError()));
+         return false;
+        }
+      return true;
+     }
+
 public:
    void Init(string baseUrl, int timeout_ms, long magic)
      {
@@ -100,9 +121,12 @@ public:
      }
 
    // Returns the requested strategy id to switch to, or "" if none/failed.
+   // outputs: runtime mode ("auto"/"manual"/"" when absent) and at most one
+   // command per beat (cmd "" when none)
    string PostHeartbeat(double equity, double balance, double floating_pl,
                         bool kill_switch, double hwm, int exposure_min,
-                        bool window_open, double spread_points, string active_strategy)
+                        bool window_open, double spread_points, string active_strategy,
+                        string &mode, string &cmd, long &cmdId, string &cmdDir)
      {
       // Field names/order match service/app/models.py HeartbeatRequest exactly.
       string json = "{\"equity\":" + DoubleToString(equity, 2) +
@@ -132,7 +156,33 @@ public:
       string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
       // "switch_to":null never matches the quoted-string pattern below, so it
       // naturally falls through to "" — no special-casing needed.
-      return ExtractString(body, "switch_to");
+      string switch_to = ExtractString(body, "switch_to");
+
+      mode = ExtractString(body, "mode");
+      cmd = ""; cmdId = 0; cmdDir = "";
+      int cpos = StringFind(body, "\"command\":{");
+      if(cpos >= 0)
+        {
+         string tail = StringSubstr(body, cpos);
+         cmd    = ExtractString(tail, "cmd");
+         cmdDir = ExtractString(tail, "direction");
+         int idpos = StringFind(tail, "\"proposal_id\":");
+         if(idpos >= 0)
+            cmdId = StringToInteger(StringSubstr(tail, idpos + 14));
+        }
+
+      return switch_to;
+     }
+
+   // Field names/order match service/app/models.py ProposalResultRequest.
+   // Best-effort, fire-and-forget — the service side-effect (recording the
+   // proposal outcome) is not on the trading critical path.
+   void PostProposalResult(long proposalId, bool ok, string detail)
+     {
+      string body = "{\"proposal_id\":" + (string)proposalId +
+                    ",\"ok\":" + (ok ? "true" : "false") +
+                    ",\"detail\":\"" + detail + "\"}";
+      Post("/proposal-result", body);
      }
 
    // Field names/order match service/app/models.py TradeEventRequest exactly.

@@ -64,6 +64,7 @@ int            g_atrHandle = INVALID_HANDLE;
 datetime       g_lastBar = 0;
 bool           g_debugFired = false;
 string         g_pendingSwitch = "";
+ENUM_EXEC_MODE g_execMode = EXEC_MANUAL;
 
 // Bridges TradeManager (strategy-agnostic) to the UI service: reads the
 // active strategy id at call time, posts the event, then screenshots the
@@ -132,6 +133,7 @@ int OnInit()
       g_alerts.Notify("XauAssistant: AUTO on LIVE account blocked (AllowLiveTrading=false)");
       return INIT_FAILED;
      }
+   g_execMode = ExecutionMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
    g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses));
    g_registry.Register(new CBollStochRsiStrategy(BbPeriod, BbDev, TrendCloses,
@@ -174,11 +176,50 @@ void OnTimer()
    string activeId    = (active != NULL) ? active.Id() : "unknown";
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
 
+   string mode = "", cmd = "", cmdDir = "";
+   long cmdId = 0;
    string sw = g_ui.PostHeartbeat(equity, balance, floating_pl,
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
-                                  spreadPts, activeId);
+                                  spreadPts, activeId,
+                                  mode, cmd, cmdId, cmdDir);
    if(sw != "") g_pendingSwitch = sw;
+
+   if(mode == "auto" || mode == "manual")
+     {
+      ENUM_EXEC_MODE want = (mode == "auto") ? EXEC_AUTO : EXEC_MANUAL;
+      if(want == EXEC_AUTO && !AllowLiveTrading &&
+         AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL)
+        {
+         if(g_execMode != EXEC_MANUAL)
+            g_alerts.Notify("AUTO refused on live account (AllowLiveTrading=false)");
+         g_execMode = EXEC_MANUAL;
+        }
+      else if(want != g_execMode)
+        {
+         g_execMode = want;
+         Print("XauAssistant: execution mode -> ", mode);
+        }
+     }
+
+   if(cmd == "execute" && (cmdDir == "BUY" || cmdDir == "SELL"))
+     {
+      ENUM_SIGNAL dir = (cmdDir == "BUY") ? SIGNAL_BUY : SIGNAL_SELL;
+      double atrBuf[];
+      double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
+      CStrategy *act = g_registry.Active();
+      bool opened = false;
+      if(atrVal > 0 && act != NULL)
+         opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
+      bool ok = opened || g_trades.BasketDirection() == dir;
+      g_ui.PostProposalResult(cmdId, ok,
+                              ok ? "opened" : "blocked by risk checks");
+     }
+   else if(cmd == "close_all")
+     {
+      g_trades.CloseAll("telegram exit");
+      g_ui.PostProposalResult(cmdId, true, "basket closed");
+     }
   }
 
 void OnDeinit(const int reason)
@@ -275,7 +316,7 @@ void ProcessBar()
    double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
 
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
-   if(ExecutionMode == EXEC_AUTO && atrVal > 0)
+   if(g_execMode == EXEC_AUTO && atrVal > 0)
      {
       bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
       // A same-direction signal into an already-open basket is a legitimate
