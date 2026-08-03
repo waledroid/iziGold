@@ -32,7 +32,7 @@ input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
 input int            TradingWindowStartHour = 9;   // server time (GMT+3 summer) = 08:00 CEST
 input int            TradingWindowEndHour   = 23;  // server time = 22:00 CEST; avoids rollover spike
-input int            MaxDailyExposureMin    = 60;
+input int            MaxDailyExposureMin    = 120; // ~2-3 trades/day at M5 hold times
 input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
