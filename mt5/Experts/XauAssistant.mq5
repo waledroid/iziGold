@@ -43,6 +43,7 @@ input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy t
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
 input int    ConfirmCloses  = 1;                  // consecutive closes beyond EMA (1 suits XAU; 2 was tuned for crypto volatility)
+input double StopBufferATR  = 0.75;               // pad wick stop by k*ATR(14); 0 = exact wick (old behavior)
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
 input double BbDev           = 2.0;  // boll_stochrsi: Bollinger deviation
 input int    TrendCloses     = 2;    // boll_stochrsi: closes in trend zone
@@ -145,7 +146,7 @@ int OnInit()
      }
    g_execMode = ExecutionMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
-   g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses));
+   g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses, StopBufferATR));
    g_registry.Register(new CBollStochRsiStrategy(BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));

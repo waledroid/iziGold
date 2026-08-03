@@ -16,6 +16,8 @@ private:
    int      m_confirm;
    int      m_emaHandle;
    int      m_warmupBars;
+   double   m_stopBufferAtr;
+   int      m_atrHandle;
 
    int      m_trend;         // 0 = blue/up, 1 = red/down, -1 = not yet seeded
    int      m_nextTrend;
@@ -149,9 +151,9 @@ private:
      }
 
 public:
-   CHalfTrendEmaStrategy(int amplitude, int emaLen, int confirmCloses)
+   CHalfTrendEmaStrategy(int amplitude, int emaLen, int confirmCloses, double stopBufferAtr)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
-        m_warmupBars(600), m_trend(-1), m_nextTrend(0),
+        m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
@@ -161,6 +163,7 @@ public:
       m_ema9Handle   = iMA(_Symbol, PERIOD_CURRENT, 9,   0, MODE_EMA, PRICE_CLOSE);
       m_ema21Handle  = iMA(_Symbol, PERIOD_CURRENT, 21,  0, MODE_EMA, PRICE_CLOSE);
       m_ema200Handle = iMA(_Symbol, PERIOD_CURRENT, 200, 0, MODE_EMA, PRICE_CLOSE);
+      m_atrHandle    = iATR(_Symbol, PERIOD_CURRENT, 14);
      }
 
    virtual string Id() { return "halftrend_ema_v1"; }
@@ -215,10 +218,16 @@ public:
       return false;
      }
 
+   // Pad the wick-extreme stop by k*ATR(14) so ordinary noise (one
+   // ATR-fraction) can't snipe the exact wick; sizing is risk-based so
+   // padding the stop distance does not change dollar risk per trade.
    virtual double StopPrice(ENUM_SIGNAL dir)
      {
-      if(dir == SIGNAL_BUY  && m_trend == 0) return m_extreme;
-      if(dir == SIGNAL_SELL && m_trend == 1) return m_extreme;
+      double atr = 0; double ab[];
+      if(CopyBuffer(m_atrHandle, 0, 1, 1, ab) == 1) atr = ab[0];
+      double pad = (m_stopBufferAtr > 0 && atr > 0) ? m_stopBufferAtr * atr : 0;
+      if(dir == SIGNAL_BUY  && m_trend == 0) return m_extreme - pad;
+      if(dir == SIGNAL_SELL && m_trend == 1) return m_extreme + pad;
       return 0.0;
      }
 
