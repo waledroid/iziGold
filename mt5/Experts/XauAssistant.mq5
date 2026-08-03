@@ -9,6 +9,7 @@
 #include <XauAssistant/SignalManager.mqh>
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/TradeManager.mqh>
+#include <XauAssistant/TradeBoxes.mqh>
 #include <XauAssistant/StrategyRegistry.mqh>
 #include <XauAssistant/Strategies/HalfTrendEma.mqh>
 #include <XauAssistant/Strategies/BollStochRsi.mqh>
@@ -60,6 +61,7 @@ CUiApi         g_ui;
 CSignalManager g_sm;
 CRiskManager   g_risk;
 CTradeManager  g_trades;
+CTradeBoxes    g_tradeBoxes;
 int            g_atrHandle = INVALID_HANDLE;
 datetime       g_lastBar = 0;
 bool           g_debugFired = false;
@@ -93,6 +95,14 @@ public:
       // close of the OLD basket can't clobber a virtual position a
       // strategy already flipped to the NEW direction this same bar.
       bool basketGone = (event != "close") || (g_trades.OpenCount() == 0);
+      // Chart risk/reward boxes: "open" starts the current basket's box,
+      // and only the basket-FINAL close (same basketGone gate as the
+      // strategy bookkeeping below) freezes it — a partial leg close of a
+      // pyramided basket must not prematurely close out the box.
+      if(event == "open")
+         g_tradeBoxes.OnOpen(ticket, dir, price, sl);
+      else if(event == "close" && basketGone)
+         g_tradeBoxes.OnClose(price);
       if(event == "close" && active != NULL && basketGone)
         {
          ENUM_SIGNAL closedDir = (dir == "BUY")  ? SIGNAL_BUY  :
@@ -336,6 +346,8 @@ void ProcessBar()
    g_risk.OnBarUpdate();
    double atrBuf[];
    double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
+
+   if(g_trades.OpenCount() > 0) g_tradeBoxes.OnBarUpdate();
 
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
    if(g_execMode == EXEC_AUTO && atrVal > 0)
