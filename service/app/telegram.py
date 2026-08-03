@@ -331,7 +331,7 @@ def handle_callback(data: str, app) -> tuple:
         sid = parts[1]
         app.state.pending_switch = sid
         return (f"Switching to {sid} at next bar.", f"→ {sid}")
-    if parts[0] == "prop" and len(parts) > 2:
+    if parts[0] == "prop" and len(parts) == 3 and parts[1].isdigit():
         pid, action = int(parts[1]), parts[2]
         row = db.get_proposal(pid)
         if row is None or row["status"] != "pending":

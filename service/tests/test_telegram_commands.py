@@ -570,3 +570,10 @@ def test_unknown_callback_returns_none_edit_and_unknown_toast(client):
     edit, toast = handle_callback("bogus:data", client.app)
     assert edit is None
     assert toast == "unknown"
+
+
+def test_malformed_prop_callback_does_not_raise(client):
+    edit, toast = handle_callback("prop:abc:take", client.app)
+    assert (edit, toast) == (None, "unknown")
+    edit, toast = handle_callback("prop::take", client.app)
+    assert (edit, toast) == (None, "unknown")
