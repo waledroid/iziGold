@@ -162,6 +162,10 @@ int OnInit()
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
                  AddTriggerATR, ProfitTargetPct, StopAtrMult, &g_uiSink);
+   // Re-arm chart box tracking if a basket was already open before this
+   // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
+   // otherwise the live box would never receive its final OnClose.
+   g_tradeBoxes.RecoverFromPositions(MagicNumber);
    g_atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
    EventSetTimer(HeartbeatSec);
    return INIT_SUCCEEDED;

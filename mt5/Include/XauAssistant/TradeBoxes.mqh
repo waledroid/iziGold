@@ -133,6 +133,64 @@ public:
       Prune();
      }
 
+   // Re-arms tracking after an EA reload (recompile auto-reload, terminal
+   // restart, chart re-attach) that happened while a basket was already
+   // open. Without this, m_active resets to false on construction and the
+   // live box would freeze stale forever — OnBarUpdate/OnClose both
+   // early-return on !m_active, so nothing would ever finalize it at the
+   // real exit. Call once from OnInit, after TradeManager.Init().
+   //
+   // Scans PositionsTotal() for this EA's own positions on _Symbol and
+   // adopts the OLDEST one (lowest POSITION_TICKET) as the basket anchor —
+   // same "tracks the FIRST entry" semantics OnOpen already uses, just
+   // approximated after the fact for a pyramided basket since the earlier
+   // legs' original open events are lost across the reload.
+   //
+   // Ticket source matches OnOpen's: TradeManager passes
+   // (long)m_trade.ResultOrder() there, which — for a hedging-mode market
+   // order producing a brand-new position — equals that position's
+   // POSITION_TICKET, so reusing POSITION_TICKET here targets the SAME
+   // object names OnOpen already created; DrawRect's ObjectFind guard means
+   // this moves the existing rectangle rather than duplicating it.
+   void RecoverFromPositions(long magic)
+     {
+      long     oldestTicket = -1;
+      double   entry = 0, sl = 0;
+      long     ptype = -1;
+      datetime openTime = 0;
+      for(int i = 0; i < PositionsTotal(); i++)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(PositionGetInteger(POSITION_MAGIC) != magic) continue;
+         long thisTicket = (long)PositionGetInteger(POSITION_TICKET);
+         if(oldestTicket < 0 || thisTicket < oldestTicket)
+           {
+            oldestTicket = thisTicket;
+            entry        = PositionGetDouble(POSITION_PRICE_OPEN);
+            sl           = PositionGetDouble(POSITION_SL);
+            ptype        = PositionGetInteger(POSITION_TYPE);
+            openTime     = (datetime)PositionGetInteger(POSITION_TIME);
+           }
+        }
+      if(oldestTicket <= 0) return;   // nothing open — nothing to recover
+
+      m_active   = true;
+      m_ticket   = oldestTicket;
+      m_dir      = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+      m_entry    = entry;
+      m_sl       = sl;
+      m_openTime = (openTime > 0) ? openTime : iTime(_Symbol, PERIOD_CURRENT, 0);
+      // Re-anchor immediately rather than waiting for the next closed bar —
+      // if the box objects still exist (normal case: only the in-memory
+      // class state was lost, not the chart), this just moves their anchors;
+      // if they were somehow removed too, this recreates them.
+      if(m_sl > 0)
+         DrawRect(RiskName(), m_openTime, MathMax(m_entry, m_sl),
+                  iTime(_Symbol, PERIOD_CURRENT, 0), MathMin(m_entry, m_sl), RiskColor());
+     }
+
    // Runs once per closed bar (caller gates on OpenCount() > 0) — no OnTick
    // work, so the box never redraws mid-candle.
    void OnBarUpdate()
