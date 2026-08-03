@@ -126,6 +126,11 @@ private:
          m_fired = false;   // a flip re-arms the once-per-trend entry
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
+         if(m_lastProcessed != 0)   // live bar, not warm-up backfill
+            Print("halftrend_ema_v1: HalfTrend flip to ",
+                  m_trend == 0 ? "UP (blue)" : "DOWN (red)",
+                  " — fake-out filter armed, need ", m_confirm, " closes ",
+                  m_trend == 0 ? "above" : "below", " EMA", m_emaLen);
         }
       else
          m_extreme = (m_trend == 0) ? MathMin(m_extreme, barLow)
@@ -181,9 +186,19 @@ public:
       if(!m_fired)
         {
          if(m_trend == 0 && m_consecAbove >= m_confirm)
-           { m_fired = true; return SIGNAL_BUY; }
+           {
+            m_fired = true;
+            Print("halftrend_ema_v1: BUY confirmed — ", m_consecAbove,
+                  " closes above EMA", m_emaLen, ", fake-out filter passed");
+            return SIGNAL_BUY;
+           }
          if(m_trend == 1 && m_consecBelow >= m_confirm)
-           { m_fired = true; return SIGNAL_SELL; }
+           {
+            m_fired = true;
+            Print("halftrend_ema_v1: SELL confirmed — ", m_consecBelow,
+                  " closes below EMA", m_emaLen, ", fake-out filter passed");
+            return SIGNAL_SELL;
+           }
         }
       return SIGNAL_NONE;
      }
