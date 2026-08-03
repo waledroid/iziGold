@@ -1,3 +1,4 @@
+import json
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -59,6 +60,11 @@ def PROPOSAL_KB(pid):
 def EXIT_KB(pid):
     """Keyboard for exiting or holding a position."""
     return kb([[("🔴 Exit now", f"prop:{pid}:take"), ("⏸ Hold", f"prop:{pid}:skip")]])
+
+
+def EXIT_NOW_KB(trade_id):
+    """Keyboard on trade-open notifications: close the basket immediately."""
+    return kb([[("🔴 EXIT — close trade", f"exitnow:{trade_id}")]])
 
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
@@ -150,9 +156,15 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         return self.transport("sendMessage", payload, None)
 
-    def send_photo(self, caption: str, png_bytes: bytes):
+    def send_photo(self, caption: str, png_bytes: bytes,
+                   reply_markup: dict | None = None):
+        payload = {"chat_id": self.chat_id, "caption": caption}
+        if reply_markup is not None:
+            # sendPhoto goes out as multipart form data, where reply_markup
+            # must be a JSON-serialized string, not a nested object
+            payload["reply_markup"] = json.dumps(reply_markup)
         return self.transport(
-            "sendPhoto", {"chat_id": self.chat_id, "caption": caption},
+            "sendPhoto", payload,
             {"photo": ("chart.png", png_bytes, "image/png")})
 
     def edit_message(self, message_id, text: str, reply_markup: dict | None = None):
@@ -208,23 +220,33 @@ def _format_status(app) -> str:
     strategy = hb.active_strategy
     if pending and pending != strategy:
         strategy = f"{strategy} → {pending}"
+    # "Kill-switch off" confused users -- phrase it as what the protection
+    # is doing, not the raw flag.
+    if hb.kill_switch:
+        protection = "⛔ KILL SWITCH TRIPPED — trading halted"
+    else:
+        protection = "🛡 Protection armed"
+        if hb.hwm:
+            dd = max(0.0, (1 - hb.equity / hb.hwm) * 100)
+            protection += f" · drawdown {dd:.1f}%"
+    db = getattr(app.state, "db", None)
+    mode = db.exec_mode().upper() if db is not None and hasattr(db, "exec_mode") else "?"
     lines = [
         session_line,
         connection,
-        "📊 Status",
-        f"Equity: {hb.equity} Balance: {hb.balance} Floating P/L: {hb.floating_pl}",
-        f"Kill-switch: {'ON' if hb.kill_switch else 'off'}",
-        f"Strategy: {strategy}",
-        f"Window: {'open' if hb.window_open else 'closed'} Exposure: {hb.exposure_min}m",
+        f"💰 {hb.equity} equity · {hb.balance} balance · {hb.floating_pl:+g} floating",
+        protection,
+        f"🎯 {strategy} · {mode}",
+        f"🕰 Window {'open' if hb.window_open else 'closed'} · {hb.exposure_min}m exposure",
     ]
     positions = hb.positions
-    lines.append(f"Positions ({len(positions)}):")
     if positions:
+        lines.append(f"📬 Positions ({len(positions)}):")
         for p in positions:
-            lines.append(f"  #{p.ticket} {p.direction} {p.lots}@{p.open_price} "
-                        f"P/L {p.profit}")
+            lines.append(f"  #{p.ticket} {p.direction} {p.lots} @ {p.open_price} "
+                        f"· P/L {p.profit:+g}")
     else:
-        lines.append("  none")
+        lines.append("📭 No open positions")
     return "\n".join(lines)
 
 
@@ -412,4 +434,18 @@ def handle_callback(data: str, app) -> tuple:
             return (f"{row['direction']} @ {row['price']} — 👍 approved, "
                     f"executing on next heartbeat…", "approved")
         return (f"{row['direction']} @ {row['price']} — ❌ skipped", "skipped")
+    if parts[0] == "exitnow" and len(parts) == 2:
+        # EXIT button on a trade-open notification: queue an immediate
+        # basket close (dispatched as close_all on the next heartbeat).
+        latest = app.state.latest_heartbeat
+        if latest is None or not latest[1].positions:
+            return (None, "already flat")
+        for st in ("pending", "approved", "dispatched"):
+            if db.pending_proposal(kind="exit", status=st) is not None:
+                return (None, f"close already {st}")
+        direction = latest[1].positions[0].direction
+        pid = db.create_proposal("exit", direction,
+                                 latest[1].active_strategy, 0.0, None)
+        db.set_proposal_status(pid, "approved", expected="pending")
+        return (None, "closing on next heartbeat…")
     return (None, "unknown")

@@ -15,8 +15,9 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, ProposalResultRequest, TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
-from app.telegram import (EXIT_KB, PROPOSAL_KB, TelegramClient, format_proposal,
-                          handle_callback, handle_command, pinned_tick, set_active_client)
+from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
+                          format_proposal, handle_callback, handle_command,
+                          pinned_tick, set_active_client)
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -598,15 +599,18 @@ async def trade_event(ev: TradeEventRequest):
                 await asyncio.to_thread(_prune_screenshots, app.state.screenshot_dir)
                 if app.state.telegram is not None:
                     caption = f"render: {ev.reason}"
+                    markup = EXIT_NOW_KB(trade_id) if ev.event == "open" else None
                     await asyncio.to_thread(
-                        _send_render_photo, app.state.telegram, caption, render_path)
+                        _send_render_photo, app.state.telegram, caption,
+                        render_path, markup)
         except Exception:
             pass
     return {"id": trade_id}
 
 
-def _send_render_photo(telegram: TelegramClient, caption: str, path: Path) -> None:
-    telegram.send_photo(caption, path.read_bytes())
+def _send_render_photo(telegram: TelegramClient, caption: str, path: Path,
+                       reply_markup: dict | None = None) -> None:
+    telegram.send_photo(caption, path.read_bytes(), reply_markup)
 
 
 @app.post("/screenshot")
@@ -627,7 +631,9 @@ async def screenshot(event: int, request: Request):
                 " FROM trades WHERE id=?", (event,)).fetchone()
             if row is not None:
                 caption = _trade_caption(*row)
-                await asyncio.to_thread(app.state.telegram.send_photo, caption, body)
+                markup = EXIT_NOW_KB(event) if row[0] == "open" else None
+                await asyncio.to_thread(
+                    app.state.telegram.send_photo, caption, body, markup)
         except Exception:
             pass
     return {"saved": str(file_path)}
