@@ -237,7 +237,6 @@ def _format_status(app) -> str:
         f"💰 {hb.equity} equity · {hb.balance} balance · {hb.floating_pl:+g} floating",
         protection,
         f"🎯 {strategy} · {mode}",
-        f"🕰 Window {'open' if hb.window_open else 'closed'} · {hb.exposure_min}m exposure",
     ]
     positions = hb.positions
     if positions:
