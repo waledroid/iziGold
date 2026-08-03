@@ -30,8 +30,8 @@ input double         AddTriggerATR          = 1.0;
 input double         ProfitTargetPct        = 2.0;
 input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
-input int            TradingWindowStartHour = 15;
-input int            TradingWindowEndHour   = 18;
+input int            TradingWindowStartHour = 9;   // server time (GMT+3 summer) = 08:00 CEST
+input int            TradingWindowEndHour   = 23;  // server time = 22:00 CEST; avoids rollover spike
 input int            MaxDailyExposureMin    = 60;
 input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
