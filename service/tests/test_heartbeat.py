@@ -25,7 +25,11 @@ def _hb(active="halftrend_ema_v1", equity=10000.0):
 
 def test_heartbeat_stores_and_returns_empty(client):
     r = client.post("/heartbeat", json=_hb())
-    assert r.status_code == 200 and r.json() == {"switch_to": None}
+    body = r.json()
+    assert r.status_code == 200
+    assert body["switch_to"] is None
+    assert body["mode"] == "manual"
+    assert body["command"] is None
     from app import main
     assert main.app.state.latest_heartbeat[1].equity == 10000.0
     rows = main.app.state.db.conn.execute("SELECT COUNT(*) FROM heartbeats").fetchone()
@@ -46,14 +50,22 @@ def test_switch_queue_delivers_until_confirmed(client):
     assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
     # delivered while the EA still reports the old strategy
     r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
-    assert r.json() == {"switch_to": "boll_stochrsi_v1"}
+    body = r.json()
+    assert body["switch_to"] == "boll_stochrsi_v1"
+    assert body["mode"] == "manual"
+    assert body["command"] is None
     r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
-    assert r.json() == {"switch_to": "boll_stochrsi_v1"}   # at-least-once
+    body = r.json()
+    assert body["switch_to"] == "boll_stochrsi_v1"   # at-least-once
     # EA reports the new id active -> cleared
     r = client.post("/heartbeat", json=_hb(active="boll_stochrsi_v1"))
-    assert r.json() == {"switch_to": None}
+    body = r.json()
+    assert body["switch_to"] is None
+    assert body["mode"] == "manual"
+    assert body["command"] is None
     r = client.post("/heartbeat", json=_hb(active="boll_stochrsi_v1"))
-    assert r.json() == {"switch_to": None}
+    body = r.json()
+    assert body["switch_to"] is None
 
 
 def test_switch_queue_cancel_clears_pending(client):
@@ -62,4 +74,7 @@ def test_switch_queue_cancel_clears_pending(client):
     r = client.post("/ui/switch", json={"strategy_id": ""})
     assert r.status_code == 200 and r.json() == {"pending": None}
     r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
-    assert r.json() == {"switch_to": None}
+    body = r.json()
+    assert body["switch_to"] is None
+    assert body["mode"] == "manual"
+    assert body["command"] is None
