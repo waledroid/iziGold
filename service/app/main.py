@@ -426,6 +426,66 @@ def ui_switch(body: dict):
     return {"pending": sid}
 
 
+def _edit_proposal_message(row, suffix):
+    """Best-effort: keep the proposal's Telegram message in sync with a
+    decision made on the dashboard. Fail-open — never raises."""
+    tg = getattr(app.state, "telegram", None)
+    if tg is None or row.get("tg_message_id") is None:
+        return
+    try:
+        tg.edit_message(row["tg_message_id"],
+                        f"{'📥' if row['kind'] == 'entry' else '📤'} "
+                        f"{row['direction']} @ {row['price']} — {suffix}")
+    except Exception:
+        pass
+
+
+@app.post("/ui/mode")
+def ui_mode(body: dict):
+    mode = str(body.get("mode", "")).strip().lower()
+    if mode not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="mode must be auto|manual")
+    app.state.db.set_exec_mode(mode)
+    return {"mode": mode}
+
+
+@app.post("/ui/proposal/{pid}")
+def ui_proposal_decide(pid: int, body: dict):
+    action = str(body.get("action", "")).strip().lower()
+    if action not in ("take", "skip"):
+        raise HTTPException(status_code=400, detail="action must be take|skip")
+    db = app.state.db
+    row = db.get_proposal(pid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such proposal")
+    status = "approved" if action == "take" else "skipped"
+    # Same guarded transition the Telegram buttons use: if a concurrent tap
+    # or the expiry sweep already decided this row, report what won instead
+    # of overwriting it.
+    if not db.set_proposal_status(pid, status, expected="pending"):
+        return {"ok": False, "status": db.get_proposal(pid)["status"]}
+    mark = "🟢 approved (dashboard)" if action == "take" else "🔴 skipped (dashboard)"
+    _edit_proposal_message(row, mark)
+    return {"ok": True, "status": status}
+
+
+@app.post("/ui/close-all")
+def ui_close_all():
+    db = app.state.db
+    for st in ("pending", "approved", "dispatched"):
+        if db.pending_proposal(kind="exit", status=st) is not None:
+            raise HTTPException(status_code=409, detail=f"close already {st}")
+    last = db.last_executed_entry()
+    direction = last["direction"] if last else "BUY"
+    latest = app.state.latest_heartbeat
+    strategy_id = latest[1].active_strategy if latest else "dashboard"
+    rc = app.state.recent_candles
+    price = rc["candles"][-1].c if rc else 0.0
+    pid = db.create_proposal("exit", direction, strategy_id, price, None)
+    db.set_proposal_status(pid, "approved", expected="pending")
+    return {"ok": True, "proposal_id": pid}
+
+
 @app.get("/ui/state")
 def ui_state():
     latest = app.state.latest_heartbeat
@@ -433,8 +493,15 @@ def ui_state():
     if latest is not None:
         age = round(time.time() - latest[0], 1)
         hb = latest[1].model_dump()
+    proposal = None
+    for st in ("pending", "approved", "dispatched"):
+        proposal = app.state.db.pending_proposal(status=st)
+        if proposal is not None:
+            break
     return {"age_s": age, "heartbeat": hb,
             "pending_switch": app.state.pending_switch,
+            "mode": app.state.db.exec_mode(),
+            "proposal": proposal,
             "stats": app.state.db.stats()}
 
 

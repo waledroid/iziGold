@@ -356,6 +356,20 @@ button.btn-cancel:hover {
     <span>⚠️</span> EA not reporting (heartbeat stale)
   </div>
 
+  <!-- Control Bar -->
+  <div class="card-section" style="padding:14px 18px;">
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span class="stat-label" style="margin-right:4px;">Mode</span>
+        <button id="mAuto" class="btn-sm" onclick="setMode('auto')">🤖 AUTO</button>
+        <button id="mManual" class="btn-sm" onclick="setMode('manual')">👤 MANUAL</button>
+      </div>
+      <button id="closeAll" class="btn-sm btn-cancel" onclick="closeAllPos()">✖ Close all</button>
+      <span id="ctlsub" class="stat-label"></span>
+    </div>
+    <div id="propcard"></div>
+  </div>
+
   <!-- Live Metrics Strip -->
   <div class="strip" id="strip">
     <div class="stat-card">
@@ -429,7 +443,17 @@ function closeLightbox(e){
 async function state(){
  const s=await j('/ui/state');
  $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
- const h=s.heartbeat; if(!h) return;
+ // controls render even before the first heartbeat (mode/proposal are
+ // service-side state, not EA state)
+ const onCss='background:var(--gold-primary);color:#000;font-weight:600;';
+ $('mAuto').style.cssText = s.mode==='auto'?onCss:'';
+ $('mManual').style.cssText = s.mode==='manual'?onCss:'';
+ renderProposal(s.proposal);
+ const h=s.heartbeat;
+ $('closeAll').disabled = !(h&&h.positions&&h.positions.length);
+ $('ctlsub').textContent = (s.mode==='manual'?'EA proposes, you approve':'EA executes signals')
+   + (h?` · spread ${fmt(h.spread_points,0)} pts`:'');
+ if(!h) return;
  
  const posStr = h.positions && h.positions.length > 0 
   ? h.positions.map(p=>`<div style="font-size:12px;margin-top:2px;"><b>${p.direction}</b> ${fmt(p.lots,2)}@${fmt(p.open_price,2)} <span class="${p.profit>=0?'pos':'neg'}">$${fmt(p.profit,2)}</span></div>`).join('') 
@@ -622,6 +646,40 @@ async function trades(){
     `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
     `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
   }).join('')+'</tbody>';
+}
+
+function renderProposal(p){
+ const el=$('propcard');
+ if(!p){el.innerHTML='';return;}
+ const badge=p.status==='pending'?'badge-gold':(p.status==='executed'?'badge-pos':(p.status==='blocked'?'badge-neg':'badge-muted'));
+ // p.id is server-generated INTEGER; Number() keeps the onclick splice safe.
+ const btns=p.status==='pending'
+  ?`<button class="btn-sm" onclick="decide(${Number(p.id)},'take')">🟢 Take trade</button>
+    <button class="btn-sm btn-cancel" onclick="decide(${Number(p.id)},'skip')">🔴 Skip</button>`
+  :'';
+ el.innerHTML=`<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+  <span>${p.kind==='entry'?'📥':'📤'} <b>${esc(p.direction)}</b> @ ${fmt(p.price)}
+   · ${esc(p.strategy_id||'')} · <span class="badge ${badge}">${esc(p.status)}</span></span>${btns}</div>`;
+}
+
+async function setMode(m){
+ const r=await fetch('/ui/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
+ if(!r.ok) alert('Mode change failed ('+r.status+')');
+ state();
+}
+
+async function decide(pid,action){
+ const r=await fetch('/ui/proposal/'+pid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+ if(r.ok){const d=await r.json(); if(!d.ok) alert('Already decided elsewhere: '+d.status);}
+ else alert('Decision failed ('+r.status+')');
+ state();
+}
+
+async function closeAllPos(){
+ if(!confirm('Close ALL open positions?')) return;
+ const r=await fetch('/ui/close-all',{method:'POST'});
+ if(!r.ok){const d=await r.json().catch(()=>({})); alert('Close-all failed: '+(d.detail||r.status));}
+ state();
 }
 
 async function sw(id){
