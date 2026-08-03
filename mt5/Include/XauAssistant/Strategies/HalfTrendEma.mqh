@@ -25,6 +25,41 @@ private:
    bool     m_fired;         // one entry per Half Trend flip
    datetime m_lastProcessed;
 
+   datetime m_prevPaintBar;
+   double   m_prevHt;
+   double   m_prevEma;
+
+   void DrawSeg(string prefix, datetime t1, double v1, datetime t2, double v2,
+                color clr)
+     {
+      if(t1 == 0 || v1 == 0 || v2 == 0) return;
+      string name = prefix + (string)(long)t2;
+      if(ObjectFind(0, name) >= 0) return;
+      if(!ObjectCreate(0, name, OBJ_TREND, 0, t1, v1, t2, v2)) return;
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, prefix == "xau_ht_" ? 2 : 1);
+      ObjectSetInteger(0, name, OBJPROP_RAY_LEFT, false);
+      ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      // rolling window: drop the segment that just left the 500-bar window
+      datetime old = t2 - 500 * PeriodSeconds(PERIOD_CURRENT);
+      ObjectDelete(0, prefix + (string)(long)old);
+     }
+
+   void PaintBar(int shift, double emaVal)
+     {
+      if(!m_paint) return;
+      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+      double ht = (m_trend == 0) ? m_maxLowPrice : m_minHighPrice;
+      color htClr = (m_trend == 0) ? clrDodgerBlue : clrOrangeRed;
+      DrawSeg("xau_ht_", m_prevPaintBar, m_prevHt, bt, ht, htClr);
+      if(emaVal > 0)
+         DrawSeg("xau_ema_", m_prevPaintBar, m_prevEma, bt, emaVal, clrGold);
+      m_prevPaintBar = bt; m_prevHt = ht;
+      if(emaVal > 0) m_prevEma = emaVal;
+     }
+
    void ProcessClosedBar(int shift)
      {
       double hi[], lo[], cl[];
@@ -75,11 +110,13 @@ private:
                                     : MathMax(m_extreme, barHigh);
 
       double emaBuf[];
-      if(CopyBuffer(m_emaHandle, 0, shift, 1, emaBuf) == 1)
+      bool haveEma = (CopyBuffer(m_emaHandle, 0, shift, 1, emaBuf) == 1);
+      if(haveEma)
         {
          if(close > emaBuf[0])      { m_consecAbove++; m_consecBelow = 0; }
          else if(close < emaBuf[0]) { m_consecBelow++; m_consecAbove = 0; }
         }
+      PaintBar(shift, haveEma ? emaBuf[0] : 0);
      }
 
 public:
@@ -87,7 +124,8 @@ public:
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
-        m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0)
+        m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
+        m_prevPaintBar(0), m_prevHt(0), m_prevEma(0)
      {
       m_emaHandle = iMA(_Symbol, PERIOD_CURRENT, m_emaLen, 0, MODE_EMA, PRICE_CLOSE);
      }
@@ -139,6 +177,22 @@ public:
       if(dir == SIGNAL_BUY  && m_trend == 0) return m_extreme;
       if(dir == SIGNAL_SELL && m_trend == 1) return m_extreme;
       return 0.0;
+     }
+
+   virtual void ClearPaint()
+     {
+      ObjectsDeleteAll(0, "xau_ht_");
+      ObjectsDeleteAll(0, "xau_ema_");
+      ChartRedraw();
+     }
+
+   // Reset the paint-chain start point whenever painting is (re)enabled, so a
+   // strategy that was deactivated and later reactivated doesn't reconnect
+   // its next segment back to a stale bar/price from before the gap.
+   virtual void EnablePaint(bool on)
+     {
+      CStrategy::EnablePaint(on);
+      if(on) { m_prevPaintBar = 0; m_prevHt = 0; m_prevEma = 0; }
      }
   };
 #endif

@@ -36,6 +36,7 @@ input int            MaxDailyExposureMin    = 60;
 input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
+input bool           ApplyChartTheme        = true;
 
 input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
@@ -105,6 +106,24 @@ public:
   };
 CUiSink g_uiSink;
 
+void ApplyDarkTheme()
+  {
+   ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+   ChartSetInteger(0, CHART_COLOR_BACKGROUND, C'19,23,34');
+   ChartSetInteger(0, CHART_COLOR_FOREGROUND, clrSilver);
+   ChartSetInteger(0, CHART_COLOR_GRID, C'42,46,57');
+   ChartSetInteger(0, CHART_COLOR_CHART_UP, clrMediumSeaGreen);
+   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, clrIndianRed);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, clrMediumSeaGreen);
+   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, clrIndianRed);
+   ChartSetInteger(0, CHART_COLOR_CHART_LINE, clrSilver);
+   ChartSetInteger(0, CHART_COLOR_VOLUME, C'42,46,57');
+   ChartSetInteger(0, CHART_SHOW_GRID, true);
+   ChartSetInteger(0, CHART_SHOW_VOLUMES, CHART_VOLUME_HIDE);
+   ChartSetInteger(0, CHART_SHOW_PERIOD_SEP, false);
+   ChartRedraw();
+  }
+
 int OnInit()
   {
    if(ExecutionMode == EXEC_AUTO && !AllowLiveTrading &&
@@ -123,6 +142,8 @@ int OnInit()
       g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");
       return INIT_FAILED;
      }
+   if(ApplyChartTheme) ApplyDarkTheme();
+   g_registry.Active().EnablePaint(true);
    g_api.Init(ApiUrl, ApiTimeoutMs);
    g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
@@ -163,6 +184,8 @@ void OnTimer()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   CStrategy *a = g_registry.Active();
+   if(a != NULL) a.ClearPaint();
    g_registry.Clear();
   }
 
@@ -213,8 +236,15 @@ void ProcessBar()
      {
       string sw = g_pendingSwitch;
       g_pendingSwitch = "";
+      // Capture the OLD active strategy before SetActive runs — once SetActive
+      // succeeds, g_registry.Active() returns the NEW strategy, so calling
+      // EnablePaint(false) via a post-switch Active() lookup would wrongly
+      // target the new strategy instead of clearing the old one's paint.
+      CStrategy *oldActive = g_registry.Active();
       if(g_registry.SetActive(sw))
         {
+         if(oldActive != NULL) oldActive.EnablePaint(false);
+         g_registry.Active().EnablePaint(true);
          Print("XauAssistant: switched active strategy to '", sw, "'");
          g_alerts.Notify("switched to " + sw);
         }

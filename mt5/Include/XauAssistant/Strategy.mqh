@@ -18,7 +18,14 @@ string SignalToString(ENUM_SIGNAL s)
 
 class CStrategy
   {
+protected:
+   bool m_paint;
 public:
+   CStrategy() : m_paint(false) {}
+   // Painting: the EA enables this on the ACTIVE strategy only. Strategies
+   // that support it draw their indicator state per closed bar; default no-op.
+   virtual void EnablePaint(bool on) { m_paint = on; if(!on) ClearPaint(); }
+   virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }
    // Called once per closed bar.
