@@ -149,16 +149,34 @@ class TelegramClient:
         return result.get("result") or []
 
 
-def _format_status(app) -> str:
+_EA_CONNECTED_MAX_AGE_S = 30
+
+
+def _ea_connection_line(app) -> str:
+    """First line of /status: EA connection state derived from
+    app.state.latest_heartbeat (ts, HeartbeatRequest) | None."""
     latest = app.state.latest_heartbeat
     if latest is None:
-        return "no heartbeat yet"
+        return "EA: 🔴 never connected"
+    ts, _ = latest
+    age = time.time() - ts
+    if age <= _EA_CONNECTED_MAX_AGE_S:
+        return f"EA: 🟢 connected ({int(age)}s ago)"
+    return f"EA: 🔴 disconnected (last seen {int(age // 60)}m ago)"
+
+
+def _format_status(app) -> str:
+    latest = app.state.latest_heartbeat
+    connection = _ea_connection_line(app)
+    if latest is None:
+        return f"{connection}\nno heartbeat yet"
     _, hb = latest
     pending = app.state.pending_switch
     strategy = hb.active_strategy
     if pending and pending != strategy:
         strategy = f"{strategy} → {pending}"
     lines = [
+        connection,
         "📊 Status",
         f"Equity: {hb.equity} Balance: {hb.balance} Floating P/L: {hb.floating_pl}",
         f"Kill-switch: {'ON' if hb.kill_switch else 'off'}",
@@ -219,44 +237,50 @@ def _format_switch(app, args: list) -> str:
     return f"switch to {target} queued — confirms on next EA heartbeat"
 
 
-def format_live_status(app) -> str:
-    latest = app.state.latest_heartbeat
-    if latest is None:
-        return "📌 Live status\nno heartbeat yet"
-    ts, hb = latest
-    if hb.kill_switch:
-        ks = "⛔ TRIPPED"
-    elif hb.hwm > 0:
-        ks = f"{100 * (hb.equity / hb.hwm - 1):.1f}% off peak"
-    else:
-        ks = "ok"
-    updated = time.strftime("%H:%M", time.localtime(ts))
-    lines = [
-        "📌 Live status",
-        f"Equity: {hb.equity} Floating P/L: {hb.floating_pl}",
-        f"Positions: {len(hb.positions)}",
-        f"Kill-switch: {ks}",
-        f"Strategy: {hb.active_strategy}",
-        f"Updated: {updated}",
-    ]
-    return "\n".join(lines)
+# Bumped whenever format_pinned_help()'s text changes. pinned_tick compares
+# this against the kv-stored "pinned_help_version" to decide whether the
+# pinned message needs rewriting -- an unrelated deploy/restart with no
+# content change must not re-edit (or even hit Telegram) every tick.
+PINNED_HELP_VERSION = "1"
+
+
+def format_pinned_help() -> str:
+    """Static command reference pinned in the chat. Not live status --
+    content only changes when this text (and PINNED_HELP_VERSION) changes."""
+    return "\n".join([
+        "📌 Command reference",
+        "/status — snapshot + EA connection state",
+        "/mode — toggle AUTO/MANUAL execution",
+        "/strategy — switch active strategy",
+        "/config — current settings",
+        "🟢 Take / 🔴 Skip on a proposal to act on it.",
+        "Valid while the strategy holds this stance.",
+    ])
 
 
 def pinned_tick(app, client: "TelegramClient") -> None:
-    """Create-pin-or-edit the live-status message. Sync so tests can drive
-    it directly with a fake transport; the async pinned_editor loop calls
-    this via asyncio.to_thread. All failures are swallowed (fail-open).
+    """Create-pin-once the static command-reference message, self-healing if
+    it was deleted/unpinned. Sync so tests can drive it directly with a fake
+    transport; the async pinned_editor loop calls this via
+    asyncio.to_thread. All failures are swallowed (fail-open).
+
+    Content is static, so a stored kv `pinned_help_version` guards rewrite:
+    once a pinned message exists and its version matches
+    PINNED_HELP_VERSION, this is a no-op (no Telegram call at all). Rewrite
+    only happens when the version differs -- either PINNED_HELP_VERSION was
+    bumped, or (upgrade path) no version was ever stored for an
+    already-pinned message.
 
     Self-healing: if the stored id can't be edited -- e.g. the pinned
     message was deleted server-side (edit_message returns None/an error),
-    or the stored value isn't a valid numeric id -- the kv id is cleared
-    so the *next* tick falls through to the create-and-pin path instead of
+    or the stored value isn't a valid numeric id -- the kv id is cleared so
+    the *next* tick falls through to the create-and-pin path instead of
     retrying a dead id forever."""
-    if app.state.latest_heartbeat is None:
-        return
-    text = format_live_status(app)
+    text = format_pinned_help()
     pinned_id = app.state.db.get_kv("pinned_message_id")
     if pinned_id:
+        if app.state.db.get_kv("pinned_help_version") == PINNED_HELP_VERSION:
+            return
         try:
             numeric_id = int(pinned_id)
         except ValueError:
@@ -265,6 +289,8 @@ def pinned_tick(app, client: "TelegramClient") -> None:
         result = client.edit_message(numeric_id, text)
         if result is None or not result.get("ok", True):
             app.state.db.set_kv("pinned_message_id", "")
+            return
+        app.state.db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
         return
     result = client.send_message(text)
     if not result or not result.get("ok"):
@@ -274,6 +300,7 @@ def pinned_tick(app, client: "TelegramClient") -> None:
         return
     client.pin_message(message_id)
     app.state.db.set_kv("pinned_message_id", str(message_id))
+    app.state.db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
 
 
 def handle_command(text: str, app) -> str | None:

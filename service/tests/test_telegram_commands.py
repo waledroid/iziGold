@@ -2,12 +2,13 @@ import asyncio
 import contextlib
 import importlib
 import threading
+import time
 import types
 
 from app import main as app_main
 from app.db import SignalDb
-from app.telegram import (TelegramClient, format_live_status, handle_callback,
-                          handle_command, pinned_tick)
+from app.telegram import (PINNED_HELP_VERSION, TelegramClient, format_pinned_help,
+                          handle_callback, handle_command, pinned_tick)
 from tests.test_proposals_flow import _post_signal, client, fake_tg  # noqa: F401
 
 
@@ -28,14 +29,14 @@ def _app(latest_heartbeat=None, pending_switch=None, db=None):
         latest_heartbeat=latest_heartbeat, pending_switch=pending_switch, db=db))
 
 
-def _hb(active="halftrend_ema_v1", equity=10250.5):
+def _hb(active="halftrend_ema_v1", equity=10250.5, ts=1234567890.0):
     position = types.SimpleNamespace(ticket=1, direction="BUY", lots=0.1,
                                      open_price=2400.0, sl=2390.0, profit=12.5)
     hb = types.SimpleNamespace(
         equity=equity, balance=10000.0, floating_pl=12.5, positions=[position],
         kill_switch=False, hwm=10300.0, exposure_min=5, window_open=True,
         spread_points=25.0, active_strategy=active)
-    return (1234567890.0, hb)
+    return (ts, hb)
 
 
 class FakeDb:
@@ -133,6 +134,7 @@ def test_status_no_heartbeat_yet():
     reply = handle_command("/status", app)
     assert reply is not None
     assert "no heartbeat yet" in reply
+    assert "EA: 🔴 never connected" in reply
 
 
 def test_status_with_heartbeat_contains_equity_and_strategy():
@@ -140,6 +142,26 @@ def test_status_with_heartbeat_contains_equity_and_strategy():
     reply = handle_command("/status", app)
     assert "10250.5" in reply
     assert "halftrend_ema_v1" in reply
+
+
+def test_status_ea_connection_fresh_heartbeat_shows_connected():
+    app = _app(latest_heartbeat=_hb(ts=time.time() - 5))
+    reply = handle_command("/status", app)
+    assert reply.splitlines()[0].startswith("EA: 🟢 connected")
+    assert "5s ago" in reply.splitlines()[0]
+
+
+def test_status_ea_connection_stale_heartbeat_shows_disconnected():
+    app = _app(latest_heartbeat=_hb(ts=time.time() - 300))
+    reply = handle_command("/status", app)
+    assert reply.splitlines()[0].startswith("EA: 🔴 disconnected")
+    assert "5m ago" in reply.splitlines()[0]
+
+
+def test_status_ea_connection_never_connected_when_no_heartbeat():
+    app = _app(latest_heartbeat=None)
+    reply = handle_command("/status", app)
+    assert reply.splitlines()[0] == "EA: 🔴 never connected"
 
 
 def test_switch_with_id_sets_pending_and_names_it_in_reply():
@@ -314,7 +336,7 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     assert recorded["get_updates_thread"] != main_thread_name
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
-    assert recorded["sent"] == ["no heartbeat yet"]
+    assert recorded["sent"] == ["EA: 🔴 never connected\nno heartbeat yet"]
 
 
 def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
@@ -355,7 +377,7 @@ def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
 
     asyncio.run(run())
 
-    assert recorded["sent"] == ["no heartbeat yet"]
+    assert recorded["sent"] == ["EA: 🔴 never connected\nno heartbeat yet"]
 
 
 # ---------------------------------------------------------------------------
@@ -372,29 +394,29 @@ def test_kv_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# format_live_status
+# format_pinned_help
 # ---------------------------------------------------------------------------
 
-def test_format_live_status_contains_equity_and_strategy():
-    app = _app(latest_heartbeat=_hb(active="halftrend_ema_v1", equity=10250.5))
-    text = format_live_status(app)
-    assert "10250.5" in text
-    assert "halftrend_ema_v1" in text
+def test_format_pinned_help_lists_commands_and_proposal_legend():
+    text = format_pinned_help()
+    for token in ("/status", "/mode", "/strategy", "/config",
+                  "🟢 Take", "🔴 Skip", "Valid while the strategy holds"):
+        assert token in text
 
 
-def test_format_live_status_no_heartbeat_yet():
-    app = _app(latest_heartbeat=None)
-    text = format_live_status(app)
-    assert "no heartbeat" in text
+def test_format_pinned_help_does_not_depend_on_heartbeat():
+    """Static content -- calling it twice (no app/state involved at all)
+    must produce identical text."""
+    assert format_pinned_help() == format_pinned_help()
 
 
 # ---------------------------------------------------------------------------
 # pinned_tick
 # ---------------------------------------------------------------------------
 
-def test_pinned_tick_creates_and_pins_then_edits_on_next_call(tmp_path):
+def test_pinned_tick_creates_pins_and_stores_version(tmp_path):
     db = SignalDb(str(tmp_path / "pin.db"))
-    app = _app(latest_heartbeat=_hb(), db=db)
+    app = _app(db=db)
     ft = FakeTransport(result={"ok": True, "result": {"message_id": 999}})
     client = TelegramClient("tok", "555", transport=ft)
 
@@ -403,28 +425,72 @@ def test_pinned_tick_creates_and_pins_then_edits_on_next_call(tmp_path):
     methods = [c[0] for c in ft.calls]
     assert methods == ["sendMessage", "pinChatMessage"]
     assert db.get_kv("pinned_message_id") == "999"
+    assert db.get_kv("pinned_help_version") == PINNED_HELP_VERSION
     pin_payload = ft.calls[1][1]
     assert pin_payload["message_id"] == 999
+    sent_text = ft.calls[0][1]["text"]
+    assert sent_text == format_pinned_help()
 
-    ft.calls.clear()
-    ft.result = {"ok": True}
+
+def test_pinned_tick_noop_without_heartbeat(tmp_path):
+    """The pinned message is static command reference, not live status --
+    it must be created/maintained even with no heartbeat ever received."""
+    db = SignalDb(str(tmp_path / "pin_noheartbeat.db"))
+    app = _app(latest_heartbeat=None, db=db)
+    ft = FakeTransport(result={"ok": True, "result": {"message_id": 42}})
+    client = TelegramClient("tok", "555", transport=ft)
+
     pinned_tick(app, client)
 
-    assert len(ft.calls) == 1
-    method, payload, files = ft.calls[0]
-    assert method == "editMessageText"
+    assert [c[0] for c in ft.calls] == ["sendMessage", "pinChatMessage"]
+    assert db.get_kv("pinned_message_id") == "42"
+
+
+def test_pinned_tick_noop_when_pinned_and_version_matches(tmp_path):
+    """Once the pin exists and its stored version is current, subsequent
+    ticks make no Telegram calls at all -- content is static."""
+    db = SignalDb(str(tmp_path / "pin_match.db"))
+    db.set_kv("pinned_message_id", "999")
+    db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
+    app = _app(db=db)
+    ft = FakeTransport()
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    assert ft.calls == []
+
+
+def test_pinned_tick_edits_when_stored_version_differs(tmp_path):
+    """A version bump (or an upgrade from before pinned_help_version
+    existed, i.e. no stored version at all) triggers a rewrite."""
+    db = SignalDb(str(tmp_path / "pin_stale_version.db"))
+    db.set_kv("pinned_message_id", "999")
+    db.set_kv("pinned_help_version", "0")
+    app = _app(db=db)
+    ft = FakeTransport(result={"ok": True})
+    client = TelegramClient("tok", "555", transport=ft)
+
+    pinned_tick(app, client)
+
+    methods = [c[0] for c in ft.calls]
+    assert methods == ["editMessageText"]
+    payload = ft.calls[0][1]
     assert payload["message_id"] == 999
-    assert isinstance(payload["message_id"], int)
+    assert payload["text"] == format_pinned_help()
+    assert db.get_kv("pinned_help_version") == PINNED_HELP_VERSION
 
 
 def test_pinned_tick_self_heals_when_edit_fails(tmp_path):
     """If the pinned message was deleted server-side, editMessageText comes
     back None/error. That tick must clear the stale kv id (not retry it
     forever); the *next* tick then falls through to create+pin again and
-    stores the new id."""
+    stores the new id. Version is left stale (not "0") so the next tick
+    still takes the edit-worthy path once a new message exists."""
     db = SignalDb(str(tmp_path / "pin_heal.db"))
     db.set_kv("pinned_message_id", "999")
-    app = _app(latest_heartbeat=_hb(), db=db)
+    db.set_kv("pinned_help_version", "0")
+    app = _app(db=db)
     ft = FakeTransport()
     ft.result = None  # editMessageText fails
     client = TelegramClient("tok", "555", transport=ft)
@@ -440,6 +506,7 @@ def test_pinned_tick_self_heals_when_edit_fails(tmp_path):
 
     assert [c[0] for c in ft.calls] == ["sendMessage", "pinChatMessage"]
     assert db.get_kv("pinned_message_id") == "1000"
+    assert db.get_kv("pinned_help_version") == PINNED_HELP_VERSION
 
 
 def test_pinned_tick_self_heals_when_edit_returns_error(tmp_path):
@@ -448,7 +515,8 @@ def test_pinned_tick_self_heals_when_edit_returns_error(tmp_path):
     edit not found"."""
     db = SignalDb(str(tmp_path / "pin_heal2.db"))
     db.set_kv("pinned_message_id", "999")
-    app = _app(latest_heartbeat=_hb(), db=db)
+    db.set_kv("pinned_help_version", "0")
+    app = _app(db=db)
     ft = FakeTransport(result={"ok": False, "description": "message not found"})
     client = TelegramClient("tok", "555", transport=ft)
 
@@ -458,16 +526,17 @@ def test_pinned_tick_self_heals_when_edit_returns_error(tmp_path):
     assert db.get_kv("pinned_message_id") in (None, "")
 
 
-def test_pinned_tick_noop_without_heartbeat(tmp_path):
-    db = SignalDb(str(tmp_path / "pin2.db"))
-    app = _app(latest_heartbeat=None, db=db)
+def test_pinned_tick_self_heals_when_stored_id_not_numeric(tmp_path):
+    db = SignalDb(str(tmp_path / "pin_heal3.db"))
+    db.set_kv("pinned_message_id", "not-a-number")
+    app = _app(db=db)
     ft = FakeTransport()
     client = TelegramClient("tok", "555", transport=ft)
 
     pinned_tick(app, client)
 
     assert ft.calls == []
-    assert db.get_kv("pinned_message_id") is None
+    assert db.get_kv("pinned_message_id") in (None, "")
 
 
 # ---------------------------------------------------------------------------

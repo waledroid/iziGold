@@ -88,11 +88,15 @@ async def telegram_poller(app: FastAPI):
 
 
 async def pinned_editor(app: FastAPI):
-    """Every 60 s, create-pin-or-edit the pinned live-status message.
-    Fail-open: any exception is swallowed and the loop just retries next
-    tick. The (synchronous, blocking) TelegramClient calls happen inside
-    `pinned_tick`, dispatched via asyncio.to_thread so they run off the
-    event loop -- same reasoning as `telegram_poller` above."""
+    """Every 300 s, create-pin-once the static command-reference message,
+    self-healing if it was deleted/unpinned. The interval is relaxed from
+    the old 60s live-status cadence because the content is now static --
+    `pinned_tick` itself no-ops (no Telegram call) once the pinned message
+    exists and its stored version is current, so this loop mostly just
+    checks in. Fail-open: any exception is swallowed and the loop just
+    retries next tick. The (synchronous, blocking) TelegramClient calls
+    happen inside `pinned_tick`, dispatched via asyncio.to_thread so they
+    run off the event loop -- same reasoning as `telegram_poller` above."""
     while True:
         try:
             await asyncio.to_thread(pinned_tick, app, app.state.telegram)
@@ -100,7 +104,7 @@ async def pinned_editor(app: FastAPI):
             raise
         except Exception:
             pass
-        await asyncio.sleep(60)
+        await asyncio.sleep(300)
 
 
 def _effective_telegram(app: FastAPI) -> tuple[str, str]:
