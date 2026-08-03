@@ -79,3 +79,7 @@ class ProposalResultRequest(BaseModel):
     proposal_id: int
     ok: bool
     detail: str = ""
+
+
+class NotifyRequest(BaseModel):
+    text: str = Field(max_length=500)

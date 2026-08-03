@@ -12,7 +12,8 @@ from app.config import settings
 from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
-                        HeartbeatResponse, ProposalResultRequest, TradeEventRequest)
+                        HeartbeatResponse, NotifyRequest, ProposalResultRequest,
+                        TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
@@ -407,6 +408,23 @@ async def proposal_result(res: ProposalResultRequest):
                 tg.edit_message, row["tg_message_id"],
                 f"{'📥' if row['kind']=='entry' else '📤'} {row['direction']} "
                 f"@ {row['price']} — {mark}: {res.detail}")
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@app.post("/notify")
+async def notify(req: NotifyRequest):
+    """Fire-and-forget Telegram notice for events with no proposal/db row
+    of their own (e.g. an AUTO entry the EA couldn't execute). Sends `text`
+    verbatim; never raises (telegram fail-open); no db writes."""
+    text = req.text.strip()
+    if not text:
+        return {"ok": False}
+    tg = getattr(app.state, "telegram", None)
+    if tg is not None:
+        try:
+            await asyncio.to_thread(tg.send_message, text)
         except Exception:
             pass
     return {"ok": True}

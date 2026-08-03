@@ -352,7 +352,13 @@ void ProcessBar()
       // still the opposite direction of sig. Either way the strategy needs
       // to drop its virtual position rather than believe it holds sig.
       if(!opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.BasketDirection() != sig)
+        {
          active.OnEntryRejected(sig);
+         string why = "";
+         if(!g_risk.CanEnter(why)) { /* why set */ }
+         else why = "order send failed (check Algo Trading button / broker)";
+         g_ui.PostNotify("🚫 AUTO " + SignalToString(sig) + " not executed: " + why);
+        }
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
       g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
      }

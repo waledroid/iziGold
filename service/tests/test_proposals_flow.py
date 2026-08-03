@@ -306,3 +306,30 @@ def test_expire_after_concurrent_approve_skips_edit(client, fake_tg, monkeypatch
     assert section1["returned"] is False   # section 1's guarded UPDATE lost the race
     assert not any(c[0] == "edit" and c[2].endswith("expired (strategy stance changed)")
                   for c in fake_tg.calls)
+
+
+def test_notify_sends_text_verbatim_via_active_telegram_client(client, fake_tg):
+    resp = client.post("/notify", json={"text": "AUTO BUY not executed: kill switch active"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert fake_tg.calls == [("send", "AUTO BUY not executed: kill switch active", None)]
+
+
+def test_notify_empty_text_sends_nothing_and_reports_not_ok(client, fake_tg):
+    resp = client.post("/notify", json={"text": "   "})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": False}
+    assert fake_tg.calls == []
+
+
+def test_notify_oversize_text_rejected(client, fake_tg):
+    resp = client.post("/notify", json={"text": "x" * 501})
+    assert resp.status_code == 422
+    assert fake_tg.calls == []
+
+
+def test_notify_no_telegram_client_fails_open(client):
+    client.app.state.telegram = None
+    resp = client.post("/notify", json={"text": "AUTO SELL not executed: no client"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}

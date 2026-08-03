@@ -185,6 +185,15 @@ public:
       Post("/proposal-result", body);
      }
 
+   // Field names match service/app/models.py NotifyRequest exactly.
+   // Best-effort, fire-and-forget — callers pass fixed-literal-plus-reason
+   // strings (no embedded quotes), so no JSON escaping is needed here.
+   void PostNotify(string text)
+     {
+      string body = "{\"text\":\"" + text + "\"}";
+      Post("/notify", body);
+     }
+
    // Field names/order match service/app/models.py TradeEventRequest exactly.
    // Returns the trade id on success, or -1 on any failure (no throw, no retry —
    // callers must treat -1 as "skip the screenshot, keep trading").
