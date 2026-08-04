@@ -55,6 +55,40 @@ def test_render_trade_chart_returns_false_on_bad_out_path(tmp_path):
     assert ok is False
 
 
+def test_render_trade_chart_with_overlays_and_sl_writes_nonempty_png(tmp_path):
+    # 200 candles (full EA payload size) + a trade with sl>0 exercises the
+    # HalfTrend/EMA overlay computation over the full series plus the
+    # SL line/label path.
+    out_path = str(tmp_path / "render_overlays.png")
+    ok = render_trade_chart(trend_candles(200), _trade(sl=2390.0), out_path)
+    assert ok is True
+
+    import os
+    assert os.path.exists(out_path)
+    with open(out_path, "rb") as f:
+        data = f.read()
+    assert len(data) > 0
+    assert data.startswith(b"\x89PNG")
+
+
+def test_render_trade_chart_no_sl_still_renders(tmp_path):
+    out_path = str(tmp_path / "render_no_sl.png")
+    ok = render_trade_chart(trend_candles(200), _trade(sl=0.0), out_path)
+    assert ok is True
+    with open(out_path, "rb") as f:
+        assert f.read().startswith(b"\x89PNG")
+
+
+def test_render_trade_chart_short_candle_series_does_not_raise(tmp_path):
+    # Fewer candles than the HalfTrend warm-up window (amplitude=4) --
+    # indicators should degrade to all-None overlays, not crash the render.
+    out_path = str(tmp_path / "render_short.png")
+    ok = render_trade_chart(trend_candles(3), _trade(), out_path)
+    assert ok is True
+    with open(out_path, "rb") as f:
+        assert f.read().startswith(b"\x89PNG")
+
+
 # ---------------------------------------------------------------------------
 # Endpoint integration tests
 # ---------------------------------------------------------------------------

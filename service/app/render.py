@@ -2,11 +2,55 @@ import matplotlib
 matplotlib.use("Agg")  # noqa: E402 -- harmless with the OO API below, kept
 # in case anything else in the process imports pyplot and picks a backend.
 from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+
+from app.indicators import ema, halftrend
+
+
+def _plot_ema(ax, values, offset, window_len, color, linewidth, alpha=1.0, zorder=1):
+    """Plot an EMA series (full-length, indexed like the input candles)
+    over the render window [offset, offset + window_len), skipping the
+    None warm-up prefix."""
+    xs, ys = [], []
+    for i in range(window_len):
+        v = values[offset + i]
+        if v is None:
+            continue
+        xs.append(i)
+        ys.append(v)
+    if xs:
+        ax.plot(xs, ys, color=color, linewidth=linewidth, alpha=alpha, zorder=zorder)
+
+
+def _plot_halftrend(ax, ht_values, offset, window_len, linewidth=1.6, zorder=1):
+    """Plot the HalfTrend line, segmented per-pair so each piece is colored
+    by the trend of its later endpoint (dodgerblue = up, orangered = down),
+    matching the EA's live chart painting."""
+    prev_x, prev_y = None, None
+    for i in range(window_len):
+        entry = ht_values[offset + i]
+        if entry is None:
+            prev_x, prev_y = None, None
+            continue
+        y, trend = entry
+        color = "dodgerblue" if trend == 0 else "orangered"
+        if prev_x is not None:
+            ax.plot([prev_x, i], [prev_y, y], color=color, linewidth=linewidth,
+                     zorder=zorder)
+        prev_x, prev_y = i, y
 
 
 def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
-    """Render the last 100 candles as manual OHLC bars with an entry/exit
-    marker and optional SL line, saved as a PNG to `out_path`.
+    """Render the last 100 candles as manual OHLC bars with HalfTrend/EMA
+    overlays, an entry/exit marker with a price label, and an optional SL
+    line, saved as a PNG to `out_path`.
+
+    Indicators are computed over the FULL `candles` list passed in (the EA
+    sends 200) so EMA55/EMA200 get maximal warmup, then only the last-100
+    window is actually rendered. EMA200 over 200 input bars only has ~1 bar
+    of settled history (SMA-seeded), so on a fresh series it is effectively
+    just the seed SMA -- acceptable for a visual overlay, not a precision
+    indicator.
 
     Uses the matplotlib object-oriented API (`Figure` directly) rather than
     `pyplot`, whose global figure-manager state is not thread-safe --
@@ -22,13 +66,30 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
 
     try:
         window = candles[-100:]
+        window_len = len(window)
+        offset = len(candles) - window_len
+
+        closes = [c.c for c in candles]
+        ema9_full = ema(closes, 9)
+        ema21_full = ema(closes, 21)
+        ema55_full = ema(closes, 55)
+        ema200_full = ema(closes, 200)
+        ht_full = halftrend(candles, amplitude=4)
+
         fig = Figure(figsize=(10, 5))
         ax = fig.add_subplot(111)
 
+        # Overlays first, drawn under the price bars (lower zorder).
+        _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
+        _plot_ema(ax, ema9_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema21_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema55_full, offset, window_len, "gold", 1.2, zorder=1)
+        _plot_ema(ax, ema200_full, offset, window_len, "mediumpurple", 1.2, zorder=1)
+
         for i, c in enumerate(window):
             color = "#2ecc71" if c.c >= c.o else "#e74c3c"
-            ax.vlines(i, c.l, c.h, color=color, linewidth=1)
-            ax.vlines(i, min(c.o, c.c), max(c.o, c.c), color=color, linewidth=3)
+            ax.vlines(i, c.l, c.h, color=color, linewidth=1, zorder=2)
+            ax.vlines(i, min(c.o, c.c), max(c.o, c.c), color=color, linewidth=3, zorder=2)
 
         event = trade.get("event", "")
         direction = trade.get("direction", "")
@@ -38,11 +99,27 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
 
         marker = "^" if event == "open" else "v"
         marker_color = "#2ecc71" if event == "open" else "#e74c3c"
-        ax.scatter([len(window) - 1], [price], marker=marker, color=marker_color,
+        entry_x = window_len - 1
+        ax.scatter([entry_x], [price], marker=marker, color=marker_color,
                   s=160, zorder=5, edgecolors="black")
+        ax.annotate(f"{price:g}", xy=(entry_x, price),
+                    xytext=(6, 8 if event == "open" else -12),
+                    textcoords="offset points", color=marker_color,
+                    fontsize=7, zorder=6)
 
         if sl and sl > 0:
-            ax.axhline(sl, color="#f39c12", linestyle="--", linewidth=1)
+            ax.axhline(sl, color="red", linestyle="--", linewidth=1, zorder=1.5)
+            ax.text(window_len - 1, sl, f"SL {sl:g}", color="red", fontsize=7,
+                    ha="right", va="bottom", zorder=6)
+
+        legend_handles = [
+            Line2D([0], [0], color="dodgerblue", linewidth=1.6, label="HalfTrend"),
+            Line2D([0], [0], color="#888888", linewidth=0.8, alpha=0.35, label="EMA9"),
+            Line2D([0], [0], color="#888888", linewidth=0.8, alpha=0.35, label="EMA21"),
+            Line2D([0], [0], color="gold", linewidth=1.2, label="EMA55"),
+            Line2D([0], [0], color="mediumpurple", linewidth=1.2, label="EMA200"),
+        ]
+        ax.legend(handles=legend_handles, loc="upper left", fontsize=7, framealpha=0.3)
 
         ax.set_title(f"{event} {direction} {reason}")
         fig.tight_layout()
