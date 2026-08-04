@@ -1,159 +1,87 @@
 # XAU Assistant
 
-An MT5 trading assistant for XAUUSD (M5 default; the EA follows whatever
-chart timeframe it is attached to) where **your strategy is the sole
-decision maker** and an AI forecasting service (Chronos-Bolt) acts as a
-confirmation/grading layer. Alerts via Telegram, signal + outcome logging in
-SQLite from day one, manual and automatic execution modes with strict money
-management.
+MT5 trading assistant for XAUUSD (chart timeframe, M5 default). **Your strategy
+is the sole decision maker**; an AI forecaster (Chronos-Bolt) grades every
+signal, everything is logged to SQLite, and Telegram is the remote control.
+Manual mode proposes trades with approve/skip buttons; auto mode executes and
+reports. Strict money management throughout (fixed-fractional risk, pyramiding
+into winners only, breakeven ratchets, proportional profit lock, drawdown kill
+switch).
 
-Full design: [docs/superpowers/specs/2026-07-29-xau-assistant-design.md](docs/superpowers/specs/2026-07-29-xau-assistant-design.md)
-Implementation plan: [docs/superpowers/plans/2026-07-29-xau-assistant-scaffold.md](docs/superpowers/plans/2026-07-29-xau-assistant-scaffold.md)
+Design docs: [docs/superpowers/specs/](docs/superpowers/specs/)
 
-Strategies live in `mt5/Include/XauAssistant/Strategies/` behind the
-`CStrategy` interface and register in the EA's `OnInit`. All registered
-strategies are shadow-evaluated and logged every bar; only `ActiveStrategy`
-trades. First real strategy: `halftrend_ema_v1` (Half Trend amplitude 4 +
-EMA 55 dual confirmation, stop at the wick extreme since the trend flip).
-Second strategy: `boll_stochrsi_v1` (Bollinger trend zone + squeeze→expansion
-+ StochRSI cross, middle-band exit, ATR stop) — runs as a shadow until you
-switch `ActiveStrategy`.
-Per-strategy hit-rates accumulate in `xau_assistant.db` (`stats()`).
+## Quick start
 
-## 1. Run the AI service (WSL2 or any Linux/macOS)
+**One-shot (Windows):** run `scripts/xau-launch.bat` (copy it to your Desktop).
+It bootstraps everything — checks WSL, clones the repo if missing, starts MT5,
+then runs the idempotent installer below and waits for the EA heartbeat.
+
+**Installer (WSL/Linux):**
 
 ```bash
-cd service
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # core (fast)
-pip install -r requirements-model.txt    # torch + chronos (large, CPU-only is fine)
-cp .env.example .env                     # then edit .env
-uvicorn app.main:app --host 127.0.0.1 --port 9000
+bash scripts/setup.sh
 ```
 
-Check: `curl http://127.0.0.1:9000/health` → `{"status":"ok",...}`.
+Handles venv, dependencies, tests, service on `127.0.0.1:9000`, interactive
+Telegram enrolment (BotFather token → auto chat-id → test message), MT5 file
+copy + MetaEditor CLI compile, and prints the two remaining manual MT5 steps
+(WebRequest allowlist for `http://127.0.0.1:9000`; attach the EA to a XAUUSD
+M5 chart with Algo Trading on). Safe to re-run any time — completed steps skip.
 
-Note: `--host 127.0.0.1` keeps the dashboard and stored credentials (e.g. your
-Telegram bot token) reachable only from this machine. Use `--host 0.0.0.0`
-only if you accept exposing the dashboard and its credentials to your LAN.
+Verify: `/status` in Telegram → `EA: 🟢 connected`.
 
-Notes:
-- The **first** Chronos call downloads the model (~1 min); afterwards inference
-  is ~20–100 ms on CPU.
-- To develop without the model: `FORECASTER=fake` in `.env`.
-- **If port 9000 is taken**, pick
-  another port and set the EA input `ApiUrl` to match.
+## What you get
 
-## 2. Telegram (optional but recommended)
+- **Strategies** — modular behind `CStrategy`
+  (`mt5/Include/XauAssistant/Strategies/`). Active: `halftrend_ema_v1`
+  (HalfTrend + EMA-55 dual confirmation, ATR-padded wick stop). Shadow:
+  `boll_stochrsi_v1`. All strategies are evaluated and logged every bar;
+  only `ActiveStrategy` trades. Per-strategy hit-rates in SQLite.
+- **Telegram control** — quiet by default. Entry/exit proposals with
+  🟢 Take / 🔴 Skip buttons (valid while the strategy holds its stance),
+  execution photos, failure notices with the exact risk-gate reason.
+  Commands: `/status` (incl. EA connection + market session), `/mode`
+  (AUTO/MANUAL), `/strategy`, `/config`, `/stats`, `/history`. A pinned
+  message lists all commands.
+- **Dashboard** (`http://127.0.0.1:9000/ui`) — live XAUUSD candlestick chart
+  with risk/reward trade boxes (red entry↔SL, green entry↔exit), strategy
+  comparison, signal log with AI grades and resolved outcomes, trade history
+  with chart thumbnails. First visit redirects to onboarding.
+- **MT5 chart** — dark theme, the strategy's own HalfTrend/EMA lines painted
+  live, trade boxes drawn per basket.
+- **Rendered trade charts** (Telegram + dashboard) — candles with HalfTrend,
+  EMA 9/21/55/200 overlays, entry price and SL labels.
+- **Exits** — dual-confirmation trend reversal, 50%-of-peak profit lock,
+  +2% basket target, ATR-padded stop. No martingale, ever.
 
-1. Talk to `@BotFather` → `/newbot` → copy the token into `TELEGRAM_BOT_TOKEN`.
-2. Send your bot any message, then open
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `chat.id` into
-   `TELEGRAM_CHAT_ID`.
-3. Restart the service. Every non-NONE signal now sends a report.
-
-**Commands:** Send any of the following to the bot:
-- `/status` — show current positions, equity, kill-switch state
-- `/stats` — strategy performance summary (signals, hit rate, avg move)
-- `/history` — last 10 trades with timestamps and P/L
-- `/switch <strategy_id>` — request an active-strategy switch (e.g., `/switch boll_stochrsi_v1`)
-- `/switch cancel` — cancel a pending strategy switch
-
-**Live pinned message:** The bot pins a live status message to the chat, updated every 60
-seconds with current equity, floating P/L, active strategy, and kill-switch state.
-
-**Photo alerts:** When a trade opens or closes, the bot sends:
-- **EA screenshot** (MetaTrader chart at the moment of execution)
-- **Rendered chart** (Python matplotlib chart overlaying the last 100 candles with
-  entry/exit markers)
-
-Note: `pip install -r requirements.txt` now includes matplotlib for chart rendering.
-
-## 3. Dashboard & heartbeat
-
-The dashboard is live at `http://127.0.0.1:9000/ui` (adjust port if you
-changed it). It shows:
-- **Equity curve** — updated every 30 seconds from heartbeats
-- **Strategy comparison** — live hit rates and average moves for each strategy
-- **Trade history** — recent open/close/exit events with timestamps and thumbnail
-  screenshots
-- **Signal log** — all active and shadow signals with AI confidence and outcomes
-
-**Setup on first visit:** the dashboard redirects to `/ui/onboarding` where you
-can enter your identity, Telegram credentials, risk preferences, and broker info.
-Everything is optional — click "Skip for now" to begin trading immediately and
-finish setup anytime via the profile badge on the dashboard. Telegram credentials
-entered here apply live and override `.env` values.
-
-Two EA inputs control the dashboard:
-- `UiBaseUrl` — defaults to `http://127.0.0.1:9000`; set to match your service
-  port and network interface.
-- `HeartbeatSec` — defaults to 5; heartbeats push position state to the service
-  every N seconds (dashboard updates use these snapshots).
-
-**Remote strategy switch:** Click "switch to this" on any strategy row. The
-dashboard shows a pending arrow → active strategy name until the next bar. When
-the EA processes the bar and sees the switch, it logs the switch and clears the
-arrow, confirming the change took effect.
-
-Screenshots land in `service/screenshots/` as PNG files, one per trade. The
-dashboard embeds them as clickable thumbnails (click to zoom).
-
-## 4. Install the EA in MetaTrader 5 (Windows)
-
-1. Install MT5 + open a **demo** account (any broker with XAUUSD).
-2. MT5 → File → **Open Data Folder** → `MQL5/`.
-3. Copy `mt5/Experts/XauAssistant.mq5` → `MQL5/Experts/`
-   and `mt5/Include/XauAssistant/` → `MQL5/Include/XauAssistant/`.
-4. Open MetaEditor (F4), open `XauAssistant.mq5`, **Compile** — expect 0 errors.
-5. MT5 → Tools → Options → Expert Advisors → check *Allow WebRequest for
-   listed URL* and add `http://127.0.0.1:9000` (or your port).
-6. Attach `XauAssistant` to a **XAUUSD M5** chart (recommended default —
-   any timeframe works; all indicators, signals, and stats follow the
-   chart, and performance stats are kept separate per timeframe).
-   Enable *Algo Trading*.
-7. First test: set input `DebugFireTestSignal=true` → within one bar you should
-   see a chart arrow, an MT5 alert with the AI grade, a Telegram message, and a
-   row in `service/xau_assistant.db`
-   (`sqlite3 xau_assistant.db "SELECT * FROM signals;"`).
-
-## 5. Mode switches (EA inputs)
+## Key EA inputs
 
 | Input | Default | Meaning |
 |---|---|---|
-| `ExecutionMode` | `EXEC_MANUAL` | `EXEC_AUTO` = EA opens/closes positions itself |
-| `AllowLiveTrading` | `false` | AUTO on a live account refuses unless explicitly enabled |
-| `RiskPerTradePct` | `0.5` | % of equity risked per cycle (fixed-fractional) |
-| `MaxDrawdownPct` | `10.0` | Drawdown from equity peak → AUTO disabled (kill switch) |
-| `EnablePyramiding` | `true` | Add to winners (1.0/0.7/0.4 sizing, breakeven on add) |
-| `ProfitTargetPct` | `2.0` | Close the whole basket at +2% of cycle-start balance |
-| `TradingWindowStartHour/EndHour` | `15/18` | Entries only inside this server-time window |
-| `MaxDailyExposureMin` | `60` | Max minutes of open-position time per day |
-| `DebugFireTestSignal` | `false` | Fire one fake BUY to test the pipeline |
-| `ActiveStrategy` | `halftrend_ema_v1` | Which registered strategy trades; others run as logged shadows |
-| `HtAmplitude` / `EmaLength` / `ConfirmCloses` | `4` / `55` / `2` | halftrend_ema_v1 parameters |
-| `BbPeriod`…`DSmooth` (10 inputs) | spec defaults | `boll_stochrsi_v1` parameters (starts as shadow) |
+| `ExecutionMode` | `EXEC_MANUAL` | runtime-switchable via Telegram `/mode` |
+| `AllowLiveTrading` | `false` | AUTO on a live account refuses unless enabled |
+| `RiskPerTradePct` / `MaxDrawdownPct` | `0.5` / `10` | risk per trade / kill switch |
+| `ProfitTargetPct` | `2.0` | bank the basket at +2% of cycle balance (0 = off) |
+| `TrailLockPct` / `TrailActivateR` | `50` / `1.0` | keep 50% of peak profit once ≥1R |
+| `StopBufferATR` | `0.75` | pad the wick stop by k×ATR (0 = exact wick) |
+| `TradingWindowStartHour/EndHour` | `9` / `23` | server-time entry window |
+| `MaxDailyExposureMin` | `120` | max open-position minutes per day |
 
-AI mode (`grading` vs `veto`) is set service-side in `.env` (`MODE=grading`).
-Keep it `grading` until the SQLite accuracy log proves the AI earns veto power.
+AI mode (`grading` vs `veto`) is service-side in `.env`. Keep `grading` until
+the accuracy log proves the AI earns veto power.
 
-## 6. Tests
+## Tests
 
 ```bash
-cd service && source .venv/bin/activate
-pytest              # fast suite (fake forecaster)
-pytest -m slow      # real Chronos-Bolt inference (downloads model)
+cd service && FORECASTER=fake .venv/bin/pytest -q   # fast suite
+pytest -m slow                                      # real model inference
 ```
 
 ## Troubleshooting
 
-- **WebRequest error 4014** — the URL is not whitelisted (step 3.5), or you
-  changed the port and forgot to update `ApiUrl`.
-- **Report says "AI unavailable"** — service down, wrong port, or the model
-  threw; the strategy signal still stands (fail-open by design). Check
-  `uvicorn` output and `curl .../health`.
-- **No trades in AUTO** — check the Experts log: entries are blocked with a
-  reason (kill switch, window, exposure, spread, ADX filter).
-- **Kill switch tripped** — equity fell 10% below its peak. Deliberate manual
-  reset required: delete the `XAU_KILL_<login>` global variable in MT5
-  (Tools → Global Variables) after you've reviewed what happened.
+- **WebRequest error 4014** — URL not in MT5's allowlist, or port mismatch.
+- **"AI unavailable"** — service down; strategy still trades (fail-open).
+- **No trades in AUTO** — the Telegram 🚫 notice and Experts log name the gate
+  (window, spread, exposure, ADX, kill switch, margin).
+- **Kill switch tripped** — deliberate manual reset: delete `XAU_KILL_<login>`
+  in MT5 → Tools → Global Variables after reviewing what happened.
