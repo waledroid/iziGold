@@ -56,10 +56,63 @@ def test_switch_accepts_valid_strategy_id(client):
     assert r.json()["pending"] == "halftrend_ema_v1"
 
 
+def test_overlays_empty_when_no_candles(client):
+    r = client.get("/ui/overlays?strategy=halftrend_ema_v1")
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
+def test_overlays_empty_for_unknown_strategy(client):
+    payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "NONE",
+               "strategy_id": "halftrend_ema_v1",
+               "candles": [c.model_dump() for c in trend_candles(200)]}
+    client.post("/analyze", json=payload)
+    r = client.get("/ui/overlays?strategy=nope")
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
+def test_overlays_halftrend_ema_v1(client):
+    candles = trend_candles(200)
+    payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "NONE",
+               "strategy_id": "halftrend_ema_v1",
+               "candles": [c.model_dump() for c in candles]}
+    client.post("/analyze", json=payload)
+    r = client.get("/ui/overlays?strategy=halftrend_ema_v1")
+    assert r.status_code == 200
+    body = r.json()
+    n = len(candles)
+    for key in ("halftrend", "ema55", "ema9", "ema21", "ema200"):
+        assert key in body
+        assert len(body[key]) == n
+    settled = [v for v in body["halftrend"] if v is not None]
+    assert settled  # trend data settles well before the end of 200 bars
+    assert all(isinstance(v, list) and len(v) == 2 for v in settled)
+    settled_ema = [v for v in body["ema55"] if v is not None]
+    assert settled_ema
+
+
+def test_overlays_boll_stochrsi_v1(client):
+    candles = trend_candles(200)
+    payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "NONE",
+               "strategy_id": "boll_stochrsi_v1",
+               "candles": [c.model_dump() for c in candles]}
+    client.post("/analyze", json=payload)
+    r = client.get("/ui/overlays?strategy=boll_stochrsi_v1")
+    assert r.status_code == 200
+    body = r.json()
+    n = len(candles)
+    for key in ("bb_upper", "bb_mid", "bb_lower"):
+        assert key in body
+        assert len(body[key]) == n
+    assert any(v is not None for v in body["bb_mid"])
+
+
 def test_dashboard_served(client):
     client.post("/ui/profile", json={})  # Skip: profile row must exist for /ui to serve the dashboard
     r = client.get("/ui")
     assert r.status_code == 200
     assert "XAU Assistant" in r.text
-    for needle in ("/ui/state", "/ui/candles", "/ui/stats", "/ui/signals", "/ui/switch", "/ui/trades"):
+    for needle in ("/ui/state", "/ui/candles", "/ui/stats", "/ui/signals", "/ui/switch",
+                   "/ui/trades", "/ui/overlays"):
         assert needle in r.text

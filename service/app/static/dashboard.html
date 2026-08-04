@@ -221,10 +221,86 @@ canvas {
   display: block;
 }
 
+/* Chart panel: strategy tabs + expand toggle */
+.chart-panel {
+  position: relative;
+}
+.chart-panel.expanded {
+  grid-column: 1 / -1;
+}
+.chart-panel.expanded .canvas-wrap {
+  height: 60vh;
+}
+.tabs {
+  display: flex;
+  gap: 6px;
+}
+.tab-btn {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  border: 1px solid var(--border-card);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+  transition: all 0.2s ease;
+}
+.tab-btn:hover {
+  color: var(--text-main);
+  transform: none;
+  box-shadow: none;
+}
+.tab-btn.active {
+  background: rgba(245, 197, 66, 0.15);
+  color: var(--gold-primary);
+  border-color: rgba(245, 197, 66, 0.4);
+}
+.expand-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  border: 1px solid var(--border-card);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: none;
+  z-index: 5;
+}
+.expand-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.12);
+  transform: none;
+  box-shadow: none;
+}
+
 /* Custom Table Design */
 .table-wrap {
   width: 100%;
   overflow-x: auto;
+}
+/* Scroll cap: shows ~8 rows of a log table, header pinned while the body
+   scrolls -- row height derives from td's 12px v-padding + 13.5px/1.5
+   line-height (~45px/row); header from th's 10px v-padding + 11px/1.5
+   line-height (~38px). */
+.table-wrap.scroll-cap {
+  max-height: calc(8 * 45px + 38px);
+  overflow-y: auto;
+}
+.table-wrap.scroll-cap thead th {
+  position: sticky;
+  top: 0;
+  background: #10151f;
+  z-index: 1;
 }
 table {
   border-collapse: collapse;
@@ -379,13 +455,18 @@ button.btn-cancel:hover {
   </div>
 
   <!-- Equity Chart -->
-  <div class="card-section">
+  <div class="card-section chart-panel" id="pricePanel">
     <div class="section-header">
       <h2>XAUUSD — live</h2>
+      <div class="tabs" id="stratTabs">
+        <button type="button" class="tab-btn active" data-tab="halftrend_ema_v1" onclick="setTab('halftrend_ema_v1')">halftrend</button>
+        <button type="button" class="tab-btn" data-tab="boll_stochrsi_v1" onclick="setTab('boll_stochrsi_v1')">boll_stochrsi</button>
+      </div>
     </div>
-    <div class="canvas-wrap">
+    <div class="canvas-wrap" id="eqWrap">
       <canvas id="eq"></canvas>
     </div>
+    <button type="button" id="expandBtn" class="expand-btn" onclick="toggleExpand()" title="Expand/collapse chart">⛶</button>
   </div>
 
   <!-- Strategy Matrix -->
@@ -403,7 +484,7 @@ button.btn-cancel:hover {
     <div class="section-header">
       <h2>Trade history</h2>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap scroll-cap">
       <table id="tr"></table>
     </div>
   </div>
@@ -413,7 +494,7 @@ button.btn-cancel:hover {
     <div class="section-header">
       <h2>Signal log</h2>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap scroll-cap">
       <table id="sig"></table>
     </div>
   </div>
@@ -508,6 +589,18 @@ async function state(){
 
 let _pcTrades = [];   // click hit-testing: {x1,x2,tradeId}
 let _tip=null, _tipLastIdx=-1;
+let _activeTab='halftrend_ema_v1', _expanded=false;
+
+function setTab(t){
+ _activeTab=t;
+ document.querySelectorAll('#stratTabs .tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+ priceChart();
+}
+function toggleExpand(){
+ _expanded=!_expanded;
+ $('pricePanel').classList.toggle('expanded', _expanded);
+ priceChart();
+}
 function tipEl(){
  if(!_tip){
    _tip=document.createElement('div');
@@ -533,10 +626,16 @@ async function priceChart(){
  ctx.clearRect(0,0,w,h);
  if(!candles.length){ctx.fillStyle='#888';ctx.fillText('waiting for first bar…',10,20);cv.onclick=null;return;}
  const win=candles.slice(-150);
+ const offset=candles.length-win.length;   // overlay arrays are aligned to the FULL candle list
  const padX=8,padY=14,cw=(w-2*padX)/win.length;
  let lo=Math.min(...win.map(c=>c.l)), hi=Math.max(...win.map(c=>c.h));
  const span=(hi-lo)||1; lo-=span*0.05; hi+=span*0.05;
  const X=i=>padX+i*cw+cw/2, Y=p=>padY+(hi-p)/(hi-lo)*(h-2*padY);
+ // strategy overlays (halftrend/EMA or bollinger bands), fetched for the
+ // active tab -- indexed with the same `offset` as the candle window since
+ // the endpoint aligns its series 1:1 with the full /ui/candles list.
+ let ov={};
+ try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
  // trades overlay first (bands under candles)
  let tr=[];
  try{ tr=(await j('/ui/trades?limit=50')).trades||[]; }catch(e){}
@@ -586,12 +685,65 @@ async function priceChart(){
      ctx.setLineDash([]);
    }
  }
+ // strategy overlay lines, drawn under the candles (matches the render.py
+ // painting order: overlays first, opaque candle bodies on top).
+ const drawSeries=(arr,color,lw,alpha)=>{
+   if(!arr) return;
+   ctx.lineWidth=lw; ctx.strokeStyle=color; ctx.globalAlpha=alpha==null?1:alpha;
+   let px=null,py=null;
+   for(let i=0;i<win.length;i++){
+     const v=arr[offset+i];
+     if(v==null){px=null;py=null;continue;}
+     const x=X(i),y=Y(v);
+     if(px!=null){ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x,y);ctx.stroke();}
+     px=x;py=y;
+   }
+   ctx.globalAlpha=1; ctx.lineWidth=1;
+ };
+ const drawDashedSeries=(arr,color,lw)=>{
+   if(!arr) return;
+   ctx.setLineDash([4,3]);
+   drawSeries(arr,color,lw);
+   ctx.setLineDash([]);
+ };
+ const drawHalftrend=(arr)=>{
+   if(!arr) return;
+   ctx.lineWidth=1.6;
+   let px=null,py=null;
+   for(let i=0;i<win.length;i++){
+     const entry=arr[offset+i];
+     if(entry==null){px=null;py=null;continue;}
+     const[val,trend]=entry;
+     const x=X(i),y=Y(val);
+     const color=trend===0?'dodgerblue':'orangered';
+     if(px!=null){ctx.strokeStyle=color;ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x,y);ctx.stroke();}
+     px=x;py=y;
+   }
+   ctx.lineWidth=1;
+ };
+ if(_activeTab==='halftrend_ema_v1'){
+   drawHalftrend(ov.halftrend);
+   drawSeries(ov.ema9,'#888888',0.8,0.35);
+   drawSeries(ov.ema21,'#888888',0.8,0.35);
+   drawSeries(ov.ema55,'gold',1.2);
+   drawSeries(ov.ema200,'mediumpurple',1.2);
+ } else if(_activeTab==='boll_stochrsi_v1'){
+   drawSeries(ov.bb_upper,'#7f8c9a',1);
+   drawSeries(ov.bb_lower,'#7f8c9a',1);
+   drawDashedSeries(ov.bb_mid,'#7f8c9a',1);
+ }
  // candles
  for(let i=0;i<win.length;i++){const c=win[i];
    const up=c.c>=c.o; ctx.strokeStyle=ctx.fillStyle=up?'#2ecc71':'#e74c3c';
    ctx.beginPath();ctx.moveTo(X(i),Y(c.h));ctx.lineTo(X(i),Y(c.l));ctx.stroke();
    const bh=Math.max(1,Math.abs(Y(c.o)-Y(c.c)));
    ctx.fillRect(X(i)-Math.max(1,cw*0.35),Math.min(Y(c.o),Y(c.c)),Math.max(2,cw*0.7),bh);}
+ // dashed last-close price line spanning the chart, both tabs
+ ctx.setLineDash([4,3]);
+ ctx.strokeStyle='rgba(245,197,66,.6)';
+ ctx.lineWidth=1;
+ ctx.beginPath();ctx.moveTo(padX,Y(lastClose));ctx.lineTo(w-padX,Y(lastClose));ctx.stroke();
+ ctx.setLineDash([]);
  // last-price label
  const last=win[win.length-1];
  ctx.fillStyle='#ddd';ctx.fillText(last.c.toFixed(2), w-58, Y(last.c)-4);

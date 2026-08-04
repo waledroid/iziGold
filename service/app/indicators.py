@@ -33,6 +33,35 @@ def ema(closes: list[float], period: int) -> list[float | None]:
     return out
 
 
+def bollinger(
+    closes: list[float], period: int = 20, dev: float = 2.0
+) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    """Bollinger Bands: SMA basis with +/- `dev` standard deviations.
+
+    Returns `(upper, mid, lower)`, each the same length as `closes`. The
+    first `period - 1` positions are None (not enough data to seed yet).
+    Uses the population standard deviation (ddof=0) over each rolling
+    window, matching the common charting-platform convention. Handles
+    short/degenerate input by returning all-None rather than raising.
+    """
+    n = len(closes)
+    if period <= 0 or n < period:
+        return [None] * n, [None] * n, [None] * n
+
+    upper: list[float | None] = [None] * (period - 1)
+    mid: list[float | None] = [None] * (period - 1)
+    lower: list[float | None] = [None] * (period - 1)
+    for i in range(period - 1, n):
+        window = closes[i - period + 1: i + 1]
+        m = sum(window) / period
+        variance = sum((x - m) ** 2 for x in window) / period
+        sd = variance ** 0.5
+        mid.append(m)
+        upper.append(m + dev * sd)
+        lower.append(m - dev * sd)
+    return upper, mid, lower
+
+
 def halftrend(candles, amplitude: int = 4) -> list[tuple[float, int] | None]:
     """Python port of CHalfTrendEmaStrategy::ProcessClosedBar (see
     mt5/Include/XauAssistant/Strategies/HalfTrendEma.mqh lines 89-151).

@@ -1,4 +1,4 @@
-from app.indicators import ema, halftrend
+from app.indicators import bollinger, ema, halftrend
 from tests.fixtures import trend_candles
 
 
@@ -54,3 +54,30 @@ def test_halftrend_handles_bad_amplitude_without_raising():
     candles = trend_candles(20)
     result = halftrend(candles, amplitude=0)
     assert result == [None] * 20
+
+
+def test_bollinger_of_constant_series_has_upper_equal_mid_equal_lower():
+    closes = [100.0] * 30
+    upper, mid, lower = bollinger(closes, period=20, dev=2.0)
+    settled = [(u, m, l) for u, m, l in zip(upper, mid, lower) if m is not None]
+    assert len(settled) == 30 - 20 + 1
+    assert all(abs(u - 100.0) < 1e-9 and abs(l - 100.0) < 1e-9 and abs(m - 100.0) < 1e-9
+               for u, m, l in settled)
+
+
+def test_bollinger_warmup_prefix_is_none():
+    closes = [float(i) for i in range(25)]
+    upper, mid, lower = bollinger(closes, period=20, dev=2.0)
+    assert upper[:19] == [None] * 19 and mid[:19] == [None] * 19 and lower[:19] == [None] * 19
+    assert upper[19] is not None and mid[19] is not None and lower[19] is not None
+
+
+def test_bollinger_handles_short_input_without_raising():
+    assert bollinger([], period=20) == ([], [], [])
+    upper, mid, lower = bollinger([1.0, 2.0], period=20)
+    assert upper == [None, None] and mid == [None, None] and lower == [None, None]
+
+
+def test_bollinger_handles_bad_period_without_raising():
+    upper, mid, lower = bollinger([1.0, 2.0, 3.0], period=0)
+    assert upper == [None] * 3 and mid == [None] * 3 and lower == [None] * 3

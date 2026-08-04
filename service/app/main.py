@@ -11,6 +11,7 @@ from app.analysis import analyze_forecast
 from app.config import settings
 from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
+from app.indicators import bollinger, ema, halftrend
 from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, NotifyRequest, ProposalResultRequest,
                         TradeEventRequest)
@@ -557,6 +558,32 @@ def ui_candles():
         return {"symbol": "", "timeframe": "", "candles": []}
     return {"symbol": rc["symbol"], "timeframe": rc["timeframe"],
             "candles": [c.model_dump() for c in rc["candles"]]}
+
+
+@app.get("/ui/overlays")
+def ui_overlays(strategy: str = ""):
+    """Chart-overlay series for the dashboard's price chart, aligned 1:1
+    (same length, None for warmup) with the candle list /ui/candles
+    returns from the same app.state.recent_candles snapshot. Unknown
+    strategy or no candles yet -> {} (nothing to draw)."""
+    rc = app.state.recent_candles
+    if not rc or not rc["candles"]:
+        return {}
+    candles = rc["candles"]
+    closes = [c.c for c in candles]
+    if strategy == "halftrend_ema_v1":
+        ht = halftrend(candles, amplitude=4)
+        return {
+            "halftrend": [list(v) if v is not None else None for v in ht],
+            "ema55": ema(closes, 55),
+            "ema9": ema(closes, 9),
+            "ema21": ema(closes, 21),
+            "ema200": ema(closes, 200),
+        }
+    if strategy == "boll_stochrsi_v1":
+        upper, mid, lower = bollinger(closes, period=20, dev=2.0)
+        return {"bb_upper": upper, "bb_mid": mid, "bb_lower": lower}
+    return {}
 
 
 def _mask_secret(value: str) -> str:
