@@ -53,6 +53,44 @@ private:
       return -1;
      }
 
+   // Price at which the CURRENT basket's total profit reaches the cycle's
+   // target$ (m_targetPct of the cycle-start balance). All own positions are
+   // same-direction by construction (OnSignal never adds to an opposite
+   // basket), so a single signed price delta from the current bid/ask
+   // applies uniformly across legs. Returns 0.0 when there is nothing to
+   // target (target disabled, no cycle balance, no positions), the target is
+   // already met/exceeded, or a tick denominator is unusable.
+   double BasketTargetPrice()
+     {
+      double cycleBal = GlobalVariableGet(CycleKey());
+      if(m_targetPct <= 0 || cycleBal <= 0) return 0.0;
+
+      double sumLots = 0;
+      long   ptype = -1;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+         if(PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+           {
+            sumLots += PositionGetDouble(POSITION_VOLUME);
+            if(ptype == -1) ptype = PositionGetInteger(POSITION_TYPE);
+           }
+      if(ptype == -1 || sumLots <= 0) return 0.0;
+
+      double tick_val  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      if(tick_size <= 0 || tick_val <= 0) return 0.0;
+      double perPriceUnit = sumLots * tick_val / tick_size;   // $ profit per $1 price move, whole basket
+      if(perPriceUnit <= 0) return 0.0;
+
+      double remaining = cycleBal * m_targetPct / 100.0 - BasketProfit();
+      if(remaining <= 0) return 0.0;                          // already at/past target
+
+      double delta = remaining / perPriceUnit;                // unsigned price distance still needed
+      double current = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                     : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      return (ptype == POSITION_TYPE_BUY) ? current + delta : current - delta;
+     }
+
    void MoveStopsToBreakeven()
      {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -118,7 +156,7 @@ public:
          string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
          double price = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
                                                       : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason, 0, basketProfit);
+         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason, 0, basketProfit, 0.0);
         }
      }
 
@@ -167,7 +205,7 @@ public:
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
             string openReason = wasReversal ? "reversal" : ("signal " + dir);
             m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason,
-                                (long)m_trade.ResultOrder());
+                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice());
            }
         }
       return ok;
@@ -220,7 +258,7 @@ public:
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
             m_sink.OnTradeEvent("add", dir, lots, price, 0.0, "pyramid add",
-                                (long)m_trade.ResultOrder());
+                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice());
            }
         }
      }

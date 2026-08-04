@@ -79,7 +79,7 @@ class CUiSink : public CTradeEventSink
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
-                             double profit = 0.0)
+                             double profit = 0.0, double tp = 0.0)
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
@@ -112,7 +112,7 @@ public:
                                  (dir == "SELL") ? SIGNAL_SELL : SIGNAL_NONE;
          active.OnBasketClosed(closedDir);
         }
-      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit);
+      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit, tp);
       if(id < 0) return;
       if(event == "open" || (event == "close" && basketGone))
          g_ui.UploadScreenshot(id);
@@ -308,7 +308,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    double lots   = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
    double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
 
-   g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit);
+   g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit, 0.0);
   }
 
 void ProcessBar()

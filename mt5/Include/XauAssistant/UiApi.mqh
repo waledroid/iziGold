@@ -12,7 +12,7 @@ class CTradeEventSink
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
-                             double profit = 0.0) = 0;
+                             double profit = 0.0, double tp = 0.0) = 0;
   };
 
 class CUiApi
@@ -201,7 +201,7 @@ public:
    // callers must treat -1 as "skip the screenshot, keep trading").
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
                        double price, double sl, string reason, long ticket,
-                       double profit = 0.0)
+                       double profit = 0.0, double tp = 0.0)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -211,7 +211,8 @@ public:
                     ",\"sl\":" + DoubleToString(sl, _Digits) +
                     ",\"reason\":\"" + reason + "\"" +
                     ",\"ticket\":" + (string)ticket +
-                    ",\"profit\":" + DoubleToString(profit, 2) + "}";
+                    ",\"profit\":" + DoubleToString(profit, 2) +
+                    ",\"tp\":" + DoubleToString(tp, _Digits) + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
