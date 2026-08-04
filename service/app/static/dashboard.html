@@ -806,10 +806,13 @@ function _drawChart(){
    let dx=e.deltaX;
    if(dx===0 && e.shiftKey) dx=e.deltaY;
    if(!dx) return;                       // plain vertical wheel: let the page scroll
-   e.preventDefault();
    const bars=Math.round(dx/cw)||(dx>0?1:-1);
    const next=_clampPan(_panBars+bars,candles.length);
-   if(next!==_panBars){_panBars=next;_drawChart();}
+   if(next===_panBars) return;           // already at the pan edge: release the
+                                          // gesture so trackpad back/forward swipes
+                                          // at the boundary aren't swallowed
+   e.preventDefault();
+   _panBars=next;_drawChart();
  };
  cv.onmousemove=e=>{
    const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
