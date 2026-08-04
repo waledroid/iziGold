@@ -10,9 +10,15 @@
 class CTradeEventSink
   {
 public:
+   // `isFinal` distinguishes a basket-ending close from a partial single-leg
+   // stop-out that leaves survivors in a pyramided basket (a "close" event
+   // that is NOT final -- `final` is a reserved word in MQL5, hence the
+   // parameter name): defaults true so every pre-existing call site
+   // (whole-basket CloseAll, open, add) keeps its old behavior unchanged.
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
-                             double profit = 0.0, double tp = 0.0) = 0;
+                             double profit = 0.0, double tp = 0.0,
+                             bool isFinal = true) = 0;
   };
 
 class CUiApi
@@ -201,7 +207,7 @@ public:
    // callers must treat -1 as "skip the screenshot, keep trading").
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
                        double price, double sl, string reason, long ticket,
-                       double profit = 0.0, double tp = 0.0)
+                       double profit = 0.0, double tp = 0.0, bool isFinal = true)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -212,7 +218,8 @@ public:
                     ",\"reason\":\"" + reason + "\"" +
                     ",\"ticket\":" + (string)ticket +
                     ",\"profit\":" + DoubleToString(profit, 2) +
-                    ",\"tp\":" + DoubleToString(tp, _Digits) + "}";
+                    ",\"tp\":" + DoubleToString(tp, _Digits) +
+                    ",\"final\":" + (isFinal ? "true" : "false") + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

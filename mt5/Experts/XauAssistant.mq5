@@ -79,7 +79,8 @@ class CUiSink : public CTradeEventSink
 public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
-                             double profit = 0.0, double tp = 0.0)
+                             double profit = 0.0, double tp = 0.0,
+                             bool isFinal = true)
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
@@ -97,7 +98,12 @@ public:
       // Direction-matched (not unconditional) so a reversal's synchronous
       // close of the OLD basket can't clobber a virtual position a
       // strategy already flipped to the NEW direction this same bar.
-      bool basketGone = (event != "close") || (g_trades.OpenCount() == 0);
+      // The caller (TradeManager.CloseAll, or OnTradeTransaction for a
+      // broker-side per-leg SL/TP close) is the authority on whether this
+      // close empties the basket, via the `isFinal` parameter -- defaults
+      // true so callers that don't pass it (CloseAll always empties the
+      // whole basket) keep today's behavior.
+      bool basketGone = (event != "close") || isFinal;
       // Chart risk/reward boxes: "open" starts the current basket's box,
       // and only the basket-FINAL close (same basketGone gate as the
       // strategy bookkeeping below) freezes it — a partial leg close of a
@@ -112,7 +118,8 @@ public:
                                  (dir == "SELL") ? SIGNAL_SELL : SIGNAL_NONE;
          active.OnBasketClosed(closedDir);
         }
-      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket, profit, tp);
+      long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
+                                    profit, tp, basketGone);
       if(id < 0) return;
       if(event == "open" || (event == "close" && basketGone))
          g_ui.UploadScreenshot(id);
@@ -308,7 +315,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    double lots   = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
    double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
 
-   g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit, 0.0);
+   // A leg stop-out with survivors still in the basket is NOT the basket's
+   // final close -- OpenCount() reflects live state right after this deal
+   // landed, so it tells us whether any own positions remain.
+   g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit, 0.0,
+                         g_trades.OpenCount() == 0);
   }
 
 void ProcessBar()

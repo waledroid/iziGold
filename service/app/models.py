@@ -75,6 +75,7 @@ class TradeEventRequest(BaseModel):
     reason: str = ""
     ticket: int = 0
     profit: float = 0.0
+    final: bool = True
 
 
 class ProposalResultRequest(BaseModel):

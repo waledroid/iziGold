@@ -135,6 +135,40 @@ def test_migration_adds_profit_and_render_path_columns_to_legacy_trades_table(tm
     assert "render_path" in cols
 
 
+def test_migration_adds_tp_and_final_columns_to_legacy_trades_table(tmp_path):
+    path = str(tmp_path / "legacy2.db")
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      strategy_id TEXT,
+      direction TEXT,
+      lots REAL,
+      price REAL,
+      sl REAL,
+      reason TEXT,
+      ticket INTEGER,
+      screenshot_path TEXT,
+      profit REAL DEFAULT 0,
+      render_path TEXT
+    )""")
+    conn.execute(
+        "INSERT INTO trades (ts, event, direction, lots, price, sl)"
+        " VALUES (1, 'open', 'BUY', 0.1, 2400.0, 2390.0)")
+    conn.commit()
+    conn.close()
+
+    db = SignalDb(path)
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(trades)")}
+    assert "tp" in cols
+    assert "final" in cols
+    # Pre-existing rows must default sanely (tp=0, final=1/True) so old
+    # payloads keep behaving exactly as they did before this migration.
+    row = db.conn.execute("SELECT tp, final FROM trades").fetchone()
+    assert row == (0, 1)
+
+
 def test_trade_event_profit_persists_and_returned_by_ui_trades(client):
     r = client.post("/trade-event", json=_trade(event="close", profit=42.5))
     trade_id = r.json()["id"]
@@ -180,8 +214,8 @@ def test_basket_legs_returns_open_and_add_rows_after_last_close(client):
     from app import main
     legs = _basket_legs(main.app.state.db, id3)
     assert legs == [
-        {"price": 2400.0, "lots": 0.1, "event": "open"},
-        {"price": 2405.0, "lots": 0.1, "event": "add"},
+        {"price": 2400.0, "lots": 0.1, "event": "open", "sl": 2390.0, "tp": 0.0},
+        {"price": 2405.0, "lots": 0.1, "event": "add", "sl": 2390.0, "tp": 0.0},
     ]
     assert id1 < id2 < id3  # sanity: ids really are in basket order
 
@@ -200,7 +234,8 @@ def test_basket_legs_excludes_prior_baskets(client):
         "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
 
     legs = _basket_legs(main.app.state.db, id_close2)
-    assert legs == [{"price": 2400.0, "lots": 0.1, "event": "open"}]
+    assert legs == [
+        {"price": 2400.0, "lots": 0.1, "event": "open", "sl": 2390.0, "tp": 0.0}]
     assert id_close1 < id_open2 < id_close2
 
 
@@ -211,7 +246,8 @@ def test_basket_legs_includes_just_inserted_open_row(client):
     trade_id = client.post(
         "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
     legs = _basket_legs(main.app.state.db, trade_id)
-    assert legs == [{"price": 2400.0, "lots": 0.1, "event": "open"}]
+    assert legs == [
+        {"price": 2400.0, "lots": 0.1, "event": "open", "sl": 2390.0, "tp": 0.0}]
 
 
 # ---------------------------------------------------------------------------

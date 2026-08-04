@@ -403,3 +403,163 @@ def test_trade_event_swallows_telegram_render_failure(client):
 
     r = client.post("/trade-event", json=_trade(event="close"))
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: real close events (sl=0/tp=0) inherit sl/tp from stored legs
+# ---------------------------------------------------------------------------
+
+def test_close_render_inherits_open_legs_sl_and_tp_when_own_are_zero(client, monkeypatch):
+    from app import main
+
+    client.post("/analyze", json=_analyze_payload())
+    captured = {}
+
+    def _fake_render(candles, trade, out_path):
+        captured["trade"] = trade
+        return True
+
+    monkeypatch.setattr(main, "render_trade_chart", _fake_render)
+
+    client.post(
+        "/trade-event",
+        json=_trade(event="open", price=2400.0, sl=2390.0, tp=2420.0))
+    # A real broker-side SL/TP close carries sl=0/tp=0 -- the EA has no
+    # per-position snapshot to resend at close time.
+    client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2415.0, sl=0.0, tp=0.0,
+                    reason="stop-loss"))
+
+    trade = captured["trade"]
+    assert trade["sl"] == 2390.0   # inherited from the basket's first leg
+    assert trade["tp"] == 2420.0   # inherited from the basket's latest tp
+
+
+def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
+    from app import main
+
+    client.post("/analyze", json=_analyze_payload())
+    captured = {}
+
+    def _fake_render(candles, trade, out_path):
+        captured["trade"] = trade
+        return True
+
+    monkeypatch.setattr(main, "render_trade_chart", _fake_render)
+
+    client.post(
+        "/trade-event",
+        json=_trade(event="open", price=2400.0, sl=2390.0, tp=2420.0))
+    client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2415.0, sl=2391.0, tp=2421.0,
+                    reason="strategy EXIT"))
+
+    trade = captured["trade"]
+    assert trade["sl"] == 2391.0   # the event's own nonzero value wins
+    assert trade["tp"] == 2421.0
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: 'add' events record legs but never render/send a photo
+# ---------------------------------------------------------------------------
+
+def test_add_event_sends_no_photo_close_render_still_carries_add_leg(client):
+    from app import main
+    from app.main import _basket_legs
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+
+    client.post("/trade-event", json=_trade(event="add", price=2405.0))
+    # The add must NOT trigger a second render/photo.
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+
+    close_id = client.post(
+        "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 2
+
+    legs = _basket_legs(main.app.state.db, close_id)
+    assert [leg["event"] for leg in legs] == ["open", "add"]
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: non-final (partial single-leg) closes are telemetry-only
+# ---------------------------------------------------------------------------
+
+def test_non_final_close_sends_no_pl_message_and_no_photo(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+
+    r = client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2395.0, sl=0.0, tp=0.0,
+                    reason="stop-loss", profit=-10.0, final=False))
+    assert r.status_code == 200
+    trade_id = r.json()["id"]
+
+    assert [c for c in ft.calls if c[0] == "sendMessage"] == []
+    # still just the open's photo -- the non-final close renders nothing
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+
+    row = main.app.state.db.conn.execute(
+        "SELECT event, final FROM trades WHERE id=?", (trade_id,)).fetchone()
+    assert row == ("close", 0)   # telemetry row still persisted
+
+
+def test_basket_legs_span_a_non_final_close_row(client):
+    from app.main import _basket_legs
+    from app import main
+
+    id_open = client.post(
+        "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
+    client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2395.0, final=False))
+    id_add = client.post(
+        "/trade-event", json=_trade(event="add", price=2405.0)).json()["id"]
+    id_close_final = client.post(
+        "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
+
+    legs = _basket_legs(main.app.state.db, id_close_final)
+    assert [leg["event"] for leg in legs] == ["open", "add"]
+    assert id_open < id_add < id_close_final
+
+
+def test_final_close_after_non_final_leg_sends_render_and_pl_message(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2395.0, final=False, profit=-5.0))
+    client.post(
+        "/trade-event",
+        json=_trade(event="close", price=2415.0, final=True, profit=15.0,
+                    reason="profit target"))
+
+    msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
+    assert len(msg_calls) == 1
+    assert "profit" in msg_calls[0][1]["text"]
+
+    # open's photo + the final close's photo -- the non-final close in
+    # between contributes no photo of its own.
+    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 2

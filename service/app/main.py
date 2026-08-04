@@ -616,31 +616,58 @@ def ui_onboarding():
 
 def _basket_legs(db: SignalDb, trade_id: int) -> list:
     """Rows belonging to the current basket, in entry order: every
-    'open'/'add' trade row after the last previous 'close' row (there is no
-    dedicated basket/ticket column, so basket boundaries are inferred from
-    'close' rows).
+    'open'/'add' trade row after the last previous FINAL 'close' row (there
+    is no dedicated basket/ticket column, so basket boundaries are inferred
+    from 'close' rows). A non-final close (a single leg stopping out while
+    the rest of the basket survives -- see TradeEventRequest.final) does NOT
+    end the basket, so it is excluded from the boundary search: legs from
+    before AND after such a row still belong to the same basket and are both
+    returned once the basket's eventual final close arrives.
 
     For a "close" event `trade_id` is the just-inserted close row itself --
     it's excluded automatically since its own event isn't 'open'/'add'. For
     "open"/"add" events, `trade_id`'s row already satisfies id > last_close
     and event IN ('open','add'), so it's included as the newest leg."""
     last_close = db.conn.execute(
-        "SELECT MAX(id) FROM trades WHERE event='close' AND id < ?",
+        "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
         (trade_id,)).fetchone()[0] or 0
     rows = db.conn.execute(
-        "SELECT price, lots, event FROM trades WHERE id > ? AND event IN"
+        "SELECT price, lots, event, sl, tp FROM trades WHERE id > ? AND event IN"
         " ('open','add') ORDER BY id ASC", (last_close,)).fetchall()
-    return [{"price": r[0], "lots": r[1], "event": r[2]} for r in rows]
+    return [{"price": r[0], "lots": r[1], "event": r[2], "sl": r[3], "tp": r[4]}
+            for r in rows]
 
 
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
     trade_id = app.state.db.insert_trade(ev.model_dump())
-    if ev.event in ("open", "add", "close") and app.state.last_candles:
+    # Render/photo only for opens and FINAL closes -- 'add' legs are still
+    # recorded above (so the eventual close chart can draw their A-lines via
+    # _basket_legs) but must not themselves trigger a render/Telegram photo,
+    # and a non-final close (a single leg stopping out mid-basket) is
+    # telemetry-only, not a basket-ending event worth a chart/P&L message.
+    should_render = ev.event == "open" or (ev.event == "close" and ev.final)
+    if should_render and app.state.last_candles:
         render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
         try:
             trade_dict = ev.model_dump()
-            trade_dict["legs"] = _basket_legs(app.state.db, trade_id)
+            legs = _basket_legs(app.state.db, trade_id)
+            trade_dict["legs"] = legs
+            if ev.event == "close":
+                # Real close events (broker-side SL/TP touches) carry
+                # sl=0/tp=0 -- the EA has no per-position SL/TP snapshot to
+                # resend at close time. Backfill from the basket's own
+                # stored legs instead of relying on the EA: sl from the
+                # basket's first ('open') leg (the original protective
+                # stop), tp from the latest non-zero tp seen across the
+                # basket's legs (a pyramided add can move the target).
+                if not trade_dict.get("sl") and legs:
+                    trade_dict["sl"] = legs[0]["sl"]
+                if not trade_dict.get("tp"):
+                    for leg in reversed(legs):
+                        if leg.get("tp"):
+                            trade_dict["tp"] = leg["tp"]
+                            break
             ok = await asyncio.to_thread(
                 render_trade_chart, app.state.last_candles, trade_dict,
                 str(render_path))
@@ -655,7 +682,7 @@ async def trade_event(ev: TradeEventRequest):
                         render_path, markup)
         except Exception:
             pass
-    if ev.event == "close" and app.state.telegram is not None:
+    if ev.event == "close" and ev.final and app.state.telegram is not None:
         try:
             await asyncio.to_thread(
                 app.state.telegram.send_message, _pl_message(ev.profit))

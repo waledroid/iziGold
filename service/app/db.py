@@ -35,7 +35,9 @@ _TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
   ticket INTEGER,
   screenshot_path TEXT,
   profit REAL DEFAULT 0,
-  render_path TEXT
+  render_path TEXT,
+  tp REAL DEFAULT 0,
+  final INTEGER DEFAULT 1
 )"""
 
 _KV_SCHEMA = """CREATE TABLE IF NOT EXISTS kv (
@@ -104,6 +106,16 @@ class SignalDb:
             self.conn.execute("ALTER TABLE trades ADD COLUMN profit REAL DEFAULT 0")
         if "render_path" not in trade_cols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN render_path TEXT")
+        if "tp" not in trade_cols:
+            try:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN tp REAL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+        if "final" not in trade_cols:
+            try:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN final INTEGER DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
@@ -201,16 +213,18 @@ class SignalDb:
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(
             "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-            " sl, reason, ticket, profit) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " sl, reason, ticket, profit, tp, final) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
              ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
-             ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0)))
+             ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
+             ev.get("tp", 0.0), int(ev.get("final", True))))
         self.conn.commit()
         return cur.lastrowid
 
     def recent_trades(self, limit: int = 50) -> list:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
-                "sl", "reason", "ticket", "screenshot_path", "profit", "render_path"]
+                "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
+                "tp", "final"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
