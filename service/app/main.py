@@ -363,10 +363,21 @@ def _sweep_stale_proposals(app: FastAPI) -> None:
 
 
 @app.post("/heartbeat", response_model=HeartbeatResponse)
-def heartbeat(hb: HeartbeatRequest):
+async def heartbeat(hb: HeartbeatRequest):
+    previous = app.state.latest_heartbeat
+    prev_algo_trading = previous[1].algo_trading if previous is not None else True
     app.state.latest_heartbeat = (time.time(), hb)
     app.state.db.insert_heartbeat({**hb.model_dump(exclude={"positions"}),
                                    "open_count": len(hb.positions)})
+    if prev_algo_trading != hb.algo_trading:
+        tg = getattr(app.state, "telegram", None)
+        if tg is not None:
+            text = ("⚠️ MT5 Algo Trading is OFF — trades cannot execute until you enable it"
+                    if not hb.algo_trading else "✅ Algo Trading back ON")
+            try:
+                await asyncio.to_thread(tg.send_message, text)
+            except Exception:
+                pass
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
     try:

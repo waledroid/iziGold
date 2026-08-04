@@ -38,13 +38,13 @@ def _app(latest_heartbeat=None, pending_switch=None, db=None):
         latest_heartbeat=latest_heartbeat, pending_switch=pending_switch, db=db))
 
 
-def _hb(active="halftrend_ema_v1", equity=10250.5, ts=1234567890.0):
+def _hb(active="halftrend_ema_v1", equity=10250.5, ts=1234567890.0, algo_trading=True):
     position = types.SimpleNamespace(ticket=1, direction="BUY", lots=0.1,
                                      open_price=2400.0, sl=2390.0, profit=12.5)
     hb = types.SimpleNamespace(
         equity=equity, balance=10000.0, floating_pl=12.5, positions=[position],
         kill_switch=False, hwm=10300.0, exposure_min=5, window_open=True,
-        spread_points=25.0, active_strategy=active)
+        spread_points=25.0, active_strategy=active, algo_trading=algo_trading)
     return (ts, hb)
 
 
@@ -256,6 +256,18 @@ def test_status_first_line_is_market_session():
     app = _app(latest_heartbeat=None)
     reply = handle_command("/status", app)
     assert reply.splitlines()[0].startswith("🕒 ")
+
+
+def test_status_shows_algo_trading_off_warning():
+    app = _app(latest_heartbeat=_hb(algo_trading=False))
+    reply = handle_command("/status", app)
+    assert "⚠️ ALGO TRADING OFF — MT5 cannot execute trades" in reply.splitlines()[2]
+
+
+def test_status_no_algo_trading_warning_when_on():
+    app = _app(latest_heartbeat=_hb(algo_trading=True))
+    reply = handle_command("/status", app)
+    assert "ALGO TRADING OFF" not in reply
 
 
 def test_switch_with_id_sets_pending_and_names_it_in_reply():

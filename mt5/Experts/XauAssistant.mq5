@@ -199,10 +199,11 @@ void OnTimer()
 
    string mode = "", cmd = "", cmdDir = "";
    long cmdId = 0;
+   bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
    string sw = g_ui.PostHeartbeat(equity, balance, floating_pl,
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
-                                  spreadPts, activeId,
+                                  spreadPts, activeId, algoTrading,
                                   mode, cmd, cmdId, cmdDir);
    if(sw != "") g_pendingSwitch = sw;
 

@@ -333,3 +333,33 @@ def test_notify_no_telegram_client_fails_open(client):
     resp = client.post("/notify", json={"text": "AUTO SELL not executed: no client"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# /heartbeat algo_trading transition notice
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_algo_trading_true_to_false_sends_warning_once(
+        client, fake_tg, heartbeat_payload):
+    client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": True})
+    client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": False})
+    assert fake_tg.calls == [("send", "⚠️ MT5 Algo Trading is OFF — trades cannot execute "
+                              "until you enable it", None)]
+    # A second False heartbeat (still-off streak) must not spam another notice.
+    client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": False})
+    assert fake_tg.calls == [("send", "⚠️ MT5 Algo Trading is OFF — trades cannot execute "
+                              "until you enable it", None)]
+
+
+def test_heartbeat_algo_trading_false_to_true_sends_recovery_notice(
+        client, fake_tg, heartbeat_payload):
+    client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": False})
+    fake_tg.calls.clear()
+    client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": True})
+    assert fake_tg.calls == [("send", "✅ Algo Trading back ON", None)]
+
+
+def test_heartbeat_algo_trading_default_true_sends_no_notice(client, fake_tg, heartbeat_payload):
+    client.post("/heartbeat", json=heartbeat_payload)
+    client.post("/heartbeat", json=heartbeat_payload)
+    assert fake_tg.calls == []

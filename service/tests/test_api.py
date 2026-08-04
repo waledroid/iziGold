@@ -142,3 +142,14 @@ def test_heartbeat_response_carries_mode_and_command(client, heartbeat_payload):
     body = r.json()
     assert body["mode"] in ("auto", "manual")
     assert "command" in body
+
+
+def test_heartbeat_request_algo_trading_defaults_true():
+    from app.models import HeartbeatRequest
+    hb = HeartbeatRequest(equity=1, balance=1, floating_pl=0)
+    assert hb.algo_trading is True
+
+
+def test_heartbeat_accepts_algo_trading_false(client, heartbeat_payload):
+    r = client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": False})
+    assert r.status_code == 200

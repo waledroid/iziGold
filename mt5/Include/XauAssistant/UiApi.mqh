@@ -126,6 +126,7 @@ public:
    string PostHeartbeat(double equity, double balance, double floating_pl,
                         bool kill_switch, double hwm, int exposure_min,
                         bool window_open, double spread_points, string active_strategy,
+                        bool algo_trading,
                         string &mode, string &cmd, long &cmdId, string &cmdDir)
      {
       // Field names/order match service/app/models.py HeartbeatRequest exactly.
@@ -138,7 +139,8 @@ public:
                     ",\"exposure_min\":" + (string)exposure_min +
                     ",\"window_open\":" + (window_open ? "true" : "false") +
                     ",\"spread_points\":" + DoubleToString(spread_points, 1) +
-                    ",\"active_strategy\":\"" + active_strategy + "\"}";
+                    ",\"active_strategy\":\"" + active_strategy + "\"" +
+                    ",\"algo_trading\":" + (algo_trading ? "true" : "false") + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

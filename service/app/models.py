@@ -55,6 +55,7 @@ class HeartbeatRequest(BaseModel):
     window_open: bool = False
     spread_points: float = 0.0
     active_strategy: str = "unknown"
+    algo_trading: bool = True
 
 
 class HeartbeatResponse(BaseModel):

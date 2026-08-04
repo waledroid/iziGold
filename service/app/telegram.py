@@ -234,6 +234,10 @@ def _format_status(app) -> str:
     lines = [
         session_line,
         connection,
+    ]
+    if getattr(hb, "algo_trading", True) is False:
+        lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")
+    lines += [
         f"💰 {hb.equity} equity · {hb.balance} balance · {hb.floating_pl:+g} floating",
         protection,
         f"🎯 {strategy} · {mode}",
