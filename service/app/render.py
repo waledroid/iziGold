@@ -3,8 +3,31 @@ matplotlib.use("Agg")  # noqa: E402 -- harmless with the OO API below, kept
 # in case anything else in the process imports pyplot and picks a backend.
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
 
 from app.indicators import ema, halftrend
+
+
+def _favorable(direction: str, entry: float, exit_price: float) -> bool:
+    """True when a close's exit price is on the winning side of entry for
+    the basket's direction. Pure helper (no plotting) so it's unit-testable
+    without rendering a chart."""
+    if direction == "BUY":
+        return exit_price > entry
+    if direction == "SELL":
+        return exit_price < entry
+    return False
+
+
+def _hline_with_label(ax, window_len, value, color, linestyle, prefix,
+                      linewidth=1.0, alpha=1.0):
+    """A full-width horizontal line plus a small right-edge price label,
+    e.g. 'E 4041.65' -- used for entry/add/TP/exit lines (SL keeps its own
+    inline call for parity with the pre-existing code)."""
+    ax.axhline(value, color=color, linestyle=linestyle, linewidth=linewidth,
+              alpha=alpha, zorder=1.5)
+    ax.text(window_len - 1, value, f"{prefix} {value:g}", color=color,
+            fontsize=7, ha="right", va="bottom", alpha=alpha, zorder=6)
 
 
 def _plot_ema(ax, values, offset, window_len, color, linewidth, alpha=1.0, zorder=1):
@@ -96,6 +119,13 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
         reason = trade.get("reason", "")
         price = trade.get("price", 0.0)
         sl = trade.get("sl", 0.0)
+        tp = trade.get("tp", 0.0)
+        legs = trade.get("legs") or []
+        # The basket's original entry price: first leg when the caller
+        # supplied one (open/add/close all carry the basket's legs), else
+        # fall back to this event's own price -- keeps old callers/tests
+        # that never populate "legs" rendering exactly as before.
+        first_entry = legs[0]["price"] if legs else price
 
         marker = "^" if event == "open" else "v"
         marker_color = "#2ecc71" if event == "open" else "#e74c3c"
@@ -107,10 +137,43 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
                     textcoords="offset points", color=marker_color,
                     fontsize=7, zorder=6)
 
+        # Risk/profit boxes. Legs carry no timestamps, so there's no real
+        # per-leg x-position to anchor a box that spans the trade's whole
+        # duration -- keep it simple: a one-bar-wide translucent band at the
+        # current event's bar (entry_x), sized in y by entry<->SL /
+        # entry<->exit. Same semantics as the MT5/web risk-reward boxes,
+        # just collapsed in x since this is a single-snapshot render.
+        if sl and sl > 0:
+            y1, y2 = sorted((first_entry, sl))
+            ax.add_patch(Rectangle((entry_x, y1), 1, y2 - y1,
+                                   facecolor="red", alpha=0.12,
+                                   edgecolor="none", zorder=0.5))
+        if event == "close" and _favorable(direction, first_entry, price):
+            y1, y2 = sorted((first_entry, price))
+            ax.add_patch(Rectangle((entry_x, y1), 1, y2 - y1,
+                                   facecolor="#2ecc71", alpha=0.12,
+                                   edgecolor="none", zorder=0.5))
+
+        # Entry/add/SL/TP/exit horizontal lines, each with a small
+        # right-edge price label.
+        entry_color = "#2ecc71" if direction == "BUY" else "#e74c3c"
+        _hline_with_label(ax, window_len, first_entry, entry_color, "-", "E",
+                          linewidth=1.2)
+        for leg in legs[1:]:
+            if leg.get("event") != "add":
+                continue
+            _hline_with_label(ax, window_len, leg["price"], "gray", ":", "A",
+                              linewidth=0.8, alpha=0.7)
         if sl and sl > 0:
             ax.axhline(sl, color="red", linestyle="--", linewidth=1, zorder=1.5)
             ax.text(window_len - 1, sl, f"SL {sl:g}", color="red", fontsize=7,
                     ha="right", va="bottom", zorder=6)
+        if tp and tp > 0:
+            _hline_with_label(ax, window_len, tp, "green", "--", "TP",
+                              linewidth=1.0)
+        if event == "close":
+            _hline_with_label(ax, window_len, price, "gray", "-", "X",
+                              linewidth=1.2)
 
         legend_handles = [
             Line2D([0], [0], color="dodgerblue", linewidth=1.6, label="HalfTrend"),

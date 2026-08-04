@@ -614,14 +614,35 @@ def ui_onboarding():
                         media_type="text/html")
 
 
+def _basket_legs(db: SignalDb, trade_id: int) -> list:
+    """Rows belonging to the current basket, in entry order: every
+    'open'/'add' trade row after the last previous 'close' row (there is no
+    dedicated basket/ticket column, so basket boundaries are inferred from
+    'close' rows).
+
+    For a "close" event `trade_id` is the just-inserted close row itself --
+    it's excluded automatically since its own event isn't 'open'/'add'. For
+    "open"/"add" events, `trade_id`'s row already satisfies id > last_close
+    and event IN ('open','add'), so it's included as the newest leg."""
+    last_close = db.conn.execute(
+        "SELECT MAX(id) FROM trades WHERE event='close' AND id < ?",
+        (trade_id,)).fetchone()[0] or 0
+    rows = db.conn.execute(
+        "SELECT price, lots, event FROM trades WHERE id > ? AND event IN"
+        " ('open','add') ORDER BY id ASC", (last_close,)).fetchall()
+    return [{"price": r[0], "lots": r[1], "event": r[2]} for r in rows]
+
+
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
     trade_id = app.state.db.insert_trade(ev.model_dump())
-    if ev.event in ("open", "close") and app.state.last_candles:
+    if ev.event in ("open", "add", "close") and app.state.last_candles:
         render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
         try:
+            trade_dict = ev.model_dump()
+            trade_dict["legs"] = _basket_legs(app.state.db, trade_id)
             ok = await asyncio.to_thread(
-                render_trade_chart, app.state.last_candles, ev.model_dump(),
+                render_trade_chart, app.state.last_candles, trade_dict,
                 str(render_path))
             if ok:
                 app.state.db.set_render(trade_id, str(render_path))
@@ -634,7 +655,21 @@ async def trade_event(ev: TradeEventRequest):
                         render_path, markup)
         except Exception:
             pass
+    if ev.event == "close" and app.state.telegram is not None:
+        try:
+            await asyncio.to_thread(
+                app.state.telegram.send_message, _pl_message(ev.profit))
+        except Exception:
+            pass
     return {"id": trade_id}
+
+
+def _pl_message(profit: float) -> str:
+    if profit > 0:
+        return f"💰 Trade closed: +${profit:.2f} profit"
+    if profit < 0:
+        return f"🔻 Trade closed: -${abs(profit):.2f} loss"
+    return "⚖️ Trade closed: breakeven"
 
 
 def _send_render_photo(telegram: TelegramClient, caption: str, path: Path,

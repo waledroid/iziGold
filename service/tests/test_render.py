@@ -3,7 +3,7 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
-from app.render import render_trade_chart
+from app.render import _favorable, render_trade_chart
 from tests.fixtures import trend_candles
 
 
@@ -87,6 +87,97 @@ def test_render_trade_chart_short_candle_series_does_not_raise(tmp_path):
     assert ok is True
     with open(out_path, "rb") as f:
         assert f.read().startswith(b"\x89PNG")
+
+
+# ---------------------------------------------------------------------------
+# _favorable — pure helper, no plotting
+# ---------------------------------------------------------------------------
+
+def test_favorable_buy_true_when_exit_above_entry():
+    assert _favorable("BUY", 2400.0, 2450.0) is True
+
+
+def test_favorable_buy_false_when_exit_at_or_below_entry():
+    assert _favorable("BUY", 2400.0, 2400.0) is False
+    assert _favorable("BUY", 2400.0, 2350.0) is False
+
+
+def test_favorable_sell_true_when_exit_below_entry():
+    assert _favorable("SELL", 2400.0, 2350.0) is True
+
+
+def test_favorable_sell_false_when_exit_at_or_above_entry():
+    assert _favorable("SELL", 2400.0, 2400.0) is False
+    assert _favorable("SELL", 2400.0, 2450.0) is False
+
+
+def test_favorable_unknown_direction_is_false():
+    assert _favorable("", 2400.0, 2450.0) is False
+
+
+# ---------------------------------------------------------------------------
+# Enriched renders: legs, tp, risk/profit boxes
+# ---------------------------------------------------------------------------
+
+def _legs(*entries):
+    return [{"price": p, "lots": lots, "event": ev} for p, lots, ev in entries]
+
+
+def test_render_close_with_legs_tp_sl_writes_nonempty_png(tmp_path):
+    out_path = str(tmp_path / "render_close_legs.png")
+    trade = _trade(
+        event="close", direction="BUY", price=2415.0, sl=2390.0,
+        tp=2420.0, reason="tp hit",
+        legs=_legs((2400.0, 0.1, "open"), (2405.0, 0.1, "add")))
+    ok = render_trade_chart(trend_candles(200), trade, out_path)
+    assert ok is True
+    with open(out_path, "rb") as f:
+        assert f.read().startswith(b"\x89PNG")
+
+
+def test_render_open_with_tp_does_not_raise(tmp_path):
+    out_path = str(tmp_path / "render_open_tp.png")
+    trade = _trade(event="open", tp=2420.0,
+                   legs=_legs((2400.0, 0.1, "open")))
+    ok = render_trade_chart(trend_candles(200), trade, out_path)
+    assert ok is True
+    with open(out_path, "rb") as f:
+        assert f.read().startswith(b"\x89PNG")
+
+
+def test_render_add_event_renders(tmp_path):
+    out_path = str(tmp_path / "render_add.png")
+    trade = _trade(event="add", price=2405.0,
+                   legs=_legs((2400.0, 0.1, "open"), (2405.0, 0.1, "add")))
+    ok = render_trade_chart(trend_candles(200), trade, out_path)
+    assert ok is True
+    with open(out_path, "rb") as f:
+        assert f.read().startswith(b"\x89PNG")
+
+
+def test_render_close_favorable_returns_true(tmp_path):
+    out_path = str(tmp_path / "render_favorable.png")
+    trade = _trade(event="close", direction="BUY", price=2450.0, sl=2390.0,
+                   legs=_legs((2400.0, 0.1, "open")))
+    ok = render_trade_chart(trend_candles(200), trade, out_path)
+    assert ok is True
+
+
+def test_render_close_unfavorable_returns_true(tmp_path):
+    out_path = str(tmp_path / "render_unfavorable.png")
+    trade = _trade(event="close", direction="BUY", price=2350.0, sl=2390.0,
+                   legs=_legs((2400.0, 0.1, "open")))
+    ok = render_trade_chart(trend_candles(200), trade, out_path)
+    assert ok is True
+
+
+def test_render_close_without_legs_still_renders(tmp_path):
+    # Old-shape trade dict (no "legs"/"tp" keys) must still render exactly
+    # as before -- backward compatibility for callers/tests that predate
+    # this feature.
+    out_path = str(tmp_path / "render_no_legs.png")
+    ok = render_trade_chart(trend_candles(200), _trade(event="close"), out_path)
+    assert ok is True
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +311,82 @@ def test_trade_event_close_sends_render_photo_when_telegram_configured(client):
     _, payload, files = photo_calls[0]
     assert "render" in payload["caption"]
     assert files is not None
+
+
+def test_trade_event_close_sends_profit_message(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post(
+        "/trade-event", json=_trade(event="close", reason="tp hit", profit=102.82))
+
+    msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
+    assert len(msg_calls) == 1
+    assert msg_calls[0][1]["text"] == "💰 Trade closed: +$102.82 profit"
+
+
+def test_trade_event_close_sends_loss_message(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post(
+        "/trade-event", json=_trade(event="close", reason="sl hit", profit=-21.40))
+
+    msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
+    assert len(msg_calls) == 1
+    assert msg_calls[0][1]["text"] == "🔻 Trade closed: -$21.40 loss"
+
+
+def test_trade_event_close_sends_breakeven_message(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post("/trade-event", json=_trade(event="close", profit=0.0))
+
+    msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
+    assert len(msg_calls) == 1
+    assert msg_calls[0][1]["text"] == "⚖️ Trade closed: breakeven"
+
+
+def test_trade_event_open_sends_no_profit_message(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+    ft = _FakeTransport()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+
+    client.post("/trade-event", json=_trade(event="open"))
+
+    assert [c for c in ft.calls if c[0] == "sendMessage"] == []
+
+
+def test_trade_event_close_profit_message_swallows_failure(client):
+    from app import main
+    from app.telegram import TelegramClient
+
+    client.post("/analyze", json=_analyze_payload())
+
+    class _BoomTransport:
+        def __call__(self, method, payload, files=None):
+            raise RuntimeError("boom")
+
+    main.app.state.telegram = TelegramClient("tok", "555", transport=_BoomTransport())
+
+    r = client.post("/trade-event", json=_trade(event="close", profit=5.0))
+    assert r.status_code == 200
 
 
 def test_trade_event_swallows_telegram_render_failure(client):

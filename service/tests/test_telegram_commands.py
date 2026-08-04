@@ -270,6 +270,25 @@ def test_status_no_algo_trading_warning_when_on():
     assert "ALGO TRADING OFF" not in reply
 
 
+def test_bal_with_heartbeat_reports_balance_equity_floating():
+    app = _app(latest_heartbeat=_hb())
+    reply = handle_command("/bal", app)
+    assert reply == "💰 Balance: $10000.00 | Equity: $10250.50 | Floating: +$12.50"
+
+
+def test_bal_no_heartbeat_reports_placeholder():
+    app = _app(latest_heartbeat=None)
+    reply = handle_command("/bal", app)
+    assert reply == "no EA heartbeat yet"
+
+
+def test_bal_negative_floating_shows_minus_sign():
+    hb = types.SimpleNamespace(equity=4331.90, balance=4302.24, floating_pl=-29.66)
+    app = _app(latest_heartbeat=(time.time(), hb))
+    reply = handle_command("/bal", app)
+    assert reply == "💰 Balance: $4302.24 | Equity: $4331.90 | Floating: -$29.66"
+
+
 def test_switch_with_id_sets_pending_and_names_it_in_reply():
     app = _app()
     reply = handle_command("/switch boll_stochrsi_v1", app)
@@ -509,7 +528,7 @@ def test_kv_roundtrip(tmp_path):
 
 def test_format_pinned_help_lists_commands_and_proposal_legend():
     text = format_pinned_help()
-    for token in ("/status", "/mode", "/strategy", "/config",
+    for token in ("/status", "/bal", "/mode", "/strategy", "/config",
                   "🟢 Take", "🔴 Skip", "Valid while the strategy holds"):
         assert token in text
 

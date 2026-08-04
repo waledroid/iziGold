@@ -164,6 +164,57 @@ def test_trade_event_sl_persists_and_returned_by_ui_trades(client):
 
 
 # ---------------------------------------------------------------------------
+# _basket_legs — basket-boundary inference for enriched renders
+# ---------------------------------------------------------------------------
+
+def test_basket_legs_returns_open_and_add_rows_after_last_close(client):
+    from app.main import _basket_legs
+
+    id1 = client.post(
+        "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
+    id2 = client.post(
+        "/trade-event", json=_trade(event="add", price=2405.0)).json()["id"]
+    id3 = client.post(
+        "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
+
+    from app import main
+    legs = _basket_legs(main.app.state.db, id3)
+    assert legs == [
+        {"price": 2400.0, "lots": 0.1, "event": "open"},
+        {"price": 2405.0, "lots": 0.1, "event": "add"},
+    ]
+    assert id1 < id2 < id3  # sanity: ids really are in basket order
+
+
+def test_basket_legs_excludes_prior_baskets(client):
+    from app.main import _basket_legs
+    from app import main
+
+    client.post("/trade-event", json=_trade(event="open", price=2300.0))
+    id_close1 = client.post(
+        "/trade-event", json=_trade(event="close", price=2310.0)).json()["id"]
+
+    id_open2 = client.post(
+        "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
+    id_close2 = client.post(
+        "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
+
+    legs = _basket_legs(main.app.state.db, id_close2)
+    assert legs == [{"price": 2400.0, "lots": 0.1, "event": "open"}]
+    assert id_close1 < id_open2 < id_close2
+
+
+def test_basket_legs_includes_just_inserted_open_row(client):
+    from app.main import _basket_legs
+    from app import main
+
+    trade_id = client.post(
+        "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
+    legs = _basket_legs(main.app.state.db, trade_id)
+    assert legs == [{"price": 2400.0, "lots": 0.1, "event": "open"}]
+
+
+# ---------------------------------------------------------------------------
 # Screenshot photo alerts
 # ---------------------------------------------------------------------------
 

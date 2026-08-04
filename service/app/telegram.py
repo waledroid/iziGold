@@ -283,6 +283,19 @@ def _format_history(app) -> str:
     return "\n".join(lines)
 
 
+def _format_balance(app) -> str:
+    """/bal reply: balance, equity, floating P/L from the latest heartbeat
+    ((ts, HeartbeatRequest) tuple | None on app.state.latest_heartbeat)."""
+    latest = app.state.latest_heartbeat
+    if latest is None:
+        return "no EA heartbeat yet"
+    _, hb = latest
+    sign = "+" if hb.floating_pl >= 0 else "-"
+    floating = f"{sign}${abs(hb.floating_pl):.2f}"
+    return (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
+            f"Floating: {floating}")
+
+
 def _format_switch(app, args: list) -> str:
     if not args:
         pending = app.state.pending_switch
@@ -300,7 +313,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "1"
+PINNED_HELP_VERSION = "2"
 
 
 def format_pinned_help() -> str:
@@ -309,6 +322,7 @@ def format_pinned_help() -> str:
     return "\n".join([
         "📌 Command reference",
         "/status — snapshot + EA connection state",
+        "/bal — balance, equity, floating P/L",
         "/mode — toggle AUTO/MANUAL execution",
         "/strategy — switch active strategy",
         "/config — current settings",
@@ -370,6 +384,8 @@ def handle_command(text: str, app) -> str | None:
     cmd = parts[0].lower()
     if cmd == "/status":
         return _format_status(app)
+    if cmd == "/bal":
+        return _format_balance(app)
     if cmd == "/stats":
         return _format_stats(app)
     if cmd == "/history":
