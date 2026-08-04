@@ -24,6 +24,24 @@ from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
 
+# /ui/candles and /ui/overlays serve from an accumulator, not the latest
+# /analyze payload alone -- the EA only resends its own rolling window each
+# post, so without merging, the dashboard chart could never scroll past what
+# fit in a single post. Capped so memory/response size stay bounded.
+_CANDLE_WINDOW_CAP = 1000
+
+
+def _merge_candle_window(existing: list, incoming: list) -> list:
+    """Merge `incoming` candles into `existing` keyed by `.t`: overlapping
+    timestamps are replaced by the incoming (fresher) candle, new timestamps
+    append. Result is sorted by `t` and capped to the most recent
+    _CANDLE_WINDOW_CAP entries."""
+    merged = {c.t: c for c in existing}
+    for c in incoming:
+        merged[c.t] = c
+    return [merged[t] for t in sorted(merged)][-_CANDLE_WINDOW_CAP:]
+
+
 # An approved-but-not-yet-dispatched proposal older than this is expired
 # rather than delivered on the next heartbeat -- a stale "yes" tapped
 # minutes ago (EA offline, terminal closed, etc.) should not suddenly fire.
@@ -288,10 +306,18 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
     app.state.last_candles = req.candles
+    rc = app.state.recent_candles
+    if rc is not None and rc["symbol"] == req.symbol and rc["timeframe"] == req.timeframe:
+        candles = _merge_candle_window(rc["candles"], req.candles)
+    else:
+        # First post, or the chart attached to a different symbol/timeframe
+        # -- start the accumulator over from this payload rather than
+        # merging incompatible series.
+        candles = _merge_candle_window([], req.candles)
     app.state.recent_candles = {
         "symbol": req.symbol,
         "timeframe": req.timeframe,
-        "candles": req.candles[-300:],
+        "candles": candles,
     }
     regime = classify_regime(req.candles)
     atr_value = last_atr(req.candles)

@@ -590,6 +590,16 @@ async function state(){
 let _pcTrades = [];   // click hit-testing: {x1,x2,tradeId}
 let _tip=null, _tipLastIdx=-1;
 let _activeTab='halftrend_ema_v1', _expanded=false;
+let _panBars=0;        // bars back from the latest candle; 0 = live edge
+let _pcData=null;      // last-fetched {candles,ov,tr}, reused for pan/wheel/resize redraws
+let _pcDrag=null;      // in-progress drag state: {startX,startPan,moved,cw}
+let _pcLastMoved=0;    // drag distance at mouseup, consulted by cv.onclick
+let _liveBtn=null;     // {x1,y1,x2,y2} of the "back to live" affordance, or null
+
+function _clampPan(bars, len){
+ const maxPan=Math.max(0, len-150);
+ return Math.max(0, Math.min(maxPan, bars));
+}
 
 function setTab(t){
  _activeTab=t;
@@ -613,7 +623,21 @@ function tipEl(){
  return _tip;
 }
 async function priceChart(){
- const {candles}=await j('/ui/candles');
+ const candles=(await j('/ui/candles')).candles;
+ let ov={};
+ try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
+ let tr=[];
+ try{ tr=(await j('/ui/trades?limit=50')).trades||[]; }catch(e){}
+ _pcData={candles,ov,tr};
+ _drawChart();
+}
+
+// Synchronous redraw from the last-fetched _pcData -- used for pan (drag/
+// wheel/double-click/live-affordance) and resize so those interactions
+// don't refetch candles/overlays/trades over the network on every frame.
+function _drawChart(){
+ if(!_pcData) return;
+ const {candles,ov,tr}=_pcData;
  const cv=$('eq');
  const rect=cv.getBoundingClientRect();
  const dpr=window.devicePixelRatio||1;
@@ -624,21 +648,18 @@ async function priceChart(){
  const w=rect.width, h=rect.height||220;
  ctx.font='11px "Plus Jakarta Sans", system-ui, sans-serif';
  ctx.clearRect(0,0,w,h);
- if(!candles.length){ctx.fillStyle='#888';ctx.fillText('waiting for first bar…',10,20);cv.onclick=null;return;}
- const win=candles.slice(-150);
- const offset=candles.length-win.length;   // overlay arrays are aligned to the FULL candle list
+ if(!candles.length){ctx.fillStyle='#888';ctx.fillText('waiting for first bar…',10,20);cv.onclick=null;cv.onmousedown=null;cv.onwheel=null;cv.ondblclick=null;return;}
+ _panBars=_clampPan(_panBars,candles.length);
+ const end=candles.length-_panBars;
+ const win=candles.slice(Math.max(0,end-150),end);
+ const offset=Math.max(0,end-150);   // overlay arrays are aligned to the FULL candle list
  const padX=8,padY=14,cw=(w-2*padX)/win.length;
  let lo=Math.min(...win.map(c=>c.l)), hi=Math.max(...win.map(c=>c.h));
  const span=(hi-lo)||1; lo-=span*0.05; hi+=span*0.05;
  const X=i=>padX+i*cw+cw/2, Y=p=>padY+(hi-p)/(hi-lo)*(h-2*padY);
- // strategy overlays (halftrend/EMA or bollinger bands), fetched for the
- // active tab -- indexed with the same `offset` as the candle window since
- // the endpoint aligns its series 1:1 with the full /ui/candles list.
- let ov={};
- try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
- // trades overlay first (bands under candles)
- let tr=[];
- try{ tr=(await j('/ui/trades?limit=50')).trades||[]; }catch(e){}
+ // strategy overlays (halftrend/EMA or bollinger bands) are indexed with
+ // the same `offset` as the candle window since the endpoint aligns its
+ // series 1:1 with the full /ui/candles list.
  // Candles are positioned by array INDEX, not by linear time -- the live
  // window can contain a multi-hour weekend gap, so a trade timestamp must be
  // mapped to the index of the nearest candle at/after it (not interpolated
@@ -747,9 +768,49 @@ async function priceChart(){
  // last-price label
  const last=win[win.length-1];
  ctx.fillStyle='#ddd';ctx.fillText(last.c.toFixed(2), w-58, Y(last.c)-4);
- cv.onclick=e=>{const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
+ // "back to live" affordance -- only while panned into history, subtle,
+ // top-right corner; also acts as a click target that resets _panBars.
+ _liveBtn=null;
+ if(_panBars>0){
+   const label='◂ live';
+   ctx.font='11px "Plus Jakarta Sans", system-ui, sans-serif';
+   const tw=ctx.measureText(label).width;
+   const bx2=w-padX, bx1=bx2-tw-10, by1=padY-2, by2=by1+16;
+   ctx.fillStyle='rgba(255,255,255,0.08)';
+   ctx.fillRect(bx1,by1,bx2-bx1,by2-by1);
+   ctx.fillStyle='rgba(255,255,255,0.55)';
+   ctx.fillText(label, bx1+5, by1+12);
+   _liveBtn={x1:bx1,y1:by1,x2:bx2,y2:by2};
+ }
+ cv.onclick=e=>{
+   const r=cv.getBoundingClientRect();const x=e.clientX-r.left,y=e.clientY-r.top;
+   // A drag (mousedown->mousemove->mouseup) also fires a native click on
+   // mouseup -- only treat it as an actual click when the drag barely moved.
+   if(_pcLastMoved>=4){_pcLastMoved=0;return;}
+   _pcLastMoved=0;
+   if(_liveBtn && x>=_liveBtn.x1 && x<=_liveBtn.x2 && y>=_liveBtn.y1 && y<=_liveBtn.y2){
+     _panBars=0; _drawChart(); return;
+   }
    const hit=_pcTrades.find(t=>x>=t.x1-5&&x<=t.x2+5);
-   if(hit) openLightbox('/ui/render/'+hit.tradeId);};
+   if(hit) openLightbox('/ui/render/'+hit.tradeId);
+ };
+ cv.ondblclick=()=>{ if(_panBars!==0){_panBars=0;_drawChart();} };
+ cv.onmousedown=e=>{
+   _pcDrag={startX:e.clientX,startPan:_panBars,moved:0,cw};
+   document.addEventListener('mousemove',_onPcDragMove);
+   document.addEventListener('mouseup',_onPcDragEnd);
+ };
+ // Drag right reveals older bars (panBars increases); the sign is chosen so
+ // the chart content appears to move with the mouse, like grabbing it.
+ cv.onwheel=e=>{
+   let dx=e.deltaX;
+   if(dx===0 && e.shiftKey) dx=e.deltaY;
+   if(!dx) return;                       // plain vertical wheel: let the page scroll
+   e.preventDefault();
+   const bars=Math.round(dx/cw)||(dx>0?1:-1);
+   const next=_clampPan(_panBars+bars,candles.length);
+   if(next!==_panBars){_panBars=next;_drawChart();}
+ };
  cv.onmousemove=e=>{
    const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
    let idx=Math.round((x-padX-cw/2)/cw);
@@ -766,6 +827,21 @@ async function priceChart(){
    }
  };
  cv.onmouseleave=()=>{tipEl().style.display='none';_tipLastIdx=-1;};
+}
+
+function _onPcDragMove(e){
+ if(!_pcDrag || !_pcData) return;
+ const dx=e.clientX-_pcDrag.startX;
+ _pcDrag.moved=Math.max(_pcDrag.moved,Math.abs(dx));
+ const bars=Math.round(dx/_pcDrag.cw);
+ const next=_clampPan(_pcDrag.startPan+bars,_pcData.candles.length);
+ if(next!==_panBars){_panBars=next;_drawChart();}
+}
+function _onPcDragEnd(){
+ document.removeEventListener('mousemove',_onPcDragMove);
+ document.removeEventListener('mouseup',_onPcDragEnd);
+ _pcLastMoved=_pcDrag?_pcDrag.moved:0;
+ _pcDrag=null;
 }
 
 async function stats(){
@@ -865,7 +941,7 @@ async function sw(id){
 
 state();priceChart();stats();signals();trades();
 setInterval(state,5000);setInterval(priceChart,30000);setInterval(stats,30000);setInterval(signals,30000);setInterval(trades,30000);
-window.addEventListener('resize', priceChart);
+window.addEventListener('resize', ()=>{ _pcData?_drawChart():priceChart(); });
 </script>
 </body>
 </html>

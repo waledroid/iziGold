@@ -122,19 +122,61 @@ def test_ui_candles_returns_last_analyze_window(client, analyze_payload):
     body = r.json()
     assert body["symbol"] == analyze_payload["symbol"]
     assert body["timeframe"] == analyze_payload["timeframe"]
-    assert len(body["candles"]) == min(len(analyze_payload["candles"]), 300)
+    assert len(body["candles"]) == len(analyze_payload["candles"])
     assert body["candles"][-1]["c"] == analyze_payload["candles"][-1]["c"]
 
 
-def test_ui_candles_window_capped_at_300(client, analyze_payload):
+def test_ui_candles_accumulates_overlapping_posts(client, analyze_payload):
+    # The EA resends its own rolling window every post -- overlapping ranges
+    # must merge into a de-duplicated, time-sorted union rather than the
+    # second post's window simply replacing the first's.
     base = analyze_payload["candles"][0]
-    analyze_payload["candles"] = [
-        {**base, "t": base["t"] + i * 300} for i in range(350)
-    ]
-    client.post("/analyze", json=analyze_payload)
+    first = [{**base, "t": base["t"] + i * 300} for i in range(200)]
+    # second post overlaps the last 50 bars of `first` and adds 100 new ones
+    second = [{**base, "t": base["t"] + i * 300} for i in range(150, 250)]
+    client.post("/analyze", json={**analyze_payload, "candles": first})
+    client.post("/analyze", json={**analyze_payload, "candles": second})
     r = client.get("/ui/candles")
-    assert len(r.json()["candles"]) == 300
-    assert r.json()["candles"][-1]["t"] == base["t"] + 349 * 300
+    ts = [c["t"] for c in r.json()["candles"]]
+    assert ts == sorted(ts)
+    assert len(ts) == len(set(ts))
+    assert len(ts) == 250  # 200 + 100 new - 50 overlap
+    assert ts[0] == base["t"]
+    assert ts[-1] == base["t"] + 249 * 300
+
+
+def test_ui_candles_window_capped_at_1000(client, analyze_payload):
+    base = analyze_payload["candles"][0]
+    first = [{**base, "t": base["t"] + i * 300} for i in range(700)]
+    second = [{**base, "t": base["t"] + i * 300} for i in range(700, 1400)]
+    client.post("/analyze", json={**analyze_payload, "candles": first})
+    client.post("/analyze", json={**analyze_payload, "candles": second})
+    r = client.get("/ui/candles")
+    body = r.json()["candles"]
+    assert len(body) == 1000
+    # newest kept: the oldest 400 bars (t indices 0..399) were dropped
+    assert body[0]["t"] == base["t"] + 400 * 300
+    assert body[-1]["t"] == base["t"] + 1399 * 300
+
+
+def test_ui_candles_resets_accumulator_on_symbol_change(client, analyze_payload):
+    client.post("/analyze", json=analyze_payload)
+    other = {**analyze_payload, "symbol": "EURUSD"}
+    client.post("/analyze", json=other)
+    r = client.get("/ui/candles")
+    body = r.json()
+    assert body["symbol"] == "EURUSD"
+    assert len(body["candles"]) == len(other["candles"])
+
+
+def test_ui_candles_resets_accumulator_on_timeframe_change(client, analyze_payload):
+    client.post("/analyze", json=analyze_payload)
+    other = {**analyze_payload, "timeframe": "H1"}
+    client.post("/analyze", json=other)
+    r = client.get("/ui/candles")
+    body = r.json()
+    assert body["timeframe"] == "H1"
+    assert len(body["candles"]) == len(other["candles"])
 
 
 def test_heartbeat_response_carries_mode_and_command(client, heartbeat_payload):
