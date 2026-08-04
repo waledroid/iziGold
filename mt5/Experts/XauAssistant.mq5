@@ -28,7 +28,7 @@ input double         MaxDrawdownPct         = 10.0;
 input bool           EnablePyramiding       = true;
 input int            MaxPositions           = 3;
 input double         AddTriggerATR          = 1.0;
-input double         ProfitTargetPct        = 3.0;
+input double         ProfitTargetPct        = 2.0;  // basket banks at +2% of cycle balance; 0 = off
 input double         TrailLockPct           = 50;  // keep this % of peak basket profit once armed; 0 = off
 input double         TrailActivateR         = 1.0; // arm lock when peak profit >= this multiple of the per-trade risk budget
 input double         StopAtrMult            = 2.0;
