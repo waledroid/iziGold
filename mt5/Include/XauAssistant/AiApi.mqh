@@ -81,7 +81,7 @@ public:
                 ENUM_SIGNAL &shadowSigs[], AiResponse &out)
      {
       out.ai_available = false;
-      string json = BuildJson(sig, 200, strategyId, shadowIds, shadowSigs);
+      string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs);   // 300 bars so EMA200 has warmup in renders
       if(json == "") return false;
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

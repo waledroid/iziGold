@@ -121,7 +121,10 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
         ]
         ax.legend(handles=legend_handles, loc="upper left", fontsize=7, framealpha=0.3)
 
-        ax.set_title(f"{event} {direction} {reason}")
+        title = f"{direction} {event} @ {price}" if price else f"{direction} {event}"
+        if reason and reason not in (f"signal {direction}",):
+            title += f" — {reason}"
+        ax.set_title(title, fontsize=10)
         fig.tight_layout()
         fig.savefig(out_path)
         return True
