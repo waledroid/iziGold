@@ -91,15 +91,33 @@ private:
       return (ptype == POSITION_TYPE_BUY) ? current + delta : current - delta;
      }
 
+   // Tighten each leg's SL to its own entry price. A leg is skipped when
+   // breakeven would LOOSEN its stop, or when its entry sits too close to
+   // the current market to be a legal stop (SYMBOL_TRADE_STOPS_LEVEL) —
+   // the broker would reject the modify anyway; the leg keeps the ATR stop
+   // it was opened with and a later add (price ≥1 ATR further away) can
+   // legally tighten it then. Rejections that do slip through are logged —
+   // a silent PositionModify failure is how a leg ends up with no stop.
    void MoveStopsToBreakeven()
      {
+      double stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
          ulong tk = PositionGetTicket(i);
          if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
             PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-         double open = PositionGetDouble(POSITION_PRICE_OPEN);
-         m_trade.PositionModify(tk, open, PositionGetDouble(POSITION_TP));
+         bool   isBuy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+         double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+         double curSl = PositionGetDouble(POSITION_SL);
+         if(curSl > 0 && (isBuy ? open <= curSl : open >= curSl)) continue;
+         if(isBuy  && open > bid - stopsLevel) continue;
+         if(!isBuy && open < ask + stopsLevel) continue;
+         if(!m_trade.PositionModify(tk, open, PositionGetDouble(POSITION_TP)))
+            Print("TradeManager: breakeven move failed #", tk,
+                  " sl ", DoubleToString(open, _Digits),
+                  " retcode ", m_trade.ResultRetcode());
         }
      }
 
@@ -248,8 +266,15 @@ public:
       double sl_points = m_stopAtrMult * atr_value / _Point;
       double lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
       if(lots <= 0) return;
-      bool ok = (ptype == POSITION_TYPE_BUY) ? m_trade.Buy(lots, _Symbol)
-                                             : m_trade.Sell(lots, _Symbol);
+      // The add carries the same ATR stop its lot size was computed from —
+      // sent WITH the order so the leg is never live without broker-side
+      // protection (MoveStopsToBreakeven cannot legally tighten a leg whose
+      // entry is at the current market, so without this the newest leg
+      // would ride naked until the next add or CloseAll).
+      double addSl = (ptype == POSITION_TYPE_BUY) ? price - m_stopAtrMult * atr_value
+                                                  : price + m_stopAtrMult * atr_value;
+      bool ok = (ptype == POSITION_TYPE_BUY) ? m_trade.Buy(lots, _Symbol, 0, addSl)
+                                             : m_trade.Sell(lots, _Symbol, 0, addSl);
       if(ok)
         {
          m_lastEntryPrice = price;
@@ -257,7 +282,7 @@ public:
          if(m_sink != NULL)
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-            m_sink.OnTradeEvent("add", dir, lots, price, 0.0, "pyramid add",
+            m_sink.OnTradeEvent("add", dir, lots, price, addSl, "pyramid add",
                                 (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice());
            }
         }
