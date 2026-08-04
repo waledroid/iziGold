@@ -36,7 +36,7 @@ if not exist "C:\Program Files\MetaTrader 5\terminal64.exe" (
   exit /b 1
 )
 tasklist /FI "IMAGENAME eq terminal64.exe" | find /I "terminal64.exe" >nul
-if errorlevel 1 start "" "C:\Program Files\MetaTrader 5\terminal64.exe"
+if errorlevel 1 start "" "C:\Program Files\MetaTrader 5\terminal64.exe" /config:"%REPO_WIN%\scripts\mt5-start.ini"
 
 rem --- 3. service: idempotent setup (first run: venv+deps+telegram; later: skips) ---
 start "XAU Service" wsl.exe -d Ubuntu-24.04 --cd "%REPO_WIN%" -e bash -c "bash scripts/setup.sh; echo; read -p Done._Press_Enter_to_close _"
