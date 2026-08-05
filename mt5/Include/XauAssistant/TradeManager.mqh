@@ -93,7 +93,9 @@ private:
 
    // Ratchet the whole basket's stop as each pyramid add lands. This function
    // runs right AFTER a successful add, so CountOwn() already includes the
-   // new leg; addCount = CountOwn() - 1 counts positions beyond the original.
+   // new leg. Own legs are sorted by ticket ascending (oldest first) into
+   // index k = 0..count-1; k (the newest leg's index) equals addCount, the
+   // number of positions beyond the original entry.
    //
    //  add1 (addCount == 1): halfway ratchet from the current stop toward the
    //  original entry, instead of snapping straight to breakeven. Instant
@@ -103,29 +105,31 @@ private:
    //  until the next management tick. The halfway ratchet trades a little
    //  retained risk for retracement tolerance (user directive 2026-08-05).
    //
-   //  add2+ (addCount >= 2): basket net-breakeven lock. The stop is set to
-   //  the lot-weighted AVERAGE ENTRY across ALL own legs, not the previous
-   //  add's halfway point or entry — later legs can carry more size than
-   //  earlier ones, so only the weighted average reflects the basket's true
-   //  breakeven price. User directive: once a basket has taken two adds, it
-   //  can no longer close net-negative. This average is by construction on
-   //  the profit side of the market price at add time (adds require
-   //  BasketProfit() > 0 and a 1-ATR advance), so applying it only tightens
-   //  the stop, never loosens it.
+   //  add2+ (addCount >= 2): lagging halfway-entry ladder. The stop moves to
+   //  the midpoint of the entries of the two legs BEFORE the newest one
+   //  (add2 -> halfway(open, add1); add3 -> halfway(add1, add2); ...) —
+   //  deliberately one step behind the newest add. This secures the basket's
+   //  veteran legs while still giving the newest add room to breathe, and it
+   //  pairs with the shrinking-size cap on adds (see Manage()) that keeps
+   //  each new leg the smallest-risk leg in the basket. Replaces the
+   //  short-lived lot-weighted-average-entry lock (user directive
+   //  2026-08-05).
    //
    // The OLDEST own position (lowest ticket) is treated as the basket of
-   // record for the add1 case: its POSITION_PRICE_OPEN is the original entry
-   // E, and its current POSITION_SL is the basket stop S — read from the
-   // broker (not cached) so this is correct even after an EA/terminal
+   // record: its POSITION_PRICE_OPEN is the original entry E, and its
+   // current POSITION_SL is the basket stop S — read fresh from the broker
+   // (not cached) each call, so this is correct even after an EA/terminal
    // reload. Every own leg (including the just-opened add, which has no SL
    // yet) is then modified to the same new stop N; each leg's TP is left
    // as-is.
    void RatchetBasketStop()
      {
-      ulong  oldestTicket = 0;
-      double E = 0, S = 0;
-      bool   isBuy = false;
-      double sumPriceVol = 0, sumVol = 0;
+      // Collect every own leg (magic+symbol match), oldest first by ticket.
+      ulong  tickets[];
+      double entries[];
+      double sls[];
+      bool   buys[];
+      double tps[];
       int    count = 0;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
@@ -133,25 +137,49 @@ private:
          if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
             PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
          count++;
-         double vol = PositionGetDouble(POSITION_VOLUME);
-         sumPriceVol += PositionGetDouble(POSITION_PRICE_OPEN) * vol;
-         sumVol += vol;
-         if(oldestTicket == 0 || tk < oldestTicket)
-           {
-            oldestTicket = tk;
-            E = PositionGetDouble(POSITION_PRICE_OPEN);
-            S = PositionGetDouble(POSITION_SL);
-            isBuy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
-           }
+         ArrayResize(tickets, count);
+         ArrayResize(entries, count);
+         ArrayResize(sls, count);
+         ArrayResize(buys, count);
+         ArrayResize(tps, count);
+         tickets[count - 1] = tk;
+         entries[count - 1] = PositionGetDouble(POSITION_PRICE_OPEN);
+         sls[count - 1]     = PositionGetDouble(POSITION_SL);
+         buys[count - 1]    = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+         tps[count - 1]     = PositionGetDouble(POSITION_TP);
         }
-      if(oldestTicket == 0) return;              // no own positions
+      if(count == 0) return;                      // no own positions
+
+      // Insertion sort by ticket ascending (oldest first) — basket sizes are
+      // small (bounded by m_maxPos), O(n^2) is plenty and keeps this
+      // dependency-free.
+      for(int i = 1; i < count; i++)
+        {
+         ulong tk = tickets[i]; double en = entries[i]; double sl = sls[i];
+         bool  bd = buys[i];    double tp = tps[i];
+         int j = i - 1;
+         while(j >= 0 && tickets[j] > tk)
+           {
+            tickets[j + 1] = tickets[j]; entries[j + 1] = entries[j];
+            sls[j + 1] = sls[j]; buys[j + 1] = buys[j]; tps[j + 1] = tps[j];
+            j--;
+           }
+         tickets[j + 1] = tk; entries[j + 1] = en; sls[j + 1] = sl;
+         buys[j + 1] = bd; tps[j + 1] = tp;
+        }
+
+      ulong  oldestTicket = tickets[0];
+      double E = entries[0];
+      double S = sls[0];
+      bool   isBuy = buys[0];
       if(S == 0)
         {
          Print("TradeManager: ratchet skipped — oldest leg #", oldestTicket, " has no stop");
          return;                                 // never invent a stop
         }
 
-      int addCount = count - 1;
+      int k = count - 1;                          // index (and count) of adds beyond the original
+      int addCount = k;
       double N;
       if(addCount <= 1)
         {
@@ -166,21 +194,18 @@ private:
         }
       else
         {
-         // add2+: basket net-breakeven lock at the lot-weighted average entry.
-         if(sumVol <= 0) return;
-         N = NormalizeDouble(sumPriceVol / sumVol, _Digits);
-         // Only move toward profit, never backward.
+         // add2+: lagging halfway-entry ladder — midpoint of the two legs
+         // BEFORE the newest one.
+         N = NormalizeDouble((entries[k - 2] + entries[k - 1]) / 2.0, _Digits);
+         // Only tighten, never loosen.
          bool advances = isBuy ? (N > S) : (N < S);
          if(!advances) return;
         }
 
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      for(int i = 0; i < count; i++)
         {
-         ulong tk = PositionGetTicket(i);
-         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
-            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-         if(!m_trade.PositionModify(tk, N, PositionGetDouble(POSITION_TP)))
-            Print("TradeManager: ratchet move failed #", tk,
+         if(!m_trade.PositionModify(tickets[i], N, tps[i]))
+            Print("TradeManager: ratchet move failed #", tickets[i],
                   " sl ", DoubleToString(N, _Digits),
                   " retcode ", m_trade.ResultRetcode());
         }
@@ -330,6 +355,28 @@ public:
       if(advance < m_addTriggerAtr * atr_value) return;
       double sl_points = m_stopAtrMult * atr_value / _Point;
       double lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
+      if(lots <= 0) return;
+      // Cap each add at 70% of the previous (newest existing) own leg's
+      // size — adds must never outweigh veterans. Growing late legs were the
+      // root cause of two retracement losses. Re-apply the broker's lot
+      // step/min floor the same way CalcLots does after the cap; the
+      // min-lot floor may override the shrink on very small volumes —
+      // acceptable, it's the broker's hard minimum.
+      ulong  newestTicket = 0;
+      double prevLots = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
+            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(newestTicket == 0 || tk > newestTicket)
+           { newestTicket = tk; prevLots = PositionGetDouble(POSITION_VOLUME); }
+        }
+      lots = MathMin(lots, NormalizeDouble(prevLots * 0.7, 2));
+      double volStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double volMin  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      lots = MathFloor(lots / volStep) * volStep;
+      if(lots < volMin) lots = volMin;
       if(lots <= 0) return;
       // The add carries the same ATR stop its lot size was computed from —
       // sent WITH the order so the leg is never live without broker-side
