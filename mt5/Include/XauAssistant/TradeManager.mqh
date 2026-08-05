@@ -91,32 +91,65 @@ private:
       return (ptype == POSITION_TYPE_BUY) ? current + delta : current - delta;
      }
 
-   // Tighten each leg's SL to its own entry price. A leg is skipped when
-   // breakeven would LOOSEN its stop, or when its entry sits too close to
-   // the current market to be a legal stop (SYMBOL_TRADE_STOPS_LEVEL) —
-   // the broker would reject the modify anyway; the leg keeps the ATR stop
-   // it was opened with and a later add (price ≥1 ATR further away) can
-   // legally tighten it then. Rejections that do slip through are logged —
-   // a silent PositionModify failure is how a leg ends up with no stop.
-   void MoveStopsToBreakeven()
+   // Ratchet the whole basket's stop halfway from its current level toward
+   // the original entry, instead of snapping it straight to breakeven.
+   // Instant breakeven parked the stop right inside normal retracement
+   // range, so a routine pullback would scratch out the old legs and — if
+   // it happened right after an add — leave the freshly added leg
+   // unprotected-in-profit until the next management tick. The halfway
+   // ratchet trades a little retained risk for retracement tolerance: each
+   // successful add moves the shared stop halfway to entry again, so it
+   // converges 50% -> 75% -> 87.5% ... toward breakeven across successive
+   // adds rather than jumping there on the first one (user directive
+   // 2026-08-05).
+   //
+   // The OLDEST own position (lowest ticket) is treated as the basket of
+   // record: its POSITION_PRICE_OPEN is the original entry E, and its
+   // current POSITION_SL is the basket stop S — read from the broker
+   // (not cached) so this is correct even after an EA/terminal reload.
+   // Every own leg (including the just-opened add, which has no SL yet)
+   // is then modified to the same new stop N; each leg's TP is left as-is.
+   void RatchetBasketStop()
      {
-      double stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      ulong  oldestTicket = 0;
+      double E = 0, S = 0;
+      bool   isBuy = false;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
         {
          ulong tk = PositionGetTicket(i);
          if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
             PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-         bool   isBuy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
-         double open  = PositionGetDouble(POSITION_PRICE_OPEN);
-         double curSl = PositionGetDouble(POSITION_SL);
-         if(curSl > 0 && (isBuy ? open <= curSl : open >= curSl)) continue;
-         if(isBuy  && open > bid - stopsLevel) continue;
-         if(!isBuy && open < ask + stopsLevel) continue;
-         if(!m_trade.PositionModify(tk, open, PositionGetDouble(POSITION_TP)))
-            Print("TradeManager: breakeven move failed #", tk,
-                  " sl ", DoubleToString(open, _Digits),
+         if(oldestTicket == 0 || tk < oldestTicket)
+           {
+            oldestTicket = tk;
+            E = PositionGetDouble(POSITION_PRICE_OPEN);
+            S = PositionGetDouble(POSITION_SL);
+            isBuy = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY;
+           }
+        }
+      if(oldestTicket == 0) return;              // no own positions
+      if(S == 0)
+        {
+         Print("TradeManager: ratchet skipped — oldest leg #", oldestTicket, " has no stop");
+         return;                                 // never invent a stop
+        }
+
+      double N = isBuy ? S + (E - S) / 2.0 : S - (S - E) / 2.0;
+      // Only move toward entry, never past it and never backward. If the
+      // stop is already at/through entry (legacy breakeven-or-better
+      // state from before this change), leave it alone.
+      bool alreadyAtOrPastEntry = isBuy ? (S >= E) : (S <= E);
+      bool advancesTowardEntry  = isBuy ? (N > S && N < E) : (N < S && N > E);
+      if(alreadyAtOrPastEntry || !advancesTowardEntry) return;
+
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
+            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(!m_trade.PositionModify(tk, N, PositionGetDouble(POSITION_TP)))
+            Print("TradeManager: ratchet move failed #", tk,
+                  " sl ", DoubleToString(N, _Digits),
                   " retcode ", m_trade.ResultRetcode());
         }
      }
@@ -268,9 +301,9 @@ public:
       if(lots <= 0) return;
       // The add carries the same ATR stop its lot size was computed from —
       // sent WITH the order so the leg is never live without broker-side
-      // protection (MoveStopsToBreakeven cannot legally tighten a leg whose
-      // entry is at the current market, so without this the newest leg
-      // would ride naked until the next add or CloseAll).
+      // protection even before RatchetBasketStop below runs (a stop this
+      // close to market may not always be modifiable to the new shared
+      // level right away, so the leg still needs its own stop from birth).
       double addSl = (ptype == POSITION_TYPE_BUY) ? price - m_stopAtrMult * atr_value
                                                   : price + m_stopAtrMult * atr_value;
       bool ok = (ptype == POSITION_TYPE_BUY) ? m_trade.Buy(lots, _Symbol, 0, addSl)
@@ -278,7 +311,7 @@ public:
       if(ok)
         {
          m_lastEntryPrice = price;
-         MoveStopsToBreakeven();
+         RatchetBasketStop();
          if(m_sink != NULL)
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
