@@ -36,6 +36,7 @@ input double         MaxSpreadPoints        = 500;
 input int            TradingWindowStartHour = 4;   // server time; skips rollover (23-01) + thin Tokyo open (01-04)
 input int            TradingWindowEndHour   = 23;  // rollover/maintenance 23-01 stays excluded (hostile spreads)
 input int            MaxDailyExposureMin    = 180; // ~3-4 trades/day across the 04-23 window
+input int            FlattenBeforeBreakMin  = 5;   // close ALL positions this many min before the 23:59 break; 0 = off
 input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
@@ -195,8 +196,29 @@ void OnTick()
 // MANUAL-mode command approved over Telegram ("execute"/"close_all") —
 // executes it (guarded by the same live-account check OnInit enforces for
 // AUTO) and reports the outcome back via PostProposalResult.
+// Server-day of the last pre-break flatten, so it fires at most once per day.
+datetime g_lastFlattenDay = 0;
+
+// Close everything shortly BEFORE the daily 23:59-01:00 maintenance break
+// (covers Friday close too — same wall-clock). Positions left open into the
+// break cannot be closed ([market closed]) and sit exposed through the gap;
+// the user mandate is: never hold through a break.
+void FlattenBeforeBreak()
+  {
+   if(FlattenBeforeBreakMin <= 0) return;
+   if(g_trades.OpenCount() == 0) return;
+   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   if(dt.hour != 23 || dt.min < 59 - FlattenBeforeBreakMin) return;
+   datetime day = TimeCurrent() - (TimeCurrent() % 86400);
+   if(day == g_lastFlattenDay) return;
+   g_lastFlattenDay = day;
+   g_trades.CloseAll("pre-break flatten");
+   g_ui.PostNotify("🌙 Pre-break flatten: all positions closed before the market break");
+  }
+
 void OnTimer()
   {
+   FlattenBeforeBreak();
    double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
    double balance     = AccountInfoDouble(ACCOUNT_BALANCE);
    double floating_pl = equity - balance;
