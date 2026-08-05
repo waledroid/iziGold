@@ -52,7 +52,7 @@ account state + `algo_trading`; the response carries runtime `mode`
 - **Risk gates on entry** (`RiskManager.CanEnter`, each refusal has a literal
   reason string): kill switch (10% DD from peak, manual reset via MT5 global
   `XAU_KILL_<login>`), trading window `4–23` server hours, daily exposure
-  `180` min, spread cap, ADX ≥ 25.
+  `180` min, spread cap, ADX ≥ 20 (lowered from 25 on 2026-08-05: MT5's ADX variant reads low vs textbook Wilder, and the 25 gate refused a strong rally entry; backtest sweep favored 20).
 - **Sizing**: 0.5% equity risk over the ACTUAL stop distance; adds shrink 70%.
 - **Stops**: entry stop = HalfTrend wick extreme ± `0.75×ATR(14)` pad
   (`StopBufferATR`). Pyramid ladder (`RatchetBasketStop`, ONE shared stop on
