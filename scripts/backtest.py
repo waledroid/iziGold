@@ -226,13 +226,12 @@ def plot(candles, trades, start_balance, out_path):
         color = "#2ecc71" if t["pl"] > 0 else "#e74c3c"
         ax.axvspan(max(0, exit_i - 12), exit_i, color=color, alpha=0.10)
         m = "^" if t["dir"] == "BUY" else "v"
-        ax.scatter([exit_i], [t["exit"]], marker="x", color=color, s=60, zorder=5)
-        for leg in t["legs"]:
-            ax.scatter([max(0, exit_i - 12)], [leg["px"]], marker=m,
-                       color=color, s=40, zorder=5, alpha=0.7)
+        ax.scatter([exit_i], [t["exit"]], marker="x", color=color, s=22, zorder=5)
+        ax.scatter([max(0, exit_i - 12)], [t["legs"][0]["px"]], marker=m,
+                   color=color, s=18, zorder=5, alpha=0.8)
         ax.annotate(f"{t['pl']:+.0f}", xy=(exit_i, t["exit"]),
-                    xytext=(4, 8), textcoords="offset points",
-                    color=color, fontsize=8, weight="bold")
+                    xytext=(3, 6), textcoords="offset points",
+                    color=color, fontsize=7)
         eq_x.append(exit_i)
         eq_y.append(eq_y[-1] + t["pl"])
     eq_x.append(len(candles) - 1)
@@ -259,6 +258,8 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--adx", type=float, default=None, help="override ADX gate")
     ap.add_argument("--chart", default=None, help="write a PNG chart to this path")
+    ap.add_argument("--days", type=float, default=None,
+                    help="backtest only the last N days of the source data")
     args = ap.parse_args()
     if args.adx is not None:
         global ADX_MIN
@@ -269,6 +270,9 @@ def main():
     else:
         data = json.load(open(args.source))
     candles = data["candles"]
+    if args.days:
+        cutoff = candles[-1]["t"] - int(args.days * 86400)
+        candles = [c for c in candles if c["t"] >= cutoff]
     if len(candles) < 100:
         sys.exit(f"only {len(candles)} candles available - need at least 100")
 
