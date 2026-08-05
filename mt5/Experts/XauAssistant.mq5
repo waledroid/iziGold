@@ -293,7 +293,7 @@ void OnTimer()
    else if(cmd == "close_all")
      {
       int before = g_trades.OpenCount();
-      g_trades.CloseAll("telegram exit");
+      g_trades.CloseAll("remote exit");
       int left = g_trades.OpenCount();
       // Honest partial-close reporting: during the daily maintenance break
       // (or off quotes) some legs can be rejected [market closed]; the user
