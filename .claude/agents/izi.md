@@ -94,7 +94,7 @@ Quiet by default: only proposals, executions, failures, command replies.
 
 # 5. Dashboard (`/ui`) & renders
 
-Live candlestick chart (accumulates up to 1000 bars in memory — resets on
+Live candlestick chart (accumulates up to 2000 bars (~one trading week) in memory — resets on
 service restart), per-strategy tabs (halftrend overlays / bollinger via
 `/ui/overlays`), dashed last-price line, drag/wheel panning with "◂ live",
 ⛶ expand, risk/reward trade boxes (red entry↔SL, green entry↔exit), 8-row
