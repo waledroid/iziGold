@@ -363,3 +363,19 @@ def test_heartbeat_algo_trading_default_true_sends_no_notice(client, fake_tg, he
     client.post("/heartbeat", json=heartbeat_payload)
     client.post("/heartbeat", json=heartbeat_payload)
     assert fake_tg.calls == []
+
+
+def test_messageless_exit_failure_sends_new_telegram_message(client, fake_tg):
+    # quick-exit proposals (dashboard close-all / exitnow) have no tg message;
+    # a failed result must still notify the user with a fresh message
+    db = client.app.state.db
+    pid = db.create_proposal("exit", "SELL", "s", 0.0, None)
+    db.set_proposal_status(pid, "approved", expected="pending")
+    db.pop_approved_command()
+    fake_tg.calls.clear()
+    client.post("/proposal-result",
+                json={"proposal_id": pid, "ok": False,
+                      "detail": "partial close - 2 of 3 legs still open"})
+    sends = [c for c in fake_tg.calls if c[0] == "send"]
+    assert sends and "partial close" in sends[0][1]
+    assert db.get_proposal(pid)["status"] == "blocked"

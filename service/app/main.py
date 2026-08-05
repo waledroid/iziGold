@@ -448,6 +448,14 @@ async def proposal_result(res: ProposalResultRequest):
                 f"@ {row['price']} — {mark}: {res.detail}")
         except Exception:
             pass
+    elif tg is not None and not res.ok:
+        # Messageless quick-exits (dashboard close-all / exitnow button) have
+        # no proposal message to edit — a failure must still reach the user.
+        try:
+            await asyncio.to_thread(
+                tg.send_message, f"🚫 close failed: {res.detail}")
+        except Exception:
+            pass
     return {"ok": True}
 
 
