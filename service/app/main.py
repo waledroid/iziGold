@@ -708,11 +708,17 @@ async def trade_event(ev: TradeEventRequest):
     # and a non-final close (a single leg stopping out mid-basket) is
     # telemetry-only, not a basket-ending event worth a chart/P&L message.
     should_render = ev.event == "open" or (ev.event == "close" and ev.final)
+    # legs computed outside the render block: the P/L message below needs the
+    # basket's entry prices even when rendering is impossible (empty candle
+    # window right after a service restart).
+    try:
+        legs = _basket_legs(app.state.db, trade_id)
+    except Exception:
+        legs = []
     if should_render and app.state.last_candles:
         render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
         try:
             trade_dict = ev.model_dump()
-            legs = _basket_legs(app.state.db, trade_id)
             trade_dict["legs"] = legs
             if ev.event == "close":
                 # Real close events (broker-side SL/TP touches) carry
@@ -746,18 +752,29 @@ async def trade_event(ev: TradeEventRequest):
     if ev.event == "close" and ev.final and app.state.telegram is not None:
         try:
             await asyncio.to_thread(
-                app.state.telegram.send_message, _pl_message(ev.profit))
+                app.state.telegram.send_message,
+                _pl_message(ev.profit, ev.direction, legs, ev.price))
         except Exception:
             pass
     return {"id": trade_id}
 
 
-def _pl_message(profit: float) -> str:
+def _pl_message(profit: float, direction: str = "", legs: list | None = None,
+                exit_price: float = 0.0) -> str:
     if profit > 0:
-        return f"💰 Trade closed: +${profit:.2f} profit"
-    if profit < 0:
-        return f"🔻 Trade closed: -${abs(profit):.2f} loss"
-    return "⚖️ Trade closed: breakeven"
+        head = f"💰 Trade closed: +${profit:.2f} profit"
+    elif profit < 0:
+        head = f"🔻 Trade closed: -${abs(profit):.2f} loss"
+    else:
+        head = "⚖️ Trade closed: breakeven"
+    # lot-weighted average entry across the basket's open/add legs, so
+    # pyramided trades report the entry that actually determined the P/L
+    if legs and exit_price:
+        tot = sum(l.get("lots", 0) for l in legs)
+        if tot > 0:
+            avg = sum(l["price"] * l.get("lots", 0) for l in legs) / tot
+            head += f" ({direction} {avg:.2f} → {exit_price:.2f})"
+    return head
 
 
 def _send_render_photo(telegram: TelegramClient, caption: str, path: Path,

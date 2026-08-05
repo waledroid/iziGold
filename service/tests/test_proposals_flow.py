@@ -379,3 +379,19 @@ def test_messageless_exit_failure_sends_new_telegram_message(client, fake_tg):
     sends = [c for c in fake_tg.calls if c[0] == "send"]
     assert sends and "partial close" in sends[0][1]
     assert db.get_proposal(pid)["status"] == "blocked"
+
+
+def test_pl_message_includes_avg_entry_and_exit(client, fake_tg):
+    # basket: open 0.01 @ 4084.55 + add 0.03 @ 4075.50 -> weighted avg 4077.76
+    base = {"strategy_id": "s", "lots": 0.01, "price": 4084.55, "sl": 4080.0}
+    client.post("/trade-event", json={**base, "event": "open", "direction": "SELL"})
+    client.post("/trade-event", json={**base, "event": "add", "direction": "SELL",
+                                      "lots": 0.03, "price": 4075.50})
+    fake_tg.calls.clear()
+    client.post("/trade-event", json={**base, "event": "close", "direction": "SELL",
+                                      "lots": 0.04, "price": 4078.65,
+                                      "profit": -8.24, "final": True})
+    sends = [c for c in fake_tg.calls if c[0] == "send"]
+    assert sends, "P/L message not sent"
+    msg = sends[-1][1]
+    assert "-$8.24 loss" in msg and "SELL 4077.76" in msg and "4078.65" in msg
