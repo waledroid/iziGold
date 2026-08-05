@@ -33,8 +33,8 @@ input double         TrailLockPct           = 50;  // keep this % of peak basket
 input double         TrailActivateR         = 1.0; // arm lock when peak profit >= this multiple of the per-trade risk budget
 input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
-input int            TradingWindowStartHour = 9;   // server time (GMT+3 summer) = 08:00 CEST
-input int            TradingWindowEndHour   = 23;  // server time = 22:00 CEST; avoids rollover spike
+input int            TradingWindowStartHour = 1;   // server time; 1-23 = all sessions except the 23-01 rollover break
+input int            TradingWindowEndHour   = 23;  // rollover/maintenance 23-01 stays excluded (hostile spreads)
 input int            MaxDailyExposureMin    = 120; // ~2-3 trades/day at M5 hold times
 input double         AdxTrendThreshold      = 25.0;
 input bool           DebugFireTestSignal    = false;
