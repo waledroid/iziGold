@@ -41,7 +41,7 @@ TRAIL_LOCK_PCT = 50.0
 TRAIL_ACTIVATE_R = 1.0
 WINDOW = (4, 23)          # server hours
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
-ADX_MIN = 25.0
+ADX_MIN = 20.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
 
@@ -205,12 +205,64 @@ def run(candles, start_balance, verbose):
     return trades, bal, max_dd
 
 
+def plot(candles, trades, start_balance, out_path):
+    """Two-panel PNG: price with trade spans/markers, and the equity curve."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.figure import Figure
+    ts = [x["t"] for x in candles]
+    idx = {t: i for i, t in enumerate(ts)}
+    fig = Figure(figsize=(12, 7))
+    ax, ax2 = fig.subplots(2, 1, height_ratios=[3, 1], sharex=True)
+    for i, x in enumerate(candles):
+        color = "#2ecc71" if x["c"] >= x["o"] else "#e74c3c"
+        ax.vlines(i, x["l"], x["h"], color=color, linewidth=0.6)
+    eq_x, eq_y = [0], [start_balance]
+    for t in trades:
+        exit_i = idx.get(int(t["when"].timestamp()), len(candles) - 1)
+        first = t["legs"][0]["px"]
+        # entry bar: search back for the first leg's price era (approx: span
+        # from exit back by number of bars is unknown -- mark exit and legs)
+        color = "#2ecc71" if t["pl"] > 0 else "#e74c3c"
+        ax.axvspan(max(0, exit_i - 12), exit_i, color=color, alpha=0.10)
+        m = "^" if t["dir"] == "BUY" else "v"
+        ax.scatter([exit_i], [t["exit"]], marker="x", color=color, s=60, zorder=5)
+        for leg in t["legs"]:
+            ax.scatter([max(0, exit_i - 12)], [leg["px"]], marker=m,
+                       color=color, s=40, zorder=5, alpha=0.7)
+        ax.annotate(f"{t['pl']:+.0f}", xy=(exit_i, t["exit"]),
+                    xytext=(4, 8), textcoords="offset points",
+                    color=color, fontsize=8, weight="bold")
+        eq_x.append(exit_i)
+        eq_y.append(eq_y[-1] + t["pl"])
+    eq_x.append(len(candles) - 1)
+    eq_y.append(eq_y[-1])
+    ax2.step(eq_x, eq_y, where="post", color="dodgerblue", linewidth=1.5)
+    ax2.axhline(start_balance, color="#888", linewidth=0.7, linestyle=":")
+    ax2.set_ylabel("equity $")
+    ax.set_title(f"halftrend backtest — {len(trades)} trades, "
+                 f"net {eq_y[-1] - start_balance:+.2f} on {start_balance:.0f}")
+    n = len(candles)
+    ticks = list(range(0, n, max(1, n // 8)))
+    import datetime as dt
+    ax2.set_xticks(ticks)
+    ax2.set_xticklabels([dt.datetime.fromtimestamp(candles[i]["t"], dt.UTC)
+                         .strftime("%d %H:%M") for i in ticks], fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--balance", type=float, default=4000)
     ap.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--adx", type=float, default=None, help="override ADX gate")
+    ap.add_argument("--chart", default=None, help="write a PNG chart to this path")
     args = ap.parse_args()
+    if args.adx is not None:
+        global ADX_MIN
+        ADX_MIN = args.adx
 
     if args.source.startswith("http"):
         data = json.load(urllib.request.urlopen(args.source))
@@ -239,6 +291,9 @@ def main():
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}")
+    if args.chart:
+        plot(candles, trades, args.balance, args.chart)
+        print(f"chart      {args.chart}")
 
 
 if __name__ == "__main__":
