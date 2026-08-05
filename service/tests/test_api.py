@@ -145,18 +145,19 @@ def test_ui_candles_accumulates_overlapping_posts(client, analyze_payload):
     assert ts[-1] == base["t"] + 249 * 300
 
 
-def test_ui_candles_window_capped_at_1000(client, analyze_payload):
+def test_ui_candles_window_capped_at_2000(client, analyze_payload):
+    # 2000 bars ~= one full trading week of M5 -- sized for scripts/backtest.py
     base = analyze_payload["candles"][0]
-    first = [{**base, "t": base["t"] + i * 300} for i in range(700)]
-    second = [{**base, "t": base["t"] + i * 300} for i in range(700, 1400)]
+    first = [{**base, "t": base["t"] + i * 300} for i in range(1200)]
+    second = [{**base, "t": base["t"] + i * 300} for i in range(1200, 2400)]
     client.post("/analyze", json={**analyze_payload, "candles": first})
     client.post("/analyze", json={**analyze_payload, "candles": second})
     r = client.get("/ui/candles")
     body = r.json()["candles"]
-    assert len(body) == 1000
+    assert len(body) == 2000
     # newest kept: the oldest 400 bars (t indices 0..399) were dropped
     assert body[0]["t"] == base["t"] + 400 * 300
-    assert body[-1]["t"] == base["t"] + 1399 * 300
+    assert body[-1]["t"] == base["t"] + 2399 * 300
 
 
 def test_ui_candles_resets_accumulator_on_symbol_change(client, analyze_payload):

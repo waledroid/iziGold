@@ -132,6 +132,12 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   `test_pop_approved_command_concurrent_exactly_once` may rarely flake under
   load — rerun before treating as regression. shellcheck at `~/.local/bin/`.
 - Daily 19:05 cron: `scripts/calibration-status.sh` → Telegram digest.
+- **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
+  [--verbose]` replays halftrend + the full current money rulebook over the
+  accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
+  on service restart). Validated against reality (reproduced the +$94.81
+  live basket within $0.35). Simplifications: bar-close granularity, own
+  Wilder ATR/ADX, flat spread charge, no margin model.
 
 # 7. History worth knowing (why rules exist)
 

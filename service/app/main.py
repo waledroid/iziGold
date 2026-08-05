@@ -28,7 +28,7 @@ _SCREENSHOT_RETENTION = 500
 # /analyze payload alone -- the EA only resends its own rolling window each
 # post, so without merging, the dashboard chart could never scroll past what
 # fit in a single post. Capped so memory/response size stay bounded.
-_CANDLE_WINDOW_CAP = 1000
+_CANDLE_WINDOW_CAP = 2000
 
 
 def _merge_candle_window(existing: list, incoming: list) -> list:
