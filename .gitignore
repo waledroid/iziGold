@@ -6,4 +6,6 @@ __pycache__/
 .env
 .pytest_cache/
 mt5/**/*.ex5
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/agents/**
