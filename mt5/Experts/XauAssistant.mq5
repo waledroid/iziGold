@@ -211,9 +211,14 @@ void FlattenBeforeBreak()
    if(dt.hour != 23 || dt.min < 59 - FlattenBeforeBreakMin) return;
    datetime day = TimeCurrent() - (TimeCurrent() % 86400);
    if(day == g_lastFlattenDay) return;
-   g_lastFlattenDay = day;
    g_trades.CloseAll("pre-break flatten");
-   g_ui.PostNotify("🌙 Pre-break flatten: all positions closed before the market break");
+   // Mark done only when truly flat — otherwise retry on the next 5s tick
+   // while the market is still open.
+   if(g_trades.OpenCount() == 0)
+     {
+      g_lastFlattenDay = day;
+      g_ui.PostNotify("🌙 Pre-break flatten: all positions closed before the market break");
+     }
   }
 
 void OnTimer()
