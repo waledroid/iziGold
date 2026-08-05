@@ -265,8 +265,18 @@ void OnTimer()
      }
    else if(cmd == "close_all")
      {
+      int before = g_trades.OpenCount();
       g_trades.CloseAll("telegram exit");
-      g_ui.PostProposalResult(cmdId, true, "basket closed");
+      int left = g_trades.OpenCount();
+      // Honest partial-close reporting: during the daily maintenance break
+      // (or off quotes) some legs can be rejected [market closed]; the user
+      // must see that legs remain rather than a false "closed".
+      if(left == 0)
+         g_ui.PostProposalResult(cmdId, true, "basket closed");
+      else
+         g_ui.PostProposalResult(cmdId, false,
+            StringFormat("partial close - %d of %d legs still open (market closed?), retry shortly",
+                         left, before));
      }
   }
 
