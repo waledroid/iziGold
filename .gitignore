@@ -9,3 +9,4 @@ mt5/**/*.ex5
 .claude/*
 !.claude/agents/
 !.claude/agents/**
+!.claude/settings.json

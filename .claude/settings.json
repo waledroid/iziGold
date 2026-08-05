@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "IN=$(cat); case \"$IN\" in *\"git commit\"*) :;; *) exit 0;; esac; cd /mnt/c/Users/aatanda/Desktop/xau || exit 0; F=$(git log -1 --name-only --pretty=format: 2>/dev/null); case \"$F\" in *mt5/*|*service/app/*) :;; *) exit 0;; esac; case \"$F\" in *.claude/agents/izi.md*) exit 0;; esac; printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"izi-sync policy: the last commit changed system code (mt5/ or service/app/) without updating .claude/agents/izi.md. Update izi.md with what changed (rules, behavior, endpoints, ops) and amend or follow-up commit BEFORE pushing. If the change was truly behavior-neutral, say so explicitly instead.\"}}'",
+            "timeout": 10,
+            "statusMessage": "izi-sync check"
+          }
+        ]
+      }
+    ]
+  }
+}

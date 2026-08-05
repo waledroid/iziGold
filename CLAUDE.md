@@ -68,6 +68,17 @@ Tests use synthetic candle fixtures (`tests/fixtures.py`: known trend, known ran
 
 Known flake: `test_pop_approved_command_concurrent_exactly_once` is a deliberately timing-sensitive two-thread probe and can rarely fail under heavy machine load (slow /mnt/c filesystem); a failure there alone → re-run before treating it as a regression.
 
+## izi stays current (non-negotiable)
+
+`.claude/agents/izi.md` is the system's living knowledge base. **Any commit
+that changes system behavior (`mt5/` or `service/app/`) must update izi.md in
+the same commit or an immediate follow-up before pushing** — new rules, changed
+defaults, new endpoints/commands, ops procedures, and the "history worth
+knowing" section when a change was bought with a trade autopsy. A PostToolUse
+hook in `.claude/settings.json` reminds on violating commits; the hook is the
+net, this rule is the law. Behavior-neutral changes (comments, tests-only,
+docs) may skip with an explicit statement.
+
 ## Current status
 
 Strategy layer is modular: strategies live in `mt5/Include/XauAssistant/Strategies/` behind `CStrategy` (with `Id()` and `StopPrice()`), registered in the EA's `OnInit`, all shadow-evaluated per bar (only `ActiveStrategy` trades/alerts). First real strategy: `halftrend_ema_v1`. The `/analyze` request carries `strategy_id` + `shadows`; SQLite tags every row and `stats()` reports per-strategy hit-rates. Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.
