@@ -41,7 +41,7 @@ TRAIL_LOCK_PCT = 50.0
 TRAIL_ACTIVATE_R = 1.0
 WINDOW = (4, 23)          # server hours
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
-ADX_MIN = 20.0  # matches EA AdxTrendThreshold; overridable via --adx
+ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
 
