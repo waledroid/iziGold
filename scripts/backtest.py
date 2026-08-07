@@ -40,6 +40,7 @@ PROFIT_TARGET_PCT = 2.0
 TRAIL_LOCK_PCT = 50.0
 TRAIL_ACTIVATE_R = 1.0
 WINDOW = (4, 23)          # server hours
+EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
@@ -98,6 +99,7 @@ def run(candles, start_balance, verbose):
     extreme = None
     trades = []
     peak_bal, max_dd = bal, 0.0
+    expo = {}              # server-day -> minutes of open-position time
 
     def basket_pl(px):
         s = 1 if basket["dir"] == "BUY" else -1
@@ -129,6 +131,10 @@ def run(candles, start_balance, verbose):
             last_flip, extreme = i, (x["l"] if trend == 0 else x["h"])
         else:
             extreme = min(extreme, x["l"]) if trend == 0 else max(extreme, x["h"])
+
+        day = when.date()
+        if basket:
+            expo[day] = expo.get(day, 0) + 5   # one M5 bar of held time
 
         # ---- flatten before the break
         if h == FLATTEN_HM[0] and m >= FLATTEN_HM[1]:
@@ -187,7 +193,8 @@ def run(candles, start_balance, verbose):
         if basket is None and signal:
             in_window = WINDOW[0] <= h < WINDOW[1]
             trending = adx[i] is not None and adx[i] >= ADX_MIN
-            if in_window and trending:
+            expo_ok = EXPO_MIN <= 0 or expo.get(day, 0) < EXPO_MIN
+            if in_window and trending and expo_ok:
                 pad = STOP_BUFFER_ATR * a
                 stop = extreme - pad if signal == "BUY" else extreme + pad
                 dist = abs(px - stop)
@@ -260,10 +267,15 @@ def main():
     ap.add_argument("--chart", default=None, help="write a PNG chart to this path")
     ap.add_argument("--days", type=float, default=None,
                     help="backtest only the last N days of the source data")
+    ap.add_argument("--expo", type=float, default=None,
+                    help="override daily exposure minutes (0 = unlimited)")
     args = ap.parse_args()
     if args.adx is not None:
         global ADX_MIN
         ADX_MIN = args.adx
+    if args.expo is not None:
+        global EXPO_MIN
+        EXPO_MIN = args.expo
 
     if args.source.startswith("http"):
         data = json.load(urllib.request.urlopen(args.source))

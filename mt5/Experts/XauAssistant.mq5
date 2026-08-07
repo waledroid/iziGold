@@ -35,7 +35,7 @@ input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
 input int            TradingWindowStartHour = 4;   // server time; skips rollover (23-01) + thin Tokyo open (01-04)
 input int            TradingWindowEndHour   = 23;  // rollover/maintenance 23-01 stays excluded (hostile spreads)
-input int            MaxDailyExposureMin    = 180; // ~3-4 trades/day across the 04-23 window
+input int            MaxDailyExposureMin    = 360; // 6h/day: fits one long trend ride + normal trades (raised from 180 after it blocked post-win entries, 2026-08-07)
 input int            FlattenBeforeBreakMin  = 5;   // close ALL positions this many min before the 23:59 break; 0 = off
 input double         AdxTrendThreshold      = 10.0; // near-permissive: week sweep 2026-08-06 showed 10 beats 20/25 on P/L AND drawdown; blocks only dead-flat tape
 input bool           DebugFireTestSignal    = false;
