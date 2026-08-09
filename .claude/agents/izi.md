@@ -36,7 +36,7 @@ optional `spread_min/spread_avg/spread_max` (default 0.0 — old EAs keep
 working; all-zero = no samples). Service upserts one `spread_history` row
 per bar (`bar_time` PK, server clock; all-zero posts skipped);
 `db.spread_stats(hours=24)` → `{n, min, avg, max}` over a window anchored to
-`MAX(bar_time)` (not wall clock — sidesteps the UTC/server-time offset).
+`MAX(bar_time)` (not wall clock — sidesteps the UTC/server-time offset). Caveat: OnTimer keeps sampling through market closures, so the first bar after a weekend/break carries a multi-day artifact row; spread_stats rows are unweighted — add duration-weighting before building UI/alerts on this data.
 Data collection only; no UI yet.
 
 # 2. Non-negotiable paradigms
