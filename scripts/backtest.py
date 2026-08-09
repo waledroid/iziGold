@@ -269,6 +269,8 @@ def main():
                     help="backtest only the last N days of the source data")
     ap.add_argument("--expo", type=float, default=None,
                     help="override daily exposure minutes (0 = unlimited)")
+    ap.add_argument("--risk", type=float, default=None,
+                    help="override risk percent per trade")
     args = ap.parse_args()
     if args.adx is not None:
         global ADX_MIN
@@ -276,6 +278,9 @@ def main():
     if args.expo is not None:
         global EXPO_MIN
         EXPO_MIN = args.expo
+    if args.risk is not None:
+        global RISK_PCT
+        RISK_PCT = args.risk
 
     if args.source.startswith("http"):
         data = json.load(urllib.request.urlopen(args.source))
