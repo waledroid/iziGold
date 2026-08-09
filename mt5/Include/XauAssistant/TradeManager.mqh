@@ -353,6 +353,12 @@ public:
       double advance = (ptype == POSITION_TYPE_BUY) ? price - m_lastEntryPrice
                                                     : m_lastEntryPrice - price;
       if(advance < m_addTriggerAtr * atr_value) return;
+      // Daily loss brake gates adds too — an add is NEW exposure. Manage()
+      // deliberately bypasses CanEnter (window/exposure/spread must not
+      // strand a live basket mid-management), so this one money gate is
+      // checked explicitly. Exits above are never blocked by it.
+      if(m_risk.DailyLossBreached())
+        { Print("TradeManager: pyramid add blocked — daily loss limit"); return; }
       double sl_points = m_stopAtrMult * atr_value / _Point;
       double lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
       if(lots <= 0) return;

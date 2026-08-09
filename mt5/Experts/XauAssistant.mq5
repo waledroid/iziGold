@@ -25,6 +25,7 @@ input int            HeartbeatSec           = 5;
 input int            UiTimeoutMs            = 1000;
 input double         RiskPerTradePct        = 1.0; // raised 0.5→1.0 on 2026-08-09: week sweep +$610 vs +$421 at DD 7.2% vs 3.8%; 1.5%+ trips the kill switch
 input double         MaxDrawdownPct         = 10.0;
+input double         MaxDailyLossPct        = 3.0; // daily realized-loss brake (symbol+magic deals since server midnight); 0 = off
 input bool           EnablePyramiding       = true;
 input int            MaxPositions           = 3;
 input double         AddTriggerATR          = 1.0;
@@ -202,7 +203,8 @@ int OnInit()
    g_api.Init(ApiUrl, ApiTimeoutMs);
    g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
-               TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin);
+               TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin,
+               MaxDailyLossPct, MagicNumber);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
                  AddTriggerATR, ProfitTargetPct, StopAtrMult,
                  TrailLockPct, TrailActivateR, &g_uiSink);

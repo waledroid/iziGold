@@ -5,9 +5,14 @@ class CRiskManager
   {
 private:
    double m_riskPct, m_maxDdPct, m_maxSpread, m_adxThreshold;
+   double m_maxDailyLossPct;
    int    m_winStart, m_winEnd, m_maxExpoMin;
    int    m_adxHandle;
-   long   m_login;
+   long   m_login, m_magic;
+   // per-bar cache for the daily realized-loss scan (HistorySelect is not
+   // free; entries/adds are bar-cadence anyway)
+   datetime m_dlCacheBar;
+   double   m_dlRealized;
 
    string Key(string tag) { return "XAU_" + tag + "_" + (string)m_login + "_" + _Symbol; }
    string ExpoKey()
@@ -18,11 +23,14 @@ private:
 
 public:
    void Init(double riskPct, double maxDdPct, double maxSpread, double adxThr,
-             int winStart, int winEnd, int maxExpoMin)
+             int winStart, int winEnd, int maxExpoMin,
+             double maxDailyLossPct, long magic)
      {
       m_riskPct = riskPct; m_maxDdPct = maxDdPct; m_maxSpread = maxSpread;
       m_adxThreshold = adxThr; m_winStart = winStart; m_winEnd = winEnd;
       m_maxExpoMin = maxExpoMin;
+      m_maxDailyLossPct = maxDailyLossPct; m_magic = magic;
+      m_dlCacheBar = 0; m_dlRealized = 0;
       m_login = AccountInfoInteger(ACCOUNT_LOGIN);
       m_adxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
      }
@@ -55,6 +63,50 @@ public:
       return dt.hour >= m_winStart && dt.hour < m_winEnd;
      }
 
+   // TODAY's realized P/L from our own closed deals (symbol+magic) since
+   // server midnight — broker history is the source of truth (no global-var
+   // state, reload-safe). Includes profit AND swap/commission of every own
+   // deal in the window (entry deals contribute their commission too).
+   // Cached per bar: the HistorySelect scan runs at most once per new bar.
+   double TodayRealized()
+     {
+      datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
+      if(bar != 0 && bar == m_dlCacheBar) return m_dlRealized;
+      double realized = 0;
+      datetime now = TimeCurrent();
+      datetime dayStart = now - (datetime)((long)now % 86400);   // server midnight
+      if(HistorySelect(dayStart, now + 60))                      // fail-open on scan failure
+        {
+         for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+           {
+            ulong tk = HistoryDealGetTicket(i);
+            if(tk == 0) continue;
+            if(HistoryDealGetString(tk, DEAL_SYMBOL) != _Symbol) continue;
+            if(HistoryDealGetInteger(tk, DEAL_MAGIC) != m_magic) continue;
+            realized += HistoryDealGetDouble(tk, DEAL_PROFIT)
+                      + HistoryDealGetDouble(tk, DEAL_SWAP)
+                      + HistoryDealGetDouble(tk, DEAL_COMMISSION);
+           }
+        }
+      m_dlCacheBar = bar;
+      m_dlRealized = realized;
+      return realized;
+     }
+
+   // Daily loss brake: true when today's realized loss has reached
+   // MaxDailyLossPct% of the day's starting balance (approximated as
+   // current balance minus today's realized P/L). Blocks NEW exposure only —
+   // entries and pyramid adds — never exits. 0 = disabled.
+   bool DailyLossBreached()
+     {
+      if(m_maxDailyLossPct <= 0) return false;
+      double realized = TodayRealized();
+      if(realized >= 0) return false;
+      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
+      if(dayStartBal <= 0) return false;                         // fail-open on nonsense state
+      return realized <= -dayStartBal * m_maxDailyLossPct / 100.0;
+     }
+
    bool TrendOK()
      {
       double adx[];
@@ -69,6 +121,7 @@ public:
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
       if(dt.hour < m_winStart || dt.hour >= m_winEnd)  { why = "outside trading window"; return false; }
       if(GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
+      if(DailyLossBreached())                          { why = "daily loss limit"; return false; }
       long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
       if(spread > m_maxSpread)                         { why = "spread too wide"; return false; }
       if(!TrendOK())                                   { why = "ADX below threshold"; return false; }
