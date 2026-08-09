@@ -74,7 +74,7 @@ public:
       if(bar != 0 && bar == m_dlCacheBar) return m_dlRealized;
       double realized = 0;
       datetime now = TimeCurrent();
-      datetime dayStart = now - (datetime)((long)now % 86400);   // server midnight
+      datetime dayStart = now - now % 86400;                     // server midnight
       if(HistorySelect(dayStart, now + 60))                      // fail-open on scan failure
         {
          for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
@@ -92,6 +92,13 @@ public:
       m_dlRealized = realized;
       return realized;
      }
+
+   // Drop the per-bar cache so the next TodayRealized() rescans history.
+   // Called from the EA's OnTradeTransaction on every own closing deal:
+   // broker-side stop-outs land mid-bar, and a Telegram-approved execute can
+   // arrive seconds later via OnTimer — without this, CanEnter would read a
+   // stale pre-loss figure for up to a full bar.
+   void InvalidateDailyCache() { m_dlCacheBar = 0; }
 
    // Daily loss brake: true when today's realized loss has reached
    // MaxDailyLossPct% of the day's starting balance (approximated as

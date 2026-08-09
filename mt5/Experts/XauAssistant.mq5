@@ -354,7 +354,9 @@ void OnDeinit(const int reason)
 // CloseAll). Every other close reason is already reported by CTradeManager
 // via the sink, so anything not DEAL_REASON_SL/TP is skipped here to avoid
 // double-reporting. Pure telemetry: every path either returns early or ends
-// in a best-effort sink call, never touches trading state or blocks OnTick.
+// in a best-effort sink call, never touches trading state or blocks OnTick
+// (sole side effect: dropping the daily-loss brake's read cache on own
+// closing deals so the next CanEnter rescans — see below).
 // Scope: this handler only recognizes DEAL_ENTRY_OUT (hedging-mode closing
 // deals, one per own position). DEAL_ENTRY_OUT_BY (netting-mode offsetting
 // deals) is out of scope — this EA's own positions are opened/managed under
@@ -370,6 +372,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol) return;
    if((long)HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != MagicNumber) return;
    if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) return;
+
+   // Every own closing deal changes today's realized P/L — drop the daily
+   // loss brake's per-bar cache BEFORE the reason filter below, so mid-bar
+   // broker-side stop-outs (and any other close) are seen by the next
+   // CanEnter even within the same bar (e.g. a Telegram-approved execute
+   // arriving via OnTimer seconds after the stop-out).
+   g_risk.InvalidateDailyCache();
 
    ENUM_DEAL_REASON dealReason = (ENUM_DEAL_REASON)HistoryDealGetInteger(trans.deal, DEAL_REASON);
    string reason;
