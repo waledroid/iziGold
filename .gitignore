@@ -10,3 +10,4 @@ mt5/**/*.ex5
 !.claude/agents/
 !.claude/agents/**
 !.claude/settings.json
+week.json
