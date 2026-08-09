@@ -153,17 +153,22 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   default false = pure inspection). Lists every `XAU_*` global with value +
   interpretation for the chart's login+symbol (kill, HWM, cycle balance,
   peak, today's/dated exposure, unknown/legacy), applies resets for the
-  CURRENT login+symbol only (kill → delete key, peak → 0, cycle → current
-  balance matching TradeManager's seeding, exposure → delete today's dated
-  key), one Print per action + an Alert summary. **Kill-switch reset goes
-  through this script now** — no more hand-editing globals in the terminal's
-  F3 dialog.
+  CURRENT login+symbol only (kill → delete KILL key AND reseed HWM to
+  current equity — trading re-arms and drawdown protection restarts from
+  here; deleting KILL alone would let OnBarUpdate re-trip it next bar off
+  the pre-crash HWM; peak → 0, cycle → current balance matching
+  TradeManager's seeding, exposure → delete today's dated key), one Print
+  per action + an Alert summary. **Kill-switch reset goes through this
+  script now** — no more hand-editing globals in the terminal's F3 dialog.
 - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
   [--verbose]` replays halftrend + the full current money rulebook over the
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
   on service restart). Validated against reality (reproduced the +$94.81
   live basket within $0.35). Simplifications: bar-close granularity, own
-  Wilder ATR/ADX, flat spread charge, no margin model.
+  Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
+  the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
+  the news blackout (NewsGuard) — replay results are slightly optimistic vs
+  the live rulebook around losing days and high-impact events.
 
 # 7. History worth knowing (why rules exist)
 

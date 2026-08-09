@@ -13,7 +13,12 @@ Simplifications (documented, keep in mind when reading results):
 - acts on bar CLOSES only (the EA also acts once per closed bar);
 - fills at close price +/- half-spread; SPREAD_USD charged per oz round-trip;
 - broker min lot 0.01 (=1 oz), integer-oz sizing;
-- no margin modelling (fine at these sizes), no slippage beyond spread.
+- no margin modelling (fine at these sizes), no slippage beyond spread;
+- the daily loss brake (MaxDailyLossPct) is NOT modeled — no simulated day
+  ever refuses entries after a losing run the way the live EA does;
+- the news blackout (NewsGuard high-impact USD events) is NOT modeled — the
+  replay takes entries the live EA would refuse near calendar events.
+
 
 Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
 """

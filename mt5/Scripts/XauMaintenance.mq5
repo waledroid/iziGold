@@ -5,6 +5,9 @@
 //| with a human interpretation for the CURRENT login+symbol, then   |
 //| applies the requested resets (current login+symbol keys ONLY).   |
 //| Pure inspection by default — all reset inputs are false.         |
+//| Kill-switch reset deletes the KILL key AND reseeds HWM to the    |
+//| current equity: leaving HWM at the pre-crash peak would let      |
+//| RiskManager.OnBarUpdate re-trip KILL on the very next bar.       |
 //| Key shapes (spec 2026-08-09 §5, must match RiskManager.Key()/    |
 //| ExpoKey() and TradeManager.CycleKey()/PeakKey()):                |
 //|   XAU_<name>_<login>_<symbol>            (KILL, HWM, CYCLE_BAL,  |
@@ -14,7 +17,7 @@
 #property script_show_inputs
 #property description "Inspect and optionally reset the XAU Assistant's terminal global variables for this chart's login+symbol."
 
-input bool ResetKillSwitch = false;  // Delete the kill-switch key (re-arms trading)
+input bool ResetKillSwitch = false;  // Delete kill key + reseed HWM to current equity (re-arms trading)
 input bool ResetPeak       = false;  // Zero the peak basket profit (profit-lock reference)
 input bool ResetCycle      = false;  // Re-seed cycle balance to current balance (profit-target base)
 input bool ResetExposure   = false;  // Delete today's exposure-minutes key
@@ -81,6 +84,14 @@ void OnStart()
         }
       else
          PrintFormat("XauMaintenance: kill switch reset requested but %s does not exist — nothing to do", killKey);
+      // Always reseed the high-water mark alongside a kill reset: with HWM
+      // left at the pre-crash peak, OnBarUpdate would re-trip KILL on the
+      // next bar (equity <= HWM*(1-MaxDD%)). Drawdown protection restarts
+      // from the current equity.
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      GlobalVariableSet(hwmKey, eq);
+      PrintFormat("XauMaintenance: RESEED high-water mark — %s set to current equity %.2f", hwmKey, eq);
+      resets++;
      }
 
    if(ResetPeak)

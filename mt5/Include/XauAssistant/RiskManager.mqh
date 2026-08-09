@@ -15,6 +15,17 @@ private:
    // free; entries/adds are bar-cadence anyway)
    datetime m_dlCacheBar;
    double   m_dlRealized;
+   datetime m_dlLastWarn;   // throttle for the HistorySelect-failure warn
+
+   // Once-per-hour Print, same shape as CNewsGuard::WarnThrottled — a broker
+   // history outage must be visible in the Experts log, not silent.
+   void WarnThrottled(string msg)
+     {
+      datetime now = TimeCurrent();
+      if(now - m_dlLastWarn < 3600) return;   // once per hour
+      m_dlLastWarn = now;
+      Print(msg);
+     }
 
    string Key(string tag) { return "XAU_" + tag + "_" + (string)m_login + "_" + _Symbol; }
    string ExpoKey()
@@ -33,7 +44,7 @@ public:
       m_maxExpoMin = maxExpoMin;
       m_maxDailyLossPct = maxDailyLossPct; m_magic = magic;
       m_news = news;
-      m_dlCacheBar = 0; m_dlRealized = 0;
+      m_dlCacheBar = 0; m_dlRealized = 0; m_dlLastWarn = 0;
       m_login = AccountInfoInteger(ACCOUNT_LOGIN);
       m_adxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
      }
@@ -78,6 +89,7 @@ public:
       double realized = 0;
       datetime now = TimeCurrent();
       datetime dayStart = now - now % 86400;                     // server midnight
+      ResetLastError();
       if(HistorySelect(dayStart, now + 60))                      // fail-open on scan failure
         {
          for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
@@ -91,6 +103,10 @@ public:
                       + HistoryDealGetDouble(tk, DEAL_COMMISSION);
            }
         }
+      else
+         WarnThrottled(StringFormat(
+            "RiskManager: HistorySelect failed (error %d) — daily loss brake fails OPEN, today's realized P/L read as 0",
+            GetLastError()));
       m_dlCacheBar = bar;
       m_dlRealized = realized;
       return realized;
