@@ -45,22 +45,19 @@ private:
 
       MqlCalendarValue values[];
       ResetLastError();
-      if(!CalendarValueHistory(values, now - m_blackoutSec, now + m_blackoutSec))
+      // CalendarValueHistory returns an INT: the number of values on
+      // success, -1 on failure (NOT a bool — see docs). Only -1 is a real
+      // failure worth the throttled warn; zero values in a ±blackout window
+      // is normal quiet tape, answered silently as "no blackout".
+      int total = CalendarValueHistory(values, now - m_blackoutSec, now + m_blackoutSec);
+      if(total < 0)
         {
          WarnThrottled(StringFormat(
             "NewsGuard: calendar query failed (err %d) — failing open, guard inactive",
             GetLastError()));
          return;
         }
-      int total = ArraySize(values);
-      if(total == 0)
-        {
-         // No calendar values AT ALL in the window (before importance/currency
-         // filtering). Usually just a quiet stretch, but on servers without
-         // calendar data it is permanent — hence the (hourly-throttled) note.
-         WarnThrottled("NewsGuard: calendar returned no data for the blackout window — failing open");
-         return;
-        }
+      if(total == 0) return;   // empty window — a definitive answer, not missing data
       for(int i = 0; i < total; i++)
         {
          MqlCalendarEvent ev;
