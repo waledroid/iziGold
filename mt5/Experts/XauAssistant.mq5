@@ -7,6 +7,7 @@
 #include <XauAssistant/AiApi.mqh>
 #include <XauAssistant/UiApi.mqh>
 #include <XauAssistant/SignalManager.mqh>
+#include <XauAssistant/NewsGuard.mqh>
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/TradeManager.mqh>
 #include <XauAssistant/TradeBoxes.mqh>
@@ -26,6 +27,8 @@ input int            UiTimeoutMs            = 1000;
 input double         RiskPerTradePct        = 1.0; // raised 0.5→1.0 on 2026-08-09: week sweep +$610 vs +$421 at DD 7.2% vs 3.8%; 1.5%+ trips the kill switch
 input double         MaxDrawdownPct         = 10.0;
 input double         MaxDailyLossPct        = 3.0; // daily realized-loss brake (symbol+magic deals since server midnight); 0 = off
+input bool           NewsGuardEnabled       = true; // block new exposure around high-importance USD calendar events (fail-open if no calendar data)
+input int            NewsBlackoutMin        = 30;  // blackout radius: minutes before AND after the event
 input bool           EnablePyramiding       = true;
 input int            MaxPositions           = 3;
 input double         AddTriggerATR          = 1.0;
@@ -64,6 +67,7 @@ CAlerts        g_alerts;
 CAiApi         g_api;
 CUiApi         g_ui;
 CSignalManager g_sm;
+CNewsGuard     g_news;
 CRiskManager   g_risk;
 CTradeManager  g_trades;
 CTradeBoxes    g_tradeBoxes;
@@ -202,9 +206,10 @@ int OnInit()
    g_registry.Active().EnablePaint(true);
    g_api.Init(ApiUrl, ApiTimeoutMs);
    g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber);
+   g_news.Init(NewsGuardEnabled, NewsBlackoutMin);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin,
-               MaxDailyLossPct, MagicNumber);
+               MaxDailyLossPct, MagicNumber, &g_news);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
                  AddTriggerATR, ProfitTargetPct, StopAtrMult,
                  TrailLockPct, TrailActivateR, &g_uiSink);

@@ -1,5 +1,6 @@
 #ifndef XAU_RISKMANAGER_MQH
 #define XAU_RISKMANAGER_MQH
+#include <XauAssistant/NewsGuard.mqh>
 
 class CRiskManager
   {
@@ -9,6 +10,7 @@ private:
    int    m_winStart, m_winEnd, m_maxExpoMin;
    int    m_adxHandle;
    long   m_login, m_magic;
+   CNewsGuard *m_news;   // injected (may be NULL) — fail-open when absent
    // per-bar cache for the daily realized-loss scan (HistorySelect is not
    // free; entries/adds are bar-cadence anyway)
    datetime m_dlCacheBar;
@@ -24,12 +26,13 @@ private:
 public:
    void Init(double riskPct, double maxDdPct, double maxSpread, double adxThr,
              int winStart, int winEnd, int maxExpoMin,
-             double maxDailyLossPct, long magic)
+             double maxDailyLossPct, long magic, CNewsGuard *news = NULL)
      {
       m_riskPct = riskPct; m_maxDdPct = maxDdPct; m_maxSpread = maxSpread;
       m_adxThreshold = adxThr; m_winStart = winStart; m_winEnd = winEnd;
       m_maxExpoMin = maxExpoMin;
       m_maxDailyLossPct = maxDailyLossPct; m_magic = magic;
+      m_news = news;
       m_dlCacheBar = 0; m_dlRealized = 0;
       m_login = AccountInfoInteger(ACCOUNT_LOGIN);
       m_adxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
@@ -114,6 +117,12 @@ public:
       return realized <= -dayStartBal * m_maxDailyLossPct / 100.0;
      }
 
+   // News blackout: high-importance USD calendar event within ±blackout of
+   // now (see NewsGuard.mqh — cached, fail-open). Like DailyLossBreached,
+   // this gates NEW exposure only (entries here, pyramid adds explicitly in
+   // TradeManager::Manage) and never blocks exits.
+   bool NewsBlackout() { return m_news != NULL && m_news.InBlackout(); }
+
    bool TrendOK()
      {
       double adx[];
@@ -129,6 +138,7 @@ public:
       if(dt.hour < m_winStart || dt.hour >= m_winEnd)  { why = "outside trading window"; return false; }
       if(GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
       if(DailyLossBreached())                          { why = "daily loss limit"; return false; }
+      if(NewsBlackout())                               { why = "news blackout"; return false; }
       long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
       if(spread > m_maxSpread)                         { why = "spread too wide"; return false; }
       if(!TrendOK())                                   { why = "ADX below threshold"; return false; }

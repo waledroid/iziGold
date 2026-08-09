@@ -359,6 +359,10 @@ public:
       // checked explicitly. Exits above are never blocked by it.
       if(m_risk.DailyLossBreached())
         { Print("TradeManager: pyramid add blocked — daily loss limit"); return; }
+      // Same reasoning for the news blackout: an add is new exposure around a
+      // high-impact release. Exits above are never blocked by it either.
+      if(m_risk.NewsBlackout())
+        { Print("TradeManager: pyramid add blocked — news blackout"); return; }
       double sl_points = m_stopAtrMult * atr_value / _Point;
       double lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
       if(lots <= 0) return;
