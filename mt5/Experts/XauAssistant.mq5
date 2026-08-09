@@ -77,6 +77,41 @@ bool           g_debugFired = false;
 string         g_pendingSwitch = "";
 ENUM_EXEC_MODE g_execMode = EXEC_MANUAL;
 
+// --- Per-bar spread telemetry (ea-scope spec §3) ---------------------------
+// OnTimer samples SYMBOL_SPREAD every HeartbeatSec (5 s) into an
+// accumulator; when OnTick sees a new bar it snapshots the accumulator as
+// the CLOSED bar's min/avg/max (posted with /analyze) and resets it for the
+// forming bar. All zeros when no samples landed (fresh attach, weekend).
+int    g_sprSamples = 0;
+double g_sprMin = 0.0, g_sprMax = 0.0, g_sprSum = 0.0;
+double g_barSprMin = 0.0, g_barSprAvg = 0.0, g_barSprMax = 0.0;
+
+void SampleSpread(double pts)
+  {
+   if(g_sprSamples == 0) { g_sprMin = pts; g_sprMax = pts; g_sprSum = 0.0; }
+   if(pts < g_sprMin) g_sprMin = pts;
+   if(pts > g_sprMax) g_sprMax = pts;
+   g_sprSum += pts;
+   g_sprSamples++;
+  }
+
+void RollSpreadBar()
+  {
+   if(g_sprSamples > 0)
+     {
+      g_barSprMin = g_sprMin;
+      g_barSprAvg = g_sprSum / g_sprSamples;
+      g_barSprMax = g_sprMax;
+     }
+   else
+     {
+      g_barSprMin = 0.0;
+      g_barSprAvg = 0.0;
+      g_barSprMax = 0.0;
+     }
+   g_sprSamples = 0;
+  }
+
 // Bridges TradeManager (strategy-agnostic) to the UI service: reads the
 // active strategy id at call time, posts the event, then screenshots the
 // chart for open/close. Every step here is best-effort — see UiApi.mqh.
@@ -227,6 +262,7 @@ void OnTick()
    datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
    if(bar == g_lastBar) return;   // act once per new bar
    g_lastBar = bar;
+   RollSpreadBar();               // freeze the closed bar's spread aggregates
    ProcessBar();
   }
 
@@ -269,6 +305,7 @@ void OnTimer()
    CStrategy *active  = g_registry.Active();
    string activeId    = (active != NULL) ? active.Id() : "unknown";
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   SampleSpread(spreadPts);
 
    string mode = "", cmd = "", cmdDir = "";
    long cmdId = 0;
@@ -493,11 +530,13 @@ void ProcessBar()
    if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)
      {
       AiResponse quiet;
-      g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, quiet);
+      g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, quiet,
+                    g_barSprMin, g_barSprAvg, g_barSprMax);
       return;   // keeps outcome-resolution data flowing (spec 6.3)
      }
    AiResponse r;
-   bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r);
+   bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r,
+                           g_barSprMin, g_barSprAvg, g_barSprMax);
    if(sig == SIGNAL_NONE) return;        // shadows logged; nothing to alert
    string report = g_sm.BuildReport(sig, r, ok) + "\n" + g_risk.Status();
    g_alerts.Draw(sig, report);

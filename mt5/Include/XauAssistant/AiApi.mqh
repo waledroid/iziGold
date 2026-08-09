@@ -19,7 +19,8 @@ private:
    int    m_timeout;
 
    string BuildJson(ENUM_SIGNAL sig, int count, string strategyId,
-                    string &shadowIds[], ENUM_SIGNAL &shadowSigs[])
+                    string &shadowIds[], ENUM_SIGNAL &shadowSigs[],
+                    double sprMin, double sprAvg, double sprMax)
      {
       MqlRates rates[];
       // shift 1 = last CLOSED bar; the forming bar is never sent
@@ -45,7 +46,11 @@ private:
          json += "{\"strategy_id\":\"" + shadowIds[i] + "\",\"signal\":\"" +
                  SignalToString(shadowSigs[i]) + "\"}";
         }
-      return json + "]}";
+      // Closed-bar spread telemetry (points); all zeros = no samples.
+      json += "],\"spread_min\":" + DoubleToString(sprMin, 2) +
+              ",\"spread_avg\":" + DoubleToString(sprAvg, 2) +
+              ",\"spread_max\":" + DoubleToString(sprMax, 2);
+      return json + "}";
      }
 
    string ExtractString(string body, string key)
@@ -78,10 +83,12 @@ public:
    void Init(string url, int timeout_ms) { m_url = url; m_timeout = timeout_ms; }
 
    bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
-                ENUM_SIGNAL &shadowSigs[], AiResponse &out)
+                ENUM_SIGNAL &shadowSigs[], AiResponse &out,
+                double sprMin = 0.0, double sprAvg = 0.0, double sprMax = 0.0)
      {
       out.ai_available = false;
-      string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs);   // 300 bars so EMA200 has warmup in renders
+      string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs,
+                              sprMin, sprAvg, sprMax);   // 300 bars so EMA200 has warmup in renders
       if(json == "") return false;
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
