@@ -51,7 +51,7 @@ account state + `algo_trading`; the response carries runtime `mode`
   `boll_stochrsi_v1`.
 - **Risk gates on entry** (`RiskManager.CanEnter`, each refusal has a literal
   reason string): kill switch (10% DD from peak, manual reset via MT5 global
-  `XAU_KILL_<login>`), trading window `4–23` server hours, daily exposure
+  `XAU_KILL_<login>_<symbol>`), trading window `4–23` server hours, daily exposure
   `360` min (raised 180→360 on 2026-08-07 after a 3h winning trend ride alone overspent the old budget and blocked follow-up entries; exposure-modeled backtest sweep: 180→+382, 360→+421, unlimited→+465 per week at similar drawdowns — the cap costs little and 360 fits one long ride + normal trades), spread cap, ADX ≥ 10 (lowered 25→20→10 across 2026-08-05/06: MT5's ADX reads low vs textbook, and the gate twice refused strong rally re-entries after high-vol pauses; the full-week sweep showed 10 beats 20/25 on BOTH profit and drawdown — 10 blocks only dead-flat tape. Re-review with more calibration data).
 - **Sizing**: 1.0% equity risk over the ACTUAL stop distance (raised from 0.5% on 2026-08-09: week sweep showed +$610 vs +$421 at 7.2% vs 3.8% DD; 1.5%+ trips the kill switch — do not raise further without a month of positive calibration data); adds shrink 70%.
 - **Stops**: entry stop = HalfTrend wick extreme ± `0.75×ATR(14)` pad
@@ -61,10 +61,15 @@ account state + `algo_trading`; the response carries runtime `mode`
   the newest (lagging ladder; secures veterans, keeps room).
 - **Exits**: dual-confirmation reversal (opposite signal = flip + EMA
   confirm), proportional profit lock (close when profit ≤ 50% of peak once
-  peak ≥ 1R; peak in MT5 global `XAU_PEAK_<login>`), profit target +2% of
-  cycle balance (`XAU_CYCLE_BAL_<login>`), the shared ladder stop, and the
+  peak ≥ 1R; peak in MT5 global `XAU_PEAK_<login>_<symbol>`), profit target +2% of
+  cycle balance (`XAU_CYCLE_BAL_<login>_<symbol>`), the shared ladder stop, and the
   **23:54 pre-break flatten** (closes everything before the 23:59–01:00
   server maintenance break; retries until flat; notifies 🌙).
+- All EA global-variable keys are per-symbol since 2026-08-09:
+  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK; EXPO adds a
+  trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
+  one-time copy old→new + delete-old (never deletes unless the new key was
+  written; prints one line per migrated key).
 - Trade events (`/trade-event`) carry `sl`, `tp` (basket target price,
   EA-computed), `final` (basket-gone flag — partial leg stop-outs are
   non-final and must not trigger P/L messages/renders).
