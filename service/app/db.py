@@ -56,6 +56,13 @@ _PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
   created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER
 )"""
 
+_SPREAD_SCHEMA = """CREATE TABLE IF NOT EXISTS spread_history (
+  bar_time INTEGER PRIMARY KEY,
+  spread_min REAL,
+  spread_avg REAL,
+  spread_max REAL
+)"""
+
 _PROPOSALS_SCHEMA = """CREATE TABLE IF NOT EXISTS proposals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_ts INTEGER NOT NULL,
@@ -92,6 +99,7 @@ class SignalDb:
         self.conn.execute(_TRADES_SCHEMA)
         self.conn.execute(_KV_SCHEMA)
         self.conn.execute(_PROFILE_SCHEMA)
+        self.conn.execute(_SPREAD_SCHEMA)
         self.conn.execute(_PROPOSALS_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
@@ -193,6 +201,31 @@ class SignalDb:
              int(hb["kill_switch"]), hb["exposure_min"], hb["active_strategy"]))
         self.conn.commit()
         return True
+
+    def upsert_spread(self, *, bar_time: int, spread_min: float,
+                      spread_avg: float, spread_max: float) -> None:
+        """One row per closed bar; a re-post for the same bar replaces it."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO spread_history"
+            " (bar_time, spread_min, spread_avg, spread_max) VALUES (?,?,?,?)",
+            (bar_time, spread_min, spread_avg, spread_max))
+        self.conn.commit()
+
+    def spread_stats(self, hours: int = 24) -> dict:
+        """Aggregate spread over the most recent window. The window is
+        anchored to the newest bar_time in the table (broker server clock),
+        not the wall clock -- bar_time is server time (GMT+3 summer) while
+        time.time() is UTC, and anchoring to MAX(bar_time) sidesteps that
+        offset entirely."""
+        row = self.conn.execute(
+            "SELECT COUNT(*), MIN(spread_min), AVG(spread_avg), MAX(spread_max)"
+            " FROM spread_history WHERE bar_time >="
+            " (SELECT MAX(bar_time) FROM spread_history) - ?",
+            (hours * 3600,)).fetchone()
+        n = row[0] or 0
+        if n == 0:
+            return {"n": 0, "min": 0.0, "avg": 0.0, "max": 0.0}
+        return {"n": n, "min": row[1], "avg": row[2], "max": row[3]}
 
     def equity_series(self, limit: int = 1440) -> list:
         rows = self.conn.execute(

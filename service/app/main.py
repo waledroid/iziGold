@@ -335,6 +335,13 @@ def analyze(req: AnalyzeRequest):
         mode=settings.mode, ai_available=ai_available)
 
     app.state.db.resolve_outcomes(req.candles, settings.horizon)
+    # Spread telemetry (ea-scope spec §3): archive the closed bar's spread
+    # aggregates. An all-zero triple means "no samples / old EA" -- skip it
+    # rather than store a meaningless row.
+    if req.spread_min > 0 or req.spread_avg > 0 or req.spread_max > 0:
+        app.state.db.upsert_spread(
+            bar_time=req.candles[-1].t, spread_min=req.spread_min,
+            spread_avg=req.spread_avg, spread_max=req.spread_max)
     if req.signal != "NONE":
         app.state.db.insert_signal(
             bar_time=req.candles[-1].t, symbol=req.symbol, signal=req.signal,

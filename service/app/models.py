@@ -24,6 +24,11 @@ class AnalyzeRequest(BaseModel):
     candles: list[Candle] = Field(min_length=50)
     strategy_id: str = "unknown"
     shadows: list[ShadowSignal] = []
+    # Per-bar spread telemetry (points) sampled by the EA every timer tick
+    # over the CLOSED bar; 0.0 = unknown / no samples (old EAs omit these).
+    spread_min: float = 0.0
+    spread_avg: float = 0.0
+    spread_max: float = 0.0
 
 
 class AnalyzeResponse(BaseModel):
