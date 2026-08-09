@@ -9,7 +9,7 @@ private:
    int    m_adxHandle;
    long   m_login;
 
-   string Key(string tag) { return "XAU_" + tag + "_" + (string)m_login; }
+   string Key(string tag) { return "XAU_" + tag + "_" + (string)m_login + "_" + _Symbol; }
    string ExpoKey()
      {
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);

@@ -146,6 +146,37 @@ void ApplyDarkTheme()
    ChartRedraw();
   }
 
+// One-time migration of login-only global-variable keys to the per-symbol
+// shape XAU_<name>_<login>_<symbol> (spec 2026-08-09 §5). Defensive: the old
+// key is deleted only after the new key was successfully written, and an
+// already-present new key is never overwritten.
+void MigrateGlobalKey(const string oldKey, const string newKey)
+  {
+   if(!GlobalVariableCheck(oldKey) || GlobalVariableCheck(newKey)) return;
+   double v = GlobalVariableGet(oldKey);
+   if(GlobalVariableSet(newKey, v) > 0)
+     {
+      GlobalVariableDel(oldKey);
+      PrintFormat("XauAssistant: migrated global %s -> %s (value %.2f)", oldKey, newKey, v);
+     }
+   else
+      PrintFormat("XauAssistant: FAILED migrating global %s -> %s; old key kept", oldKey, newKey);
+  }
+
+void MigrateGlobalKeys()
+  {
+   string login = "_" + (string)AccountInfoInteger(ACCOUNT_LOGIN);
+   string names[] = {"XAU_KILL", "XAU_HWM", "XAU_CYCLE_BAL", "XAU_PEAK"};
+   for(int i = 0; i < ArraySize(names); i++)
+      MigrateGlobalKey(names[i] + login, names[i] + login + "_" + _Symbol);
+   // Exposure keys are dated; only today's key still matters (stale dated
+   // keys are inert and expire via MT5's 4-week global-variable TTL).
+   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   string day = StringFormat("%04d%02d%02d", dt.year, dt.mon, dt.day);
+   MigrateGlobalKey("XAU_EXPO" + login + "_" + day,
+                    "XAU_EXPO" + login + "_" + _Symbol + "_" + day);
+  }
+
 int OnInit()
   {
    if(ExecutionMode == EXEC_AUTO && !AllowLiveTrading &&
@@ -165,6 +196,7 @@ int OnInit()
       g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");
       return INIT_FAILED;
      }
+   MigrateGlobalKeys();
    if(ApplyChartTheme) ApplyDarkTheme();
    g_registry.Active().EnablePaint(true);
    g_api.Init(ApiUrl, ApiTimeoutMs);

@@ -19,8 +19,8 @@ private:
    double        m_lastEntryPrice;
    double        m_ratios[3];
 
-   string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN); }
-   string PeakKey() { return "XAU_PEAK_" + (string)AccountInfoInteger(ACCOUNT_LOGIN); }
+   string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string PeakKey() { return "XAU_PEAK_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
 
    int CountOwn()
      {
