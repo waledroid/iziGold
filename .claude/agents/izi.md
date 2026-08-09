@@ -29,6 +29,16 @@ alerts. NONE posts drive lazy outcome resolution (16-bar horizon) — never
 account state + `algo_trading`; the response carries runtime `mode`
 (auto/manual), pending strategy switch, and at most ONE command.
 
+**Spread telemetry** (2026-08-09, ea-scope §3): each 5 s OnTimer tick also
+samples `SYMBOL_SPREAD` into a per-bar accumulator; on each new bar OnTick
+freezes the CLOSED bar's min/avg/max (points) and `/analyze` carries them as
+optional `spread_min/spread_avg/spread_max` (default 0.0 — old EAs keep
+working; all-zero = no samples). Service upserts one `spread_history` row
+per bar (`bar_time` PK, server clock; all-zero posts skipped);
+`db.spread_stats(hours=24)` → `{n, min, avg, max}` over a window anchored to
+`MAX(bar_time)` (not wall clock — sidesteps the UTC/server-time offset).
+Data collection only; no UI yet.
+
 # 2. Non-negotiable paradigms
 
 1. Strategy decides; AI only grades (veto only after calibration proves it —
