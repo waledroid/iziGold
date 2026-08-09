@@ -53,7 +53,7 @@ account state + `algo_trading`; the response carries runtime `mode`
   reason string): kill switch (10% DD from peak, manual reset via MT5 global
   `XAU_KILL_<login>`), trading window `4–23` server hours, daily exposure
   `360` min (raised 180→360 on 2026-08-07 after a 3h winning trend ride alone overspent the old budget and blocked follow-up entries; exposure-modeled backtest sweep: 180→+382, 360→+421, unlimited→+465 per week at similar drawdowns — the cap costs little and 360 fits one long ride + normal trades), spread cap, ADX ≥ 10 (lowered 25→20→10 across 2026-08-05/06: MT5's ADX reads low vs textbook, and the gate twice refused strong rally re-entries after high-vol pauses; the full-week sweep showed 10 beats 20/25 on BOTH profit and drawdown — 10 blocks only dead-flat tape. Re-review with more calibration data).
-- **Sizing**: 0.5% equity risk over the ACTUAL stop distance; adds shrink 70%.
+- **Sizing**: 1.0% equity risk over the ACTUAL stop distance (raised from 0.5% on 2026-08-09: week sweep showed +$610 vs +$421 at 7.2% vs 3.8% DD; 1.5%+ trips the kill switch — do not raise further without a month of positive calibration data); adds shrink 70%.
 - **Stops**: entry stop = HalfTrend wick extreme ± `0.75×ATR(14)` pad
   (`StopBufferATR`). Pyramid ladder (`RatchetBasketStop`, ONE shared stop on
   all legs, derived live from broker state — reload-safe): add 1 → halfway

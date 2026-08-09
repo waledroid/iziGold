@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
 from app.indicators import ema, halftrend  # noqa: E402
 
 # --- current EA inputs ---
-RISK_PCT = 0.5
+RISK_PCT = 1.0
 STOP_BUFFER_ATR = 0.75
 CONFIRM_CLOSES = 1
 EMA_LEN = 55
