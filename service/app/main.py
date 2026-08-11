@@ -191,6 +191,7 @@ async def lifespan(app: FastAPI):
     app.state.latest_heartbeat = None
     app.state.ticker = TickerState()
     app.state.ticker_busy = False
+    app.state.ticker_task = None
     app.state.pending_switch = None
     app.state.last_candles = None
     app.state.recent_candles = None
@@ -421,7 +422,7 @@ async def heartbeat(hb: HeartbeatRequest):
             finally:
                 app.state.ticker_busy = False
 
-        asyncio.create_task(_ticker_bg())
+        app.state.ticker_task = asyncio.create_task(_ticker_bg())
     if prev_algo_trading != hb.algo_trading:
         tg = getattr(app.state, "telegram", None)
         if tg is not None:
