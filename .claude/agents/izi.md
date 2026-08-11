@@ -109,7 +109,11 @@ Quiet by default: only proposals, executions, failures, command replies.
   `/bal`, `/mode` (AUTO/MANUAL buttons), `/strategy` (switch buttons),
   `/config`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "3").
+  forces rewrite; now "3"). The version-bump edit also re-pins (a manually
+  unpinned message otherwise stays unpinned forever once the version
+  matches); if the pin is lost with a matching version, clear the
+  `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service
+  restart) recreates and pins a fresh message.
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
   (`exitnow:` callback); dashboard `/ui/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes

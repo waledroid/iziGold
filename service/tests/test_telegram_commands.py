@@ -603,10 +603,14 @@ def test_pinned_tick_edits_when_stored_version_differs(tmp_path):
     pinned_tick(app, client)
 
     methods = [c[0] for c in ft.calls]
-    assert methods == ["editMessageText"]
+    # Re-pin after the edit: the message may have been manually unpinned,
+    # and once the version matches again pinned_tick no-ops forever — the
+    # version-bump edit is the only chance to restore the pin.
+    assert methods == ["editMessageText", "pinChatMessage"]
     payload = ft.calls[0][1]
     assert payload["message_id"] == 999
     assert payload["text"] == format_pinned_help()
+    assert ft.calls[1][1]["message_id"] == 999
     assert db.get_kv("pinned_help_version") == PINNED_HELP_VERSION
 
 

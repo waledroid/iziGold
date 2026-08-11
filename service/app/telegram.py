@@ -390,6 +390,10 @@ def pinned_tick(app, client: "TelegramClient") -> None:
         if result is None or not result.get("ok", True):
             app.state.db.set_kv("pinned_message_id", "")
             return
+        # Re-pin after a successful edit: the message may have been manually
+        # unpinned since creation, and editing alone leaves it unpinned
+        # forever once the version matches again.
+        client.pin_message(numeric_id)
         app.state.db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
         return
     result = client.send_message(text)
