@@ -88,6 +88,8 @@ Data collection only; no UI yet.
 
 **TelegramClient** (`app/telegram.py`): low-level HTTP transport to Telegram Bot API. Owner-chat methods (`send_message`, `send_photo`, `edit_message`, `answer_callback`) default to `self.chat_id`. **Channel-addressed methods** (2026-08-11, phase 1 of broadcast feature) — `send_message_to(chat_id, text)`, `send_photo_to(chat_id, caption, png_bytes)`, `edit_message_to(chat_id, message_id, text)` — explicitly target a `chat_id`, and **structurally forbid reply_markup** (channels must never carry interactive buttons, structural invariant — the restriction lives in the method signature, not in call-site discipline).
 
+**Privacy filter for channels** (2026-08-11, phase 2): `handle_command`, `_format_status`, `_format_balance` now accept a `redacted` parameter (default `False`, preserving owner-chat output byte-identical). When `redacted=True`: `/status` drops the 💰 balance line and drawdown suffix; `/bal` becomes `💰 Balance: ••• | Equity: ••• | Floating: +$X.XX`; `/config` masks balance/equity values with `REDACTED` ("•••"). Trade-level figures (position P/L, open prices, lots) remain visible; every other command (stats/history/switch/mode/strategy) is already account-free. Channel members see what trades perform, never what the account is worth.
+
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the
   strategy holds the stance; expiry edits ⌛); approved → command via

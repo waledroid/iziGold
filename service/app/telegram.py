@@ -7,6 +7,11 @@ import httpx
 
 _ICON = {"confirm": "✅", "conflict": "⚠️", "neutral": "➖"}
 
+# Channel privacy filter: account-level figures are replaced with this
+# marker in every channel-bound text (spec: members see how trades
+# perform, never what the account is worth).
+REDACTED = "•••"
+
 _PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
@@ -226,7 +231,7 @@ def _ea_connection_line(app) -> str:
     return f"EA: 🔴 disconnected (last seen {int(age // 60)}m ago)"
 
 
-def _format_status(app) -> str:
+def _format_status(app, redacted=False) -> str:
     latest = app.state.latest_heartbeat
     connection = _ea_connection_line(app)
     session_line = f"🕒 {market_session()}"
@@ -243,7 +248,7 @@ def _format_status(app) -> str:
         protection = "⛔ KILL SWITCH TRIPPED — trading halted"
     else:
         protection = "🛡 Protection armed"
-        if hb.hwm:
+        if hb.hwm and not redacted:
             dd = max(0.0, (1 - hb.equity / hb.hwm) * 100)
             protection += f" · drawdown {dd:.1f}%"
     db = getattr(app.state, "db", None)
@@ -254,8 +259,10 @@ def _format_status(app) -> str:
     ]
     if getattr(hb, "algo_trading", True) is False:
         lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")
+    if not redacted:
+        lines.append(f"💰 {hb.equity} equity · {hb.balance} balance "
+                     f"· {hb.floating_pl:+g} floating")
     lines += [
-        f"💰 {hb.equity} equity · {hb.balance} balance · {hb.floating_pl:+g} floating",
         protection,
         f"🎯 {strategy} · {mode}",
     ]
@@ -300,7 +307,7 @@ def _format_history(app) -> str:
     return "\n".join(lines)
 
 
-def _format_balance(app) -> str:
+def _format_balance(app, redacted=False) -> str:
     """/bal reply: balance, equity, floating P/L from the latest heartbeat
     ((ts, HeartbeatRequest) tuple | None on app.state.latest_heartbeat)."""
     latest = app.state.latest_heartbeat
@@ -309,6 +316,8 @@ def _format_balance(app) -> str:
     _, hb = latest
     sign = "+" if hb.floating_pl >= 0 else "-"
     floating = f"{sign}${abs(hb.floating_pl):.2f}"
+    if redacted:
+        return f"💰 Balance: {REDACTED} | Equity: {REDACTED} | Floating: {floating}"
     return (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
             f"Floating: {floating}")
 
@@ -393,16 +402,16 @@ def pinned_tick(app, client: "TelegramClient") -> None:
     app.state.db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
 
 
-def handle_command(text: str, app) -> str | None:
+def handle_command(text: str, app, redacted=False) -> str | None:
     """Pure function mapping a slash command to a reply, or None if unknown."""
     parts = text.strip().split()
     if not parts:
         return None
     cmd = parts[0].lower()
     if cmd == "/status":
-        return _format_status(app)
+        return _format_status(app, redacted=redacted)
     if cmd == "/bal":
-        return _format_balance(app)
+        return _format_balance(app, redacted=redacted)
     if cmd == "/stats":
         return _format_stats(app)
     if cmd == "/history":
@@ -432,7 +441,8 @@ def handle_command(text: str, app) -> str | None:
             f"strategy: {hb.active_strategy if hb else '?'}\n"
             f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
             f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
-            f"balance: {hb.balance if hb else '?'} | equity: {hb.equity if hb else '?'}\n"
+            f"balance: {REDACTED if redacted else (hb.balance if hb else '?')} | "
+            f"equity: {REDACTED if redacted else (hb.equity if hb else '?')}\n"
             f"kill switch: {hb.kill_switch if hb else '?'} | "
             f"window open: {hb.window_open if hb else '?'}\n"
             f"spread: {hb.spread_points if hb else '?'}pt")

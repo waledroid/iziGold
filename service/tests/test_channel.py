@@ -53,3 +53,79 @@ def test_owner_methods_unchanged():
     client, t = _client()
     client.send_message("owner text")
     assert t.calls[0][1]["chat_id"] == "555"
+
+
+import time
+import types
+
+from app.telegram import REDACTED, handle_command
+
+
+class _KvDb:
+    """Minimal db stub: exec_mode + kv store, enough for handle_command."""
+
+    def __init__(self):
+        self.kv = {}
+
+    def exec_mode(self):
+        return "auto"
+
+    def get_kv(self, key):
+        return self.kv.get(key)
+
+    def set_kv(self, key, value):
+        self.kv[key] = value
+
+    def strategy_ids(self):
+        return ["halftrend_ema_v1"]
+
+
+def _hb_ns(**over):
+    base = dict(equity=4785.18, balance=4719.78, floating_pl=65.40,
+                positions=[], kill_switch=False, hwm=4800.0, exposure_min=5,
+                window_open=True, spread_points=25.0,
+                active_strategy="halftrend_ema_v1", algo_trading=True)
+    base.update(over)
+    return types.SimpleNamespace(**base)
+
+
+def _cmd_app():
+    return types.SimpleNamespace(state=types.SimpleNamespace(
+        latest_heartbeat=(time.time(), _hb_ns()), pending_switch=None,
+        db=_KvDb(), pending_channel=None))
+
+
+def test_status_redacted_hides_account_figures():
+    app = _cmd_app()
+    text = handle_command("/status", app, redacted=True)
+    for figure in ("4785.18", "4719.78", "4800", "drawdown"):
+        assert figure not in text
+    assert "halftrend_ema_v1" in text          # strategy stays
+    assert "Protection armed" in text           # state stays, number goes
+
+
+def test_status_redacted_keeps_position_pl():
+    app = _cmd_app()
+    app.state.latest_heartbeat[1].positions = [types.SimpleNamespace(
+        ticket=7, direction="SELL", lots=0.02, open_price=4391.60,
+        sl=4400.0, profit=54.02)]
+    text = handle_command("/status", app, redacted=True)
+    assert "54.02" in text and "4391.6" in text
+
+
+def test_bal_redacted_masks_balance_and_equity():
+    text = handle_command("/bal", app=_cmd_app(), redacted=True)
+    assert REDACTED in text
+    assert "4719.78" not in text and "4785.18" not in text
+    assert "+$65.40" in text                     # floating is trade-level
+
+
+def test_config_redacted_masks_account_line():
+    text = handle_command("/config", app=_cmd_app(), redacted=True)
+    assert "4719.78" not in text and "4785.18" not in text
+    assert REDACTED in text
+
+
+def test_default_is_unredacted():
+    text = handle_command("/bal", app=_cmd_app())
+    assert "4719.78" in text
