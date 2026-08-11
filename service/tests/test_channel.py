@@ -207,7 +207,7 @@ def test_channel_command_states_and_unlink():
 
 def test_pinned_help_mentions_channel_and_version_bumped():
     assert "/channel" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "4"
+    assert PINNED_HELP_VERSION == "5"
 
 
 import importlib
