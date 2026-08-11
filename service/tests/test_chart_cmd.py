@@ -83,3 +83,95 @@ def test_heartbeat_model_accepts_old_and_new_payloads():
                            bar_t=123, bar_o=1.0, bar_h=2.0, bar_l=0.5,
                            bar_c=1.5)
     assert new.bar_t == 123 and new.bar_c == 1.5
+
+
+import asyncio
+import pathlib
+
+from app.telegram import PINNED_HELP_VERSION, TelegramClient, format_pinned_help
+
+
+class FakeTransport:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, method, payload, files=None):
+        self.calls.append((method, payload, files))
+        return {"ok": True, "result": {"message_id": 1}}
+
+    def of(self, method):
+        return [c for c in self.calls if c[0] == method]
+
+
+class _Db:
+    def __init__(self, channel_id=""):
+        self._c = channel_id
+
+    def get_kv(self, key):
+        return self._c if key == "channel_id" else None
+
+
+def _snap_app(tmp_path, candles, hb=None, hb_age=0.0, channel_id=""):
+    import time as _time
+    from app import main as app_main
+    transport = FakeTransport()
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        telegram=TelegramClient("tok", "555", transport=transport),
+        recent_candles=({"symbol": "XAUUSD", "timeframe": "M5",
+                         "candles": candles} if candles else None),
+        latest_heartbeat=((_time.time() - hb_age, hb) if hb is not None else None),
+        screenshot_dir=pathlib.Path(tmp_path),
+        db=_Db(channel_id)))
+    return app, transport, app_main
+
+
+def _full_hb(bar_t, positions=()):
+    from app.models import HeartbeatRequest
+    return HeartbeatRequest(equity=1000.0, balance=1000.0, floating_pl=0.0,
+                            positions=list(positions), bar_t=bar_t,
+                            bar_o=5000.0, bar_h=5002.0, bar_l=4998.0,
+                            bar_c=5001.0)
+
+
+def test_chart_sends_photo_with_caption(tmp_path):
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300))
+    asyncio.run(m._send_chart_snapshot(app))
+    photos = t.of("sendPhoto")
+    assert len(photos) == 1
+    assert photos[0][1]["chat_id"] == "555"
+    assert "XAUUSD" in photos[0][1]["caption"]
+    assert "closed bars only" not in photos[0][1]["caption"]
+
+
+def test_chart_no_candles_replies_text(tmp_path):
+    app, t, m = _snap_app(tmp_path, candles=None)
+    asyncio.run(m._send_chart_snapshot(app))
+    assert t.of("sendPhoto") == []
+    assert "no candles yet" in t.of("sendMessage")[0][1]["text"]
+
+
+def test_chart_stale_heartbeat_notes_closed_bars_only(tmp_path):
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300), hb_age=120.0)
+    asyncio.run(m._send_chart_snapshot(app))
+    assert "closed bars only" in t.of("sendPhoto")[0][1]["caption"]
+
+
+def test_chart_mirrors_photo_to_channel_owner_first(tmp_path):
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300),
+                          channel_id="-1001234")
+    asyncio.run(m._send_chart_snapshot(app))
+    photos = t.of("sendPhoto")
+    assert [p[1]["chat_id"] for p in photos] == ["555", "-1001234"]
+    assert photos[1][1]["caption"].startswith("👤 /chart")
+    assert "reply_markup" not in photos[1][1]
+
+
+def test_pinned_help_lists_chart_and_version_bumped():
+    assert "/chart" in format_pinned_help()
+    assert PINNED_HELP_VERSION == "5"

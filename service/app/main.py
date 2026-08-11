@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from app.analysis import analyze_forecast
+from app.chart_cmd import merge_forming_bar
 from app.config import settings
 from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
@@ -16,7 +17,7 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, NotifyRequest, ProposalResultRequest,
                         TradeEventRequest)
 from app.regime import classify_regime, last_atr
-from app.render import render_trade_chart
+from app.render import render_snapshot_chart, render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
@@ -106,6 +107,12 @@ async def telegram_poller(app: FastAPI):
                 text = message.get("text") or ""
                 msg_chat_id = str(message.get("chat", {}).get("id"))
                 if text.startswith("/") and msg_chat_id == chat_id:
+                    if text.strip().split()[0].lower() == "/chart":
+                        try:
+                            await _send_chart_snapshot(app)
+                        except Exception:
+                            pass  # fail-open: /chart must never kill the poller
+                        continue
                     reply = handle_command(text, app)
                     if isinstance(reply, tuple):
                         await asyncio.to_thread(app.state.telegram.send_message,
@@ -165,6 +172,41 @@ async def _mirror(app, text: str | None = None,
             await asyncio.to_thread(tg.send_message_to, cid, text)
     except Exception:
         pass
+
+
+_CHART_HB_FRESH_S = 60
+
+
+async def _send_chart_snapshot(app) -> None:
+    """/chart: render closed candles + the heartbeat's forming bar and send
+    as a photo (owner first, channel mirror after). Every failure path
+    replies with text instead; never raises into the poller."""
+    tg = app.state.telegram
+    rc = app.state.recent_candles
+    if not rc or not rc.get("candles"):
+        await asyncio.to_thread(
+            tg.send_message, "no candles yet — waiting for the first bar post")
+        return
+    latest = app.state.latest_heartbeat
+    hb = latest[1] if latest is not None else None
+    stale = (latest is None or (time.time() - latest[0]) > _CHART_HB_FRESH_S
+             or not getattr(hb, "bar_t", 0))
+    candles = rc["candles"]
+    if not stale:
+        candles = merge_forming_bar(candles, hb)
+    out = str(app.state.screenshot_dir / "chart_cmd.png")
+    positions = hb.positions if hb is not None else []
+    ok = await asyncio.to_thread(render_snapshot_chart, candles, out, positions)
+    if not ok:
+        await asyncio.to_thread(tg.send_message, "chart render failed")
+        return
+    caption = (f"📈 {rc['symbol']} {rc['timeframe']} — {candles[-1].c:g} "
+               f"(as of {time.strftime('%H:%M:%S')})")
+    if stale:
+        caption += " · closed bars only"
+    png = await asyncio.to_thread(Path(out).read_bytes)
+    await asyncio.to_thread(tg.send_photo, caption, png)
+    await _mirror(app, photo_bytes=png, caption=f"👤 /chart\n{caption}")
 
 
 def _mirror_command_text(text: str, app) -> str | None:

@@ -108,13 +108,29 @@ Quiet by default: only proposals, executions, failures, command replies.
   reason. **AUTO**: trades immediately; failures notify 🚫 via `/notify`.
 - **Commands**: `/status` (session 🕒, EA connection, algo-trading warning),
   `/bal`, `/mode` (AUTO/MANUAL buttons), `/strategy` (switch buttons),
-  `/config`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
+  `/config`, `/chart`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "4"; full command list incl. /stats, /history, /switch). The version-bump edit also re-pins (a manually
+  forces rewrite; now "5"; full command list incl. /chart, /stats, /history, /switch). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service
   restart) recreates and pins a fresh message.
+- **`/chart`** (2026-08-11, `app/main.py` `_send_chart_snapshot`, intercepted
+  in the poller before `handle_command` so the channel text-mirror never
+  fires for it): renders the closed-candle accumulator (`app.state
+  .recent_candles`) plus the latest heartbeat's still-forming bar 0
+  (`merge_forming_bar`, `app/chart_cmd.py`) via `render_snapshot_chart`
+  (`app/render.py`), giving real-time freshness down to the ≤5 s heartbeat
+  cadence instead of waiting for the next bar close. Open-basket
+  entry/SL overlays draw from the heartbeat's `positions`. Heartbeat older
+  than 60 s (`_CHART_HB_FRESH_S`) → skip the forming-bar merge and append
+  " · closed bars only" to the caption; no candles yet → reply text "no
+  candles yet — waiting for the first bar post" instead of a photo; render
+  failure → reply text "chart render failed". Every failure path replies
+  with text and never raises into the poller. Owner gets the photo first
+  (`tg.send_photo`), then the channel mirror (if linked) via `_mirror(app,
+  photo_bytes=..., caption="👤 /chart\n" + caption)` — same owner-first,
+  fail-open, no-`reply_markup` mirroring as everything else.
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
   (`exitnow:` callback); dashboard `/ui/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
