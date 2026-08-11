@@ -129,3 +129,65 @@ def test_config_redacted_masks_account_line():
 def test_default_is_unredacted():
     text = handle_command("/bal", app=_cmd_app())
     assert "4719.78" in text
+
+
+from app.telegram import (PINNED_HELP_VERSION, format_pinned_help,
+                          handle_callback, handle_channel_post)
+
+
+def _post(chat_id="-1001234", title="XAU Signals"):
+    return {"chat": {"id": chat_id, "title": title, "type": "channel"},
+            "text": "hello"}
+
+
+def test_channel_post_offers_link_to_owner():
+    app = _cmd_app()
+    result = handle_channel_post(_post(), app)
+    assert result is not None
+    text, keyboard = result
+    assert "XAU Signals" in text
+    flat = [b for row in keyboard["inline_keyboard"] for b in row]
+    assert [b["callback_data"] for b in flat] == \
+        ["chan:link:-1001234", "chan:ignore:-1001234"]
+    assert app.state.pending_channel == "-1001234"
+
+
+def test_channel_post_ignored_when_already_linked_or_pending():
+    app = _cmd_app()
+    app.state.db.set_kv("channel_id", "-1009999")
+    assert handle_channel_post(_post(), app) is None
+    app2 = _cmd_app()
+    app2.state.pending_channel = "-1008888"
+    assert handle_channel_post(_post(), app2) is None
+
+
+def test_chan_link_callback_stores_kv_and_clears_pending():
+    app = _cmd_app()
+    app.state.pending_channel = "-1001234"
+    edit_text, toast = handle_callback("chan:link:-1001234", app)
+    assert app.state.db.get_kv("channel_id") == "-1001234"
+    assert app.state.pending_channel is None
+    assert "linked" in edit_text.lower()
+
+
+def test_chan_ignore_callback_stores_nothing():
+    app = _cmd_app()
+    app.state.pending_channel = "-1001234"
+    edit_text, toast = handle_callback("chan:ignore:-1001234", app)
+    assert not app.state.db.get_kv("channel_id")
+    assert app.state.pending_channel is None
+
+
+def test_channel_command_states_and_unlink():
+    app = _cmd_app()
+    assert "no channel linked" in handle_command("/channel", app)
+    app.state.db.set_kv("channel_id", "-1001234")
+    assert "-1001234" in handle_command("/channel", app)
+    reply = handle_command("/channel unlink", app)
+    assert "unlinked" in reply
+    assert not app.state.db.get_kv("channel_id")
+
+
+def test_pinned_help_mentions_channel_and_version_bumped():
+    assert "/channel" in format_pinned_help()
+    assert PINNED_HELP_VERSION == "3"

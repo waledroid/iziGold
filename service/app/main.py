@@ -18,8 +18,8 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
-                          format_proposal, handle_callback, handle_command,
-                          pinned_tick, set_active_client)
+                          format_proposal, handle_callback, handle_channel_post,
+                          handle_command, pinned_tick, set_active_client)
 from app.ticker import TickerState, ticker_tick
 from app.verdict import combine
 
@@ -91,6 +91,14 @@ async def telegram_poller(app: FastAPI):
                         if edit_text and msg.get("message_id"):
                             await asyncio.to_thread(app.state.telegram.edit_message,
                                                     msg["message_id"], edit_text)
+                    continue
+                ch_post = upd.get("channel_post")
+                if ch_post is not None:
+                    offer = handle_channel_post(ch_post, app)
+                    if offer is not None:
+                        await asyncio.to_thread(
+                            app.state.telegram.send_message,
+                            offer[0], offer[1])
                     continue
                 message = upd.get("message") or {}
                 text = message.get("text") or ""
@@ -193,6 +201,7 @@ async def lifespan(app: FastAPI):
     app.state.ticker_busy = False
     app.state.ticker_task = None
     app.state.pending_switch = None
+    app.state.pending_channel = None
     app.state.last_candles = None
     app.state.recent_candles = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)

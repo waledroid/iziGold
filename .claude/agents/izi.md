@@ -92,6 +92,26 @@ Data collection only; no UI yet.
 
 **Live ticker** (2026-08-11, `app/ticker.py`): one self-editing Telegram message per trade cycle (flat→open posts a LIVE message, open→open silently edits in-place on profit/price changes throttled to min 5 s apart, open→flat freezes with CLOSED showing the final numbers). Ticker state is in-memory; service restart loses the message tracking and the first new open starts a fresh one. Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Every Telegram call is fail-open: a failed send/edit is dropped and the next heartbeat retries naturally. Posts are driven by `/heartbeat` calls from the EA (~5 s cycle); dispatch is fire-and-forget (`asyncio.create_task` + `to_thread`) so the ticker's Telegram calls never delay the `/heartbeat` response the EA's commands ride on — `app.state.ticker_busy` collapses overlapping runs to at most one in-flight tick. The created task's reference is kept on `app.state.ticker_task` (like `telegram_task`/`pinned_task`) — the event loop only holds a weak reference, so an unstored task can be garbage-collected mid-flight, which would leave `ticker_busy` stuck `True` and silently disable the ticker forever; shutdown cancellation of `ticker_task` is not needed since the ticker is fail-open by design.
 
+**Channel linking** (2026-08-11, phase 3, owner-approved): kv `channel_id`
+is the single source of truth for whether a broadcast channel is linked —
+nothing else gates the channel-mirroring features from phases 1/2/4. Linking
+procedure: add the bot to a channel as admin with post rights → post
+anything in that channel → the poller's `channel_post` branch calls
+`handle_channel_post(post, app)`, which (only if no channel is linked yet
+**and** no offer is already pending, checked via `app.state.pending_channel`)
+stages the channel id on `app.state.pending_channel` and returns an owner-chat
+confirmation `(text, keyboard)` with 🔗 Link / ❌ Ignore buttons
+(`chan:link:<id>` / `chan:ignore:<id>`) — sent to the owner chat, never back
+into the channel. Security invariant: a stranger's channel post can never
+self-link — only tapping ✅ in the owner chat (already gated by the poller's
+existing `from_id == chat_id` callback filter) writes `channel_id` via
+`handle_callback`; both `chan:link` and `chan:ignore` clear
+`app.state.pending_channel` so a fresh offer can be made afterward.
+`/channel` reports the linked id or "no channel linked" with the linking
+instructions; `/channel unlink` clears the kv (mirroring off). `pending_channel`
+is in-memory only (reset to `None` at lifespan startup), so a stale offer
+never survives a service restart.
+
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the
   strategy holds the stance; expiry edits ⌛); approved → command via
@@ -101,8 +121,9 @@ Quiet by default: only proposals, executions, failures, command replies.
   reason. **AUTO**: trades immediately; failures notify 🚫 via `/notify`.
 - **Commands**: `/status` (session 🕒, EA connection, algo-trading warning),
   `/bal`, `/mode` (AUTO/MANUAL buttons), `/strategy` (switch buttons),
-  `/config`, `/stats`, `/history`. Pinned message = static command reference
-  (`PINNED_HELP_VERSION` bump forces rewrite).
+  `/config`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
+  Pinned message = static command reference (`PINNED_HELP_VERSION` bump
+  forces rewrite; now "3").
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
   (`exitnow:` callback); dashboard `/ui/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes

@@ -339,7 +339,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "2"
+PINNED_HELP_VERSION = "3"
 
 
 def format_pinned_help() -> str:
@@ -352,6 +352,7 @@ def format_pinned_help() -> str:
         "/mode — toggle AUTO/MANUAL execution",
         "/strategy — switch active strategy",
         "/config — current settings",
+        "/channel — link/unlink the broadcast channel",
         "🟢 Take / 🔴 Skip on a proposal to act on it.",
         "Valid while the strategy holds this stance.",
     ])
@@ -446,7 +447,40 @@ def handle_command(text: str, app, redacted=False) -> str | None:
             f"kill switch: {hb.kill_switch if hb else '?'} | "
             f"window open: {hb.window_open if hb else '?'}\n"
             f"spread: {hb.spread_points if hb else '?'}pt")
+    if cmd == "/channel":
+        if parts[1:] and parts[1].lower() == "unlink":
+            app.state.db.set_kv("channel_id", "")
+            return "🔗 channel unlinked — mirroring off"
+        cid = app.state.db.get_kv("channel_id")
+        if cid:
+            return f"🔗 linked to channel {cid} — /channel unlink to stop"
+        return ("no channel linked — add the bot as admin to your channel, "
+                "post any message there, then approve the prompt that "
+                "appears here")
     return None
+
+
+def handle_channel_post(post: dict, app):
+    """A message posted in a channel the bot was added to. If no channel is
+    linked and no offer is pending, stage this channel and return the
+    owner-chat confirmation (text, keyboard); otherwise None. Only the
+    owner's ✅ callback (chan:link) actually stores the id — a stranger's
+    channel can never self-link."""
+    chat = post.get("chat") or {}
+    cid = str(chat.get("id") or "")
+    if not cid:
+        return None
+    if app.state.db.get_kv("channel_id"):
+        return None
+    if getattr(app.state, "pending_channel", None) is not None:
+        return None
+    title = chat.get("title") or "channel"
+    app.state.pending_channel = cid
+    text = (f"🔗 Link channel «{title}» ({cid})?\n"
+            f"Members will see trade activity — never account figures.")
+    keyboard = kb([[("✅ Link", f"chan:link:{cid}"),
+                    ("❌ Ignore", f"chan:ignore:{cid}")]])
+    return (text, keyboard)
 
 
 def handle_callback(data: str, app) -> tuple:
@@ -494,4 +528,13 @@ def handle_callback(data: str, app) -> tuple:
                                  latest[1].active_strategy, 0.0, None)
         db.set_proposal_status(pid, "approved", expected="pending")
         return (None, "closing on next heartbeat…")
+    if parts[0] == "chan" and len(parts) == 3:
+        # parts[2] is the channel id; ids are negative ("-100..."), but the
+        # split on ":" is safe — callback data is built as chan:<action>:<id>
+        # and the id contains no colon.
+        app.state.pending_channel = None
+        if parts[1] == "link":
+            db.set_kv("channel_id", parts[2])
+            return (f"🔗 Channel linked ({parts[2]}) — mirroring on.", "linked")
+        return ("Channel ignored.", "ignored")
     return (None, "unknown")
