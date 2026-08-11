@@ -208,3 +208,97 @@ def test_channel_command_states_and_unlink():
 def test_pinned_help_mentions_channel_and_version_bumped():
     assert "/channel" in format_pinned_help()
     assert PINNED_HELP_VERSION == "3"
+
+
+import importlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+class _RecordingTransport:
+    def __init__(self, fail_chat_ids=()):
+        self.calls = []
+        self.fail_chat_ids = set(fail_chat_ids)
+        self._mid = 200
+
+    def __call__(self, method, payload, files=None):
+        self.calls.append((method, payload, files))
+        if str(payload.get("chat_id")) in self.fail_chat_ids:
+            return None
+        if method in ("sendMessage", "sendPhoto"):
+            self._mid += 1
+            return {"ok": True, "result": {"message_id": self._mid}}
+        return {"ok": True}
+
+    def sends(self):
+        return [(p.get("chat_id"), p.get("text") or p.get("caption"))
+                for m, p, f in self.calls if m in ("sendMessage", "sendPhoto")]
+
+
+@pytest.fixture()
+def linked_app(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "mirror.db"))
+    from app import config, main
+    importlib.reload(config)
+    importlib.reload(main)
+    with TestClient(main.app) as client:
+        transport = _RecordingTransport()
+        main.app.state.telegram = TelegramClient("tok", "555",
+                                                 transport=transport)
+        main.app.state.db.set_kv("channel_id", "-1001234")
+        yield main, client, transport
+
+
+def test_notify_mirrors_owner_first(linked_app):
+    main, client, transport = linked_app
+    r = client.post("/notify", json={"text": "🚫 entry not executed: spread"})
+    assert r.status_code == 200
+    sends = transport.sends()
+    assert sends[0][0] == "555"
+    assert sends[1] == ("-1001234", "🚫 entry not executed: spread")
+
+
+def test_channel_failure_leaves_owner_delivery_intact(linked_app):
+    main, client, transport = linked_app
+    transport.fail_chat_ids = {"-1001234"}
+    r = client.post("/notify", json={"text": "hello"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert transport.sends()[0][0] == "555"
+
+
+def test_unlinked_channel_sends_nothing_extra(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "nolink.db"))
+    from app import config, main
+    importlib.reload(config)
+    importlib.reload(main)
+    with TestClient(main.app) as client:
+        transport = _RecordingTransport()
+        main.app.state.telegram = TelegramClient("tok", "555",
+                                                 transport=transport)
+        client.post("/notify", json={"text": "hello"})
+        assert [c for c, _ in transport.sends()] == ["555"]
+
+
+def test_channel_payloads_never_carry_reply_markup(linked_app):
+    main, client, transport = linked_app
+    client.post("/notify", json={"text": "hi"})
+    for method, payload, files in transport.calls:
+        if str(payload.get("chat_id")) == "-1001234":
+            assert "reply_markup" not in payload
+
+
+def test_mirror_helper_redacts_command_replies(linked_app):
+    """Poller-level mirroring is driven by _mirror_command; verify the
+    composed channel text: '👤 /bal' header + redacted reply."""
+    main, client, transport = linked_app
+    hb = {"equity": 4785.18, "balance": 4719.78, "floating_pl": 65.40,
+          "positions": [], "kill_switch": False, "hwm": 4800.0,
+          "exposure_min": 5, "window_open": True, "spread_points": 25.0,
+          "active_strategy": "halftrend_ema_v1"}
+    client.post("/heartbeat", json=hb)
+    text = main._mirror_command_text("/bal", main.app)
+    assert text.startswith("👤 /bal")
+    assert "4719.78" not in text and "•••" in text

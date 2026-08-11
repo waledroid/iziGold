@@ -118,6 +118,35 @@ kv (mirroring off). `pending_channel` is in-memory only (reset to `None` at
 lifespan startup), so a stale offer — including one stuck pending because
 the owner-chat send itself failed — never survives a service restart.
 
+**Outbound mirroring** (2026-08-11, phase 6, `app/main.py`): every owner-chat
+send in `main.py` — `/notify`, the algo-trading on/off transition in
+`/heartbeat`, `maybe_propose`'s proposal message, `/proposal-result`'s
+executed/blocked edit and the messageless close-fail send, the trade-event
+chart photo and final close P/L message, and the poller's command replies and
+callback edits — is mirrored to the linked channel through
+`_mirror(app, text=None, photo_bytes=None, caption="")`, always called
+**strictly after** the owner send it mirrors (ordering is the caller's job,
+not `_mirror`'s). `_mirror` is a pure fail-open no-op when unlinked (`kv
+channel_id` empty/absent) or when no Telegram client is configured; a channel
+delivery failure is swallowed and never affects the owner send or the
+endpoint's response — checked directly by
+`test_channel_failure_leaves_owner_delivery_intact`. It always calls
+`send_message_to`/`send_photo_to` (never the owner methods), so the
+structural no-`reply_markup` invariant holds for every mirrored message too.
+Two call sites don't go through `_mirror` because they run in sync context
+(`/analyze` → `maybe_propose`, called from a sync FastAPI handler): they
+mirror the proposal text with a direct synchronous `tg.send_message_to`
+call, same fail-open try/except. **What's excluded, deliberately**: `/channel`
+command replies (link management is owner-only housekeeping — filtered in
+`_mirror_command_text`) and `chan:` callback taps (link/ignore confirmations
+— filtered inline in the poller by checking `cq["data"].startswith("chan:")`
+before mirroring the edit). Command replies are mirrored through the
+poller-only helper `_mirror_command_text(text, app)`, which re-runs
+`handle_command(text, app, redacted=True)` (not the owner's already-computed
+unredacted reply) and composes `"👤 {text}\n\n{body}"` — so channel members
+see the command that was run and its privacy-filtered answer, never the
+account figures the owner saw.
+
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the
   strategy holds the stance; expiry edits ⌛); approved → command via
