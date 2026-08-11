@@ -107,10 +107,16 @@ self-link — only tapping ✅ in the owner chat (already gated by the poller's
 existing `from_id == chat_id` callback filter) writes `channel_id` via
 `handle_callback`; both `chan:link` and `chan:ignore` clear
 `app.state.pending_channel` so a fresh offer can be made afterward.
-`/channel` reports the linked id or "no channel linked" with the linking
-instructions; `/channel unlink` clears the kv (mirroring off). `pending_channel`
-is in-memory only (reset to `None` at lifespan startup), so a stale offer
-never survives a service restart.
+`handle_callback`'s `chan:` branch also checks the tapped id against the
+*current* `app.state.pending_channel` before acting — a stale `chan:link`/
+`chan:ignore` button left over from a superseded or already-ignored offer
+(still sitting in chat history) replies "offer expired" and touches neither
+kv nor pending state, instead of silently re-linking or re-ignoring whatever
+channel happens to be pending now. `/channel` reports the linked id or "no
+channel linked" with the linking instructions; `/channel unlink` clears the
+kv (mirroring off). `pending_channel` is in-memory only (reset to `None` at
+lifespan startup), so a stale offer — including one stuck pending because
+the owner-chat send itself failed — never survives a service restart.
 
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the

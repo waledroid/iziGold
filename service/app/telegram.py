@@ -532,6 +532,13 @@ def handle_callback(data: str, app) -> tuple:
         # parts[2] is the channel id; ids are negative ("-100..."), but the
         # split on ":" is safe — callback data is built as chan:<action>:<id>
         # and the id contains no colon.
+        # Only honor a tap that matches the current pending offer -- a stale
+        # button from a superseded/ignored offer, still sitting in chat
+        # history, must not silently re-link (or ignore) some other
+        # channel's offer. This is what keeps "one pending offer at a time"
+        # actually true rather than just true at offer-creation time.
+        if parts[2] != getattr(app.state, "pending_channel", None):
+            return (None, "offer expired")
         app.state.pending_channel = None
         if parts[1] == "link":
             db.set_kv("channel_id", parts[2])

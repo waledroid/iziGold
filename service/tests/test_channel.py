@@ -178,6 +178,23 @@ def test_chan_ignore_callback_stores_nothing():
     assert app.state.pending_channel is None
 
 
+def test_chan_link_callback_ignored_when_no_pending_offer():
+    app = _cmd_app()
+    app.state.pending_channel = None
+    edit_text, toast = handle_callback("chan:link:-1001234", app)
+    assert not app.state.db.get_kv("channel_id")
+    assert toast == "offer expired"
+
+
+def test_chan_link_callback_ignored_when_id_does_not_match_pending():
+    app = _cmd_app()
+    app.state.pending_channel = "-100NEW"
+    edit_text, toast = handle_callback("chan:link:-100OLD", app)
+    assert not app.state.db.get_kv("channel_id")
+    assert app.state.pending_channel == "-100NEW"
+    assert toast == "offer expired"
+
+
 def test_channel_command_states_and_unlink():
     app = _cmd_app()
     assert "no channel linked" in handle_command("/channel", app)
