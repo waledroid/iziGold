@@ -20,6 +20,7 @@ from app.render import render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
                           format_proposal, handle_callback, handle_command,
                           pinned_tick, set_active_client)
+from app.ticker import TickerState, ticker_tick
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -188,6 +189,8 @@ async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
+    app.state.ticker = TickerState()
+    app.state.ticker_busy = False
     app.state.pending_switch = None
     app.state.last_candles = None
     app.state.recent_candles = None
@@ -403,6 +406,22 @@ async def heartbeat(hb: HeartbeatRequest):
     app.state.latest_heartbeat = (time.time(), hb)
     app.state.db.insert_heartbeat({**hb.model_dump(exclude={"positions"}),
                                    "open_count": len(hb.positions)})
+    # Live ticker: fire-and-forget so three potential Telegram calls (10 s
+    # timeout each) can never delay this response — the EA's commands ride
+    # on it. ticker_busy collapses overlapping runs to at most one.
+    if not app.state.ticker_busy and getattr(app.state, "telegram", None) is not None:
+        app.state.ticker_busy = True
+        hb_now = time.time()
+
+        async def _ticker_bg(hb=hb, hb_now=hb_now, previous=previous):
+            try:
+                await asyncio.to_thread(ticker_tick, app, hb, hb_now, previous)
+            except Exception:
+                pass
+            finally:
+                app.state.ticker_busy = False
+
+        asyncio.create_task(_ticker_bg())
     if prev_algo_trading != hb.algo_trading:
         tg = getattr(app.state, "telegram", None)
         if tg is not None:

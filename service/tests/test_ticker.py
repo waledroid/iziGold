@@ -212,3 +212,37 @@ def test_open_to_open_edit_failure_retries():
 
     # Now the edit should have succeeded and text updated
     assert "60.00" in app.state.ticker.owner_text
+
+
+def test_heartbeat_endpoint_triggers_ticker(tmp_path, monkeypatch):
+    """Integration: /heartbeat with positions posts a LIVE message without
+    delaying the response; flat heartbeats post nothing."""
+    import importlib
+
+    monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "tick.db"))
+    from fastapi.testclient import TestClient
+
+    from app import config, main
+    importlib.reload(config)
+    importlib.reload(main)
+    with TestClient(main.app) as client:
+        transport = FakeTransport()
+        main.app.state.telegram = TelegramClient("tok", "555",
+                                                 transport=transport)
+        hb = {"equity": 4785.18, "balance": 4719.78, "floating_pl": 65.40,
+              "positions": [{"ticket": 1, "direction": "SELL", "lots": 0.02,
+                             "open_price": 4391.60, "sl": 4400.0,
+                             "profit": 54.02}],
+              "kill_switch": False, "hwm": 4800.0, "exposure_min": 5,
+              "window_open": True, "spread_points": 25.0,
+              "active_strategy": "halftrend_ema_v1"}
+        r = client.post("/heartbeat", json=hb)
+        assert r.status_code == 200
+        assert r.json()["command"] is None      # response shape unchanged
+        for _ in range(40):                      # ticker runs in background
+            if transport.of("sendMessage"):
+                break
+            time.sleep(0.05)
+        sends = transport.of("sendMessage")
+        assert len(sends) == 1 and "LIVE" in sends[0][1]["text"]
