@@ -61,6 +61,14 @@ class HeartbeatRequest(BaseModel):
     spread_points: float = 0.0
     active_strategy: str = "unknown"
     algo_trading: bool = True
+    # Forming (bar 0) OHLC carried by the EA every heartbeat so /chart can
+    # render in real time without waiting for the bar to close. 0 = absent
+    # (old EA, or CopyRates failure — fail-open).
+    bar_t: int = 0
+    bar_o: float = 0.0
+    bar_h: float = 0.0
+    bar_l: float = 0.0
+    bar_c: float = 0.0
 
 
 class HeartbeatResponse(BaseModel):

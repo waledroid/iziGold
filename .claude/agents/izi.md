@@ -26,7 +26,8 @@ signal (incl. NONE) + 300 candles → service grades (direction/confidence),
 classifies regime classically (ADX+ATR in `regime.py`, not the AI), logs,
 alerts. NONE posts drive lazy outcome resolution (16-bar horizon) — never
 "optimize them away". **Every 5 s** the EA heartbeats (`/heartbeat`) carrying
-account state + `algo_trading`; the response carries runtime `mode`
+account state + `algo_trading` + the forming bar's OHLC (`bar_t`, `bar_o/h/l/c`;
+zeros = absent or CopyRates failure, fail-open); the response carries runtime `mode`
 (auto/manual), pending strategy switch, and at most ONE command.
 
 **Spread telemetry** (2026-08-09, ea-scope §3): each 5 s OnTimer tick also

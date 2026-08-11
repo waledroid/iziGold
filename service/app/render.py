@@ -193,3 +193,60 @@ def render_trade_chart(candles, trade: dict, out_path: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def render_snapshot_chart(candles, out_path: str, positions=None) -> bool:
+    """Current-market render for /chart: the last-100 window with
+    HalfTrend/EMA overlays and a right-edge last-price label; when an open
+    basket is supplied, each leg's entry line plus the shared SL line are
+    overlaid. No event marker or risk boxes — there is no single trade
+    event in a snapshot. Returns True on success; never raises."""
+    if not candles:
+        return False
+    try:
+        window = candles[-100:]
+        window_len = len(window)
+        offset = len(candles) - window_len
+
+        closes = [c.c for c in candles]
+        ema9_full = ema(closes, 9)
+        ema21_full = ema(closes, 21)
+        ema55_full = ema(closes, 55)
+        ema200_full = ema(closes, 200)
+        ht_full = halftrend(candles, amplitude=4)
+
+        fig = Figure(figsize=(10, 5))
+        ax = fig.add_subplot(111)
+
+        _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
+        _plot_ema(ax, ema9_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema21_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema55_full, offset, window_len, "gold", 1.2, zorder=1)
+        _plot_ema(ax, ema200_full, offset, window_len, "mediumpurple", 1.2, zorder=1)
+
+        for i, c in enumerate(window):
+            color = "#2ecc71" if c.c >= c.o else "#e74c3c"
+            ax.vlines(i, c.l, c.h, color=color, linewidth=1, zorder=2)
+            ax.vlines(i, min(c.o, c.c), max(c.o, c.c), color=color, linewidth=3, zorder=2)
+
+        last = window[-1]
+        ax.annotate(f"{last.c:g}", xy=(window_len - 1, last.c),
+                    xytext=(6, 0), textcoords="offset points",
+                    color="#2ecc71" if last.c >= last.o else "#e74c3c",
+                    fontsize=8, fontweight="bold", zorder=6)
+
+        for p in (positions or []):
+            entry_color = "#2ecc71" if p.direction == "BUY" else "#e74c3c"
+            _hline_with_label(ax, window_len, p.open_price, entry_color,
+                              "--", "E", alpha=0.8)
+        if positions:
+            sl = positions[0].sl
+            if sl and sl > 0:
+                ax.axhline(sl, color="red", linestyle="-", linewidth=1.2, zorder=1.5)
+                ax.text(window_len - 1, sl, f"SL {sl:g}", color="red",
+                        fontsize=7, ha="right", va="bottom", zorder=6)
+        fig.tight_layout()
+        fig.savefig(out_path)
+        return True
+    except Exception:
+        return False
