@@ -135,6 +135,22 @@ public:
                         bool algo_trading,
                         string &mode, string &cmd, long &cmdId, string &cmdDir)
      {
+      // Forming (bar 0) OHLC for the service's /chart real-time render.
+      // Zeros on CopyRates failure -- the service treats 0 as "no forming
+      // bar" (fail-open, old-service compatible: unknown JSON fields are
+      // ignored by pydantic).
+      MqlRates bar0[];
+      long   bar_t = 0;
+      double bar_o = 0, bar_h = 0, bar_l = 0, bar_c = 0;
+      if(CopyRates(_Symbol, PERIOD_CURRENT, 0, 1, bar0) == 1)
+        {
+         bar_t = (long)bar0[0].time;
+         bar_o = bar0[0].open;
+         bar_h = bar0[0].high;
+         bar_l = bar0[0].low;
+         bar_c = bar0[0].close;
+        }
+
       // Field names/order match service/app/models.py HeartbeatRequest exactly.
       string json = "{\"equity\":" + DoubleToString(equity, 2) +
                     ",\"balance\":" + DoubleToString(balance, 2) +
@@ -146,7 +162,12 @@ public:
                     ",\"window_open\":" + (window_open ? "true" : "false") +
                     ",\"spread_points\":" + DoubleToString(spread_points, 1) +
                     ",\"active_strategy\":\"" + active_strategy + "\"" +
-                    ",\"algo_trading\":" + (algo_trading ? "true" : "false") + "}";
+                    ",\"algo_trading\":" + (algo_trading ? "true" : "false") +
+                    ",\"bar_t\":" + (string)bar_t +
+                    ",\"bar_o\":" + DoubleToString(bar_o, 2) +
+                    ",\"bar_h\":" + DoubleToString(bar_h, 2) +
+                    ",\"bar_l\":" + DoubleToString(bar_l, 2) +
+                    ",\"bar_c\":" + DoubleToString(bar_c, 2) + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
