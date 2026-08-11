@@ -7,6 +7,11 @@ import httpx
 
 _ICON = {"confirm": "✅", "conflict": "⚠️", "neutral": "➖"}
 
+# Channel privacy filter: account-level figures are replaced with this
+# marker in every channel-bound text (spec: members see how trades
+# perform, never what the account is worth).
+REDACTED = "•••"
+
 _PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
@@ -174,6 +179,23 @@ class TelegramClient:
         return self.transport(
             "editMessageText", payload, None)
 
+    # Channel-addressed sends. Deliberately no reply_markup parameter:
+    # the channel must never carry interactive controls (spec invariant),
+    # so the restriction is structural, not a call-site convention.
+    def send_message_to(self, chat_id, text):
+        return self.transport("sendMessage",
+                              {"chat_id": chat_id, "text": text}, None)
+
+    def send_photo_to(self, chat_id, caption: str, png_bytes: bytes):
+        return self.transport(
+            "sendPhoto", {"chat_id": chat_id, "caption": caption},
+            {"photo": ("chart.png", png_bytes, "image/png")})
+
+    def edit_message_to(self, chat_id, message_id, text: str):
+        return self.transport(
+            "editMessageText",
+            {"chat_id": chat_id, "message_id": message_id, "text": text}, None)
+
     def answer_callback(self, callback_id: str, text: str = "") -> dict | None:
         return self.transport(
             "answerCallbackQuery",
@@ -209,7 +231,7 @@ def _ea_connection_line(app) -> str:
     return f"EA: 🔴 disconnected (last seen {int(age // 60)}m ago)"
 
 
-def _format_status(app) -> str:
+def _format_status(app, redacted=False) -> str:
     latest = app.state.latest_heartbeat
     connection = _ea_connection_line(app)
     session_line = f"🕒 {market_session()}"
@@ -226,7 +248,7 @@ def _format_status(app) -> str:
         protection = "⛔ KILL SWITCH TRIPPED — trading halted"
     else:
         protection = "🛡 Protection armed"
-        if hb.hwm:
+        if hb.hwm and not redacted:
             dd = max(0.0, (1 - hb.equity / hb.hwm) * 100)
             protection += f" · drawdown {dd:.1f}%"
     db = getattr(app.state, "db", None)
@@ -237,8 +259,10 @@ def _format_status(app) -> str:
     ]
     if getattr(hb, "algo_trading", True) is False:
         lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")
+    if not redacted:
+        lines.append(f"💰 {hb.equity} equity · {hb.balance} balance "
+                     f"· {hb.floating_pl:+g} floating")
     lines += [
-        f"💰 {hb.equity} equity · {hb.balance} balance · {hb.floating_pl:+g} floating",
         protection,
         f"🎯 {strategy} · {mode}",
     ]
@@ -283,7 +307,7 @@ def _format_history(app) -> str:
     return "\n".join(lines)
 
 
-def _format_balance(app) -> str:
+def _format_balance(app, redacted=False) -> str:
     """/bal reply: balance, equity, floating P/L from the latest heartbeat
     ((ts, HeartbeatRequest) tuple | None on app.state.latest_heartbeat)."""
     latest = app.state.latest_heartbeat
@@ -292,6 +316,8 @@ def _format_balance(app) -> str:
     _, hb = latest
     sign = "+" if hb.floating_pl >= 0 else "-"
     floating = f"{sign}${abs(hb.floating_pl):.2f}"
+    if redacted:
+        return f"💰 Balance: {REDACTED} | Equity: {REDACTED} | Floating: {floating}"
     return (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
             f"Floating: {floating}")
 
@@ -313,7 +339,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "2"
+PINNED_HELP_VERSION = "3"
 
 
 def format_pinned_help() -> str:
@@ -326,6 +352,7 @@ def format_pinned_help() -> str:
         "/mode — toggle AUTO/MANUAL execution",
         "/strategy — switch active strategy",
         "/config — current settings",
+        "/channel — link/unlink the broadcast channel",
         "🟢 Take / 🔴 Skip on a proposal to act on it.",
         "Valid while the strategy holds this stance.",
     ])
@@ -376,16 +403,16 @@ def pinned_tick(app, client: "TelegramClient") -> None:
     app.state.db.set_kv("pinned_help_version", PINNED_HELP_VERSION)
 
 
-def handle_command(text: str, app) -> str | None:
+def handle_command(text: str, app, redacted=False) -> str | None:
     """Pure function mapping a slash command to a reply, or None if unknown."""
     parts = text.strip().split()
     if not parts:
         return None
     cmd = parts[0].lower()
     if cmd == "/status":
-        return _format_status(app)
+        return _format_status(app, redacted=redacted)
     if cmd == "/bal":
-        return _format_balance(app)
+        return _format_balance(app, redacted=redacted)
     if cmd == "/stats":
         return _format_stats(app)
     if cmd == "/history":
@@ -415,11 +442,45 @@ def handle_command(text: str, app) -> str | None:
             f"strategy: {hb.active_strategy if hb else '?'}\n"
             f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
             f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
-            f"balance: {hb.balance if hb else '?'} | equity: {hb.equity if hb else '?'}\n"
+            f"balance: {REDACTED if redacted else (hb.balance if hb else '?')} | "
+            f"equity: {REDACTED if redacted else (hb.equity if hb else '?')}\n"
             f"kill switch: {hb.kill_switch if hb else '?'} | "
             f"window open: {hb.window_open if hb else '?'}\n"
             f"spread: {hb.spread_points if hb else '?'}pt")
+    if cmd == "/channel":
+        if parts[1:] and parts[1].lower() == "unlink":
+            app.state.db.set_kv("channel_id", "")
+            return "🔗 channel unlinked — mirroring off"
+        cid = app.state.db.get_kv("channel_id")
+        if cid:
+            return f"🔗 linked to channel {cid} — /channel unlink to stop"
+        return ("no channel linked — add the bot as admin to your channel, "
+                "post any message there, then approve the prompt that "
+                "appears here")
     return None
+
+
+def handle_channel_post(post: dict, app):
+    """A message posted in a channel the bot was added to. If no channel is
+    linked and no offer is pending, stage this channel and return the
+    owner-chat confirmation (text, keyboard); otherwise None. Only the
+    owner's ✅ callback (chan:link) actually stores the id — a stranger's
+    channel can never self-link."""
+    chat = post.get("chat") or {}
+    cid = str(chat.get("id") or "")
+    if not cid:
+        return None
+    if app.state.db.get_kv("channel_id"):
+        return None
+    if getattr(app.state, "pending_channel", None) is not None:
+        return None
+    title = chat.get("title") or "channel"
+    app.state.pending_channel = cid
+    text = (f"🔗 Link channel «{title}» ({cid})?\n"
+            f"Members will see trade activity — never account figures.")
+    keyboard = kb([[("✅ Link", f"chan:link:{cid}"),
+                    ("❌ Ignore", f"chan:ignore:{cid}")]])
+    return (text, keyboard)
 
 
 def handle_callback(data: str, app) -> tuple:
@@ -467,4 +528,20 @@ def handle_callback(data: str, app) -> tuple:
                                  latest[1].active_strategy, 0.0, None)
         db.set_proposal_status(pid, "approved", expected="pending")
         return (None, "closing on next heartbeat…")
+    if parts[0] == "chan" and len(parts) == 3:
+        # parts[2] is the channel id; ids are negative ("-100..."), but the
+        # split on ":" is safe — callback data is built as chan:<action>:<id>
+        # and the id contains no colon.
+        # Only honor a tap that matches the current pending offer -- a stale
+        # button from a superseded/ignored offer, still sitting in chat
+        # history, must not silently re-link (or ignore) some other
+        # channel's offer. This is what keeps "one pending offer at a time"
+        # actually true rather than just true at offer-creation time.
+        if parts[2] != getattr(app.state, "pending_channel", None):
+            return (None, "offer expired")
+        app.state.pending_channel = None
+        if parts[1] == "link":
+            db.set_kv("channel_id", parts[2])
+            return (f"🔗 Channel linked ({parts[2]}) — mirroring on.", "linked")
+        return ("Channel ignored.", "ignored")
     return (None, "unknown")

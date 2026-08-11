@@ -18,8 +18,9 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
 from app.regime import classify_regime, last_atr
 from app.render import render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
-                          format_proposal, handle_callback, handle_command,
-                          pinned_tick, set_active_client)
+                          format_proposal, handle_callback, handle_channel_post,
+                          handle_command, pinned_tick, set_active_client)
+from app.ticker import TickerState, ticker_tick
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -90,6 +91,16 @@ async def telegram_poller(app: FastAPI):
                         if edit_text and msg.get("message_id"):
                             await asyncio.to_thread(app.state.telegram.edit_message,
                                                     msg["message_id"], edit_text)
+                            if not cq.get("data", "").startswith("chan:"):
+                                await _mirror(app, text=edit_text)
+                    continue
+                ch_post = upd.get("channel_post")
+                if ch_post is not None:
+                    offer = handle_channel_post(ch_post, app)
+                    if offer is not None:
+                        await asyncio.to_thread(
+                            app.state.telegram.send_message,
+                            offer[0], offer[1])
                     continue
                 message = upd.get("message") or {}
                 text = message.get("text") or ""
@@ -101,6 +112,9 @@ async def telegram_poller(app: FastAPI):
                                                 reply[0], reply[1])
                     elif reply is not None:
                         await asyncio.to_thread(app.state.telegram.send_message, reply)
+                    chan_text = _mirror_command_text(text, app)
+                    if chan_text is not None:
+                        await _mirror(app, text=chan_text)
             await asyncio.sleep(1)
         except asyncio.CancelledError:
             raise
@@ -126,6 +140,43 @@ async def pinned_editor(app: FastAPI):
         except Exception:
             pass
         await asyncio.sleep(300)
+
+
+def _linked_channel(app) -> str | None:
+    try:
+        return app.state.db.get_kv("channel_id") or None
+    except Exception:
+        return None
+
+
+async def _mirror(app, text: str | None = None,
+                  photo_bytes: bytes | None = None, caption: str = "") -> None:
+    """Mirror one already-sent owner message to the linked channel.
+    Owner-first ordering is the caller's job (call this after the owner
+    send). Fail-open: never raises, no-op when unlinked/no client."""
+    cid = _linked_channel(app)
+    tg = getattr(app.state, "telegram", None)
+    if cid is None or tg is None:
+        return
+    try:
+        if photo_bytes is not None:
+            await asyncio.to_thread(tg.send_photo_to, cid, caption, photo_bytes)
+        elif text:
+            await asyncio.to_thread(tg.send_message_to, cid, text)
+    except Exception:
+        pass
+
+
+def _mirror_command_text(text: str, app) -> str | None:
+    """Channel rendition of an owner command: '👤 /cmd' + the redacted
+    reply. None when the command is unknown or owner-only."""
+    if text.split()[0].lower() == "/channel":
+        return None  # link management is owner-only housekeeping
+    reply = handle_command(text, app, redacted=True)
+    if reply is None:
+        return None
+    body = reply[0] if isinstance(reply, tuple) else reply
+    return f"👤 {text}\n\n{body}"
 
 
 def _effective_telegram(app: FastAPI) -> tuple[str, str]:
@@ -188,7 +239,11 @@ async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
+    app.state.ticker = TickerState()
+    app.state.ticker_busy = False
+    app.state.ticker_task = None
     app.state.pending_switch = None
+    app.state.pending_channel = None
     app.state.last_candles = None
     app.state.recent_candles = None
     app.state.screenshot_dir = Path(settings.screenshot_dir)
@@ -301,6 +356,13 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
                                reply_markup=markup)
         if sent and sent.get("result", {}).get("message_id"):
             db.set_proposal_message(pid, sent["result"]["message_id"])
+        cid = _linked_channel(app)
+        if cid is not None:
+            try:
+                tg.send_message_to(
+                    cid, format_proposal(kind, direction, price, resp))
+            except Exception:
+                pass
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -403,6 +465,22 @@ async def heartbeat(hb: HeartbeatRequest):
     app.state.latest_heartbeat = (time.time(), hb)
     app.state.db.insert_heartbeat({**hb.model_dump(exclude={"positions"}),
                                    "open_count": len(hb.positions)})
+    # Live ticker: fire-and-forget so three potential Telegram calls (10 s
+    # timeout each) can never delay this response — the EA's commands ride
+    # on it. ticker_busy collapses overlapping runs to at most one.
+    if not app.state.ticker_busy and getattr(app.state, "telegram", None) is not None:
+        app.state.ticker_busy = True
+        hb_now = time.time()
+
+        async def _ticker_bg(hb=hb, hb_now=hb_now, previous=previous):
+            try:
+                await asyncio.to_thread(ticker_tick, app, hb, hb_now, previous)
+            except Exception:
+                pass
+            finally:
+                app.state.ticker_busy = False
+
+        app.state.ticker_task = asyncio.create_task(_ticker_bg())
     if prev_algo_trading != hb.algo_trading:
         tg = getattr(app.state, "telegram", None)
         if tg is not None:
@@ -412,6 +490,7 @@ async def heartbeat(hb: HeartbeatRequest):
                 await asyncio.to_thread(tg.send_message, text)
             except Exception:
                 pass
+            await _mirror(app, text=text)
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
     try:
@@ -455,6 +534,9 @@ async def proposal_result(res: ProposalResultRequest):
                 f"@ {row['price']} — {mark}: {res.detail}")
         except Exception:
             pass
+        await _mirror(app, text=(
+            f"{'📥' if row['kind']=='entry' else '📤'} {row['direction']} "
+            f"@ {row['price']} — {mark}: {res.detail}"))
     elif tg is not None and not res.ok:
         # Messageless quick-exits (dashboard close-all / exitnow button) have
         # no proposal message to edit — a failure must still reach the user.
@@ -463,6 +545,7 @@ async def proposal_result(res: ProposalResultRequest):
                 tg.send_message, f"🚫 close failed: {res.detail}")
         except Exception:
             pass
+        await _mirror(app, text=f"🚫 close failed: {res.detail}")
     return {"ok": True}
 
 
@@ -480,6 +563,7 @@ async def notify(req: NotifyRequest):
             await asyncio.to_thread(tg.send_message, text)
         except Exception:
             pass
+        await _mirror(app, text=text)
     return {"ok": True}
 
 
@@ -754,6 +838,8 @@ async def trade_event(ev: TradeEventRequest):
                     await asyncio.to_thread(
                         _send_render_photo, app.state.telegram, caption,
                         render_path, markup)
+                    await _mirror(app, photo_bytes=render_path.read_bytes(),
+                                  caption=caption)
         except Exception:
             pass
     if ev.event == "close" and ev.final and app.state.telegram is not None:
@@ -763,6 +849,8 @@ async def trade_event(ev: TradeEventRequest):
                 _pl_message(ev.profit, ev.direction, legs, ev.price))
         except Exception:
             pass
+        await _mirror(app, text=_pl_message(ev.profit, ev.direction,
+                                            legs, ev.price))
     return {"id": trade_id}
 
 
