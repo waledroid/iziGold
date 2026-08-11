@@ -109,7 +109,7 @@ Quiet by default: only proposals, executions, failures, command replies.
   `/bal`, `/mode` (AUTO/MANUAL buttons), `/strategy` (switch buttons),
   `/config`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "3"). The version-bump edit also re-pins (a manually
+  forces rewrite; now "4"; full command list incl. /stats, /history, /switch). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service

@@ -529,6 +529,7 @@ def test_kv_roundtrip(tmp_path):
 def test_format_pinned_help_lists_commands_and_proposal_legend():
     text = format_pinned_help()
     for token in ("/status", "/bal", "/mode", "/strategy", "/config",
+                  "/stats", "/history", "/switch", "/channel",
                   "🟢 Take", "🔴 Skip", "Valid while the strategy holds"):
         assert token in text
 
