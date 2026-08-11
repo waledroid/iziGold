@@ -86,66 +86,17 @@ Data collection only; no UI yet.
 
 # 4. Telegram (the remote control)
 
-**TelegramClient** (`app/telegram.py`): low-level HTTP transport to Telegram Bot API. Owner-chat methods (`send_message`, `send_photo`, `edit_message`, `answer_callback`) default to `self.chat_id`. **Channel-addressed methods** (2026-08-11, phase 1 of broadcast feature) — `send_message_to(chat_id, text)`, `send_photo_to(chat_id, caption, png_bytes)`, `edit_message_to(chat_id, message_id, text)` — explicitly target a `chat_id`, and **structurally forbid reply_markup** (channels must never carry interactive buttons, structural invariant — the restriction lives in the method signature, not in call-site discipline).
+**TelegramClient** (`app/telegram.py`): low-level HTTP transport to Telegram Bot API. Owner-chat methods (`send_message`, `send_photo`, `edit_message`, `answer_callback`) default to `self.chat_id`. **Channel-addressed methods** (`send_message_to`, `send_photo_to`, `edit_message_to`) explicitly target a `chat_id` and structurally forbid `reply_markup` — channels must never carry interactive buttons.
 
-**Privacy filter for channels** (2026-08-11, phase 2): `handle_command`, `_format_status`, `_format_balance` now accept a `redacted` parameter (default `False`, preserving owner-chat output byte-identical). When `redacted=True`: `/status` drops the 💰 balance line and drawdown suffix; `/bal` becomes `💰 Balance: ••• | Equity: ••• | Floating: +$X.XX`; `/config` masks balance/equity values with `REDACTED` ("•••"). Trade-level figures (position P/L, open prices, lots) remain visible; every other command (stats/history/switch/mode/strategy) is already account-free. Channel members see what trades perform, never what the account is worth.
+**Channel operations** (2026-08-11): kv `channel_id` is the single source of truth for whether a broadcast channel is linked. Linking procedure: create channel → add bot as admin with post rights → post anything in the channel → approve the "Link channel?" prompt in the owner chat. `/channel` reports the linked id or "no channel linked" with the linking instructions; `/channel unlink` clears the kv (mirroring off). Pending channel confirmation is in-memory only, so a stale offer never survives a service restart.
 
-**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing Telegram message per trade cycle (flat→open posts a LIVE message, open→open silently edits in-place on profit/price changes throttled to min 5 s apart, open→flat freezes with CLOSED showing the final numbers). Ticker state is in-memory; service restart loses the message tracking and the first new open starts a fresh one. Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Every Telegram call is fail-open: a failed send/edit is dropped and the next heartbeat retries naturally. Posts are driven by `/heartbeat` calls from the EA (~5 s cycle); dispatch is fire-and-forget (`asyncio.create_task` + `to_thread`) so the ticker's Telegram calls never delay the `/heartbeat` response the EA's commands ride on — `app.state.ticker_busy` collapses overlapping runs to at most one in-flight tick. The created task's reference is kept on `app.state.ticker_task` (like `telegram_task`/`pinned_task`) — the event loop only holds a weak reference, so an unstored task can be garbage-collected mid-flight, which would leave `ticker_busy` stuck `True` and silently disable the ticker forever; shutdown cancellation of `ticker_task` is not needed since the ticker is fail-open by design.
+**Privacy filter invariant:** channel text never contains balance, equity, drawdown %, or HWM (masked as `•••`); trade-level figures (prices, lots, per-leg/basket floating, realized per-trade P/L) pass through. Owner commands are mirrored as `👤 /cmd` + redacted reply via `_mirror_command_text(text, app)`, which re-runs `handle_command(text, app, redacted=True)`.
 
-**Channel linking** (2026-08-11, phase 3, owner-approved): kv `channel_id`
-is the single source of truth for whether a broadcast channel is linked —
-nothing else gates the channel-mirroring features from phases 1/2/4. Linking
-procedure: add the bot to a channel as admin with post rights → post
-anything in that channel → the poller's `channel_post` branch calls
-`handle_channel_post(post, app)`, which (only if no channel is linked yet
-**and** no offer is already pending, checked via `app.state.pending_channel`)
-stages the channel id on `app.state.pending_channel` and returns an owner-chat
-confirmation `(text, keyboard)` with 🔗 Link / ❌ Ignore buttons
-(`chan:link:<id>` / `chan:ignore:<id>`) — sent to the owner chat, never back
-into the channel. Security invariant: a stranger's channel post can never
-self-link — only tapping ✅ in the owner chat (already gated by the poller's
-existing `from_id == chat_id` callback filter) writes `channel_id` via
-`handle_callback`; both `chan:link` and `chan:ignore` clear
-`app.state.pending_channel` so a fresh offer can be made afterward.
-`handle_callback`'s `chan:` branch also checks the tapped id against the
-*current* `app.state.pending_channel` before acting — a stale `chan:link`/
-`chan:ignore` button left over from a superseded or already-ignored offer
-(still sitting in chat history) replies "offer expired" and touches neither
-kv nor pending state, instead of silently re-linking or re-ignoring whatever
-channel happens to be pending now. `/channel` reports the linked id or "no
-channel linked" with the linking instructions; `/channel unlink` clears the
-kv (mirroring off). `pending_channel` is in-memory only (reset to `None` at
-lifespan startup), so a stale offer — including one stuck pending because
-the owner-chat send itself failed — never survives a service restart.
+**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker state is in-memory; service restart loses message tracking and starts a fresh message on the next trade. Authoritative P/L remains the close report.
 
-**Outbound mirroring** (2026-08-11, phase 6, `app/main.py`): every owner-chat
-send in `main.py` — `/notify`, the algo-trading on/off transition in
-`/heartbeat`, `maybe_propose`'s proposal message, `/proposal-result`'s
-executed/blocked edit and the messageless close-fail send, the trade-event
-chart photo and final close P/L message, and the poller's command replies and
-callback edits — is mirrored to the linked channel through
-`_mirror(app, text=None, photo_bytes=None, caption="")`, always called
-**strictly after** the owner send it mirrors (ordering is the caller's job,
-not `_mirror`'s). `_mirror` is a pure fail-open no-op when unlinked (`kv
-channel_id` empty/absent) or when no Telegram client is configured; a channel
-delivery failure is swallowed and never affects the owner send or the
-endpoint's response — checked directly by
-`test_channel_failure_leaves_owner_delivery_intact`. It always calls
-`send_message_to`/`send_photo_to` (never the owner methods), so the
-structural no-`reply_markup` invariant holds for every mirrored message too.
-Two call sites don't go through `_mirror` because they run in sync context
-(`/analyze` → `maybe_propose`, called from a sync FastAPI handler): they
-mirror the proposal text with a direct synchronous `tg.send_message_to`
-call, same fail-open try/except. **What's excluded, deliberately**: `/channel`
-command replies (link management is owner-only housekeeping — filtered in
-`_mirror_command_text`) and `chan:` callback taps (link/ignore confirmations
-— filtered inline in the poller by checking `cq["data"].startswith("chan:")`
-before mirroring the edit). Command replies are mirrored through the
-poller-only helper `_mirror_command_text(text, app)`, which re-runs
-`handle_command(text, app, redacted=True)` (not the owner's already-computed
-unredacted reply) and composes `"👤 {text}\n\n{body}"` — so channel members
-see the command that was run and its privacy-filtered answer, never the
-account figures the owner saw.
+**Ops note:** mirroring and ticker are fail-open — channel send failures never touch owner delivery or the heartbeat path.
+
+**Outbound mirroring** (2026-08-11, `app/main.py`): every owner-chat send (`/notify`, proposals, executions, command replies) is mirrored to the linked channel through `_mirror(app, ...)`, always called strictly after the owner send. `_mirror` is a pure fail-open no-op when unlinked or unconfigured; a channel delivery failure is swallowed and never affects the owner send or endpoint response. Excluded from mirroring: `/channel` command replies (owner-only housekeeping) and `chan:` callback taps (link/ignore confirmations). Channel-addressed methods always use `send_message_to`/`send_photo_to`, maintaining the structural no-`reply_markup` invariant.
 
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the
