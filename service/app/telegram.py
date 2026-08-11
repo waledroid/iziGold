@@ -174,6 +174,23 @@ class TelegramClient:
         return self.transport(
             "editMessageText", payload, None)
 
+    # Channel-addressed sends. Deliberately no reply_markup parameter:
+    # the channel must never carry interactive controls (spec invariant),
+    # so the restriction is structural, not a call-site convention.
+    def send_message_to(self, chat_id, text):
+        return self.transport("sendMessage",
+                              {"chat_id": chat_id, "text": text}, None)
+
+    def send_photo_to(self, chat_id, caption: str, png_bytes: bytes):
+        return self.transport(
+            "sendPhoto", {"chat_id": chat_id, "caption": caption},
+            {"photo": ("chart.png", png_bytes, "image/png")})
+
+    def edit_message_to(self, chat_id, message_id, text: str):
+        return self.transport(
+            "editMessageText",
+            {"chat_id": chat_id, "message_id": message_id, "text": text}, None)
+
     def answer_callback(self, callback_id: str, text: str = "") -> dict | None:
         return self.transport(
             "answerCallbackQuery",

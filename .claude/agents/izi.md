@@ -86,6 +86,8 @@ Data collection only; no UI yet.
 
 # 4. Telegram (the remote control)
 
+**TelegramClient** (`app/telegram.py`): low-level HTTP transport to Telegram Bot API. Owner-chat methods (`send_message`, `send_photo`, `edit_message`, `answer_callback`) default to `self.chat_id`. **Channel-addressed methods** (2026-08-11, phase 1 of broadcast feature) — `send_message_to(chat_id, text)`, `send_photo_to(chat_id, caption, png_bytes)`, `edit_message_to(chat_id, message_id, text)` — explicitly target a `chat_id`, and **structurally forbid reply_markup** (channels must never carry interactive buttons, structural invariant — the restriction lives in the method signature, not in call-site discipline).
+
 Quiet by default: only proposals, executions, failures, command replies.
 - **MANUAL mode**: entry proposals with 🟢 Take / 🔴 Skip (valid while the
   strategy holds the stance; expiry edits ⌛); approved → command via
