@@ -7,7 +7,7 @@ old one stops updating. Every Telegram call is fail-open: a failed send
 or edit is dropped and the next heartbeat retries naturally.
 """
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 TICKER_MIN_EDIT_S = 5
 
@@ -99,18 +99,22 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
         if _body(text) == _body(st.owner_text):
             return
         try:
-            tg.edit_message(st.owner_msg_id, text)
+            edit_result = tg.edit_message(st.owner_msg_id, text)
         except Exception:
-            pass
-        st.owner_text = text
-        st.last_edit_ts = now
+            edit_result = None
+        if (edit_result or {}).get("ok", False):
+            st.owner_text = text
+            st.last_edit_ts = now
+        else:
+            return  # retry on next tick if edit failed
         if cid and st.channel_msg_id is not None:
             ch_text = format_ticker(hb, mode, ts_str, redacted=True)
             try:
-                tg.edit_message_to(cid, st.channel_msg_id, ch_text)
+                ch_edit_result = tg.edit_message_to(cid, st.channel_msg_id, ch_text)
             except Exception:
-                pass
-            st.channel_text = ch_text
+                ch_edit_result = None
+            if (ch_edit_result or {}).get("ok", False):
+                st.channel_text = ch_text
         return
 
     if not hb.positions and st.owner_msg_id is not None:

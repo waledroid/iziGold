@@ -146,3 +146,69 @@ def test_format_ticker_closed_footer():
     text = format_ticker(_hb([_pos()]), "auto", "14:32:05", closed=True)
     assert text.startswith("📊 CLOSED")
     assert "final P/L in the close report" in text
+
+
+def test_close_with_previous_parameter_snapshots_prior_open():
+    """Close branch must use prior open snapshot when previous parameter provided."""
+    app, t = _app()
+    prior_pos = _pos(profit=100.00)
+    prior_hb = _hb([prior_pos])
+    prior_ts = 1000.0
+
+    # Open the trade with initial state
+    ticker_tick(app, prior_hb, now=prior_ts)
+    assert app.state.ticker.owner_msg_id == 101
+
+    # Close the trade, passing the prior state via previous parameter
+    flat_hb = _hb([])  # now flat
+    ticker_tick(app, flat_hb, now=prior_ts + 100,
+                previous=(prior_ts, prior_hb))
+
+    # Verify the frozen CLOSED message contains the prior position data
+    edits = t.of("editMessageText")
+    assert len(edits) == 1
+    closed_text = edits[0][1]["text"]
+    assert "CLOSED" in closed_text
+    assert "SELL 0.02 @ 4391.6" in closed_text  # prior position visible
+    assert "100.00" in closed_text  # prior profit visible
+
+
+def test_open_to_open_edit_failure_retries():
+    """Open→open: failed edit leaves state unchanged so next tick retries."""
+    app, t = _app()
+
+    # First open posts successfully
+    ticker_tick(app, _hb([_pos(profit=54.02)]), now=1000.0)
+    assert app.state.ticker.owner_msg_id == 101
+    initial_text = app.state.ticker.owner_text
+
+    # Second call: change data but make edit fail (transport returns None/falsy ok)
+    class FailingTransport:
+        def __init__(self):
+            self.calls = []
+            self.next_message_id = 101
+
+        def __call__(self, method, payload, files=None):
+            self.calls.append((method, payload, files))
+            if method == "sendMessage":
+                self.next_message_id += 1
+                return {"ok": True, "result": {"message_id": self.next_message_id}}
+            elif method == "editMessageText":
+                # Simulate failure: return None or {"ok": False}
+                return None
+            return {"ok": True}
+
+    failing_transport = FailingTransport()
+    app.state.telegram = TelegramClient("tok", "555", transport=failing_transport)
+
+    ticker_tick(app, _hb([_pos(profit=60.00)]), now=1000.0 + TICKER_MIN_EDIT_S + 1)
+
+    # State should be unchanged after failed edit
+    assert app.state.ticker.owner_text == initial_text
+    # Try again: this time edit succeeds (new app/transport)
+    success_transport = FakeTransport()
+    app.state.telegram = TelegramClient("tok", "555", transport=success_transport)
+    ticker_tick(app, _hb([_pos(profit=60.00)]), now=1000.0 + TICKER_MIN_EDIT_S * 2 + 2)
+
+    # Now the edit should have succeeded and text updated
+    assert "60.00" in app.state.ticker.owner_text
