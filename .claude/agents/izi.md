@@ -101,13 +101,45 @@ Data collection only; no UI yet.
   **23:54 pre-break flatten** (closes everything before the 23:59–01:00
   server maintenance break; retries until flat; notifies 🌙).
 - All EA global-variable keys are per-symbol since 2026-08-09:
-  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK; EXPO adds a
-  trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
+  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK, RECON; EXPO adds
+  a trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
   one-time copy old→new + delete-old (never deletes unless the new key was
-  written; prints one line per migrated key).
+  written; prints one line per migrated key) — RECON was born in this shape
+  (2026-08-12) so it never needed migration.
 - Trade events (`/trade-event`) carry `sl`, `tp` (basket target price,
   EA-computed), `final` (basket-gone flag — partial leg stop-outs are
   non-final and must not trigger P/L messages/renders).
+- **Reconcile-on-reconnect** (2026-08-12, `XauAssistant.mq5`): back-fills
+  `/trade-event` close reports for own closing deals the service never saw —
+  a broker-side SL/TP (or any close) that lands while MT5 is down (no
+  `OnTradeTransaction` fires) or while the service is down (the live POST
+  fails/drops). `ReconcileOfflineCloses()` runs once in `OnInit` (after
+  `MigrateGlobalKeys()` and `g_ui.Init()`, so key shapes and the base URL
+  are both settled) and at most once per 60 s from `OnTimer`. Watermark =
+  `XAU_RECON_<login>_<symbol>` global holding the last successfully
+  reported closing-deal ticket; every LIVE close (`CUiSink::OnTradeEvent`,
+  fed by `TradeManager` and the broker-side-SL/TP branch of
+  `OnTradeTransaction`) advances it on a successful POST, so in the normal
+  case the reconciler finds nothing to do. First run (key absent) seeds the
+  watermark to the newest own closing deal WITHOUT posting — no history
+  spam on install or after the 2026-08-09 key migration. Otherwise it scans
+  `HistoryDealsTotal()` oldest-first over the trailing 30 days, filters to
+  own closing deals (symbol + magic + `DEAL_ENTRY_OUT`) newer than the
+  watermark, and replays each through `g_ui.PostTradeEvent` directly —
+  bypassing `g_uiSink`/`CUiSink` on purpose, since the sink also drives
+  chart risk/reward boxes and per-strategy basket bookkeeping meant for
+  LIVE closes only (reconciled backlog closes must not repaint those), but
+  both hit the same `/trade-event` endpoint so service-side handling
+  (report, render, DB row, channel mirror) is identical either way. Reason
+  strings get a `" (reconciled)"` suffix so these are visually
+  distinguishable from live reports in Telegram/dashboard/DB. At-least-once,
+  stop-on-first-failure: the watermark only advances after a successful
+  POST and the scan returns immediately on the first failed POST (service
+  still down), so nothing is skipped — the next `OnTimer` pass resumes from
+  the same watermark. `HistorySelect` failures are fail-open (retry next
+  pass) with a `Print` throttled to ≤1/hour (`g_lastReconWarn`). The 30-day
+  window bounds the scan — anything older is unreachable, acceptable since
+  outages here run hours, not weeks.
 
 # 4. Telegram (the remote control)
 
@@ -218,6 +250,18 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   TradeManager's seeding, exposure → delete today's dated key), one Print
   per action + an Alert summary. **Kill-switch reset goes through this
   script now** — no more hand-editing globals in the terminal's F3 dialog.
+  `XAU_RECON_<login>_<symbol>` (see §3, reconcile-on-reconnect) is
+  deliberately NOT offered here: resetting it (delete) would re-report
+  already-seen closes on the next pass, and reseeding it would silently
+  skip unreported ones — leave it alone; it self-manages.
+- **Reconcile-on-reconnect live drill**: stop the service
+  (`pkill -f "uvicorn app.main:app"`) → close an open position manually in
+  the terminal (or let a broker-side SL/TP fire while the service is down)
+  → restart the service (see restart procedure above) → within ~60 s (next
+  `OnTimer` pass) a `"... (reconciled)"` close report lands in
+  Telegram/dashboard/DB with the correct P/L. This is the regression check
+  for the 08-11 blackout (see §7) — confirms an offline close is never lost
+  silently again.
 - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
   [--verbose]` replays halftrend + the full current money rulebook over the
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
@@ -245,6 +289,12 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   parameters for a full day; a −$41.97 M15 stop-out on 2026-08-12 exposed it.
   Permanent fix: the `TradeTimeframe` input (§3) pins every decision path to
   M5 regardless of which timeframe the chart displays.
+- 2026-08-11: a 6.1 h MT5/service blackout let a broker-side stop close a
+  basket for −$56.18 with zero report — no Telegram alert, no DB row, no
+  trace anywhere until someone happened to check the terminal. Permanent
+  fix: reconcile-on-reconnect (§3/§6, 2026-08-12) — the EA now back-fills
+  any offline close within 60 s of either side coming back up, so a silent
+  loss like this can't happen again.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly

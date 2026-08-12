@@ -163,6 +163,10 @@ public:
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
                                     profit, tp, basketGone);
       if(id < 0) return;
+      // Live close reported successfully -> the reconciler never needs to
+      // re-report this deal on the next MT5/service restart.
+      if(event == "close" && ticket != 0)
+         AdvanceReconWatermark(ticket);
       if(event == "open" || (event == "close" && basketGone))
          g_ui.UploadScreenshot(id);
      }
@@ -218,6 +222,105 @@ void MigrateGlobalKeys()
                     "XAU_EXPO" + login + "_" + _Symbol + "_" + day);
   }
 
+// --- Reconcile-on-reconnect --------------------------------------------
+// Back-fills /trade-event close reports for own closing deals the service
+// never saw (MT5 was down -> OnTradeTransaction never fired; or the
+// service was down -> the live post was dropped/failed). Watermark = last
+// successfully reported closing-deal ticket, persisted per login+symbol so
+// terminal restarts can't reset it (spec: risk/kill-switch state pattern).
+string ReconKey()
+  {
+   return "XAU_RECON_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol;
+  }
+
+void AdvanceReconWatermark(long dealTicket)
+  {
+   if((double)dealTicket > GlobalVariableGet(ReconKey()))
+      GlobalVariableSet(ReconKey(), (double)dealTicket);
+  }
+
+// Throttles the "reconcile HistorySelect failed" warning to <=1/hour so a
+// stuck terminal history cache can't spam the log/Telegram.
+datetime g_lastReconWarn = 0;
+
+// Back-fill close reports for own closing deals the service never saw
+// (MT5 was down -> OnTradeTransaction never fired; or the service was
+// down -> the live post was dropped). Watermark = last successfully
+// reported closing-deal ticket. At-least-once, oldest-first; the scan
+// stops at the first failed post so nothing is skipped.
+void ReconcileOfflineCloses()
+  {
+   if(!GlobalVariableCheck(ReconKey()))
+     {
+      // First run: seed to the newest own closing deal without reporting
+      // history (no spam on install/migration).
+      long newest = 0;
+      if(HistorySelect(TimeCurrent() - 30 * 86400, TimeCurrent() + 60))
+         for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+           {
+            ulong t = HistoryDealGetTicket(i);
+            if(t == 0) continue;
+            if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
+            if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
+            if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+            newest = (long)t;
+            break;
+           }
+      GlobalVariableSet(ReconKey(), (double)newest);
+      PrintFormat("XauAssistant: reconcile watermark seeded at deal %I64d", newest);
+      return;
+     }
+   long watermark = (long)GlobalVariableGet(ReconKey());
+   if(!HistorySelect(TimeCurrent() - 30 * 86400, TimeCurrent() + 60))
+     {
+      if(TimeCurrent() - g_lastReconWarn > 3600)
+        {
+         Print("XauAssistant: reconcile HistorySelect failed, err=", GetLastError());
+         g_lastReconWarn = TimeCurrent();
+        }
+      return;   // fail-open: retry on the next pass
+     }
+   // Collect unreported own closing deals, oldest first (history is
+   // time-ordered; iterate forward).
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong t = HistoryDealGetTicket(i);
+      if(t == 0 || (long)t <= watermark) continue;
+      if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      string dir = (HistoryDealGetInteger(t, DEAL_TYPE) == DEAL_TYPE_BUY)
+                   ? "SELL" : "BUY";   // closing deal type is opposite the basket
+      double lots   = HistoryDealGetDouble(t, DEAL_VOLUME);
+      double price  = HistoryDealGetDouble(t, DEAL_PRICE);
+      double profit = HistoryDealGetDouble(t, DEAL_PROFIT)
+                    + HistoryDealGetDouble(t, DEAL_SWAP)
+                    + HistoryDealGetDouble(t, DEAL_COMMISSION);
+      string reason;
+      switch((ENUM_DEAL_REASON)HistoryDealGetInteger(t, DEAL_REASON))
+        {
+         case DEAL_REASON_SL: reason = "stop-loss (reconciled)";   break;
+         case DEAL_REASON_TP: reason = "take-profit (reconciled)"; break;
+         default:             reason = "closed offline (reconciled)";
+        }
+      bool isFinal = !PositionSelect(_Symbol);   // flat now = this backlog ends flat
+      // Replay directly through g_ui.PostTradeEvent rather than the
+      // g_uiSink/CUiSink path: the sink also drives chart risk/reward boxes
+      // and per-strategy basket bookkeeping (OnBasketClosed) intended for
+      // LIVE closes only — reconciled (backlog) closes must not repaint
+      // those. Service-side handling (report, render, db, channel mirror)
+      // is identical either way since both call the same /trade-event
+      // endpoint.
+      long id = g_ui.PostTradeEvent("close", ActiveStrategy, dir, lots, price,
+                                    0.0, reason, (long)t, profit, 0.0, isFinal);
+      if(id < 0)
+         return;                     // service still down -> retry next pass
+      AdvanceReconWatermark((long)t);
+      PrintFormat("XauAssistant: reconciled offline close deal %I64d (%s %.2f)",
+                  (long)t, reason, profit);
+     }
+  }
+
 int OnInit()
   {
    if(ExecutionMode == EXEC_AUTO && !AllowLiveTrading &&
@@ -242,6 +345,9 @@ int OnInit()
    g_registry.Active().EnablePaint(true);
    g_api.Init(ApiUrl, ApiTimeoutMs, TradeTimeframe);
    g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber, TradeTimeframe);
+   // Key shapes are settled (MigrateGlobalKeys) and g_ui is initialized
+   // (base URL/timeout) — safe to back-fill any offline closes now.
+   ReconcileOfflineCloses();
    g_news.Init(NewsGuardEnabled, NewsBlackoutMin);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin,
@@ -303,6 +409,14 @@ void FlattenBeforeBreak()
 
 void OnTimer()
   {
+   // At most once per 60s: back-fill any close reports missed while MT5 or
+   // the service was down (fail-open, throttled — see ReconcileOfflineCloses).
+   static datetime g_lastRecon = 0;
+   if(TimeCurrent() - g_lastRecon >= 60)
+     {
+      ReconcileOfflineCloses();
+      g_lastRecon = TimeCurrent();
+     }
    FlattenBeforeBreak();
    double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
    double balance     = AccountInfoDouble(ACCOUNT_BALANCE);
