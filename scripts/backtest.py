@@ -21,6 +21,15 @@ Simplifications (documented, keep in mind when reading results):
 
 
 Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
+                   [--exit-scheme target-exit|floor-a|floor-b|floor-a-adds]
+
+--exit-scheme (profit-floor experiment, spec 2026-08-12-profit-floor-design):
+default target-exit is the current EA behavior; floor-a converts the profit
+target into a guaranteed floor stop at target-0.25*ATR-worth (adds frozen);
+floor-b arms the full target as the floor once profit reaches
+target+0.25*ATR-worth (adds frozen); floor-a-adds is floor-a with adds left
+on, to quantify the erosion. Floor stop is a pure ratchet; the profit lock
+and reversal exits are unchanged in every scheme.
 """
 import argparse
 import datetime as dt
@@ -50,6 +59,29 @@ FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
+
+# --- profit-floor experiment (docs/superpowers/specs/2026-08-12-profit-floor-design.md) ---
+# target-exit  : baseline — close the basket at +PROFIT_TARGET_PCT (current EA)
+# floor-a      : at target, shared stop -> price where basket P/L =
+#                target - 0.25*ATR(14)-worth; adds frozen from that moment
+# floor-b      : at target + 0.25*ATR-worth of profit, stop -> price where
+#                basket P/L = full target; adds frozen
+# floor-a-adds : floor-a but pyramid adds left ON (quantifies the erosion)
+# The floor stop is a pure ratchet (only tightens, directionally); profit
+# lock (50% of peak once >= 1R) and the reversal exit stay unchanged.
+EXIT_SCHEMES = ("target-exit", "floor-a", "floor-b", "floor-a-adds")
+EXIT_SCHEME = "target-exit"
+FLOOR_ARM_ATR = 0.25      # the 0.25*ATR(14) margin in both variants
+
+
+def floor_price(legs, s, amount):
+    """Price P where the basket's P/L equals `amount`, using the same
+    convention as basket_pl(): sum(oz_i*(P-e_i)*s) - SPREAD_USD*T = amount
+    (s=+1 BUY, s=-1 SELL; contract = 1 oz units, round-trip spread charged),
+    so a stop fill exactly at P realizes exactly `amount`."""
+    tot = sum(l["oz"] for l in legs)
+    wsum = sum(l["oz"] * l["px"] for l in legs)
+    return (wsum + s * (amount + SPREAD_USD * tot)) / tot
 
 
 def wilder(vals, period):
@@ -104,6 +136,7 @@ def run(candles, start_balance, verbose):
     extreme = None
     trades = []
     peak_bal, max_dd = bal, 0.0
+    peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
 
     def basket_pl(px):
@@ -116,7 +149,10 @@ def run(candles, start_balance, verbose):
         pl = basket_pl(px)
         bal += pl
         trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
-                       "exit": px, "when": when, "why": why, "pl": pl})
+                       "exit": px, "when": when, "why": why, "pl": pl,
+                       "opened": basket.get("opened"),
+                       "floor": basket.get("floor"),
+                       "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
         if verbose:
@@ -159,37 +195,77 @@ def run(candles, start_balance, verbose):
         # ---- manage open basket
         if basket:
             s = 1 if basket["dir"] == "BUY" else -1
-            # shared stop hit (intrabar)
+            # shared stop hit (intrabar) — checked BEFORE any close-based exit
+            # (existing convention: stop beats target/lock/reversal in a bar)
             hit = x["l"] <= basket["stop"] if s == 1 else x["h"] >= basket["stop"]
             if hit:
-                close_basket(basket["stop"], when, "stop")
+                why = "stop"
+                if basket.get("floor") is not None and \
+                        basket["stop"] * s >= basket["floor_px"] * s - 1e-9:
+                    why = "floor stop"
+                close_basket(basket["stop"], when, why)
             else:
                 pl = basket_pl(px)
                 basket["peak"] = max(basket["peak"], pl)
                 risk_budget = basket["cycle_bal"] * RISK_PCT / 100
-                if pl >= basket["cycle_bal"] * PROFIT_TARGET_PCT / 100:
-                    close_basket(px, when, "profit target")
+                target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100
+                closed = False
+                if EXIT_SCHEME == "target-exit":
+                    if pl >= target:
+                        close_basket(px, when, "profit target")
+                        closed = True
+                elif basket.get("floor") is None:
+                    # arm the floor instead of closing at target
+                    tot_oz = sum(l["oz"] for l in basket["legs"])
+                    arm = None
+                    if EXIT_SCHEME in ("floor-a", "floor-a-adds") \
+                            and pl >= target:
+                        arm = target - FLOOR_ARM_ATR * a * tot_oz
+                    elif EXIT_SCHEME == "floor-b" \
+                            and pl >= target + FLOOR_ARM_ATR * a * tot_oz:
+                        arm = target
+                    if arm is not None:
+                        fpx = floor_price(basket["legs"], s, arm)
+                        basket["floor"], basket["floor_px"] = arm, fpx
+                        # pure ratchet: the floor may only tighten the stop
+                        if fpx * s > basket["stop"] * s:
+                            basket["stop"] = fpx
+                        if verbose:
+                            print(f"  floor {when:%m-%d %H:%M} armed "
+                                  f"${arm:+.2f} stop->{basket['stop']:.2f}")
+                if closed:
+                    pass
                 elif (basket["peak"] >= TRAIL_ACTIVATE_R * risk_budget
                       and pl <= basket["peak"] * TRAIL_LOCK_PCT / 100):
                     close_basket(px, when, "profit lock")
                 elif signal and signal != basket["dir"]:
                     close_basket(px, when, "reversal")
                 else:
-                    # pyramid add
+                    # pyramid add (frozen once the floor is armed, except
+                    # in the floor-a-adds erosion probe)
+                    frozen = basket.get("floor") is not None \
+                        and EXIT_SCHEME != "floor-a-adds"
                     cond = (basket["dir"] == "BUY" and trend == 0 and px > e) or \
                            (basket["dir"] == "SELL" and trend == 1 and px < e)
                     adv = (px - basket["legs"][-1]["px"]) * s
-                    if (cond and pl > 0 and len(basket["legs"]) < MAX_POSITIONS
+                    if (not frozen and cond and pl > 0
+                            and len(basket["legs"]) < MAX_POSITIONS
                             and adv >= ADD_TRIGGER_ATR * a):
                         oz = max(MIN_OZ, int(basket["legs"][-1]["oz"] * ADD_SHRINK))
                         basket["legs"].append({"px": px, "oz": oz})
                         n_adds = len(basket["legs"]) - 1
                         e0 = basket["legs"][0]["px"]
                         if n_adds == 1:      # halfway current stop -> entry
-                            basket["stop"] = (basket["stop"] + e0) / 2
+                            ladder = (basket["stop"] + e0) / 2
                         else:                # lagging ladder: mid of two prior entries
-                            basket["stop"] = (basket["legs"][-3]["px"]
-                                              + basket["legs"][-2]["px"]) / 2
+                            ladder = (basket["legs"][-3]["px"]
+                                      + basket["legs"][-2]["px"]) / 2
+                        if basket.get("floor") is not None:
+                            # armed: ladder may tighten the stop, never loosen
+                            if ladder * s > basket["stop"] * s:
+                                basket["stop"] = ladder
+                        else:
+                            basket["stop"] = ladder
                         if verbose:
                             print(f"  add   {when:%m-%d %H:%M} {oz}oz @ {px:.2f} "
                                   f"stop->{basket['stop']:.2f}")
@@ -207,14 +283,20 @@ def run(candles, start_balance, verbose):
                     risk = bal * RISK_PCT / 100
                     oz = max(MIN_OZ, int(risk / dist))
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
-                              "stop": stop, "peak": 0.0, "cycle_bal": bal}
+                              "stop": stop, "peak": 0.0, "cycle_bal": bal,
+                              "opened": when}
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})")
 
+        # open-equity valley (marked at bar close)
+        eq = bal + (basket_pl(px) if basket else 0.0)
+        peak_eq = max(peak_eq, eq)
+        max_valley = max(max_valley, peak_eq - eq)
+
     if basket:
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
-    return trades, bal, max_dd
+    return trades, bal, max_dd, max_valley
 
 
 def plot(candles, trades, start_balance, out_path):
@@ -276,7 +358,12 @@ def main():
                     help="override daily exposure minutes (0 = unlimited)")
     ap.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
+    ap.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
+                    help="profit-floor experiment scheme (default: current "
+                         "behavior, close at profit target)")
     args = ap.parse_args()
+    global EXIT_SCHEME
+    EXIT_SCHEME = args.exit_scheme
     if args.adx is not None:
         global ADX_MIN
         ADX_MIN = args.adx
@@ -300,9 +387,26 @@ def main():
 
     t0, t1 = hhmm(candles[0]["t"])[0], hhmm(candles[-1]["t"])[0]
     print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
-          f"(server time) | start balance ${args.balance:,.0f}\n")
+          f"(server time) | start balance ${args.balance:,.0f} "
+          f"| exit scheme {EXIT_SCHEME}\n")
 
-    trades, bal, max_dd = run(candles, args.balance, args.verbose)
+    trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
+
+    # floor guarantee check: once armed, a trade may never realize less than
+    # its floor amount — the only allowed leaks are the close-based forced
+    # exits (pre-break flatten / end-of-data), which fill at bar close and
+    # may sit one bar's move below the floor price.
+    floor_leaks = []
+    for t in trades:
+        if t.get("floor") is not None and t["pl"] < t["floor"] - 1e-6:
+            if t["why"] in ("flatten", "eod-open"):
+                floor_leaks.append(t)
+            elif EXIT_SCHEME == "floor-a-adds":
+                floor_leaks.append(t)   # erosion by post-arm adds: measured
+            else:
+                raise AssertionError(
+                    f"floor violated: {t['when']:%m-%d %H:%M} {t['why']} "
+                    f"pl {t['pl']:+.2f} < floor {t['floor']:+.2f}")
 
     wins = [t for t in trades if t["pl"] > 0]
     losses = [t for t in trades if t["pl"] <= 0]
@@ -312,11 +416,18 @@ def main():
         print(f"gross loss {sum(t['pl'] for t in losses):+10.2f}")
         for t in trades:
             legs = "+".join(f"{l['oz']}oz@{l['px']:.2f}" for l in t["legs"])
+            fl = f"  floor {t['floor']:+.2f}" if t.get("floor") is not None else ""
             print(f"  {t['when']:%m-%d %H:%M} {t['dir']:4} [{legs}] -> "
-                  f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}")
+                  f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}{fl}")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
-    print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}")
+    print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
+          f"max open-equity valley {max_valley:.2f}")
+    armed = [t for t in trades if t.get("floor") is not None]
+    if EXIT_SCHEME != "target-exit":
+        print(f"floor armed on {len(armed)} trades; "
+              f"{len(floor_leaks)} realized below their floor "
+              f"({', '.join(t['why'] for t in floor_leaks) or 'none'})")
     if args.chart:
         plot(candles, trades, args.balance, args.chart)
         print(f"chart      {args.chart}")
