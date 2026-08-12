@@ -22,6 +22,14 @@ Simplifications (documented, keep in mind when reading results):
 
 Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--exit-scheme target-exit|floor-a|floor-b|floor-a-adds]
+                   [--adx N] [--expo MIN] [--risk PCT] [--days N]
+                   [--confirm N] [--stop-buffer ATR]
+
+--confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
+HalfTrend flip before the entry fires — EA fake-out filter semantics: the
+counter resets on every flip and whenever a close lands back on the wrong
+side of the EMA; default 1 reproduces the historical latch exactly).
+--stop-buffer overrides the ATR(14) multiple padding the wick-extreme stop.
 
 --exit-scheme (profit-floor experiment, spec 2026-08-12-profit-floor-design):
 default target-exit is the current EA behavior; floor-a converts the profit
@@ -134,6 +142,7 @@ def run(candles, start_balance, verbose):
     fired_flip = None      # flip index already traded
     last_flip = None
     extreme = None
+    consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
     trades = []
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
@@ -170,8 +179,13 @@ def run(candles, start_balance, verbose):
         trend = ht[i][1]
         if last_flip is None or (ht[i - 1] and trend != ht[i - 1][1]):
             last_flip, extreme = i, (x["l"] if trend == 0 else x["h"])
+            consec_above = consec_below = 0   # flip re-arms the filter
         else:
             extreme = min(extreme, x["l"]) if trend == 0 else max(extreme, x["h"])
+        if px > e:
+            consec_above, consec_below = consec_above + 1, 0
+        elif px < e:
+            consec_below, consec_above = consec_below + 1, 0
 
         day = when.date()
         if basket:
@@ -185,9 +199,9 @@ def run(candles, start_balance, verbose):
 
         signal = None
         if fired_flip != last_flip:
-            if trend == 0 and px > e:
+            if trend == 0 and px > e and consec_above >= CONFIRM_CLOSES:
                 signal = "BUY"
-            elif trend == 1 and px < e:
+            elif trend == 1 and px < e and consec_below >= CONFIRM_CLOSES:
                 signal = "SELL"
             if signal:
                 fired_flip = last_flip
@@ -358,6 +372,12 @@ def main():
                     help="override daily exposure minutes (0 = unlimited)")
     ap.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
+    ap.add_argument("--confirm", type=int, default=None,
+                    help="override ConfirmCloses (consecutive closes beyond "
+                         "the EMA required after a flip; default 1)")
+    ap.add_argument("--stop-buffer", type=float, default=None,
+                    help="override the stop pad in ATR(14) multiples "
+                         "(default 0.75)")
     ap.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
                     help="profit-floor experiment scheme (default: current "
                          "behavior, close at profit target)")
@@ -373,6 +393,12 @@ def main():
     if args.risk is not None:
         global RISK_PCT
         RISK_PCT = args.risk
+    if args.confirm is not None:
+        global CONFIRM_CLOSES
+        CONFIRM_CLOSES = args.confirm
+    if args.stop_buffer is not None:
+        global STOP_BUFFER_ATR
+        STOP_BUFFER_ATR = args.stop_buffer
 
     if args.source.startswith("http"):
         data = json.load(urllib.request.urlopen(args.source))
