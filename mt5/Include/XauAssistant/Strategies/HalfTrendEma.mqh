@@ -35,6 +35,7 @@ private:
    double   m_catchupMaxChaseAtr;
    int      m_confirmShift;    // shift where the CURRENT trend's entry first
    double   m_confirmClose;    // confirmed during processing; 0 = none yet
+   datetime m_confirmTime;     // bar time of the confirm bar; 0 = none yet
 
    int      m_ema9Handle;
    int      m_ema21Handle;
@@ -137,7 +138,7 @@ private:
          m_fired = false;   // a flip re-arms the once-per-trend entry
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
-         m_confirmShift = 0; m_confirmClose = 0;
+         m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print("halftrend_ema_v1: HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
@@ -157,9 +158,18 @@ private:
          if(m_confirmShift == 0 &&
             ((m_trend == 0 && m_consecAbove == m_confirm) ||
              (m_trend == 1 && m_consecBelow == m_confirm)))
-           { m_confirmShift = shift; m_confirmClose = close; }
+           { m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift); }
         }
       PaintBar(shift, haveEma ? emaBuf[0] : 0);
+     }
+
+   // Per-symbol MT5 global holding the bar time of the last bar this
+   // strategy processed while the EA was actually running (LIVE branch of
+   // Evaluate only — never written during warm-up backfill). Same
+   // "XAU_<name>_<login>_<symbol>" shape RiskManager uses.
+   string LastLiveKey()
+     {
+      return "XAU_LASTLIVE_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol;
      }
 
    // Missed-entry catch-up guards, evaluated on CURRENT data. True = the
@@ -171,6 +181,12 @@ private:
         { Print("halftrend_ema_v1: catch-up disabled — stale entry suppressed"); return false; }
       if(m_confirmShift == 0 || m_confirmClose <= 0)
         { Print("halftrend_ema_v1: catch-up — no confirm bar recorded, suppressed"); return false; }
+      string liveKey = LastLiveKey();
+      if(!GlobalVariableCheck(liveKey))
+        { Print("halftrend_ema_v1: catch-up — no live-bar watermark yet, suppressed (first run)"); return false; }
+      datetime lastLive = (datetime)(long)GlobalVariableGet(liveKey);
+      if(m_confirmTime <= lastLive)
+        { Print("halftrend_ema_v1: catch-up rejected — confirm happened while EA was live, not a missed signal"); return false; }
       int ageBars = m_confirmShift - 1;   // bars between confirm bar and newest closed bar
       if(ageBars > m_catchupMaxAge)
         {
@@ -212,7 +228,7 @@ public:
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
-        m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0),
+        m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -249,7 +265,10 @@ public:
            }
         }
       else
+        {
          ProcessClosedBar(1);
+         GlobalVariableSet(LastLiveKey(), (double)(long)closed);
+        }
       m_lastProcessed = closed;
 
       if(!m_fired)
