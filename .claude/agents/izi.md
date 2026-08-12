@@ -101,13 +101,86 @@ Data collection only; no UI yet.
   **23:54 pre-break flatten** (closes everything before the 23:59–01:00
   server maintenance break; retries until flat; notifies 🌙).
 - All EA global-variable keys are per-symbol since 2026-08-09:
-  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK; EXPO adds a
-  trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
+  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK, RECON; EXPO adds
+  a trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
   one-time copy old→new + delete-old (never deletes unless the new key was
-  written; prints one line per migrated key).
+  written; prints one line per migrated key) — RECON was born in this shape
+  (2026-08-12) so it never needed migration.
 - Trade events (`/trade-event`) carry `sl`, `tp` (basket target price,
   EA-computed), `final` (basket-gone flag — partial leg stop-outs are
   non-final and must not trigger P/L messages/renders).
+- **Reconcile-on-reconnect** (2026-08-12, `XauAssistant.mq5`): back-fills
+  `/trade-event` close reports for own closing deals the service never saw —
+  a broker-side SL/TP (or any close) that lands while MT5 is down (no
+  `OnTradeTransaction` fires) or while the service is down (the live POST
+  fails/drops). `ReconcileOfflineCloses()` runs once in `OnInit` (after
+  `MigrateGlobalKeys()` and `g_ui.Init()`, so key shapes and the base URL
+  are both settled) and at most once per 60 s from `OnTimer`. Watermark =
+  `XAU_RECON_<login>_<symbol>` global holding the last successfully
+  reported closing-deal ticket; every LIVE close (`CUiSink::OnTradeEvent`,
+  fed by `TradeManager` and the broker-side-SL/TP branch of
+  `OnTradeTransaction`) advances it on a successful POST, so in the normal
+  case the reconciler finds nothing to do.
+  - **Ticket=0**: the broker-side-SL/TP branch of `OnTradeTransaction`
+    always carries a real deal ticket, but `TradeManager.CloseAll`'s
+    aggregate close event — the path for reversals, EXIT signals, profit
+    target, profit lock, pre-break flatten, and remote `close_all` —
+    reports with `ticket=0` (one event can close several legs). For that
+    case `CUiSink::OnTradeEvent` calls `NewestOwnClosingDeal()`
+    (`HistorySelect` over the trailing ~24h, same
+    symbol+magic+`DEAL_ENTRY_OUT` filter, max ticket) and advances the
+    watermark to whatever it finds; fail-open on lookup failure (throttled
+    ≤1/hour via `g_lastReconLookupWarn`) — the advance is simply skipped,
+    which can only produce a duplicate `"(reconciled)"` report on the next
+    pass, never a silent loss.
+  - **First run** (key absent) seeds the watermark to the newest own
+    closing deal WITHOUT posting — no history spam on install or after the
+    2026-08-09 key migration. **This permanently leaves every close that
+    happened before this feature was deployed unreported** — including the
+    2026-08-11 −$56.18 blackout close (§7) — by design: the seed exists to
+    stop the reconciler from replaying years of history on first boot, not
+    to retroactively back-fill it. If `HistorySelect` fails during the seed
+    (e.g. a cold terminal start before history is ready), the key is left
+    UNSET (no seed-to-0) and a throttled warning prints — 0 would make
+    every deal in the next 30-day scan look unreported and replay the
+    whole history; the next 60 s pass just retries the seed.
+  - Otherwise it scans `HistoryDealsTotal()` over the trailing 30 days,
+    filters to own closing deals (symbol + magic + `DEAL_ENTRY_OUT`) newer
+    than the watermark, sorts them ascending by ticket explicitly (not
+    relying on history index order — a mid-backlog post failure right
+    after an out-of-order higher ticket had already posted must not strand
+    a lower one behind the advanced watermark forever), and replays each
+    through `g_ui.PostTradeEvent` directly — bypassing `g_uiSink`/`CUiSink`
+    on purpose, since the sink also drives chart risk/reward boxes and
+    per-strategy basket bookkeeping meant for LIVE closes only (reconciled
+    backlog closes must not repaint those), but both hit the same
+    `/trade-event` endpoint so service-side handling (report, render, DB
+    row, channel mirror) is identical either way. Reason strings get a
+    `" (reconciled)"` suffix so these are visually distinguishable from
+    live reports in Telegram/dashboard/DB.
+  - **Final flag is derived from history, not live positions**: while
+    building the backlog the scan tracks a running net own volume for
+    symbol+magic (`DEAL_ENTRY_IN` adds, `DEAL_ENTRY_OUT` subtracts) across
+    the same `HistorySelect` window; a qualifying deal gets `final=true`
+    exactly when that running tally lands back on zero AT that deal — "no
+    own position remained open after this deal", a fact fixed in history.
+    NOT "am I flat right now": that check broke two ways — a new basket
+    already open by the time the reconciler ran made the true-final close
+    of the OLD basket post `final=false` forever (and the service would
+    keep folding that dead basket's legs into the next live close's
+    report), and `PositionSelect(_Symbol)` ignores magic, so any
+    manual/other-EA position on the symbol would suppress `final` too. The
+    history-derived check needs no live-position read at all, and
+    correctly marks EVERY basket that fully closed within one backlog scan
+    (not just the last), since each is now judged independently.
+  - At-least-once, stop-on-first-failure: the watermark only advances
+    after a successful POST and the scan returns immediately on the first
+    failed POST (service still down), so nothing is skipped — the next
+    `OnTimer` pass resumes from the same watermark. `HistorySelect`
+    failures are fail-open (retry next pass) with a `Print` throttled to
+    ≤1/hour (`g_lastReconWarn`). The 30-day window bounds the scan —
+    anything older is unreachable, acceptable since outages here run
+    hours, not weeks.
 
 # 4. Telegram (the remote control)
 
@@ -218,6 +291,18 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   TradeManager's seeding, exposure → delete today's dated key), one Print
   per action + an Alert summary. **Kill-switch reset goes through this
   script now** — no more hand-editing globals in the terminal's F3 dialog.
+  `XAU_RECON_<login>_<symbol>` (see §3, reconcile-on-reconnect) is
+  deliberately NOT offered here: resetting it (delete) would re-report
+  already-seen closes on the next pass, and reseeding it would silently
+  skip unreported ones — leave it alone; it self-manages.
+- **Reconcile-on-reconnect live drill**: stop the service
+  (`pkill -f "uvicorn app.main:app"`) → close an open position manually in
+  the terminal (or let a broker-side SL/TP fire while the service is down)
+  → restart the service (see restart procedure above) → within ~60 s (next
+  `OnTimer` pass) a `"... (reconciled)"` close report lands in
+  Telegram/dashboard/DB with the correct P/L. This is the regression check
+  for the 08-11 blackout (see §7) — confirms an offline close is never lost
+  silently again.
 - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
   [--verbose]` replays halftrend + the full current money rulebook over the
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
@@ -245,6 +330,15 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   parameters for a full day; a −$41.97 M15 stop-out on 2026-08-12 exposed it.
   Permanent fix: the `TradeTimeframe` input (§3) pins every decision path to
   M5 regardless of which timeframe the chart displays.
+- 2026-08-11: a 6.1 h MT5/service blackout let a broker-side stop close a
+  basket for −$56.18 with zero report — no Telegram alert, no DB row, no
+  trace anywhere until someone happened to check the terminal. That
+  specific close is NOT retroactively back-filled — reconcile-on-reconnect
+  (§3/§6, 2026-08-12) seeds its watermark to "newest deal at first run" on
+  deploy, by design, so every close before that point (this one included)
+  stays permanently unreported. Going forward: the EA now back-fills any
+  offline close within 60 s of either side coming back up, so a FUTURE
+  blackout can't repeat this silently.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly
