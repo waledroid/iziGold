@@ -30,6 +30,12 @@ private:
    bool     m_fired;         // one entry per Half Trend flip
    datetime m_lastProcessed;
 
+   bool     m_catchupEnabled;
+   int      m_catchupMaxAge;
+   double   m_catchupMaxChaseAtr;
+   int      m_confirmShift;    // shift where the CURRENT trend's entry first
+   double   m_confirmClose;    // confirmed during processing; 0 = none yet
+
    int      m_ema9Handle;
    int      m_ema21Handle;
    int      m_ema200Handle;
@@ -131,6 +137,7 @@ private:
          m_fired = false;   // a flip re-arms the once-per-trend entry
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
+         m_confirmShift = 0; m_confirmClose = 0;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print("halftrend_ema_v1: HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
@@ -147,16 +154,65 @@ private:
         {
          if(close > emaBuf[0])      { m_consecAbove++; m_consecBelow = 0; }
          else if(close < emaBuf[0]) { m_consecBelow++; m_consecAbove = 0; }
+         if(m_confirmShift == 0 &&
+            ((m_trend == 0 && m_consecAbove == m_confirm) ||
+             (m_trend == 1 && m_consecBelow == m_confirm)))
+           { m_confirmShift = shift; m_confirmClose = close; }
         }
       PaintBar(shift, haveEma ? emaBuf[0] : 0);
      }
 
+   // Missed-entry catch-up guards, evaluated on CURRENT data. True = the
+   // outage-spanning signal is still tradeable now. Every rejection prints
+   // its reason once (this runs once, at warm-up).
+   bool CatchupOk()
+     {
+      if(!m_catchupEnabled)
+        { Print("halftrend_ema_v1: catch-up disabled — stale entry suppressed"); return false; }
+      if(m_confirmShift == 0 || m_confirmClose <= 0)
+        { Print("halftrend_ema_v1: catch-up — no confirm bar recorded, suppressed"); return false; }
+      int ageBars = m_confirmShift - 1;   // bars between confirm bar and newest closed bar
+      if(ageBars > m_catchupMaxAge)
+        {
+         PrintFormat("halftrend_ema_v1: catch-up rejected — signal %d bars old (max %d)",
+                     ageBars, m_catchupMaxAge);
+         return false;
+        }
+      double emaBuf[];
+      if(CopyBuffer(m_emaHandle, 0, 1, 1, emaBuf) != 1 || emaBuf[0] <= 0)
+        { Print("halftrend_ema_v1: catch-up — EMA unavailable, suppressed"); return false; }
+      double atrBuf[];
+      if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) != 1 || atrBuf[0] <= 0)
+        { Print("halftrend_ema_v1: catch-up — ATR unavailable, suppressed"); return false; }
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(m_trend == 1)   // SELL thesis
+        {
+         if(bid >= emaBuf[0])
+           { Print("halftrend_ema_v1: catch-up rejected — price back above EMA, thesis gone"); return false; }
+         if(m_confirmClose - bid > m_catchupMaxChaseAtr * atrBuf[0])
+           { Print("halftrend_ema_v1: catch-up rejected — price already ran, not chasing"); return false; }
+        }
+      else               // BUY thesis
+        {
+         if(bid <= emaBuf[0])
+           { Print("halftrend_ema_v1: catch-up rejected — price back below EMA, thesis gone"); return false; }
+         if(bid - m_confirmClose > m_catchupMaxChaseAtr * atrBuf[0])
+           { Print("halftrend_ema_v1: catch-up rejected — price already ran, not chasing"); return false; }
+        }
+      PrintFormat("halftrend_ema_v1: catch-up entry — %s confirmed %d bars ago during downtime, guards passed",
+                  m_trend == 1 ? "SELL" : "BUY", ageBars);
+      return true;
+     }
+
 public:
-   CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr)
+   CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
+                         bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
+        m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
+        m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -180,11 +236,17 @@ public:
          int from = MathMin(m_warmupBars, MathMax(avail, 1));
          for(int s = from; s >= 1; s--) ProcessClosedBar(s);   // oldest -> newest
 
-         // suppress stale entry: if this trend already confirmed during warm-up,
-         // the real entry bar is long past — wait for the next flip
+         // this trend's entry already confirmed during the gap: normally a
+         // stale entry (suppress, wait for the next flip) — unless the
+         // catch-up guards say the thesis is still intact right now, in
+         // which case m_fired stays false and the first Evaluate() below
+         // emits the signal through the normal gate path.
          if((m_trend == 0 && m_consecAbove >= m_confirm) ||
             (m_trend == 1 && m_consecBelow >= m_confirm))
-            m_fired = true;
+           {
+            if(!CatchupOk())
+               m_fired = true;
+           }
         }
       else
          ProcessClosedBar(1);

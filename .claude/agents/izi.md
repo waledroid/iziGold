@@ -84,6 +84,32 @@ Data collection only; no UI yet.
 - **Entry**: `halftrend_ema_v1` — HalfTrend flip (amplitude 4) + `ConfirmCloses=1`
   closes beyond EMA-55, once per flip (fake-out filter). Shadow:
   `boll_stochrsi_v1`.
+- **Guarded catch-up entry** (2026-08-12, `HalfTrendEma.mqh`): before this,
+  restarting MT5/EA after ANY gap that spanned a fresh flip+confirm always
+  suppressed that entry as "stale — wait for the next flip", even seconds
+  after restart with the thesis fully intact (born from the 08-11 blackout
+  and the owner's "can it still jump on it?" question). Now the warm-up
+  replay records the shift/close where the CURRENT trend first reached
+  `ConfirmCloses` (`m_confirmShift`/`m_confirmClose`, first reach only via
+  `==`, reset to 0 on every flip); if that trend is still the live one when
+  warm-up finishes, `CatchupOk()` runs once and either lets the signal
+  through the NORMAL path (`m_fired` stays false → the same `Evaluate()`
+  call emits it, so it clears every existing risk gate, sizing, and
+  `/analyze` reporting exactly like a fresh signal — no bypass, no new order
+  code) or suppresses with a named reason, each Printed once: `CatchupEnabled=false`
+  ("catch-up disabled"), no confirm bar recorded, **age** — `m_confirmShift −
+  1` trade-TF bars old exceeds `CatchupMaxAgeBars` (default 12 = 1h on M5),
+  **thesis-now** — live Bid has crossed back through the shift-1 EMA-55
+  (trend invalidated), **no-chase** — Bid has already run more than
+  `CatchupMaxChaseATR` (default 1.0) × shift-1 ATR(14) beyond the confirmed
+  close (don't chase a move that already happened). All three new inputs
+  (`CatchupEnabled`, `CatchupMaxAgeBars`, `CatchupMaxChaseATR`) live on the
+  EA and pass through the `CHalfTrendEmaStrategy` constructor's three
+  trailing params. Net effect: fires within seconds of restart through the
+  normal gate path (`g_lastBar=0` on restart → the very first tick processes
+  the pending bar). In MANUAL mode a passed catch-up is just an ordinary
+  entry proposal, nothing special. `BollStochRsi.mqh` is untouched — this is
+  scoped to `halftrend_ema_v1` only.
 - **Risk gates on entry** (`RiskManager.CanEnter`, each refusal has a literal
   reason string): kill switch (10% DD from peak, manual reset via the
   XauMaintenance script — see runbook), trading window `4–23` server hours, daily exposure
@@ -339,6 +365,11 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   stays permanently unreported. Going forward: the EA now back-fills any
   offline close within 60 s of either side coming back up, so a FUTURE
   blackout can't repeat this silently.
+- Same 08-11 blackout, second consequence: after it, the owner asked "can it
+  still jump on it?" about the entry that fired-and-suppressed during the
+  gap. The answer was no — warm-up always treated any already-confirmed
+  trend as stale. The guarded catch-up entry (§3, 2026-08-12) makes that a
+  real "yes, if the thesis still holds" instead of an unconditional no.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly
