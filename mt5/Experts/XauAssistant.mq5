@@ -164,9 +164,23 @@ public:
                                     profit, tp, basketGone);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
-      // re-report this deal on the next MT5/service restart.
-      if(event == "close" && ticket != 0)
-         AdvanceReconWatermark(ticket);
+      // re-report this deal on the next MT5/service restart. CloseAll's
+      // aggregate close (reversal/EXIT/profit target/profit lock/flatten/
+      // remote exit) carries no per-deal ticket (0) -- resolve it to
+      // whatever just closed instead, so the watermark still advances and
+      // the reconciler doesn't duplicate-report every leg of a normal
+      // online exit next pass.
+      if(event == "close")
+        {
+         if(ticket != 0)
+            AdvanceReconWatermark(ticket);
+         else
+           {
+            long newest = NewestOwnClosingDeal();
+            if(newest >= 0)
+               AdvanceReconWatermark(newest);
+           }
+        }
       if(event == "open" || (event == "close" && basketGone))
          g_ui.UploadScreenshot(id);
      }
@@ -242,6 +256,45 @@ void AdvanceReconWatermark(long dealTicket)
 // Throttles the "reconcile HistorySelect failed" warning to <=1/hour so a
 // stuck terminal history cache can't spam the log/Telegram.
 datetime g_lastReconWarn = 0;
+// Separate throttle for the ticket==0 lookup below -- distinct failure mode
+// (per-event, not per-60s-pass), kept on its own clock so a burst of
+// ticket-less closes can't itself spam the log within one hour either.
+datetime g_lastReconLookupWarn = 0;
+
+// TradeManager.CloseAll's aggregate "close" event (reversal, EXIT signal,
+// profit target, profit lock, pre-break flatten, remote "close_all") does
+// not carry a per-deal ticket (ticket=0) -- it can close several legs in
+// one call. When the live path needs to advance the watermark for such an
+// event, resolve it to the newest own closing deal actually on the books
+// right now. Mirrors the first-run-seed filter set (symbol + magic +
+// DEAL_ENTRY_OUT) but narrowed to ~24h since this only needs "whatever just
+// closed", not the full reconcile lookback. Fail-open: HistorySelect
+// failure or no match returns -1 and the caller skips the advance (a
+// duplicate reconciled report is possible only in that rare case, and it's
+// honest data, not silent loss).
+long NewestOwnClosingDeal()
+  {
+   if(!HistorySelect(TimeCurrent() - 86400, TimeCurrent() + 60))
+     {
+      if(TimeCurrent() - g_lastReconLookupWarn > 3600)
+        {
+         Print("XauAssistant: recon newest-deal lookup HistorySelect failed, err=", GetLastError());
+         g_lastReconLookupWarn = TimeCurrent();
+        }
+      return -1;
+     }
+   long newest = -1;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong t = HistoryDealGetTicket(i);
+      if(t == 0) continue;
+      if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      if((long)t > newest) newest = (long)t;
+     }
+   return newest;
+  }
 
 // Back-fill close reports for own closing deals the service never saw
 // (MT5 was down -> OnTradeTransaction never fired; or the service was
@@ -280,6 +333,22 @@ void ReconcileOfflineCloses()
         }
       return;   // fail-open: retry on the next pass
      }
+   // Determine the LAST unreported qualifying deal up front: only it may
+   // carry final=true (and only when flat now) -- otherwise a multi-leg
+   // backlog would send a "final" P/L message for every leg, spamming
+   // Telegram with one basket's close reported N times as if N baskets
+   // closed. Earlier backlog deals always send final=false; per-deal
+   // telemetry/P&L for them is still posted below, nothing is lost.
+   long lastQualifying = -1;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong t = HistoryDealGetTicket(i);
+      if(t == 0 || (long)t <= watermark) continue;
+      if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      lastQualifying = (long)t;   // history is time-ordered; last match wins
+     }
    // Collect unreported own closing deals, oldest first (history is
    // time-ordered; iterate forward).
    for(int i = 0; i < HistoryDealsTotal(); i++)
@@ -303,7 +372,9 @@ void ReconcileOfflineCloses()
          case DEAL_REASON_TP: reason = "take-profit (reconciled)"; break;
          default:             reason = "closed offline (reconciled)";
         }
-      bool isFinal = !PositionSelect(_Symbol);   // flat now = this backlog ends flat
+      // Only the last unreported deal's final flag depends on flat-now;
+      // every earlier deal in this backlog is unconditionally non-final.
+      bool isFinal = ((long)t == lastQualifying) && !PositionSelect(_Symbol);
       // Replay directly through g_ui.PostTradeEvent rather than the
       // g_uiSink/CUiSink path: the sink also drives chart risk/reward boxes
       // and per-strategy basket bookkeeping (OnBasketClosed) intended for

@@ -120,7 +120,22 @@ Data collection only; no UI yet.
   reported closing-deal ticket; every LIVE close (`CUiSink::OnTradeEvent`,
   fed by `TradeManager` and the broker-side-SL/TP branch of
   `OnTradeTransaction`) advances it on a successful POST, so in the normal
-  case the reconciler finds nothing to do. First run (key absent) seeds the
+  case the reconciler finds nothing to do. **Ticket=0 nuance** (fixed
+  2026-08-12 same day, after code review): the broker-side-SL/TP branch of
+  `OnTradeTransaction` always carries a real deal ticket, but
+  `TradeManager.CloseAll`'s aggregate close event — the path for reversals,
+  EXIT signals, profit target, profit lock, pre-break flatten, and remote
+  `close_all` — reports with `ticket=0` (one event can close several legs).
+  For that case `CUiSink::OnTradeEvent` calls `NewestOwnClosingDeal()`
+  (`HistorySelect` over the trailing ~24h, same symbol+magic+`DEAL_ENTRY_OUT`
+  filter, max ticket) and advances the watermark to whatever it finds;
+  fail-open on lookup failure (throttled ≤1/hour via
+  `g_lastReconLookupWarn`) — the advance is simply skipped, which can only
+  produce a duplicate `"(reconciled)"` report on the next pass, never a
+  silent loss. Before this fix, every `CloseAll`-driven close (the majority
+  of normal online exits) left the watermark stuck, so the reconciler
+  duplicate-reported them — one Telegram message per leg — on the very next
+  60 s pass. First run (key absent) seeds the
   watermark to the newest own closing deal WITHOUT posting — no history
   spam on install or after the 2026-08-09 key migration. Otherwise it scans
   `HistoryDealsTotal()` oldest-first over the trailing 30 days, filters to
@@ -132,7 +147,13 @@ Data collection only; no UI yet.
   both hit the same `/trade-event` endpoint so service-side handling
   (report, render, DB row, channel mirror) is identical either way. Reason
   strings get a `" (reconciled)"` suffix so these are visually
-  distinguishable from live reports in Telegram/dashboard/DB. At-least-once,
+  distinguishable from live reports in Telegram/dashboard/DB. **Final flag**
+  (fixed 2026-08-12 same day): only the LAST unreported deal in a backlog
+  scan may carry `final=true`, and only when flat right now — every earlier
+  deal in a multi-leg backlog is unconditionally `final=false`. The
+  qualifying set is pre-scanned once to find that last ticket before the
+  per-deal posting loop runs, so a multi-leg basket backlog doesn't send N
+  "final" P/L messages for what was really one basket closing. At-least-once,
   stop-on-first-failure: the watermark only advances after a successful
   POST and the scan returns immediately on the first failed POST (service
   still down), so nothing is skipped — the next `OnTimer` pass resumes from
