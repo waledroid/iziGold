@@ -28,6 +28,7 @@ private:
    string   m_url;
    int      m_timeout;
    long     m_magic;
+   ENUM_TIMEFRAMES m_tf;
    datetime m_lastWarn;
 
    string ExtractString(string body, string key)
@@ -117,12 +118,13 @@ private:
      }
 
 public:
-   void Init(string baseUrl, int timeout_ms, long magic)
+   void Init(string baseUrl, int timeout_ms, long magic, ENUM_TIMEFRAMES tf)
      {
       m_baseUrl = baseUrl;
       m_url     = baseUrl + "/heartbeat";
       m_timeout = timeout_ms;
       m_magic   = magic;
+      m_tf      = tf;
       m_lastWarn = 0;
      }
 
@@ -142,7 +144,7 @@ public:
       MqlRates bar0[];
       long   bar_t = 0;
       double bar_o = 0, bar_h = 0, bar_l = 0, bar_c = 0;
-      if(CopyRates(_Symbol, PERIOD_CURRENT, 0, 1, bar0) == 1)
+      if(CopyRates(_Symbol, m_tf, 0, 1, bar0) == 1)
         {
          bar_t = (long)bar0[0].time;
          bar_o = bar0[0].open;

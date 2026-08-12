@@ -10,6 +10,7 @@ private:
    int    m_winStart, m_winEnd, m_maxExpoMin;
    int    m_adxHandle;
    long   m_login, m_magic;
+   ENUM_TIMEFRAMES m_tf;
    CNewsGuard *m_news;   // injected (may be NULL) — fail-open when absent
    // per-bar cache for the daily realized-loss scan (HistorySelect is not
    // free; entries/adds are bar-cadence anyway)
@@ -37,16 +38,17 @@ private:
 public:
    void Init(double riskPct, double maxDdPct, double maxSpread, double adxThr,
              int winStart, int winEnd, int maxExpoMin,
-             double maxDailyLossPct, long magic, CNewsGuard *news = NULL)
+             double maxDailyLossPct, long magic, ENUM_TIMEFRAMES tf, CNewsGuard *news = NULL)
      {
       m_riskPct = riskPct; m_maxDdPct = maxDdPct; m_maxSpread = maxSpread;
       m_adxThreshold = adxThr; m_winStart = winStart; m_winEnd = winEnd;
       m_maxExpoMin = maxExpoMin;
       m_maxDailyLossPct = maxDailyLossPct; m_magic = magic;
+      m_tf = tf;
       m_news = news;
       m_dlCacheBar = 0; m_dlRealized = 0; m_dlLastWarn = 0;
       m_login = AccountInfoInteger(ACCOUNT_LOGIN);
-      m_adxHandle = iADX(_Symbol, PERIOD_CURRENT, 14);
+      m_adxHandle = iADX(_Symbol, m_tf, 14);
      }
 
    void OnBarUpdate()
@@ -60,7 +62,7 @@ public:
       if(PositionsTotal() > 0)
         {
          double mins = GlobalVariableGet(ExpoKey());
-         GlobalVariableSet(ExpoKey(), mins + PeriodSeconds(PERIOD_CURRENT) / 60.0);
+         GlobalVariableSet(ExpoKey(), mins + PeriodSeconds(m_tf) / 60.0);
         }
      }
 
@@ -84,7 +86,7 @@ public:
    // Cached per bar: the HistorySelect scan runs at most once per new bar.
    double TodayRealized()
      {
-      datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
+      datetime bar = iTime(_Symbol, m_tf, 0);
       if(bar != 0 && bar == m_dlCacheBar) return m_dlRealized;
       double realized = 0;
       datetime now = TimeCurrent();

@@ -17,6 +17,7 @@ class CAiApi
 private:
    string m_url;
    int    m_timeout;
+   ENUM_TIMEFRAMES m_tf;
 
    string BuildJson(ENUM_SIGNAL sig, int count, string strategyId,
                     string &shadowIds[], ENUM_SIGNAL &shadowSigs[],
@@ -24,9 +25,9 @@ private:
      {
       MqlRates rates[];
       // shift 1 = last CLOSED bar; the forming bar is never sent
-      int copied = CopyRates(_Symbol, PERIOD_CURRENT, 1, count, rates);
+      int copied = CopyRates(_Symbol, m_tf, 1, count, rates);
       if(copied <= 0) return "";
-      string tf = StringSubstr(EnumToString(_Period), 7); // "PERIOD_M15" -> "M15"
+      string tf = StringSubstr(EnumToString(m_tf), 7); // "PERIOD_M5" -> "M5"
       string json = "{\"symbol\":\"" + _Symbol + "\",\"timeframe\":\"" + tf +
                     "\",\"signal\":\"" + SignalToString(sig) + "\",\"candles\":[";
       for(int i = 0; i < copied; i++)
@@ -80,7 +81,7 @@ private:
      }
 
 public:
-   void Init(string url, int timeout_ms) { m_url = url; m_timeout = timeout_ms; }
+   void Init(string url, int timeout_ms, ENUM_TIMEFRAMES tf) { m_url = url; m_timeout = timeout_ms; m_tf = tf; }
 
    bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
                 ENUM_SIGNAL &shadowSigs[], AiResponse &out,

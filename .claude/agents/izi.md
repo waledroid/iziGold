@@ -19,7 +19,8 @@ operate, extend, and debug the system safely.
   bot (poller + commands + proposals), dashboard (`/ui`), chart renders
   (`app/render.py` + `app/indicators.py`).
 
-**Per closed bar** (chart TF, M5 default): EA evaluates all registered
+**Per closed bar** (`TradeTimeframe` input, M5 default — the chart's own
+timeframe is visual-only and never affects trading, see §3 below): EA evaluates all registered
 strategies (`Strategies/` behind `CStrategy`; only `ActiveStrategy` trades,
 others are logged shadows) → AUTO executes FIRST → POSTs `/analyze` with
 signal (incl. NONE) + 300 candles → service grades (direction/confidence),
@@ -57,6 +58,19 @@ Data collection only; no UI yet.
 
 # 3. Trading rules (current, all EA inputs)
 
+- **`TradeTimeframe` input (default `PERIOD_M5`, 2026-08-12)**: pins EVERY
+  trading decision — bar-close detection, indicator handles, `CopyRates`/
+  `iTime`/`Bars` in both strategies, RiskManager's ADX handle/exposure
+  accumulation/daily-realized cache, AiApi's candle fetch + timeframe tag,
+  UiApi's forming-bar heartbeat read. Switching the chart's own timeframe
+  NEVER changes trading — chart TF is visual/painting only. Threaded as the
+  FIRST constructor arg into both strategies and as an added param on
+  `RiskManager.Init`/`AiApi.Init`/`UiApi.Init`. **Exception**: `TradeBoxes.mqh`
+  (risk/reward box painting) intentionally stays on the chart's `PERIOD_CURRENT`
+  — it draws on whatever timeframe is visible, not the trading TF. **Grep
+  invariant**: `grep -rn PERIOD_CURRENT mt5/` must hit ONLY `TradeBoxes.mqh` —
+  anything else is a decision path that escaped the pin and must be threaded
+  through `m_tf`/`TradeTimeframe` before merging.
 - **Entry**: `halftrend_ema_v1` — HalfTrend flip (amplitude 4) + `ConfirmCloses=1`
   closes beyond EMA-55, once per flip (fake-out filter). Shadow:
   `boll_stochrsi_v1`.
@@ -216,6 +230,11 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   reporting, and the pre-break flatten.
 - Calibration phase since 2026-08-02: thresholds (`CONFIRM_THRESHOLD` etc.)
   are placeholders until the log earns better ones; AI ~62% early hit-rate.
+- 2026-08-11: the chart got switched to M15 and the EA — everything used
+  `PERIOD_CURRENT` — silently started trading M15 on uncalibrated M15
+  parameters for a full day; a −$41.97 M15 stop-out on 2026-08-12 exposed it.
+  Permanent fix: the `TradeTimeframe` input (§3) pins every decision path to
+  M5 regardless of which timeframe the chart displays.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly
