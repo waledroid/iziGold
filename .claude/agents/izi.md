@@ -70,7 +70,17 @@ Data collection only; no UI yet.
   — it draws on whatever timeframe is visible, not the trading TF. **Grep
   invariant**: `grep -rn PERIOD_CURRENT mt5/` must hit ONLY `TradeBoxes.mqh` —
   anything else is a decision path that escaped the pin and must be threaded
-  through `m_tf`/`TradeTimeframe` before merging.
+  through `m_tf`/`TradeTimeframe` before merging. **Zero-bar guard**: when
+  `TradeTimeframe` differs from the chart's own TF, `iTime(_Symbol,
+  TradeTimeframe, 0)` in `OnTick` can transiently return 0 mid-session while
+  that non-chart-TF series resyncs (e.g. after a reconnect) — `OnTick` treats
+  0 like "no new bar yet" (`if(bar == 0 || bar == g_lastBar) return;`)
+  instead of assigning it to `g_lastBar`, which would otherwise cause a
+  real→0→real sequence to double-run `ProcessBar()` for the same bar
+  (double-counted exposure minutes, corrupted spread telemetry for that bar).
+  `TradeBoxes.OnBarUpdate()` also now runs once per TRADE-TF bar rather than
+  once per chart bar (can fire multiple times per visible candle on a higher
+  chart TF) — each call just re-anchors the same box, so this is harmless.
 - **Entry**: `halftrend_ema_v1` — HalfTrend flip (amplitude 4) + `ConfirmCloses=1`
   closes beyond EMA-55, once per flip (fake-out filter). Shadow:
   `boll_stochrsi_v1`.
