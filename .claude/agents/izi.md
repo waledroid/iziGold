@@ -120,47 +120,67 @@ Data collection only; no UI yet.
   reported closing-deal ticket; every LIVE close (`CUiSink::OnTradeEvent`,
   fed by `TradeManager` and the broker-side-SL/TP branch of
   `OnTradeTransaction`) advances it on a successful POST, so in the normal
-  case the reconciler finds nothing to do. **Ticket=0 nuance** (fixed
-  2026-08-12 same day, after code review): the broker-side-SL/TP branch of
-  `OnTradeTransaction` always carries a real deal ticket, but
-  `TradeManager.CloseAll`'s aggregate close event — the path for reversals,
-  EXIT signals, profit target, profit lock, pre-break flatten, and remote
-  `close_all` — reports with `ticket=0` (one event can close several legs).
-  For that case `CUiSink::OnTradeEvent` calls `NewestOwnClosingDeal()`
-  (`HistorySelect` over the trailing ~24h, same symbol+magic+`DEAL_ENTRY_OUT`
-  filter, max ticket) and advances the watermark to whatever it finds;
-  fail-open on lookup failure (throttled ≤1/hour via
-  `g_lastReconLookupWarn`) — the advance is simply skipped, which can only
-  produce a duplicate `"(reconciled)"` report on the next pass, never a
-  silent loss. Before this fix, every `CloseAll`-driven close (the majority
-  of normal online exits) left the watermark stuck, so the reconciler
-  duplicate-reported them — one Telegram message per leg — on the very next
-  60 s pass. First run (key absent) seeds the
-  watermark to the newest own closing deal WITHOUT posting — no history
-  spam on install or after the 2026-08-09 key migration. Otherwise it scans
-  `HistoryDealsTotal()` oldest-first over the trailing 30 days, filters to
-  own closing deals (symbol + magic + `DEAL_ENTRY_OUT`) newer than the
-  watermark, and replays each through `g_ui.PostTradeEvent` directly —
-  bypassing `g_uiSink`/`CUiSink` on purpose, since the sink also drives
-  chart risk/reward boxes and per-strategy basket bookkeeping meant for
-  LIVE closes only (reconciled backlog closes must not repaint those), but
-  both hit the same `/trade-event` endpoint so service-side handling
-  (report, render, DB row, channel mirror) is identical either way. Reason
-  strings get a `" (reconciled)"` suffix so these are visually
-  distinguishable from live reports in Telegram/dashboard/DB. **Final flag**
-  (fixed 2026-08-12 same day): only the LAST unreported deal in a backlog
-  scan may carry `final=true`, and only when flat right now — every earlier
-  deal in a multi-leg backlog is unconditionally `final=false`. The
-  qualifying set is pre-scanned once to find that last ticket before the
-  per-deal posting loop runs, so a multi-leg basket backlog doesn't send N
-  "final" P/L messages for what was really one basket closing. At-least-once,
-  stop-on-first-failure: the watermark only advances after a successful
-  POST and the scan returns immediately on the first failed POST (service
-  still down), so nothing is skipped — the next `OnTimer` pass resumes from
-  the same watermark. `HistorySelect` failures are fail-open (retry next
-  pass) with a `Print` throttled to ≤1/hour (`g_lastReconWarn`). The 30-day
-  window bounds the scan — anything older is unreachable, acceptable since
-  outages here run hours, not weeks.
+  case the reconciler finds nothing to do.
+  - **Ticket=0**: the broker-side-SL/TP branch of `OnTradeTransaction`
+    always carries a real deal ticket, but `TradeManager.CloseAll`'s
+    aggregate close event — the path for reversals, EXIT signals, profit
+    target, profit lock, pre-break flatten, and remote `close_all` —
+    reports with `ticket=0` (one event can close several legs). For that
+    case `CUiSink::OnTradeEvent` calls `NewestOwnClosingDeal()`
+    (`HistorySelect` over the trailing ~24h, same
+    symbol+magic+`DEAL_ENTRY_OUT` filter, max ticket) and advances the
+    watermark to whatever it finds; fail-open on lookup failure (throttled
+    ≤1/hour via `g_lastReconLookupWarn`) — the advance is simply skipped,
+    which can only produce a duplicate `"(reconciled)"` report on the next
+    pass, never a silent loss.
+  - **First run** (key absent) seeds the watermark to the newest own
+    closing deal WITHOUT posting — no history spam on install or after the
+    2026-08-09 key migration. **This permanently leaves every close that
+    happened before this feature was deployed unreported** — including the
+    2026-08-11 −$56.18 blackout close (§7) — by design: the seed exists to
+    stop the reconciler from replaying years of history on first boot, not
+    to retroactively back-fill it. If `HistorySelect` fails during the seed
+    (e.g. a cold terminal start before history is ready), the key is left
+    UNSET (no seed-to-0) and a throttled warning prints — 0 would make
+    every deal in the next 30-day scan look unreported and replay the
+    whole history; the next 60 s pass just retries the seed.
+  - Otherwise it scans `HistoryDealsTotal()` over the trailing 30 days,
+    filters to own closing deals (symbol + magic + `DEAL_ENTRY_OUT`) newer
+    than the watermark, sorts them ascending by ticket explicitly (not
+    relying on history index order — a mid-backlog post failure right
+    after an out-of-order higher ticket had already posted must not strand
+    a lower one behind the advanced watermark forever), and replays each
+    through `g_ui.PostTradeEvent` directly — bypassing `g_uiSink`/`CUiSink`
+    on purpose, since the sink also drives chart risk/reward boxes and
+    per-strategy basket bookkeeping meant for LIVE closes only (reconciled
+    backlog closes must not repaint those), but both hit the same
+    `/trade-event` endpoint so service-side handling (report, render, DB
+    row, channel mirror) is identical either way. Reason strings get a
+    `" (reconciled)"` suffix so these are visually distinguishable from
+    live reports in Telegram/dashboard/DB.
+  - **Final flag is derived from history, not live positions**: while
+    building the backlog the scan tracks a running net own volume for
+    symbol+magic (`DEAL_ENTRY_IN` adds, `DEAL_ENTRY_OUT` subtracts) across
+    the same `HistorySelect` window; a qualifying deal gets `final=true`
+    exactly when that running tally lands back on zero AT that deal — "no
+    own position remained open after this deal", a fact fixed in history.
+    NOT "am I flat right now": that check broke two ways — a new basket
+    already open by the time the reconciler ran made the true-final close
+    of the OLD basket post `final=false` forever (and the service would
+    keep folding that dead basket's legs into the next live close's
+    report), and `PositionSelect(_Symbol)` ignores magic, so any
+    manual/other-EA position on the symbol would suppress `final` too. The
+    history-derived check needs no live-position read at all, and
+    correctly marks EVERY basket that fully closed within one backlog scan
+    (not just the last), since each is now judged independently.
+  - At-least-once, stop-on-first-failure: the watermark only advances
+    after a successful POST and the scan returns immediately on the first
+    failed POST (service still down), so nothing is skipped — the next
+    `OnTimer` pass resumes from the same watermark. `HistorySelect`
+    failures are fail-open (retry next pass) with a `Print` throttled to
+    ≤1/hour (`g_lastReconWarn`). The 30-day window bounds the scan —
+    anything older is unreachable, acceptable since outages here run
+    hours, not weeks.
 
 # 4. Telegram (the remote control)
 
@@ -312,10 +332,13 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   M5 regardless of which timeframe the chart displays.
 - 2026-08-11: a 6.1 h MT5/service blackout let a broker-side stop close a
   basket for −$56.18 with zero report — no Telegram alert, no DB row, no
-  trace anywhere until someone happened to check the terminal. Permanent
-  fix: reconcile-on-reconnect (§3/§6, 2026-08-12) — the EA now back-fills
-  any offline close within 60 s of either side coming back up, so a silent
-  loss like this can't happen again.
+  trace anywhere until someone happened to check the terminal. That
+  specific close is NOT retroactively back-filled — reconcile-on-reconnect
+  (§3/§6, 2026-08-12) seeds its watermark to "newest deal at first run" on
+  deploy, by design, so every close before that point (this one included)
+  stays permanently unreported. Going forward: the EA now back-fills any
+  offline close within 60 s of either side coming back up, so a FUTURE
+  blackout can't repeat this silently.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly

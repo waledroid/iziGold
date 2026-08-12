@@ -306,19 +306,33 @@ void ReconcileOfflineCloses()
    if(!GlobalVariableCheck(ReconKey()))
      {
       // First run: seed to the newest own closing deal without reporting
-      // history (no spam on install/migration).
-      long newest = 0;
-      if(HistorySelect(TimeCurrent() - 30 * 86400, TimeCurrent() + 60))
-         for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+      // history (no spam on install/migration -- this permanently leaves
+      // every PRE-DEPLOY close unreported, by design; see izi.md).
+      // HistorySelect can fail at a cold terminal start (history not
+      // ready yet) -- do NOT seed to 0 in that case, since every deal in
+      // the next 30-day scan would then look "unreported" and the
+      // reconciler would replay the whole history. Leave the key absent
+      // so the very next 60s pass retries the seed from scratch.
+      if(!HistorySelect(TimeCurrent() - 30 * 86400, TimeCurrent() + 60))
+        {
+         if(TimeCurrent() - g_lastReconWarn > 3600)
            {
-            ulong t = HistoryDealGetTicket(i);
-            if(t == 0) continue;
-            if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
-            if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
-            if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-            newest = (long)t;
-            break;
+            Print("XauAssistant: reconcile seed HistorySelect failed, err=", GetLastError());
+            g_lastReconWarn = TimeCurrent();
            }
+         return;   // fail-open: retry the seed next pass
+        }
+      long newest = 0;
+      for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+        {
+         ulong t = HistoryDealGetTicket(i);
+         if(t == 0) continue;
+         if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
+         if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
+         if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+         newest = (long)t;
+         break;
+        }
       GlobalVariableSet(ReconKey(), (double)newest);
       PrintFormat("XauAssistant: reconcile watermark seeded at deal %I64d", newest);
       return;
@@ -333,31 +347,70 @@ void ReconcileOfflineCloses()
         }
       return;   // fail-open: retry on the next pass
      }
-   // Determine the LAST unreported qualifying deal up front: only it may
-   // carry final=true (and only when flat now) -- otherwise a multi-leg
-   // backlog would send a "final" P/L message for every leg, spamming
-   // Telegram with one basket's close reported N times as if N baskets
-   // closed. Earlier backlog deals always send final=false; per-deal
-   // telemetry/P&L for them is still posted below, nothing is lost.
-   long lastQualifying = -1;
+   // Build the backlog of unreported own closing deals from the SAME
+   // HistorySelect window, tracking a running net own volume (symbol +
+   // magic; DEAL_ENTRY_IN adds, DEAL_ENTRY_OUT subtracts) as we go. A
+   // qualifying deal (ticket > watermark) is final=true exactly when that
+   // running tally lands back on zero AT that deal -- i.e. "no own
+   // position remains open after this deal", a fact fixed in history, NOT
+   // "am I flat right now": the latter breaks if a NEW basket had already
+   // opened by the time the reconciler ran (the old basket's true-final
+   // close would post final=false forever), and it can't distinguish an
+   // own position from another magic/manual position on the same symbol.
+   // Hedging-mode own positions only ever use IN/OUT (see
+   // OnTradeTransaction's scope comment above) -- DEAL_ENTRY_INOUT/OUT_BY
+   // are out of scope here for the same reason.
+   ulong  qTickets[];
+   bool   qFinal[];
+   double netVol = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
       ulong t = HistoryDealGetTicket(i);
-      if(t == 0 || (long)t <= watermark) continue;
+      if(t == 0) continue;
       if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
       if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
-      if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
-      lastQualifying = (long)t;   // history is time-ordered; last match wins
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(t, DEAL_ENTRY);
+      double vol = HistoryDealGetDouble(t, DEAL_VOLUME);
+      if(entry == DEAL_ENTRY_IN)
+         netVol += vol;
+      else if(entry == DEAL_ENTRY_OUT)
+        {
+         netVol -= vol;
+         if((long)t > watermark)
+           {
+            int n = ArraySize(qTickets);
+            ArrayResize(qTickets, n + 1);
+            ArrayResize(qFinal, n + 1);
+            qTickets[n] = t;
+            qFinal[n]   = (MathAbs(netVol) < 0.0000001);   // flat immediately after this deal
+           }
+        }
      }
-   // Collect unreported own closing deals, oldest first (history is
-   // time-ordered; iterate forward).
-   for(int i = 0; i < HistoryDealsTotal(); i++)
+   // Explicit ascending sort by ticket (insertion sort -- backlog sizes
+   // here are tiny, hours of outage not weeks, never worth a faster sort).
+   // HistoryDealsTotal() index order is assumed to equal ticket order but
+   // is not RELIED on: without this sort, a mid-backlog post failure right
+   // after an out-of-order higher ticket had already posted (and advanced
+   // the watermark) would strand the lower ticket behind it forever.
+   for(int a = 1; a < ArraySize(qTickets); a++)
      {
-      ulong t = HistoryDealGetTicket(i);
-      if(t == 0 || (long)t <= watermark) continue;
-      if(HistoryDealGetString(t, DEAL_SYMBOL) != _Symbol) continue;
-      if(HistoryDealGetInteger(t, DEAL_MAGIC) != MagicNumber) continue;
-      if(HistoryDealGetInteger(t, DEAL_ENTRY) != DEAL_ENTRY_OUT) continue;
+      ulong tk = qTickets[a];
+      bool  fn = qFinal[a];
+      int b = a - 1;
+      while(b >= 0 && qTickets[b] > tk)
+        {
+         qTickets[b + 1] = qTickets[b];
+         qFinal[b + 1]   = qFinal[b];
+         b--;
+        }
+      qTickets[b + 1] = tk;
+      qFinal[b + 1]   = fn;
+     }
+   // Post oldest-first; the scan stops at the first failed post so nothing
+   // is skipped.
+   for(int k = 0; k < ArraySize(qTickets); k++)
+     {
+      ulong t = qTickets[k];
       string dir = (HistoryDealGetInteger(t, DEAL_TYPE) == DEAL_TYPE_BUY)
                    ? "SELL" : "BUY";   // closing deal type is opposite the basket
       double lots   = HistoryDealGetDouble(t, DEAL_VOLUME);
@@ -372,9 +425,7 @@ void ReconcileOfflineCloses()
          case DEAL_REASON_TP: reason = "take-profit (reconciled)"; break;
          default:             reason = "closed offline (reconciled)";
         }
-      // Only the last unreported deal's final flag depends on flat-now;
-      // every earlier deal in this backlog is unconditionally non-final.
-      bool isFinal = ((long)t == lastQualifying) && !PositionSelect(_Symbol);
+      bool isFinal = qFinal[k];   // history-derived: flat immediately after this deal
       // Replay directly through g_ui.PostTradeEvent rather than the
       // g_uiSink/CUiSink path: the sink also drives chart risk/reward boxes
       // and per-strategy basket bookkeeping (OnBasketClosed) intended for
