@@ -265,7 +265,7 @@ int OnInit()
 void OnTick()
   {
    datetime bar = iTime(_Symbol, TradeTimeframe, 0);
-   if(bar == g_lastBar) return;   // act once per new bar
+   if(bar == 0 || bar == g_lastBar) return;   // 0 = transient resync (non-chart-TF series); act once per new bar
    g_lastBar = bar;
    RollSpreadBar();               // freeze the closed bar's spread aggregates
    ProcessBar();
