@@ -11,6 +11,7 @@
 class CHalfTrendEmaStrategy : public CStrategy
   {
 private:
+   ENUM_TIMEFRAMES m_tf;
    int      m_amplitude;
    int      m_emaLen;
    int      m_confirm;
@@ -54,7 +55,7 @@ private:
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_BACK, true);
       // rolling window: drop the segment that just left the 500-bar window
-      datetime old = t2 - 500 * PeriodSeconds(PERIOD_CURRENT);
+      datetime old = t2 - 500 * PeriodSeconds(m_tf);
       ObjectDelete(0, prefix + (string)(long)old);
      }
 
@@ -71,7 +72,7 @@ private:
    void PaintBar(int shift, double emaVal)
      {
       if(!m_paint) return;
-      datetime bt = iTime(_Symbol, PERIOD_CURRENT, shift);
+      datetime bt = iTime(_Symbol, m_tf, shift);
       double ht = (m_trend == 0) ? m_maxLowPrice : m_minHighPrice;
       color htClr = (m_trend == 0) ? clrDodgerBlue : clrOrangeRed;
       DrawSeg("xau_ht_", m_prevPaintBar, m_prevHt, bt, ht, htClr, 2);
@@ -89,9 +90,9 @@ private:
    void ProcessClosedBar(int shift)
      {
       double hi[], lo[], cl[];
-      if(CopyHigh(_Symbol, PERIOD_CURRENT, shift, m_amplitude, hi) != m_amplitude) return;
-      if(CopyLow(_Symbol, PERIOD_CURRENT, shift, m_amplitude, lo)  != m_amplitude) return;
-      if(CopyClose(_Symbol, PERIOD_CURRENT, shift, 1, cl) != 1) return;
+      if(CopyHigh(_Symbol, m_tf, shift, m_amplitude, hi) != m_amplitude) return;
+      if(CopyLow(_Symbol, m_tf, shift, m_amplitude, lo)  != m_amplitude) return;
+      if(CopyClose(_Symbol, m_tf, shift, 1, cl) != 1) return;
       double highPrice = hi[ArrayMaximum(hi)];
       double lowPrice  = lo[ArrayMinimum(lo)];
       double highma = 0, lowma = 0;
@@ -99,8 +100,8 @@ private:
       highma /= m_amplitude;
       lowma  /= m_amplitude;
       double close    = cl[0];
-      double prevLow  = iLow(_Symbol, PERIOD_CURRENT, shift + 1);
-      double prevHigh = iHigh(_Symbol, PERIOD_CURRENT, shift + 1);
+      double prevLow  = iLow(_Symbol, m_tf, shift + 1);
+      double prevHigh = iHigh(_Symbol, m_tf, shift + 1);
 
       if(m_trend < 0)  // seed on the very first processed bar
         {
@@ -123,8 +124,8 @@ private:
            { m_trend = 0; m_nextTrend = 1; m_maxLowPrice = lowPrice; }
         }
 
-      double barLow  = iLow(_Symbol, PERIOD_CURRENT, shift);
-      double barHigh = iHigh(_Symbol, PERIOD_CURRENT, shift);
+      double barLow  = iLow(_Symbol, m_tf, shift);
+      double barHigh = iHigh(_Symbol, m_tf, shift);
       if(m_trend != prevTrend)
         {
          m_fired = false;   // a flip re-arms the once-per-trend entry
@@ -151,7 +152,7 @@ private:
      }
 
 public:
-   CHalfTrendEmaStrategy(int amplitude, int emaLen, int confirmCloses, double stopBufferAtr)
+   CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
@@ -159,22 +160,23 @@ public:
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
-      m_emaHandle    = iMA(_Symbol, PERIOD_CURRENT, m_emaLen, 0, MODE_EMA, PRICE_CLOSE);
-      m_ema9Handle   = iMA(_Symbol, PERIOD_CURRENT, 9,   0, MODE_EMA, PRICE_CLOSE);
-      m_ema21Handle  = iMA(_Symbol, PERIOD_CURRENT, 21,  0, MODE_EMA, PRICE_CLOSE);
-      m_ema200Handle = iMA(_Symbol, PERIOD_CURRENT, 200, 0, MODE_EMA, PRICE_CLOSE);
-      m_atrHandle    = iATR(_Symbol, PERIOD_CURRENT, 14);
+      m_tf = tf;   // must be set before the handle-creating calls below
+      m_emaHandle    = iMA(_Symbol, m_tf, m_emaLen, 0, MODE_EMA, PRICE_CLOSE);
+      m_ema9Handle   = iMA(_Symbol, m_tf, 9,   0, MODE_EMA, PRICE_CLOSE);
+      m_ema21Handle  = iMA(_Symbol, m_tf, 21,  0, MODE_EMA, PRICE_CLOSE);
+      m_ema200Handle = iMA(_Symbol, m_tf, 200, 0, MODE_EMA, PRICE_CLOSE);
+      m_atrHandle    = iATR(_Symbol, m_tf, 14);
      }
 
    virtual string Id() { return "halftrend_ema_v1"; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
-      datetime closed = iTime(_Symbol, PERIOD_CURRENT, 1);
+      datetime closed = iTime(_Symbol, m_tf, 1);
       if(closed == 0 || closed == m_lastProcessed) return SIGNAL_NONE;
       if(m_lastProcessed == 0)
         {
-         int avail = Bars(_Symbol, PERIOD_CURRENT) - m_amplitude - 2;
+         int avail = Bars(_Symbol, m_tf) - m_amplitude - 2;
          int from = MathMin(m_warmupBars, MathMax(avail, 1));
          for(int s = from; s >= 1; s--) ProcessClosedBar(s);   // oldest -> newest
 
@@ -212,7 +214,7 @@ public:
      {
       double emaBuf[];
       if(CopyBuffer(m_emaHandle, 0, 1, 1, emaBuf) != 1) return false;
-      double close = iClose(_Symbol, PERIOD_CURRENT, 1);
+      double close = iClose(_Symbol, m_tf, 1);
       if(dir == SIGNAL_BUY)  return m_trend == 0 && close > emaBuf[0];
       if(dir == SIGNAL_SELL) return m_trend == 1 && close < emaBuf[0];
       return false;

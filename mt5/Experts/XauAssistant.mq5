@@ -19,6 +19,7 @@ enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
 input ENUM_EXEC_MODE ExecutionMode          = EXEC_MANUAL;
 input bool           AllowLiveTrading       = false;
+input ENUM_TIMEFRAMES TradeTimeframe        = PERIOD_M5; // trading TF — chart TF is visual only
 input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
 input string         UiBaseUrl              = "http://127.0.0.1:9000";
@@ -227,8 +228,8 @@ int OnInit()
      }
    g_execMode = ExecutionMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
-   g_registry.Register(new CHalfTrendEmaStrategy(HtAmplitude, EmaLength, ConfirmCloses, StopBufferATR));
-   g_registry.Register(new CBollStochRsiStrategy(BbPeriod, BbDev, TrendCloses,
+   g_registry.Register(new CHalfTrendEmaStrategy(TradeTimeframe, HtAmplitude, EmaLength, ConfirmCloses, StopBufferATR));
+   g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));
    if(!g_registry.SetActive(ActiveStrategy))
@@ -239,12 +240,12 @@ int OnInit()
    MigrateGlobalKeys();
    if(ApplyChartTheme) ApplyDarkTheme();
    g_registry.Active().EnablePaint(true);
-   g_api.Init(ApiUrl, ApiTimeoutMs);
-   g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber);
+   g_api.Init(ApiUrl, ApiTimeoutMs, TradeTimeframe);
+   g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber, TradeTimeframe);
    g_news.Init(NewsGuardEnabled, NewsBlackoutMin);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin,
-               MaxDailyLossPct, MagicNumber, &g_news);
+               MaxDailyLossPct, MagicNumber, TradeTimeframe, &g_news);
    g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
                  AddTriggerATR, ProfitTargetPct, StopAtrMult,
                  TrailLockPct, TrailActivateR, &g_uiSink);
@@ -252,15 +253,19 @@ int OnInit()
    // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
    // otherwise the live box would never receive its final OnClose.
    g_tradeBoxes.RecoverFromPositions(MagicNumber);
-   g_atrHandle = iATR(_Symbol, PERIOD_CURRENT, 14);
+   g_atrHandle = iATR(_Symbol, TradeTimeframe, 14);
    EventSetTimer(HeartbeatSec);
+   if(Period() != TradeTimeframe)
+      PrintFormat("XauAssistant: trading TF %s (chart %s — visual only)",
+                  StringSubstr(EnumToString(TradeTimeframe), 7),
+                  StringSubstr(EnumToString(Period()), 7));
    return INIT_SUCCEEDED;
   }
 
 void OnTick()
   {
-   datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
-   if(bar == g_lastBar) return;   // act once per new bar
+   datetime bar = iTime(_Symbol, TradeTimeframe, 0);
+   if(bar == 0 || bar == g_lastBar) return;   // 0 = transient resync (non-chart-TF series); act once per new bar
    g_lastBar = bar;
    RollSpreadBar();               // freeze the closed bar's spread aggregates
    ProcessBar();

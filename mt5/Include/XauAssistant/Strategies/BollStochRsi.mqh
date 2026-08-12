@@ -8,6 +8,7 @@
 class CBollStochRsiStrategy : public CStrategy
   {
 private:
+   ENUM_TIMEFRAMES m_tf;
    int      m_bbPeriod;
    double   m_bbDev;
    int      m_trendCloses;
@@ -67,7 +68,7 @@ private:
       if(CopyBuffer(m_bbHandle, 1, shift, 1, upper)  != 1) return false; // 1 = upper
       if(CopyBuffer(m_bbHandle, 0, shift, 1, middle) != 1) return false; // 0 = middle
       if(CopyBuffer(m_bbHandle, 2, shift, 1, lower)  != 1) return false; // 2 = lower
-      if(CopyClose(_Symbol, PERIOD_CURRENT, shift, 1, close) != 1) return false;
+      if(CopyClose(_Symbol, m_tf, shift, 1, close) != 1) return false;
       double up = upper[0], mid = middle[0], lo = lower[0], cl = close[0];
       if(mid <= 0) return false;
 
@@ -117,7 +118,7 @@ private:
    bool m_pendingExit;
 
 public:
-   CBollStochRsiStrategy(int bbPeriod, double bbDev, int trendCloses,
+   CBollStochRsiStrategy(ENUM_TIMEFRAMES tf, int bbPeriod, double bbDev, int trendCloses,
                          int squeezeLookback, double squeezePctile, int expansionBars,
                          int rsiPeriod, int stochPeriod, int kSmooth, int dSmooth)
       : m_bbPeriod(bbPeriod), m_bbDev(bbDev), m_trendCloses(trendCloses),
@@ -130,19 +131,20 @@ public:
         m_prevK(50), m_prevD(50), m_crossUp(false), m_crossDown(false),
         m_virtualDir(SIGNAL_NONE), m_pendingExit(false)
      {
-      m_bbHandle  = iBands(_Symbol, PERIOD_CURRENT, m_bbPeriod, 0, m_bbDev, PRICE_CLOSE);
-      m_rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, m_rsiPeriod, PRICE_CLOSE);
+      m_tf = tf;   // must be set before the handle-creating calls below
+      m_bbHandle  = iBands(_Symbol, m_tf, m_bbPeriod, 0, m_bbDev, PRICE_CLOSE);
+      m_rsiHandle = iRSI(_Symbol, m_tf, m_rsiPeriod, PRICE_CLOSE);
      }
 
    virtual string Id() { return "boll_stochrsi_v1"; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
-      datetime closed = iTime(_Symbol, PERIOD_CURRENT, 1);
+      datetime closed = iTime(_Symbol, m_tf, 1);
       if(closed == 0 || closed == m_lastProcessed) return SIGNAL_NONE;
       if(m_lastProcessed == 0)
         {
-         int avail = Bars(_Symbol, PERIOD_CURRENT) - m_stochPeriod - 2;
+         int avail = Bars(_Symbol, m_tf) - m_stochPeriod - 2;
          int from = MathMin(m_warmupBars, MathMax(avail, 1));
          for(int s = from; s >= 1; s--) ProcessClosedBar(s);
          // suppress stale signals on attach: no entry without a fresh live cross,

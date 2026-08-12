@@ -191,8 +191,10 @@ public:
                   iTime(_Symbol, PERIOD_CURRENT, 0), MathMin(m_entry, m_sl), RiskColor());
      }
 
-   // Runs once per closed bar (caller gates on OpenCount() > 0) — no OnTick
-   // work, so the box never redraws mid-candle.
+   // Runs once per closed TRADE-TF bar (caller gates on OpenCount() > 0) — on
+   // a chart displaying a higher timeframe this fires multiple times per
+   // visible candle (e.g. 3x per M15 bar when trading M5); each call is
+   // idempotent (re-anchors to the same box), so redraws are harmless.
    void OnBarUpdate()
      {
       if(!m_active) return;
