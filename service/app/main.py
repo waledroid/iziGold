@@ -551,6 +551,7 @@ async def heartbeat(hb: HeartbeatRequest):
     return HeartbeatResponse(
         switch_to=app.state.pending_switch,
         mode=app.state.db.exec_mode(),
+        entry_mode=app.state.db.entry_mode(),
         command=command
     )
 

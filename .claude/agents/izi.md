@@ -147,11 +147,57 @@ Data collection only; no UI yet.
   **23:54 pre-break flatten** (closes everything before the 23:59–01:00
   server maintenance break; retries until flat; notifies 🌙).
 - All EA global-variable keys are per-symbol since 2026-08-09:
-  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK, RECON; EXPO adds
-  a trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in the EA's OnInit does a
-  one-time copy old→new + delete-old (never deletes unless the new key was
-  written; prints one line per migrated key) — RECON was born in this shape
-  (2026-08-12) so it never needed migration.
+  `XAU_<name>_<login>_<symbol>` (KILL, HWM, CYCLE_BAL, PEAK, RECON,
+  BASKET_MODE; EXPO adds a trailing `_<YYYYMMDD>`). `MigrateGlobalKeys()` in
+  the EA's OnInit does a one-time copy old→new + delete-old (never deletes
+  unless the new key was written; prints one line per migrated key) — RECON
+  and BASKET_MODE were both born in this shape (2026-08-12/13) so neither
+  ever needed migration.
+- **Entry mode** (2026-08-13,
+  `docs/superpowers/specs/2026-08-13-entry-mode-fixed-design.md`,
+  backtest-first — evidence in `.superpowers/entry-mode-backtest-report.md`):
+  a second sizing/management scheme alongside the default. **ADR stays the
+  live default** — the backtest favors it on the market it was tuned for.
+
+  | | **ADR** (default) | **FIXED** |
+  |---|---|---|
+  | Sizing | 1% equity risk over stop distance | `FixedLots` input, direct lot size |
+  | Pyramiding | Adds into winners (≤70% of previous leg) | none — single leg only |
+  | Profit target / lock | +2% cycle balance / ≤50% of peak once ≥1R | none — pure trend ride |
+  | Exit | target, lock, ladder stop, reversal, flatten | ladder stop, reversal, flatten only |
+  | Backtest, last 30d (tuned market) | **+$1,132**, 46% win, ~$468 valley | +$645, 34% win, ~$504 valley |
+  | Backtest, full 17mo (untuned regimes) | −$3,100, $4,717 valley | **−$1,006** (less loss), $6,040 valley (deeper dip) |
+
+  ADR wins on the recent, tuned-for market (profit, win rate, drawdown);
+  FIXED's only edge is a smaller total loss over the long ugly window, paid
+  for with a deeper valley. `FixedLots=0.10` (2x size) is NOT an option —
+  the 17mo replay goes to a −$2,579 balance mid-window, i.e. margin-called
+  in reality; only 0.05 was validated. Default `FixedLots=0.05` ≈ 1.5–2%
+  equity risk per trade at current stop distances — comparable to ADR's 1%
+  base risk since FIXED has no adds. `FixedLots<=0` is a fail-closed
+  "entries disabled" setting: `CTradeManager::ClampToVolume` returns 0.0
+  immediately for `raw<=0` (2026-08-13 — before this fix a misconfigured
+  0.0 silently rounded up to the broker minimum lot instead of refusing to
+  trade) rather than clamping up, so the existing `lots<=0 → return false`
+  guard in `OnSignal` actually fires.
+
+  **Switching is next-trade-only, and per-basket mode is sticky**: Telegram
+  `tmode:adr`/`tmode:fixed` → `db.set_entry_mode` (kv `entry_mode`,
+  validated to `"adr"`/`"fixed"`) → carried in the next `/heartbeat`
+  response's `entry_mode` field → EA's `OnTimer` heartbeat handler updates
+  `g_entryMode` but does NOT touch any open basket. Sizing mode is captured
+  once, at `OnSignal` (basket open), into the per-symbol global
+  `XAU_BASKET_MODE_<login>_<symbol>` (0=ADR, 1=FIXED,
+  `TradeManager.BasketModeKey`/`CurrentEntryModeStr`) — `Manage()` reads
+  that sticky value every bar, so a runtime switch mid-trade, or an
+  MT5/service restart mid-trade, can never turn a running FIXED ride into
+  ADR management (adds/target/lock) or vice versa. Trade events (open/add/
+  close) tag `entry_mode` with this sticky per-basket value, independent of
+  whatever the live switch has moved on to since. Wire contract:
+  `HeartbeatRequest.entry_mode` (EA's current runtime mode, informational),
+  `HeartbeatResponse.entry_mode` (`Literal["adr","fixed"]`, kv-sourced
+  desired mode), `TradeEventRequest.entry_mode` (sticky per-basket tag,
+  default `""` for pre-2026-08-13 EAs).
 - Trade events (`/trade-event`) carry `sl`, `tp` (basket target price,
   EA-computed), `final` (basket-gone flag — partial leg stop-outs are
   non-final and must not trigger P/L messages/renders).
@@ -266,10 +312,13 @@ Quiet by default: only proposals, executions, failures, command replies.
   180 s). EA execution still passes all risk gates; refusals report the real
   reason. **AUTO**: trades immediately; failures notify 🚫 via `/notify`.
 - **Commands**: `/status` (session 🕒, EA connection, algo-trading warning),
-  `/bal`, `/mode` (AUTO/MANUAL buttons), `/strategy` (switch buttons),
-  `/config`, `/chart`, `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
+  `/bal`, `/mode` (four buttons in two rows — 🤖 AUTO / 👤 MANUAL execution
+  mode via `mode:auto`/`mode:manual`, and 📊 ADR / 🎯 FIXED entry mode via
+  `tmode:adr`/`tmode:fixed`, see §3 "Entry mode"), `/strategy` (switch
+  buttons), `/config` (now also echoes `entry mode: adr|fixed`), `/chart`,
+  `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "5"; full command list incl. /chart, /stats, /history, /switch). The version-bump edit also re-pins (a manually
+  forces rewrite; now "6"; full command list incl. /chart, /stats, /history, /switch). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service

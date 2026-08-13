@@ -24,6 +24,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--exit-scheme target-exit|floor-a|floor-b|floor-a-adds]
                    [--adx N] [--expo MIN] [--risk PCT] [--days N]
                    [--confirm N] [--stop-buffer ATR]
+                   [--entry-mode adr|fixed] [--fixed-lots L]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -38,6 +39,13 @@ floor-b arms the full target as the floor once profit reaches
 target+0.25*ATR-worth (adds frozen); floor-a-adds is floor-a with adds left
 on, to quantify the erosion. Floor stop is a pure ratchet; the profit lock
 and reversal exits are unchanged in every scheme.
+
+--entry-mode (fixed-entry experiment, spec 2026-08-13-entry-mode-fixed):
+default adr is the live behavior above; fixed replays a pure trend ride —
+every entry is --fixed-lots lots (default 0.05, no 1%-risk sizing), no
+pyramid adds, no profit target, no profit lock. Exits only on the confirmed
+opposite signal (reversal), the shared wick-extreme stop, or the pre-break
+flatten the replay already models.
 """
 import argparse
 import datetime as dt
@@ -80,6 +88,13 @@ MIN_OZ = 1                # 0.01 lots
 EXIT_SCHEMES = ("target-exit", "floor-a", "floor-b", "floor-a-adds")
 EXIT_SCHEME = "target-exit"
 FLOOR_ARM_ATR = 0.25      # the 0.25*ATR(14) margin in both variants
+
+# --- fixed-entry experiment (spec 2026-08-13-entry-mode-fixed) ---
+# adr   : live behavior (1%-risk sizing, adds, target, lock) — the default
+# fixed : FIXED_LOTS lots per entry, no adds/target/lock; exits only via
+#         confirmed reversal, the shared stop, or the pre-break flatten
+ENTRY_MODE = "adr"
+FIXED_LOTS = 0.05         # lots (1 lot = 100 oz) when ENTRY_MODE == "fixed"
 
 
 def floor_price(legs, s, amount):
@@ -224,7 +239,9 @@ def run(candles, start_balance, verbose):
                 risk_budget = basket["cycle_bal"] * RISK_PCT / 100
                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100
                 closed = False
-                if EXIT_SCHEME == "target-exit":
+                if ENTRY_MODE == "fixed":
+                    pass   # pure ride: no profit target / floor in fixed mode
+                elif EXIT_SCHEME == "target-exit":
                     if pl >= target:
                         close_basket(px, when, "profit target")
                         closed = True
@@ -249,12 +266,13 @@ def run(candles, start_balance, verbose):
                                   f"${arm:+.2f} stop->{basket['stop']:.2f}")
                 if closed:
                     pass
-                elif (basket["peak"] >= TRAIL_ACTIVATE_R * risk_budget
+                elif (ENTRY_MODE != "fixed"
+                      and basket["peak"] >= TRAIL_ACTIVATE_R * risk_budget
                       and pl <= basket["peak"] * TRAIL_LOCK_PCT / 100):
                     close_basket(px, when, "profit lock")
                 elif signal and signal != basket["dir"]:
                     close_basket(px, when, "reversal")
-                else:
+                elif ENTRY_MODE != "fixed":  # no pyramid adds in fixed mode
                     # pyramid add (frozen once the floor is armed, except
                     # in the floor-a-adds erosion probe)
                     frozen = basket.get("floor") is not None \
@@ -294,8 +312,11 @@ def run(candles, start_balance, verbose):
                 stop = extreme - pad if signal == "BUY" else extreme + pad
                 dist = abs(px - stop)
                 if dist > 0:
-                    risk = bal * RISK_PCT / 100
-                    oz = max(MIN_OZ, int(risk / dist))
+                    if ENTRY_MODE == "fixed":
+                        oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
+                    else:
+                        risk = bal * RISK_PCT / 100
+                        oz = max(MIN_OZ, int(risk / dist))
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
                               "opened": when}
@@ -381,9 +402,15 @@ def main():
     ap.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
                     help="profit-floor experiment scheme (default: current "
                          "behavior, close at profit target)")
+    ap.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
+                    help="adr = live behavior; fixed = fixed lots, no adds/"
+                         "target/lock, exit on confirmed reversal or stop")
+    ap.add_argument("--fixed-lots", type=float, default=0.05)
     args = ap.parse_args()
-    global EXIT_SCHEME
+    global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS
     EXIT_SCHEME = args.exit_scheme
+    ENTRY_MODE = args.entry_mode
+    FIXED_LOTS = args.fixed_lots
     if args.adx is not None:
         global ADX_MIN
         ADX_MIN = args.adx
@@ -412,9 +439,11 @@ def main():
         sys.exit(f"only {len(candles)} candles available - need at least 100")
 
     t0, t1 = hhmm(candles[0]["t"])[0], hhmm(candles[-1]["t"])[0]
+    mode = (f" | entry mode fixed ({FIXED_LOTS:g} lots)"
+            if ENTRY_MODE == "fixed" else "")
     print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
           f"(server time) | start balance ${args.balance:,.0f} "
-          f"| exit scheme {EXIT_SCHEME}\n")
+          f"| exit scheme {EXIT_SCHEME}{mode}\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 

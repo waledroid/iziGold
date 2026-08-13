@@ -15,10 +15,13 @@ public:
    // that is NOT final -- `final` is a reserved word in MQL5, hence the
    // parameter name): defaults true so every pre-existing call site
    // (whole-basket CloseAll, open, add) keeps its old behavior unchanged.
+   // `entryMode` is the basket's sticky mode ("adr"/"fixed"); defaults to ""
+   // so any caller that doesn't know it (or predates entry modes) keeps
+   // compiling and the service treats it as "unknown" (fail-open).
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
-                             bool isFinal = true) = 0;
+                             bool isFinal = true, string entryMode = "") = 0;
   };
 
 class CUiApi
@@ -129,13 +132,19 @@ public:
      }
 
    // Returns the requested strategy id to switch to, or "" if none/failed.
-   // outputs: runtime mode ("auto"/"manual"/"" when absent) and at most one
-   // command per beat (cmd "" when none)
+   // outputs: runtime execution mode ("auto"/"manual"/"" when absent),
+   // runtime entry mode ("adr"/"fixed"/"" when absent), and at most one
+   // command per beat (cmd "" when none). `entryMode` is the EA's current
+   // entry mode, sent so the service's heartbeat contract stays symmetric
+   // with `mode` (execution mode) even though today only entryMode_out
+   // (the service's kv, which is the source of truth for remote switches)
+   // drives EA behavior.
    string PostHeartbeat(double equity, double balance, double floating_pl,
                         bool kill_switch, double hwm, int exposure_min,
                         bool window_open, double spread_points, string active_strategy,
-                        bool algo_trading,
-                        string &mode, string &cmd, long &cmdId, string &cmdDir)
+                        bool algo_trading, string entryMode,
+                        string &mode, string &entryMode_out, string &cmd,
+                        long &cmdId, string &cmdDir)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
       // Zeros on CopyRates failure -- the service treats 0 as "no forming
@@ -169,7 +178,8 @@ public:
                     ",\"bar_o\":" + DoubleToString(bar_o, 2) +
                     ",\"bar_h\":" + DoubleToString(bar_h, 2) +
                     ",\"bar_l\":" + DoubleToString(bar_l, 2) +
-                    ",\"bar_c\":" + DoubleToString(bar_c, 2) + "}";
+                    ",\"bar_c\":" + DoubleToString(bar_c, 2) +
+                    ",\"entry_mode\":\"" + entryMode + "\"}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
@@ -190,6 +200,7 @@ public:
       string switch_to = ExtractString(body, "switch_to");
 
       mode = ExtractString(body, "mode");
+      entryMode_out = ExtractString(body, "entry_mode");
       cmd = ""; cmdId = 0; cmdDir = "";
       int cpos = StringFind(body, "\"command\":{");
       if(cpos >= 0)
@@ -228,9 +239,13 @@ public:
    // Field names/order match service/app/models.py TradeEventRequest exactly.
    // Returns the trade id on success, or -1 on any failure (no throw, no retry —
    // callers must treat -1 as "skip the screenshot, keep trading").
+   // `entryMode` defaults to "" so the reconciler's existing call (replayed
+   // offline closes, which don't track which basket-mode each deal belonged
+   // to) keeps compiling unchanged.
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
                        double price, double sl, string reason, long ticket,
-                       double profit = 0.0, double tp = 0.0, bool isFinal = true)
+                       double profit = 0.0, double tp = 0.0, bool isFinal = true,
+                       string entryMode = "")
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -242,7 +257,8 @@ public:
                     ",\"ticket\":" + (string)ticket +
                     ",\"profit\":" + DoubleToString(profit, 2) +
                     ",\"tp\":" + DoubleToString(tp, _Digits) +
-                    ",\"final\":" + (isFinal ? "true" : "false") + "}";
+                    ",\"final\":" + (isFinal ? "true" : "false") +
+                    ",\"entry_mode\":\"" + entryMode + "\"}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

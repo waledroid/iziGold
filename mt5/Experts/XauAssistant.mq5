@@ -47,6 +47,10 @@ input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
 input bool           ApplyChartTheme        = true;
 
+enum ENUM_ENTRY_MODE { ENTRY_ADR = 0, ENTRY_FIXED = 1 };
+input ENUM_ENTRY_MODE EntryMode  = ENTRY_ADR;  // ADR = 1% risk + adds/targets; FIXED = fixed lots, pure ride
+input double          FixedLots  = 0.05;       // FIXED-mode entry size (broker-clamped)
+
 input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
@@ -80,6 +84,7 @@ datetime       g_lastBar = 0;
 bool           g_debugFired = false;
 string         g_pendingSwitch = "";
 ENUM_EXEC_MODE g_execMode = EXEC_MANUAL;
+ENUM_ENTRY_MODE g_entryMode = ENTRY_ADR;
 
 // --- Per-bar spread telemetry (ea-scope spec §3) ---------------------------
 // OnTimer samples SYMBOL_SPREAD every HeartbeatSec (5 s) into an
@@ -125,7 +130,7 @@ public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
-                             bool isFinal = true)
+                             bool isFinal = true, string entryMode = "")
      {
       CStrategy *active = g_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
@@ -164,7 +169,7 @@ public:
          active.OnBasketClosed(closedDir);
         }
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
-                                    profit, tp, basketGone);
+                                    profit, tp, basketGone, entryMode);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
       // re-report this deal on the next MT5/service restart. CloseAll's
@@ -455,6 +460,7 @@ int OnInit()
       return INIT_FAILED;
      }
    g_execMode = ExecutionMode;
+   g_entryMode = EntryMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
    g_registry.Register(new CHalfTrendEmaStrategy(TradeTimeframe, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
@@ -553,14 +559,15 @@ void OnTimer()
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    SampleSpread(spreadPts);
 
-   string mode = "", cmd = "", cmdDir = "";
+   string mode = "", entryModeResp = "", cmd = "", cmdDir = "";
    long cmdId = 0;
    bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
+   string entryModeStr = (g_entryMode == ENTRY_FIXED) ? "fixed" : "adr";
    string sw = g_ui.PostHeartbeat(equity, balance, floating_pl,
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
-                                  spreadPts, activeId, algoTrading,
-                                  mode, cmd, cmdId, cmdDir);
+                                  spreadPts, activeId, algoTrading, entryModeStr,
+                                  mode, entryModeResp, cmd, cmdId, cmdDir);
    if(sw != "") g_pendingSwitch = sw;
 
    if(mode == "auto" || mode == "manual")
@@ -577,6 +584,21 @@ void OnTimer()
         {
          g_execMode = want;
          Print("XauAssistant: execution mode -> ", mode);
+        }
+     }
+
+   // Runtime entry-mode switch (Telegram tmode:adr/tmode:fixed). Applies to
+   // the NEXT entry only — any already-open basket keeps running under the
+   // mode captured in its sticky global (TradeManager.BasketModeKey) at
+   // open, untouched here.
+   if(entryModeResp == "adr" || entryModeResp == "fixed")
+     {
+      ENUM_ENTRY_MODE want = (entryModeResp == "fixed") ? ENTRY_FIXED : ENTRY_ADR;
+      if(want != g_entryMode)
+        {
+         g_entryMode = want;
+         Print("XauAssistant: entry mode -> ", (want == ENTRY_FIXED ? "FIXED" : "ADR"),
+               " (from Telegram) — applies to the next trade");
         }
      }
 
@@ -605,7 +627,8 @@ void OnTimer()
             CStrategy *act = g_registry.Active();
             bool opened = false;
             if(atrVal > 0 && act != NULL)
-               opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir));
+               opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir),
+                                          g_entryMode == ENTRY_FIXED, FixedLots);
             bool ok = opened || g_trades.BasketDirection() == dir;
             g_ui.PostProposalResult(cmdId, ok,
                                     ok ? "opened" : "blocked by risk checks");
@@ -687,7 +710,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // final close -- OpenCount() reflects live state right after this deal
    // landed, so it tells us whether any own positions remain.
    g_uiSink.OnTradeEvent("close", dir, lots, price, 0.0, reason, (long)trans.deal, profit, 0.0,
-                         g_trades.OpenCount() == 0);
+                         g_trades.OpenCount() == 0, g_trades.EntryModeStr());
   }
 
 void ProcessBar()
@@ -740,7 +763,8 @@ void ProcessBar()
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
    if(g_execMode == EXEC_AUTO && atrVal > 0)
      {
-      bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig));
+      bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig),
+                                      g_entryMode == ENTRY_FIXED, FixedLots);
       // A same-direction signal into an already-open basket is a legitimate
       // early return (false) — not a rejection, since the strategy's
       // virtual position is still validly tracking that basket (basket

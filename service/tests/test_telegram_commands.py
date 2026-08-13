@@ -720,7 +720,7 @@ def test_mode_command_returns_buttons(client):
     text, markup = out
     assert "manual" in text.lower()
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert set(datas) == {"mode:auto", "mode:manual"}
+    assert set(datas) == {"mode:auto", "mode:manual", "tmode:adr", "tmode:fixed"}
 
 
 def test_mode_callback_switches(client):

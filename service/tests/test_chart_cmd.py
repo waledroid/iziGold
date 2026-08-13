@@ -174,4 +174,4 @@ def test_chart_mirrors_photo_to_channel_owner_first(tmp_path):
 
 def test_pinned_help_lists_chart_and_version_bumped():
     assert "/chart" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "5"
+    assert PINNED_HELP_VERSION == "6"

@@ -339,7 +339,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "5"
+PINNED_HELP_VERSION = "6"
 
 
 def format_pinned_help() -> str:
@@ -349,7 +349,7 @@ def format_pinned_help() -> str:
         "📌 Command reference",
         "/status — snapshot + EA connection state",
         "/bal — balance, equity, floating P/L",
-        "/mode — toggle AUTO/MANUAL execution",
+        "/mode — execution (AUTO/MANUAL) + entry mode (ADR/FIXED)",
         "/strategy — switch active strategy",
         "/config — current settings",
         "/chart — current chart snapshot",
@@ -429,9 +429,14 @@ def handle_command(text: str, app, redacted=False) -> str | None:
         return _format_switch(app, parts[1:])
     if cmd == "/mode":
         mode = app.state.db.exec_mode()
+        emode = app.state.db.entry_mode()
         return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
-                f"immediately; MANUAL sends proposals with buttons.",
-                kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")]]))
+                f"immediately; MANUAL sends proposals with buttons.\n"
+                f"Entry mode: {emode.upper()}\nADR sizes by 1% risk with "
+                f"pyramid adds and targets; FIXED rides a fixed lot until "
+                f"the trend confirms a change.",
+                kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")],
+                    [("📊 ADR", "tmode:adr"), ("🎯 FIXED", "tmode:fixed")]]))
     if cmd == "/strategy":
         rows = app.state.db.strategy_ids()
         latest = app.state.latest_heartbeat
@@ -447,6 +452,7 @@ def handle_command(text: str, app, redacted=False) -> str | None:
         return (
             "⚙️ Config\n"
             f"mode: {db.exec_mode()}\n"
+            f"entry mode: {db.entry_mode()}\n"
             f"strategy: {hb.active_strategy if hb else '?'}\n"
             f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
             f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
@@ -500,6 +506,10 @@ def handle_callback(data: str, app) -> tuple:
     if parts[0] == "mode" and len(parts) > 1 and parts[1] in ("auto", "manual"):
         db.set_exec_mode(parts[1])
         return (f"Execution mode → {parts[1].upper()}", f"mode: {parts[1]}")
+    if parts[0] == "tmode" and len(parts) > 1 and parts[1] in ("adr", "fixed"):
+        db.set_entry_mode(parts[1])
+        return (f"Entry mode → {parts[1].upper()} — applies from the next trade.",
+                f"entry mode: {parts[1]}")
     if parts[0] == "strat" and len(parts) > 1:
         sid = parts[1]
         app.state.pending_switch = sid
