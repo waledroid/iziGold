@@ -125,8 +125,11 @@ class SignalDb:
             except sqlite3.OperationalError:
                 pass
         if "entry_mode" not in trade_cols:
-            self.conn.execute(
-                "ALTER TABLE trades ADD COLUMN entry_mode TEXT DEFAULT ''")
+            try:
+                self.conn.execute(
+                    "ALTER TABLE trades ADD COLUMN entry_mode TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,

@@ -359,7 +359,8 @@ public:
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
             string openReason = wasReversal ? "reversal" : ("signal " + dir);
             m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason,
-                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice(),
+                                (long)m_trade.ResultOrder(), 0.0,
+                                entryModeFixed ? 0.0 : BasketTargetPrice(),
                                 true, entryModeFixed ? "fixed" : "adr");
            }
         }
