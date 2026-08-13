@@ -38,6 +38,7 @@ private:
    // rather than floor, then clamp to the broker's min/max.
    double ClampToVolume(double raw)
      {
+      if(raw <= 0) return 0.0; // fail closed: a misconfigured 0.0 must not silently round up to broker min-lot
       double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
       double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
       double vmax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
