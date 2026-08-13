@@ -69,11 +69,13 @@ class HeartbeatRequest(BaseModel):
     bar_h: float = 0.0
     bar_l: float = 0.0
     bar_c: float = 0.0
+    entry_mode: str = "adr"
 
 
 class HeartbeatResponse(BaseModel):
     switch_to: str | None = None
     mode: Literal["auto", "manual"] = "manual"
+    entry_mode: Literal["adr", "fixed"] = "adr"
     command: dict | None = None
 
 
@@ -89,6 +91,7 @@ class TradeEventRequest(BaseModel):
     ticket: int = 0
     profit: float = 0.0
     final: bool = True
+    entry_mode: str = ""
 
 
 class ProposalResultRequest(BaseModel):

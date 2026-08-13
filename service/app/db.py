@@ -124,6 +124,9 @@ class SignalDb:
                 self.conn.execute("ALTER TABLE trades ADD COLUMN final INTEGER DEFAULT 1")
             except sqlite3.OperationalError:
                 pass
+        if "entry_mode" not in trade_cols:
+            self.conn.execute(
+                "ALTER TABLE trades ADD COLUMN entry_mode TEXT DEFAULT ''")
         self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
@@ -246,11 +249,13 @@ class SignalDb:
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(
             "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-            " sl, reason, ticket, profit, tp, final) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " sl, reason, ticket, profit, tp, final, entry_mode)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
              ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
              ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
-             ev.get("tp", 0.0), int(ev.get("final", True))))
+             ev.get("tp", 0.0), int(ev.get("final", True)),
+             ev.get("entry_mode", "")))
         self.conn.commit()
         return cur.lastrowid
 
@@ -329,6 +334,15 @@ class SignalDb:
         if mode not in ("auto", "manual"):
             raise ValueError(f"invalid exec mode: {mode}")
         self.set_kv("exec_mode", mode)
+
+    def entry_mode(self) -> str:
+        val = self.get_kv("entry_mode")
+        return val if val else "adr"
+
+    def set_entry_mode(self, mode: str) -> None:
+        if mode not in ("adr", "fixed"):
+            raise ValueError(f"invalid entry mode: {mode}")
+        self.set_kv("entry_mode", mode)
 
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:

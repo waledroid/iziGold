@@ -70,6 +70,9 @@ class _KvDb:
     def exec_mode(self):
         return "auto"
 
+    def entry_mode(self):
+        return self.kv.get("entry_mode") or "adr"
+
     def get_kv(self, key):
         return self.kv.get(key)
 
@@ -207,7 +210,7 @@ def test_channel_command_states_and_unlink():
 
 def test_pinned_help_mentions_channel_and_version_bumped():
     assert "/channel" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "5"
+    assert PINNED_HELP_VERSION == "6"
 
 
 import importlib
