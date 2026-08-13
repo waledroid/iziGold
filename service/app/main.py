@@ -284,6 +284,7 @@ async def lifespan(app: FastAPI):
     app.state.ticker = TickerState()
     app.state.ticker_busy = False
     app.state.ticker_task = None
+    app.state.report_tasks = set()
     app.state.pending_switch = None
     app.state.pending_channel = None
     app.state.last_candles = None
@@ -834,20 +835,46 @@ def _basket_legs(db: SignalDb, trade_id: int) -> list:
 
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
+    # Idempotent receiver for the EA's at-least-once close delivery: deal
+    # tickets are unique, so a close re-delivered with the same nonzero
+    # ticket (the EA timed out before seeing our response and retried —
+    # the reconciler does this every 60 s) must get the ORIGINAL row id
+    # back, with no re-insert and no re-report.
+    if ev.event == "close" and ev.ticket:
+        row = app.state.db.conn.execute(
+            "SELECT MIN(id) FROM trades WHERE event='close' AND ticket=?",
+            (ev.ticket,)).fetchone()
+        if row is not None and row[0] is not None:
+            return {"id": row[0]}
     trade_id = app.state.db.insert_trade(ev.model_dump())
-    # Render/photo only for opens and FINAL closes -- 'add' legs are still
-    # recorded above (so the eventual close chart can draw their A-lines via
-    # _basket_legs) but must not themselves trigger a render/Telegram photo,
-    # and a non-final close (a single leg stopping out mid-basket) is
-    # telemetry-only, not a basket-ending event worth a chart/P&L message.
-    should_render = ev.event == "open" or (ev.event == "close" and ev.final)
-    # legs computed outside the render block: the P/L message below needs the
-    # basket's entry prices even when rendering is impossible (empty candle
-    # window right after a service restart).
+    # legs computed before responding: _basket_legs is a quick db read, and
+    # the background report needs the basket bounded as of THIS row.
     try:
         legs = _basket_legs(app.state.db, trade_id)
     except Exception:
         legs = []
+    # Respond immediately — the render + Telegram + channel-mirror work for
+    # a FINAL close takes multiple seconds, far beyond the EA's 1 s
+    # WebRequest timeout. Holding the response made the EA treat every
+    # slow final close as FAILED and re-deliver it forever (the 2026-08-13
+    # reconcile spam). The report runs as a background task instead; task
+    # refs are held on app.state so they can't be garbage-collected.
+    task = asyncio.create_task(_report_trade_event(ev, trade_id, legs))
+    app.state.report_tasks.add(task)
+    task.add_done_callback(app.state.report_tasks.discard)
+    return {"id": trade_id}
+
+
+async def _report_trade_event(ev: TradeEventRequest, trade_id: int,
+                              legs: list) -> None:
+    """Render/photo/P&L message for a trade event, OFF the response path.
+    Render/photo only for opens and FINAL closes -- 'add' legs are still
+    recorded (so the eventual close chart can draw their A-lines via
+    _basket_legs) but must not themselves trigger a render/Telegram photo,
+    and a non-final close (a single leg stopping out mid-basket) is
+    telemetry-only, not a basket-ending event worth a chart/P&L message.
+    Fail-open: every failure is swallowed."""
+    should_render = ev.event == "open" or (ev.event == "close" and ev.final)
     if should_render and app.state.last_candles:
         render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
         try:
@@ -893,7 +920,6 @@ async def trade_event(ev: TradeEventRequest):
             pass
         await _mirror(app, text=_pl_message(ev.profit, ev.direction,
                                             legs, ev.price))
-    return {"id": trade_id}
 
 
 def _pl_message(profit: float, direction: str = "", legs: list | None = None,

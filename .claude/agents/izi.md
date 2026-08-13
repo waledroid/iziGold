@@ -204,6 +204,22 @@ Data collection only; no UI yet.
     row, channel mirror) is identical either way. Reason strings get a
     `" (reconciled)"` suffix so these are visually distinguishable from
     live reports in Telegram/dashboard/DB.
+  - **The service is an idempotent, fast-responding receiver** (2026-08-13,
+    bought with a live incident): `/trade-event` answers with the row id
+    immediately after the DB insert — the render + Telegram photo + P/L
+    message + channel mirrors run as a background task
+    (`_report_trade_event`, refs held in `app.state.report_tasks`). Before
+    this, a FINAL close's report work took multiple seconds while the EA's
+    `UiTimeoutMs` is 1 s: the EA timed out on every final-close post, the
+    reconciler (correctly) refused to advance the watermark on an
+    unconfirmed post, and the same close was re-reported every 60 s
+    forever — message + render spam each minute. Second layer: a close
+    re-delivered with the same nonzero deal ticket returns the ORIGINAL
+    row's id (`SELECT MIN(id) … WHERE event='close' AND ticket=?`) with no
+    re-insert and no re-report, so any at-least-once retry is harmless by
+    construction. Tests: `test_trades.py` (idempotency, sub-1 s response
+    under slow Telegram); render/P&L tests now `_drain()` the background
+    task before asserting sends.
   - **Final flag is derived from history, not live positions**: while
     building the backlog the scan tracks a running net own volume for
     symbol+magic (`DEAL_ENTRY_IN` adds, `DEAL_ENTRY_OUT` subtracts) across

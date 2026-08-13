@@ -391,7 +391,12 @@ def test_pl_message_includes_avg_entry_and_exit(client, fake_tg):
     client.post("/trade-event", json={**base, "event": "close", "direction": "SELL",
                                       "lots": 0.04, "price": 4078.65,
                                       "profit": -8.24, "final": True})
-    sends = [c for c in fake_tg.calls if c[0] == "send"]
+    # report work runs in a background task now (fast /trade-event response)
+    deadline = time.time() + 5.0
+    sends = []
+    while time.time() < deadline and not sends:
+        sends = [c for c in fake_tg.calls if c[0] == "send"]
+        time.sleep(0.05)
     assert sends, "P/L message not sent"
     msg = sends[-1][1]
     assert "-$8.24 loss" in msg and "SELL 4077.76" in msg and "4078.65" in msg

@@ -14,6 +14,17 @@ def _trade(**overrides):
     return ev
 
 
+def _drain(timeout=6.0):
+    """Wait for the background trade-event report tasks (render + Telegram
+    now run OFF the response path so the EA's 1 s timeout can't fire)."""
+    import time as _t
+    from app import main
+    deadline = _t.time() + timeout
+    while _t.time() < deadline and getattr(main.app.state, "report_tasks", None):
+        _t.sleep(0.05)
+
+
+
 # ---------------------------------------------------------------------------
 # render_trade_chart unit tests
 # ---------------------------------------------------------------------------
@@ -207,6 +218,7 @@ def test_trade_event_close_renders_chart_after_analyze(client):
 
     trade_id = client.post(
         "/trade-event", json=_trade(event="close", reason="tp hit")).json()["id"]
+    _drain()
 
     from app import main
     row = main.app.state.db.conn.execute(
@@ -227,6 +239,7 @@ def test_trade_event_open_renders_chart_after_analyze(client):
     client.post("/analyze", json=_analyze_payload())
 
     trade_id = client.post("/trade-event", json=_trade(event="open")).json()["id"]
+    _drain()
 
     from app import main
     row = main.app.state.db.conn.execute(
@@ -266,6 +279,7 @@ def test_trade_event_render_prunes_to_retention_cap(client, tmp_path):
     client.post("/analyze", json=_analyze_payload())
     trade_id = client.post(
         "/trade-event", json=_trade(event="close", reason="tp hit")).json()["id"]
+    _drain()
 
     remaining = list(shot_dir.glob("*.png"))
     assert len(remaining) == 500
@@ -305,6 +319,7 @@ def test_trade_event_close_sends_render_photo_when_telegram_configured(client):
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
     client.post("/trade-event", json=_trade(event="close", reason="tp hit"))
+    _drain()
 
     photo_calls = [c for c in ft.calls if c[0] == "sendPhoto"]
     assert len(photo_calls) == 1
@@ -323,6 +338,7 @@ def test_trade_event_close_sends_profit_message(client):
 
     client.post(
         "/trade-event", json=_trade(event="close", reason="tp hit", profit=102.82))
+    _drain()
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
@@ -339,6 +355,7 @@ def test_trade_event_close_sends_loss_message(client):
 
     client.post(
         "/trade-event", json=_trade(event="close", reason="sl hit", profit=-21.40))
+    _drain()
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
@@ -354,6 +371,7 @@ def test_trade_event_close_sends_breakeven_message(client):
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
     client.post("/trade-event", json=_trade(event="close", profit=0.0))
+    _drain()
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
@@ -451,10 +469,12 @@ def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
     client.post(
         "/trade-event",
         json=_trade(event="open", price=2400.0, sl=2390.0, tp=2420.0))
+    _drain()
     client.post(
         "/trade-event",
         json=_trade(event="close", price=2415.0, sl=2391.0, tp=2421.0,
                     reason="strategy EXIT"))
+    _drain()
 
     trade = captured["trade"]
     assert trade["sl"] == 2391.0   # the event's own nonzero value wins
@@ -475,14 +495,17 @@ def test_add_event_sends_no_photo_close_render_still_carries_add_leg(client):
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    _drain()
     assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
 
     client.post("/trade-event", json=_trade(event="add", price=2405.0))
+    _drain()
     # The add must NOT trigger a second render/photo.
     assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
 
     close_id = client.post(
         "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
+    _drain()
     assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 2
 
     legs = _basket_legs(main.app.state.db, close_id)
@@ -502,12 +525,14 @@ def test_non_final_close_sends_no_pl_message_and_no_photo(client):
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    _drain()
     assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
 
     r = client.post(
         "/trade-event",
         json=_trade(event="close", price=2395.0, sl=0.0, tp=0.0,
                     reason="stop-loss", profit=-10.0, final=False))
+    _drain()
     assert r.status_code == 200
     trade_id = r.json()["id"]
 
@@ -548,13 +573,16 @@ def test_final_close_after_non_final_leg_sends_render_and_pl_message(client):
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
+    _drain()
     client.post(
         "/trade-event",
         json=_trade(event="close", price=2395.0, final=False, profit=-5.0))
+    _drain()
     client.post(
         "/trade-event",
         json=_trade(event="close", price=2415.0, final=True, profit=15.0,
                     reason="profit target"))
+    _drain()
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
