@@ -21,6 +21,30 @@ private:
 
    string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    string PeakKey() { return "XAU_PEAK_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   // Sticky per-basket entry mode (0=ADR, 1=FIXED). Written once at basket
+   // open (OnSignal), read by Manage() every bar so a mid-trade restart
+   // cannot turn a FIXED ride into ADR management or vice versa. Meaningful
+   // only while a basket exists — stale after CloseAll until the next open
+   // overwrites it, same pattern as CycleKey (never reset on close).
+   string BasketModeKey() { return "XAU_BASKET_MODE_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+
+   // "adr"/"fixed" string for the CURRENT basket's mode — used to tag trade
+   // events (open/add/close) with the mode that basket was actually running
+   // under, independent of whatever the runtime switch has moved on to.
+   string CurrentEntryModeStr() { return (GlobalVariableGet(BasketModeKey()) > 0.5) ? "fixed" : "adr"; }
+
+   // FixedLots is a direct target size (not a risk ceiling that must never
+   // be exceeded like CalcLots' output), so round to the nearest step
+   // rather than floor, then clamp to the broker's min/max.
+   double ClampToVolume(double raw)
+     {
+      double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double vmax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+      double lots = raw;
+      if(step > 0) lots = MathRound(lots / step) * step;
+      return MathMin(MathMax(lots, vmin), vmax);
+     }
 
    int CountOwn()
      {
@@ -227,6 +251,12 @@ public:
 
    int OpenCount() { return CountOwn(); }
 
+   // Public read of the current basket's sticky mode ("adr"/"fixed"), for
+   // callers outside TradeManager that report trade events it didn't
+   // originate (e.g. the EA's OnTradeTransaction handler for a broker-side
+   // SL/TP close).
+   string EntryModeStr() { return CurrentEntryModeStr(); }
+
    ENUM_SIGNAL BasketDirection()
      {
       long t = OwnType();
@@ -242,6 +272,7 @@ public:
       long ptype = OwnType();
       double totalLots = 0;
       double basketProfit = BasketProfit();
+      string entryModeStr = CurrentEntryModeStr();
       for(int i = PositionsTotal() - 1; i >= 0; i--)
          if(PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
             PositionGetString(POSITION_SYMBOL) == _Symbol)
@@ -264,14 +295,27 @@ public:
          string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
          double price = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
                                                       : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason, 0, basketProfit, 0.0);
+         m_sink.OnTradeEvent("close", dir, totalLots, price, 0.0, reason, 0, basketProfit, 0.0,
+                             true, entryModeStr);
         }
      }
 
    // Returns true ONLY when an order was actually opened (used by the EA to
    // detect AUTO-mode entry rejections). EXIT closes rather than opens, so
    // it returns false; every blocked/no-op path returns false too.
-   bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0)
+   // entryModeFixed/fixedLots are passed per-call (trailing defaulted params,
+   // same style as the existing stopPrice default) rather than threaded
+   // through Init as persistent members: the runtime mode can change every
+   // heartbeat (5s) while a basket can sit open for hours, so the EA already
+   // has to re-evaluate "which mode applies to a NEW entry" at every
+   // OnSignal call site anyway (AUTO's ProcessBar call and the MANUAL
+   // Telegram-execute call in OnTimer) — passing it in keeps TradeManager
+   // stateless about the runtime switch and makes "the reversal path uses
+   // the CURRENT runtime mode for the new basket" automatic (same call,
+   // same fresh param) rather than requiring a setter call ordered before
+   // every OnSignal.
+   bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0,
+                bool entryModeFixed = false, double fixedLots = 0.0)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return false; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return false;
@@ -299,7 +343,7 @@ public:
       else sl = (sig == SIGNAL_BUY) ? price - m_stopAtrMult * atr_value
                                     : price + m_stopAtrMult * atr_value;
       double sl_points = MathAbs(price - sl) / _Point;
-      double lots = m_risk.CalcLots(sl_points, m_ratios[0]);
+      double lots = entryModeFixed ? ClampToVolume(fixedLots) : m_risk.CalcLots(sl_points, m_ratios[0]);
       if(lots <= 0) return false;
       bool ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
                                     : m_trade.Sell(lots, _Symbol, 0, sl);
@@ -308,12 +352,14 @@ public:
          m_lastEntryPrice = price;
          GlobalVariableSet(CycleKey(), AccountInfoDouble(ACCOUNT_BALANCE));
          GlobalVariableSet(PeakKey(), 0);
+         GlobalVariableSet(BasketModeKey(), entryModeFixed ? 1 : 0);
          if(m_sink != NULL)
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
             string openReason = wasReversal ? "reversal" : ("signal " + dir);
             m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason,
-                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice());
+                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice(),
+                                true, entryModeFixed ? "fixed" : "adr");
            }
         }
       return ok;
@@ -323,6 +369,14 @@ public:
      {
       int n = CountOwn();
       if(n == 0) return;
+      // FIXED baskets skip adds + profit target + profit lock entirely —
+      // pure trend ride to a confirmed reversal or the shared stop, neither
+      // of which lives in Manage() (reversal is OnSignal's close-and-open;
+      // the stop is broker-side on each leg). Nothing below this line has a
+      // consumer without the lock/target/pyramid it belongs to (peak
+      // tracking below exists only to feed the lock), so returning here is
+      // a full skip, not a partial one.
+      if(GlobalVariableGet(BasketModeKey()) > 0.5) return;
       // profit target: close everything at +targetPct of cycle-start balance
       double cycleBal = GlobalVariableGet(CycleKey());
       if(m_targetPct > 0 && cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
@@ -405,7 +459,8 @@ public:
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
             m_sink.OnTradeEvent("add", dir, lots, price, addSl, "pyramid add",
-                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice());
+                                (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice(),
+                                true, CurrentEntryModeStr());
            }
         }
      }
