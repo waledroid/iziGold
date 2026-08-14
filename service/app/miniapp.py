@@ -18,6 +18,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
+from app.indicators import ema, halftrend
+from app.models import Candle
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -151,7 +153,29 @@ def page():
 def history(tf: str, _=Depends(require_viewer)):
     if tf not in TFS:
         raise HTTPException(status_code=400, detail=f"unknown tf {tf}")
-    return {"tf": tf, "candles": list(state.candles[tf])}
+    rows = list(state.candles[tf])
+    return {"tf": tf, "candles": rows, **_indicator_series(rows)}
+
+
+def _indicator_series(rows: list[dict]) -> dict:
+    """EMA-9/21/55/200 + HalfTrend(amplitude=4), computed fresh from the ring
+    buffer on every request (<=500 candles: cheap, no cache needed). Uses
+    the exact same app.indicators math the render.py trade-chart PNGs use,
+    so the mini-app overlays match the EA's live MT5 chart. ema()/halftrend()
+    already degrade to all-None/empty for short input (see their
+    docstrings), so a <2-candle TF naturally yields empty/null arrays here
+    without any special-casing.
+    """
+    closes = [r["c"] for r in rows]
+    candle_objs = [Candle(**r) for r in rows]
+    ht = halftrend(candle_objs, amplitude=4)
+    return {
+        "ema9": ema(closes, 9),
+        "ema21": ema(closes, 21),
+        "ema55": ema(closes, 55),
+        "ema200": ema(closes, 200),
+        "halftrend": [({"v": e[0], "trend": e[1]} if e else None) for e in ht],
+    }
 
 
 @app.websocket("/ws")

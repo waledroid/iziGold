@@ -549,6 +549,34 @@ CDN/network dependency at runtime. `telegram-web-app.js` is the one
 external `<script src>` (loaded `defer` from `https://telegram.org`;
 everything else is local).
 
+**Indicator overlays** (Phase 2.5, 2026-08-14, owner request after seeing
+the page): `GET /api/history` gains `ema9`/`ema21`/`ema55`/`ema200` (arrays
+aligned to `candles`, `null` during warmup) and `halftrend` (aligned array
+of `null` or `{"v", "trend": 0|1}`) — `app/miniapp.py`'s `_indicator_series`
+computes them fresh from the ring buffer on every request (≤500 candles,
+no cache) by calling `app/indicators.py`'s `ema`/`halftrend` directly (the
+same EA-math port `render.py` uses for the trade-chart PNGs, so the
+mini-app matches both the PNGs and the EA's live MT5 chart); a short-lived
+`app.models.Candle(**row)` per row gives `halftrend` the attribute access
+it expects over the dict-shaped ring buffer. `ema`/`halftrend` already
+degrade to all-`None`/empty on short input, so `<2`-candle TFs need no
+special-casing. `miniapp.html` draws EMA-9/21 as dim gray (`#888888`,
+width 1), EMA-55 gold, EMA-200 purple (width 2), all with price-line/
+last-value labels off; HalfTrend as two line series (`dodgerblue`=up,
+`orangered`=down, width 2) carrying a value only where their trend
+matches and a whitespace point (`{time}` only) elsewhere, so a flip breaks
+the segment instead of interpolating across it — all six overlay series
+are added to the chart *before* the candlestick series so candles paint on
+top. Live: each `candle` WS delta advances the four EMA lines client-side
+with the exact recurrence (`k = 2/(n+1)`) from a baseline captured at the
+last *closed* bar (`setEmaBaseline`, index `length-2` of the last history
+fetch); HalfTrend is never advanced client-side (its state machine needs
+the full closed-bar walk) — a genuine bar rollover (delta `t` newer than
+the tracked `lastBarT`, not just the forming bar being re-pushed) instead
+triggers a full `loadHistory()` refetch that redraws every overlay from
+server truth. All defensively guarded: missing/short indicator arrays (old
+server) just mean that overlay draws no points, never a crash.
+
 **WS client contract** (binding — any future edit to the handler must keep
 these): a `snapshot` message is a full **reset**, not a merge — deltas can
 race an in-flight reconnect and arrive first, so `snapshot` always clobbers
