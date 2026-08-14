@@ -94,14 +94,18 @@ a tick); auto-reconnect WS. No trading controls of any kind.
 - `/chart` replies with the link (+ button) when `MINIAPP_LINK` is set;
   falls back to the existing PNG snapshot when not.
 
-### 5. Deployment — Cloudflare named tunnel
+### 5. Deployment — ngrok free static domain (amended 2026-08-14)
 
-`cloudflared` named tunnel (config in `scripts/cloudflared-config.yml`):
-`chart.<owner domain>` → `http://localhost:9001`, catch-all 404. Started
-by the launcher; safe to skip when unconfigured (setup prints SKIP).
-Owner prerequisites (one-time, ~15 min, walked through at Phase 3): free
-Cloudflare account, domain added to it, interactive `cloudflared tunnel
-login`, BotFather `/newapp`.
+Owner has no domain; chose ngrok's free tier (one permanent static
+domain per account, e.g. `<name>.ngrok-free.app`). `ngrok http
+--url=<static-domain> 9001` started by the launcher; safe to skip when
+unconfigured (setup prints SKIP). Trade-off accepted: ngrok's free tier
+shows a one-tap interstitial ("Visit site") on first browser visit per
+session. Owner prerequisites (one-time, ~5 min): free ngrok account,
+claim the free static domain, paste authtoken (stored as NGROK_AUTHTOKEN
+in service/.env, never committed), BotFather `/newapp` with the static
+URL. Upgrade path unchanged: a paid domain + Cloudflare named tunnel is
+a pure config swap (one URL setting), no rebuild.
 
 ## Phases (separate plan + branch each)
 
@@ -110,7 +114,13 @@ login`, BotFather `/newapp`.
    with curl + a WS client locally; service tests with a fake bridge.
 2. **Frontend**: vendored library, the page, TF switching, overlays,
    position card, live WS updates, offline banner. Testable in a normal
-   browser at `127.0.0.1:9001` with dev bypass.
+   browser at `127.0.0.1:9001` with dev bypass. **Phase 2.5 (owner
+   request after seeing the page): indicator overlays** — server
+   computes HalfTrend (amplitude 4) + EMA 9/21/55/200 per TF with
+   `app/indicators.py` (exact EA math) alongside history; page draws
+   them (HalfTrend as blue/red segmented line, EMA-55 gold, EMA-200
+   purple, 9/21 dim); live: EMAs advance client-side with the exact
+   recurrence, full refresh on bar rollover.
 3. **Auth + Telegram + tunnel**: initData validation + channel-membership
    authorization, BotFather registration, ticker button + `/chart`
    repoint + channel text link, cloudflared config + launcher/setup
