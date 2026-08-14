@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     db_path: str = "xau_assistant.db"
     screenshot_dir: str = "screenshots"
+    feed_key: str = ""
+    miniapp_dev_bypass: bool = False
 
 
 settings = Settings()
