@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
 VENV="$SERVICE_DIR/.venv"
 BASE_URL="http://127.0.0.1:9000"
-TOTAL=7
+TOTAL=8
 MT5_DIR=""
 METAEDITOR=""
 
@@ -143,8 +143,69 @@ print("  analyze ok: %s conf=%s regime=%s ai=%s"
   || fail "/analyze returned an unexpected body: $smoke_resp"
 ok "service healthy + /analyze smoke passed"
 
-# ----------------------------------------------------------------- 5. Telegram
-phase 5 "Telegram"
+# ---------------------------------------------------- 5. Mini-app feed service
+phase 5 "Mini-app feed service"
+MINIAPP_URL="http://127.0.0.1:9001"
+miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/openapi.json" >/dev/null 2>&1; }
+
+feed_key_changed=0
+if grep -q '^FEED_KEY=.\+' "$SERVICE_DIR/.env"; then
+  skip "FEED_KEY already set"
+else
+  feed_key="$(openssl rand -hex 24 2>/dev/null || true)"
+  [[ -n "$feed_key" ]] || feed_key="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_hex(24))')"
+  [[ -n "$feed_key" ]] || fail "could not generate FEED_KEY"
+  if grep -q '^FEED_KEY=$' "$SERVICE_DIR/.env"; then
+    # .env.example ships a blank FEED_KEY= line (so it's documented and
+    # diff-visible); fill that line in place rather than appending, or a
+    # second FEED_KEY= line would exist and the bridge's (pre-fix) first-
+    # match parser would keep reading the blank one forever.
+    sed -i "s/^FEED_KEY=\$/FEED_KEY=$feed_key/" "$SERVICE_DIR/.env"
+    ok "filled blank FEED_KEY in .env"
+  else
+    # No FEED_KEY= line at all: append one, guarding against a
+    # hand-truncated .env whose last line has no trailing newline (which
+    # would otherwise concatenate onto that line instead of adding a new
+    # one).
+    if [[ -s "$SERVICE_DIR/.env" ]] && [[ "$(tail -c1 "$SERVICE_DIR/.env" | wc -l)" -eq 0 ]]; then
+      printf '\n' >> "$SERVICE_DIR/.env"
+    fi
+    printf 'FEED_KEY=%s\n' "$feed_key" >> "$SERVICE_DIR/.env"
+    ok "generated FEED_KEY into .env"
+  fi
+  feed_key_changed=1
+fi
+
+if [[ "$feed_key_changed" == 1 ]] && miniapp_alive; then
+  echo "  FEED_KEY changed — restarting mini-app so it picks up the new key"
+  pkill -f "uvicorn app.miniapp:app" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    miniapp_alive || break
+    sleep 1
+  done
+  miniapp_alive && fail "could not stop the stale mini-app process (still holding the old FEED_KEY)"
+  ok "stopped stale mini-app process"
+fi
+
+if miniapp_alive; then
+  skip "already running at $MINIAPP_URL"
+else
+  (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.miniapp:app --host 127.0.0.1 --port 9001 \
+      >>"$SERVICE_DIR/miniapp.log" 2>&1 &)
+  up=""
+  for _ in $(seq 1 30); do
+    if miniapp_alive; then up=yes; break; fi
+    sleep 1
+  done
+  if [[ -z "$up" ]]; then
+    tail -25 "$SERVICE_DIR/miniapp.log" >&2
+    fail "mini-app did not come up in 30s — see service/miniapp.log"
+  fi
+  ok "started in background (logs: service/miniapp.log)"
+fi
+
+# ----------------------------------------------------------------- 6. Telegram
+phase 6 "Telegram"
 profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
 import json, sys
 p = json.load(sys.stdin).get("profile") or {}
@@ -193,8 +254,8 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
 
-# ------------------------------------------------------ 6. MT5 install + compile
-phase 6 "MT5 install + compile"
+# ------------------------------------------------------ 7. MT5 install + compile
+phase 7 "MT5 install + compile"
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -219,8 +280,8 @@ fi
 [[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
 
-# ------------------------------------------- 7. Handoff + end-to-end verification
-phase 7 "Handoff + end-to-end verify"
+# ------------------------------------------- 8. Handoff + end-to-end verification
+phase 8 "Handoff + end-to-end verify"
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
@@ -263,7 +324,7 @@ else
     - The toolbar "Algo Trading" button is ON (green) and the chart smiley is smiling
     - MT5 Toolbox > Experts tab: look for "WebRequest error 4014" or similar
     - Remove the EA from the chart and re-attach it (options load at EA init)
-  Re-run scripts/setup.sh afterwards — phases 1-6 will SKIP and the wait restarts.
+  Re-run scripts/setup.sh afterwards — phases 1-7 will SKIP and the wait restarts.
 EOF
   fail "EA heartbeat not observed"
 fi
