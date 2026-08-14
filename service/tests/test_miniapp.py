@@ -101,3 +101,40 @@ def test_ws_requires_viewer_auth(monkeypatch):
 def test_push_never_500s_on_garbage(client):
     assert _push(client, {"candles": {"M5": [{"bad": 1}]}}).status_code == 200
     assert _push(client, {"tick": "nonsense"}).status_code == 200
+
+
+def test_bad_t_in_empty_buffer_then_well_formed(client):
+    """Critical fix: bad-t candle into empty buffer should be rejected,
+    and later well-formed pushes should land without TypeError."""
+    # Push a candle with non-numeric t into empty buffer
+    resp = _push(client, {"candles": {"M5": [{"t": "oops", "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": 10}]}})
+    assert resp.status_code == 200  # Never 500
+    # Now push a well-formed candle
+    resp = _push(client, {"candles": {"M5": [_candle(1000)]}})
+    assert resp.status_code == 200
+    # Verify the well-formed candle landed
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 1
+    assert body["candles"][0]["t"] == 1000
+    # Push another well-formed candle
+    resp = _push(client, {"candles": {"M5": [_candle(1300)]}})
+    assert resp.status_code == 200
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 2
+    assert [c["t"] for c in body["candles"]] == [1000, 1300]
+
+
+def test_type_garbage_candles_rejected(client):
+    """Type validation: reject candles with non-numeric t/o/h/l/c
+    (including booleans which are technically int subclass)."""
+    # String t
+    assert _push(client, {"candles": {"M5": [{"t": "oops", "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": 10}]}}).status_code == 200
+    # Bool t (bool is int subclass in Python, must explicitly reject)
+    assert _push(client, {"candles": {"M5": [{"t": True, "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": 10}]}}).status_code == 200
+    # Non-numeric o
+    assert _push(client, {"candles": {"M5": [{"t": 1000, "o": "bad", "h": 4002, "l": 3999, "c": 4001, "v": 10}]}}).status_code == 200
+    # Non-numeric c
+    assert _push(client, {"candles": {"M5": [{"t": 1000, "o": 4000, "h": 4002, "l": 3999, "c": None, "v": 10}]}}).status_code == 200
+    # Verify nothing landed
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 0

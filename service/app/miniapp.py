@@ -8,7 +8,6 @@ Runs as its own process: uvicorn app.miniapp:app --host 127.0.0.1
 bridge's next backfill push (fail-open).
 """
 import asyncio
-import contextlib
 from collections import deque
 
 from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
@@ -49,6 +48,10 @@ class FeedState:
                 for row in rows:
                     if not isinstance(row, dict) or not CANDLE_FIELDS <= set(row):
                         continue
+                    # Validate numeric types (reject bool)
+                    if not all(isinstance(row[k], (int, float)) and not isinstance(row[k], bool)
+                               for k in ["t", "o", "h", "l", "c"]):
+                        continue
                     if buf and row["t"] == buf[-1]["t"]:
                         buf[-1] = row                     # forming-bar update
                     elif buf and row["t"] < buf[-1]["t"]:
@@ -77,7 +80,7 @@ class _Hub:
         dead = []
         for ws in list(self.clients):
             try:
-                await ws.send_json(msg)
+                await asyncio.wait_for(ws.send_json(msg), timeout=1.0)
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -88,11 +91,18 @@ state = FeedState()
 hub = _Hub()
 
 
+def viewer_allowed() -> bool:
+    """Check if viewer is allowed. Shared by REST and WS.
+    Phase 1: dev bypass only. Phase 3 replaces the body with Telegram
+    initData validation + owner/channel-membership authorization."""
+    return settings.miniapp_dev_bypass
+
+
 def require_viewer(request: Request = None):
     """Phase 1: dev bypass only. Phase 3 replaces the body with Telegram
     initData validation + owner/channel-membership authorization — same
     dependency, same call sites."""
-    if settings.miniapp_dev_bypass:
+    if viewer_allowed():
         return True
     raise HTTPException(status_code=403, detail="viewer auth required")
 
@@ -106,7 +116,10 @@ async def feed_push(request: Request):
         batch = await request.json()
     except Exception:
         return {"ok": False}
-    deltas = state.apply_push(batch)
+    try:
+        deltas = state.apply_push(batch)
+    except Exception:
+        return {"ok": False}
     for d in deltas:
         await hub.broadcast(d)
     return {"ok": True, "deltas": len(deltas)}
@@ -121,7 +134,7 @@ def history(tf: str, _=Depends(require_viewer)):
 
 @app.websocket("/ws")
 async def ws_feed(ws: WebSocket):
-    if not settings.miniapp_dev_bypass:
+    if not viewer_allowed():
         await ws.close(code=4403)
         return
     await ws.accept()
