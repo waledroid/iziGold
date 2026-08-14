@@ -202,6 +202,14 @@ def test_vendor_lightweight_charts_served(client):
     assert "LightweightCharts" in resp.text
 
 
+def test_shared_static_dir_not_exposed(client):
+    """The miniapp process is the one Phase 3 tunnels publicly — it must
+    only ever serve static/vendor, never the rest of static/ (which holds
+    main.py's dashboard.html/onboarding.html, i.e. trading controls)."""
+    assert client.get("/static/dashboard.html").status_code == 404
+    assert client.get("/static/onboarding.html").status_code == 404
+
+
 def test_string_v_rejected(client):
     """Volume (v) must be numeric too — string-v should be rejected."""
     resp = _push(client, {"candles": {"M5": [{"t": 1000, "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": "NOT_A_NUMBER"}]}})

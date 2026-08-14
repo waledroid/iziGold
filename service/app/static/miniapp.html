@@ -179,15 +179,21 @@ body {
   var RECONNECT_STEPS_MS = [1000, 2000, 5000];
 
   // ---- Telegram WebApp bridge (optional, feature-detected) ----------
-  var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
-  var initData = "";
-  if (tg) {
-    try { tg.ready(); } catch (e) {}
-    try { tg.expand(); } catch (e) {}
-    initData = tg.initData || "";
+  // telegram-web-app.js is loaded with `defer`, so it has NOT necessarily
+  // run yet at the point this script's top-level code executes (this
+  // inline script is itself not deferred, so the parser reaches it
+  // mid-document). Every use site reads window.Telegram lazily through
+  // tg() instead of capturing it once into a variable; anything that
+  // actually needs the object populated (ready/expand, initial theme
+  // colors, initData) runs from boot(), which only fires once the whole
+  // document — including deferred scripts, per spec — has parsed.
+  function tg() {
+    return (window.Telegram && window.Telegram.WebApp) || null;
   }
 
   function withInitData(url) {
+    var t = tg();
+    var initData = t ? (t.initData || "") : "";
     if (!initData) return url;
     var sep = url.indexOf("?") === -1 ? "?" : "&";
     return url + sep + "initData=" + encodeURIComponent(initData);
@@ -195,7 +201,8 @@ body {
 
   // ---- Theme (Telegram themeParams when available) -------------------
   function themeColors() {
-    var tp = (tg && tg.themeParams) ? tg.themeParams : {};
+    var t = tg();
+    var tp = (t && t.themeParams) ? t.themeParams : {};
     return {
       bg: tp.bg_color || "#0a0e14",
       text: tp.text_color || "#e7ecf3",
@@ -204,52 +211,14 @@ body {
     };
   }
 
-  // ---- Chart setup -----------------------------------------------------
-  var chartWrap = document.getElementById("chartWrap");
-  var chartEl = document.getElementById("chart");
-  var colors = themeColors();
+  // ---- Chart setup (created in boot(), once the DOM + deferred scripts
+  // have loaded) ------------------------------------------------------------
+  var chartWrap, chartEl, chart, series;
+  var tfRow, bidEl, askEl, spreadEl, posCard, dot, offlineBanner;
 
-  var chart = LightweightCharts.createChart(chartEl, {
-    layout: {
-      background: { type: "solid", color: colors.bg },
-      textColor: colors.text
-    },
-    grid: {
-      vertLines: { color: colors.grid },
-      horzLines: { color: colors.grid }
-    },
-    rightPriceScale: {
-      borderColor: colors.border
-    },
-    timeScale: {
-      borderColor: colors.border,
-      timeVisible: true,
-      secondsVisible: true
-    },
-    crosshair: {
-      mode: LightweightCharts.CrosshairMode.Normal
-    },
-    autoSize: true
-  });
-
-  var series = chart.addCandlestickSeries({
-    upColor: "#26a69a",
-    downColor: "#ef5350",
-    borderUpColor: "#26a69a",
-    borderDownColor: "#ef5350",
-    wickUpColor: "#26a69a",
-    wickDownColor: "#ef5350"
-  });
-
-  // Belt-and-suspenders resize: autoSize handles most cases, but Telegram
-  // WebApp viewport changes (keyboard, safe-area) don't always fire a
-  // window resize event.
   function resizeChart() {
+    if (!chart || !chartWrap) return;
     chart.resize(chartWrap.clientWidth, chartWrap.clientHeight);
-  }
-  window.addEventListener("resize", resizeChart);
-  if (tg && tg.onEvent) {
-    try { tg.onEvent("viewportChanged", resizeChart); } catch (e) {}
   }
 
   // ---- Candle mapping ----------------------------------------------------
@@ -268,7 +237,6 @@ body {
 
   // ---- TF state + buttons -------------------------------------------------
   var currentTf = "M5";
-  var tfRow = document.getElementById("tfRow");
 
   function renderTfButtons(tfs) {
     tfRow.innerHTML = "";
@@ -296,6 +264,10 @@ body {
         return r.json();
       })
       .then(function (body) {
+        // A TF switch (or a WS snapshot that changed TF) may have moved
+        // currentTf on while this request was in flight — a stale
+        // response must not clobber the newer selection.
+        if (tf !== currentTf) return;
         if (!body || !Array.isArray(body.candles)) return;
         var rows = body.candles.filter(isValidCandle).map(toLwCandle);
         series.setData(rows);
@@ -314,10 +286,6 @@ body {
   }
 
   // ---- Header (tick) --------------------------------------------------------
-  var bidEl = document.getElementById("bidVal");
-  var askEl = document.getElementById("askVal");
-  var spreadEl = document.getElementById("spreadVal");
-
   function applyTick(tick) {
     if (!tick || !isNumeric(tick.bid) || !isNumeric(tick.ask)) return;
     bidEl.textContent = tick.bid.toFixed(2);
@@ -328,7 +296,6 @@ body {
   }
 
   // ---- Positions: price lines + card --------------------------------------
-  var posCard = document.getElementById("posCard");
   var activeLines = [];
 
   function clearLines() {
@@ -393,12 +360,17 @@ body {
       totalProfit += isNumeric(p.profit) ? p.profit : 0;
     });
     var avgEntry = totalLots > 0 ? weightedEntry / totalLots : valid[0].entry;
-    var dir = (valid[0].direction || "").toUpperCase();
-    var dirClass = dir === "SELL" ? "dir-sell" : "dir-buy";
+
+    // Whitelist the direction text before it ever reaches innerHTML — a
+    // raw feed string must never land in the DOM as markup, however
+    // implausible an attacker-controlled feed value is in practice.
+    var rawDir = (valid[0].direction || "").toString().toUpperCase();
+    var dir = rawDir === "SELL" ? "SELL" : rawDir === "BUY" ? "BUY" : "—";
+    var dirClass = rawDir === "SELL" ? "dir-sell" : "dir-buy";
     var profitClass = totalProfit >= 0 ? "profit-pos" : "profit-neg";
 
     posCard.innerHTML =
-      '<div class="row"><span class="' + dirClass + '">' + (dir || "—") + '</span>' +
+      '<div class="row"><span class="' + dirClass + '">' + dir + '</span>' +
       '<span>' + totalLots.toFixed(2) + ' lots</span></div>' +
       '<div class="row"><span>Entry</span><span>' + avgEntry.toFixed(2) + '</span></div>' +
       '<div class="row"><span>P/L</span><span class="' + profitClass + '">' +
@@ -407,8 +379,6 @@ body {
   }
 
   // ---- Connection state: dot + offline banner ------------------------------
-  var dot = document.getElementById("dot");
-  var offlineBanner = document.getElementById("offlineBanner");
   var lastMsgAt = Date.now();
   var offline = true;
 
@@ -417,17 +387,11 @@ body {
     dot.classList.toggle("online", isOnline);
     offlineBanner.classList.toggle("visible", !isOnline);
   }
-  // Deliberately no setOnline(false) here: the banner/dot markup already
-  // default to the offline look (see CSS), and at t=0 neither trigger
-  // condition (no message for 10s / socket closed) is true yet. This
-  // avoids a flash of "Connection lost" on every fresh page load while
-  // the first WS handshake is still in flight.
-
-  setInterval(function () {
-    if (Date.now() - lastMsgAt > OFFLINE_TIMEOUT_MS) {
-      setOnline(false);
-    }
-  }, 1000);
+  // Deliberately no setOnline(false) call at top level: the banner/dot
+  // markup already default to the offline look (see CSS), and at t=0
+  // neither trigger condition (no message for 10s / socket closed) is
+  // true yet. This avoids a flash of "Connection lost" on every fresh
+  // page load while the first WS handshake is still in flight.
 
   // ---- WebSocket with reset-on-snapshot + reconnect backoff -----------------
   var ws = null;
@@ -475,7 +439,18 @@ body {
         // Only apply candle updates for the TF currently on screen.
         if (msg.tf !== currentTf) break;
         if (isValidCandle(msg.candle)) {
-          series.update(toLwCandle(msg.candle));
+          try {
+            series.update(toLwCandle(msg.candle));
+          } catch (e) {
+            // Lightweight Charts throws if the update's time is older
+            // than the series' current tail (e.g. a stale delta landing
+            // just after a fresh setData from a TF switch/snapshot) —
+            // drop it; the next in-order update supersedes it anyway.
+            // handleMessage runs outside ws.onmessage's JSON.parse
+            // try/catch, so an uncaught throw here would otherwise kill
+            // this message dispatch (and, depending on the browser,
+            // possibly the socket's event handling).
+          }
         }
         break;
 
@@ -522,9 +497,92 @@ body {
   }
 
   // ---- Boot -----------------------------------------------------------------
-  renderTfButtons(DEFAULT_TFS);
-  loadHistory(currentTf);
-  connect();
+  // Runs once the document (including deferred scripts, guaranteed by
+  // spec to run before DOMContentLoaded) has parsed, so tg() reliably
+  // reflects a real Telegram WebView here — this is where ready()/
+  // expand() and the Telegram-themed chart colors actually take effect.
+  function boot() {
+    chartWrap = document.getElementById("chartWrap");
+    chartEl = document.getElementById("chart");
+    tfRow = document.getElementById("tfRow");
+    bidEl = document.getElementById("bidVal");
+    askEl = document.getElementById("askVal");
+    spreadEl = document.getElementById("spreadVal");
+    posCard = document.getElementById("posCard");
+    dot = document.getElementById("dot");
+    offlineBanner = document.getElementById("offlineBanner");
+
+    var t = tg();
+    if (t) {
+      try { t.ready(); } catch (e) {}
+      try { t.expand(); } catch (e) {}
+    }
+
+    var colors = themeColors();
+    chart = LightweightCharts.createChart(chartEl, {
+      layout: {
+        background: { type: "solid", color: colors.bg },
+        textColor: colors.text
+      },
+      grid: {
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid }
+      },
+      rightPriceScale: {
+        borderColor: colors.border
+      },
+      timeScale: {
+        borderColor: colors.border,
+        timeVisible: true,
+        secondsVisible: true
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal
+      },
+      autoSize: true
+    });
+
+    series = chart.addCandlestickSeries({
+      upColor: "#26a69a",
+      downColor: "#ef5350",
+      borderUpColor: "#26a69a",
+      borderDownColor: "#ef5350",
+      wickUpColor: "#26a69a",
+      wickDownColor: "#ef5350"
+    });
+
+    // Belt-and-suspenders resize: autoSize handles most cases, but
+    // Telegram WebApp viewport changes (keyboard, safe-area) don't
+    // always fire a window resize event.
+    window.addEventListener("resize", resizeChart);
+    if (t && t.onEvent) {
+      try { t.onEvent("viewportChanged", resizeChart); } catch (e) {}
+    }
+
+    setInterval(function () {
+      if (Date.now() - lastMsgAt > OFFLINE_TIMEOUT_MS) {
+        setOnline(false);
+        // A half-open socket (network dropped without a clean close
+        // frame ever arriving) never fires onclose on its own — force
+        // it shut so scheduleReconnect actually engages instead of
+        // waiting indefinitely on a connection that looks alive but
+        // isn't.
+        if (ws) {
+          try { ws.close(); } catch (e) {}
+        }
+      }
+    }, 1000);
+
+    renderTfButtons(DEFAULT_TFS);
+    loadHistory(currentTf);
+    connect();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
 })();
 </script>
 </body>

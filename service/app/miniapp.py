@@ -74,7 +74,12 @@ class FeedState:
 
 
 app = FastAPI(title="xau-miniapp")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Mount ONLY the vendor subdirectory, not the whole shared static/ dir —
+# this process is the one Phase 3 tunnels publicly, and static/ also holds
+# main.py's dashboard.html/onboarding.html (trading controls), which must
+# never be reachable from here. The page itself is served by GET / below.
+app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"),
+          name="static-vendor")
 
 
 class _Hub:
