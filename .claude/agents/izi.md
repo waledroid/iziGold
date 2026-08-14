@@ -481,7 +481,7 @@ browser at `127.0.0.1:9001` with dev bypass. **Phase 3**: real auth
 authorization replacing `require_viewer`'s bypass body), BotFather
 `/newapp` registration, ticker `[📈 Live Chart]` button + `/chart`
 repoint, Cloudflare named tunnel — **this is the only point at which port
-9001 becomes reachable from outside 127.0.0.1**. Until Phase 3 ships,
+9001 becomes reachable from outside 127.0.0.1**. Checklist: set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on 127.0.0.1 but not through the tunnel), and replace the setup's `/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint. Until Phase 3 ships,
 treat the mini-app as a local-only dev surface.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,

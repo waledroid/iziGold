@@ -8,6 +8,7 @@ Runs as its own process: uvicorn app.miniapp:app --host 127.0.0.1
 bridge's next backfill push (fail-open).
 """
 import asyncio
+import math
 from collections import deque
 
 from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
@@ -48,9 +49,10 @@ class FeedState:
                 for row in rows:
                     if not isinstance(row, dict) or not CANDLE_FIELDS <= set(row):
                         continue
-                    # Validate numeric types (reject bool)
+                    # Validate numeric types (reject bool, NaN, Infinity)
                     if not all(isinstance(row[k], (int, float)) and not isinstance(row[k], bool)
-                               for k in ["t", "o", "h", "l", "c"]):
+                               and math.isfinite(row[k])
+                               for k in ["t", "o", "h", "l", "c", "v"]):
                         continue
                     if buf and row["t"] == buf[-1]["t"]:
                         buf[-1] = row                     # forming-bar update

@@ -1,5 +1,6 @@
 """Mini-app feed service: keyed push, ring buffers, history, WS deltas."""
 import importlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -138,3 +139,53 @@ def test_type_garbage_candles_rejected(client):
     # Verify nothing landed
     body = client.get("/api/history", params={"tf": "M5"}).json()
     assert len(body["candles"]) == 0
+
+
+def test_nan_candle_rejected_then_well_formed_land(client):
+    """Important fix: NaN-o candle in empty buffer should be rejected,
+    later well-formed pushes should land, /api/history stays 200."""
+    # Push a candle with NaN-o into empty buffer using raw JSON (json.loads accepts NaN)
+    resp = client.post("/feed/push",
+                       content=json.dumps({"candles": {"M5": [{"t": 1000, "o": float("nan"), "h": 4002, "l": 3999, "c": 4001, "v": 10}]}}, allow_nan=True),
+                       headers={"X-Feed-Key": "sekret", "Content-Type": "application/json"})
+    assert resp.status_code == 200  # Never 500
+    # Now push a well-formed candle
+    resp = _push(client, {"candles": {"M5": [_candle(1000)]}})
+    assert resp.status_code == 200
+    # Verify the well-formed candle landed
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 1
+    assert body["candles"][0]["t"] == 1000
+    # Verify /api/history doesn't 500
+    resp = client.get("/api/history", params={"tf": "M5"})
+    assert resp.status_code == 200
+
+
+def test_infinity_candle_rejected(client):
+    """Infinity values (inf/-inf) should be rejected, not land in buffer."""
+    # Test both positive and negative infinity using raw JSON
+    resp = client.post("/feed/push",
+                       content=json.dumps({"candles": {"M5": [{"t": 1000, "o": float("inf"), "h": 4002, "l": 3999, "c": 4001, "v": 10}]}}, allow_nan=True),
+                       headers={"X-Feed-Key": "sekret", "Content-Type": "application/json"})
+    assert resp.status_code == 200
+    resp = client.post("/feed/push",
+                       content=json.dumps({"candles": {"M5": [{"t": 1001, "o": 4000, "h": float("-inf"), "l": 3999, "c": 4001, "v": 10}]}}, allow_nan=True),
+                       headers={"X-Feed-Key": "sekret", "Content-Type": "application/json"})
+    assert resp.status_code == 200
+    # Verify nothing landed
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 0
+
+
+def test_string_v_rejected(client):
+    """Volume (v) must be numeric too — string-v should be rejected."""
+    resp = _push(client, {"candles": {"M5": [{"t": 1000, "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": "NOT_A_NUMBER"}]}})
+    assert resp.status_code == 200
+    # Verify nothing landed
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 0
+    # Push a well-formed candle to verify the buffer still works
+    resp = _push(client, {"candles": {"M5": [_candle(1000)]}})
+    assert resp.status_code == 200
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 1
