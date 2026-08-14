@@ -10,11 +10,16 @@ bridge's next backfill push (fail-open).
 import asyncio
 import math
 from collections import deque
+from pathlib import Path
 
 from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 TFS = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
 MAX_CANDLES = 500
@@ -69,6 +74,12 @@ class FeedState:
 
 
 app = FastAPI(title="xau-miniapp")
+# Mount ONLY the vendor subdirectory, not the whole shared static/ dir —
+# this process is the one Phase 3 tunnels publicly, and static/ also holds
+# main.py's dashboard.html/onboarding.html (trading controls), which must
+# never be reachable from here. The page itself is served by GET / below.
+app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"),
+          name="static-vendor")
 
 
 class _Hub:
@@ -125,6 +136,15 @@ async def feed_push(request: Request):
     for d in deltas:
         await hub.broadcast(d)
     return {"ok": True, "deltas": len(deltas)}
+
+
+@app.get("/")
+def page():
+    """The live chart page itself. Deliberately NOT behind require_viewer —
+    Telegram loads this URL directly inside the WebApp webview before any
+    initData is available to check; the data endpoints (/api/history, /ws)
+    stay gated. Matches Phase 1's auth seam."""
+    return FileResponse(STATIC_DIR / "miniapp.html", media_type="text/html")
 
 
 @app.get("/api/history")

@@ -177,6 +177,39 @@ def test_infinity_candle_rejected(client):
     assert len(body["candles"]) == 0
 
 
+def test_page_route_returns_html_with_chart_div(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert 'id="chart"' in resp.text
+
+
+def test_page_route_does_not_require_viewer_auth(monkeypatch):
+    monkeypatch.setenv("FEED_KEY", "sekret")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "false")
+    from app import config, miniapp
+    importlib.reload(config)
+    importlib.reload(miniapp)
+    with TestClient(miniapp.app) as c:
+        assert c.get("/").status_code == 200
+        assert c.get("/api/history", params={"tf": "M5"}).status_code == 403
+
+
+def test_vendor_lightweight_charts_served(client):
+    resp = client.get("/static/vendor/lightweight-charts.standalone.production.js")
+    assert resp.status_code == 200
+    assert "javascript" in resp.headers["content-type"]
+    assert "LightweightCharts" in resp.text
+
+
+def test_shared_static_dir_not_exposed(client):
+    """The miniapp process is the one Phase 3 tunnels publicly — it must
+    only ever serve static/vendor, never the rest of static/ (which holds
+    main.py's dashboard.html/onboarding.html, i.e. trading controls)."""
+    assert client.get("/static/dashboard.html").status_code == 404
+    assert client.get("/static/onboarding.html").status_code == 404
+
+
 def test_string_v_rejected(client):
     """Volume (v) must be numeric too — string-v should be rejected."""
     resp = _push(client, {"candles": {"M5": [{"t": 1000, "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": "NOT_A_NUMBER"}]}})

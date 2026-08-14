@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>XAUUSD — Live</title>
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+<style>
+:root {
+  --bg: #0a0e14;
+  --bg-panel: #10151f;
+  --border: rgba(255, 255, 255, 0.08);
+  --text-main: #e7ecf3;
+  --text-muted: #8a94a6;
+  --up: #26a69a;
+  --down: #ef5350;
+  --accent: #f5c542;
+  --neutral-line: #9aa5b8;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text-main);
+  display: flex;
+  flex-direction: column;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Header */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+#symbol {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+#dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--down);
+  flex: 0 0 auto;
+  box-shadow: 0 0 6px 0 currentColor;
+}
+#dot.online { background: var(--up); }
+#priceRow {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+#priceRow .val { color: var(--text-main); font-weight: 600; }
+#priceRow .lbl { color: var(--text-muted); margin-right: 2px; }
+
+/* TF buttons */
+#tfRow {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+.tf-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.tf-btn.active {
+  color: #0a0e14;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Chart */
+#chartWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+#chart {
+  position: absolute;
+  inset: 0;
+}
+
+/* Position card */
+#posCard {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  background: rgba(16, 21, 31, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  min-width: 170px;
+  backdrop-filter: blur(4px);
+  display: none;
+}
+#posCard.visible { display: block; }
+#posCard .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 1px 0;
+}
+#posCard .dir-buy { color: var(--up); font-weight: 700; }
+#posCard .dir-sell { color: var(--down); font-weight: 700; }
+#posCard .profit-pos { color: var(--up); }
+#posCard .profit-neg { color: var(--down); }
+
+/* Offline banner */
+#offlineBanner {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: var(--down);
+  color: #fff;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 8px;
+  z-index: 5;
+}
+#offlineBanner.visible { display: block; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <span id="dot"></span>
+  <span id="symbol">XAUUSD</span>
+  <div id="priceRow">
+    <span><span class="lbl">Bid</span><span class="val" id="bidVal">—</span></span>
+    <span><span class="lbl">Ask</span><span class="val" id="askVal">—</span></span>
+    <span><span class="lbl">Spread</span><span class="val" id="spreadVal">—</span></span>
+  </div>
+</div>
+
+<div id="tfRow"></div>
+
+<div id="chartWrap">
+  <div id="offlineBanner">Connection lost — reconnecting…</div>
+  <div id="chart"></div>
+  <div id="posCard"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var DEFAULT_TFS = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+  var OFFLINE_TIMEOUT_MS = 10000;
+  var RECONNECT_STEPS_MS = [1000, 2000, 5000];
+
+  // ---- Telegram WebApp bridge (optional, feature-detected) ----------
+  // telegram-web-app.js is loaded with `defer`, so it has NOT necessarily
+  // run yet at the point this script's top-level code executes (this
+  // inline script is itself not deferred, so the parser reaches it
+  // mid-document). Every use site reads window.Telegram lazily through
+  // tg() instead of capturing it once into a variable; anything that
+  // actually needs the object populated (ready/expand, initial theme
+  // colors, initData) runs from boot(), which only fires once the whole
+  // document — including deferred scripts, per spec — has parsed.
+  function tg() {
+    return (window.Telegram && window.Telegram.WebApp) || null;
+  }
+
+  function withInitData(url) {
+    var t = tg();
+    var initData = t ? (t.initData || "") : "";
+    if (!initData) return url;
+    var sep = url.indexOf("?") === -1 ? "?" : "&";
+    return url + sep + "initData=" + encodeURIComponent(initData);
+  }
+
+  // ---- Theme (Telegram themeParams when available) -------------------
+  function themeColors() {
+    var t = tg();
+    var tp = (t && t.themeParams) ? t.themeParams : {};
+    return {
+      bg: tp.bg_color || "#0a0e14",
+      text: tp.text_color || "#e7ecf3",
+      grid: "rgba(255,255,255,0.06)",
+      border: tp.hint_color || "rgba(255,255,255,0.15)"
+    };
+  }
+
+  // ---- Chart setup (created in boot(), once the DOM + deferred scripts
+  // have loaded) ------------------------------------------------------------
+  var chartWrap, chartEl, chart, series;
+  var tfRow, bidEl, askEl, spreadEl, posCard, dot, offlineBanner;
+
+  function resizeChart() {
+    if (!chart || !chartWrap) return;
+    chart.resize(chartWrap.clientWidth, chartWrap.clientHeight);
+  }
+
+  // ---- Candle mapping ----------------------------------------------------
+  function toLwCandle(c) {
+    return { time: c.t, open: c.o, high: c.h, low: c.l, close: c.c };
+  }
+
+  function isNumeric(x) {
+    return typeof x === "number" && isFinite(x);
+  }
+
+  function isValidCandle(c) {
+    return c && isNumeric(c.t) && isNumeric(c.o) && isNumeric(c.h)
+      && isNumeric(c.l) && isNumeric(c.c);
+  }
+
+  // ---- TF state + buttons -------------------------------------------------
+  var currentTf = "M5";
+
+  function renderTfButtons(tfs) {
+    tfRow.innerHTML = "";
+    tfs.forEach(function (tf) {
+      var btn = document.createElement("button");
+      btn.className = "tf-btn" + (tf === currentTf ? " active" : "");
+      btn.textContent = tf;
+      btn.dataset.tf = tf;
+      btn.addEventListener("click", function () { selectTf(tf); });
+      tfRow.appendChild(btn);
+    });
+  }
+
+  function highlightActiveTf() {
+    var btns = tfRow.querySelectorAll(".tf-btn");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle("active", btns[i].dataset.tf === currentTf);
+    }
+  }
+
+  function loadHistory(tf) {
+    return fetch(withInitData("/api/history?tf=" + encodeURIComponent(tf)))
+      .then(function (r) {
+        if (!r.ok) throw new Error("history http " + r.status);
+        return r.json();
+      })
+      .then(function (body) {
+        // A TF switch (or a WS snapshot that changed TF) may have moved
+        // currentTf on while this request was in flight — a stale
+        // response must not clobber the newer selection.
+        if (tf !== currentTf) return;
+        if (!body || !Array.isArray(body.candles)) return;
+        var rows = body.candles.filter(isValidCandle).map(toLwCandle);
+        series.setData(rows);
+      })
+      .catch(function () {
+        // Fail open: keep whatever is currently on the chart, the WS
+        // stream (or the next TF click / reconnect) will catch it up.
+      });
+  }
+
+  function selectTf(tf) {
+    if (tf === currentTf) return;
+    currentTf = tf;
+    highlightActiveTf();
+    loadHistory(tf);
+  }
+
+  // ---- Header (tick) --------------------------------------------------------
+  function applyTick(tick) {
+    if (!tick || !isNumeric(tick.bid) || !isNumeric(tick.ask)) return;
+    bidEl.textContent = tick.bid.toFixed(2);
+    askEl.textContent = tick.ask.toFixed(2);
+    // Spread in points: XAUUSD quotes 2 decimals -> 1 point = 0.01.
+    var spreadPoints = (tick.ask - tick.bid) * 100;
+    spreadEl.textContent = spreadPoints.toFixed(1);
+  }
+
+  // ---- Positions: price lines + card --------------------------------------
+  var activeLines = [];
+
+  function clearLines() {
+    activeLines.forEach(function (line) {
+      try { series.removePriceLine(line); } catch (e) {}
+    });
+    activeLines = [];
+  }
+
+  function isValidPosition(p) {
+    return p && isNumeric(p.entry) && isNumeric(p.lots);
+  }
+
+  function addLine(price, opts) {
+    activeLines.push(series.createPriceLine(Object.assign({ price: price }, opts)));
+  }
+
+  function renderPositions(positions) {
+    clearLines();
+    var valid = Array.isArray(positions) ? positions.filter(isValidPosition) : [];
+
+    valid.forEach(function (p) {
+      addLine(p.entry, {
+        color: "#9aa5b8",
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "E " + p.lots.toFixed(2)
+      });
+      if (isNumeric(p.sl) && p.sl > 0) {
+        addLine(p.sl, {
+          color: "#ef5350",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Solid,
+          axisLabelVisible: true,
+          title: "SL"
+        });
+      }
+      if (isNumeric(p.tp) && p.tp > 0) {
+        addLine(p.tp, {
+          color: "#26a69a",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Solid,
+          axisLabelVisible: true,
+          title: "TP"
+        });
+      }
+    });
+
+    if (valid.length === 0) {
+      posCard.classList.remove("visible");
+      posCard.innerHTML = "";
+      return;
+    }
+
+    var totalLots = 0;
+    var weightedEntry = 0;
+    var totalProfit = 0;
+    valid.forEach(function (p) {
+      totalLots += p.lots;
+      weightedEntry += p.entry * p.lots;
+      totalProfit += isNumeric(p.profit) ? p.profit : 0;
+    });
+    var avgEntry = totalLots > 0 ? weightedEntry / totalLots : valid[0].entry;
+
+    // Whitelist the direction text before it ever reaches innerHTML — a
+    // raw feed string must never land in the DOM as markup, however
+    // implausible an attacker-controlled feed value is in practice.
+    var rawDir = (valid[0].direction || "").toString().toUpperCase();
+    var dir = rawDir === "SELL" ? "SELL" : rawDir === "BUY" ? "BUY" : "—";
+    var dirClass = rawDir === "SELL" ? "dir-sell" : "dir-buy";
+    var profitClass = totalProfit >= 0 ? "profit-pos" : "profit-neg";
+
+    posCard.innerHTML =
+      '<div class="row"><span class="' + dirClass + '">' + dir + '</span>' +
+      '<span>' + totalLots.toFixed(2) + ' lots</span></div>' +
+      '<div class="row"><span>Entry</span><span>' + avgEntry.toFixed(2) + '</span></div>' +
+      '<div class="row"><span>P/L</span><span class="' + profitClass + '">' +
+      (totalProfit >= 0 ? "+" : "") + totalProfit.toFixed(2) + '</span></div>';
+    posCard.classList.add("visible");
+  }
+
+  // ---- Connection state: dot + offline banner ------------------------------
+  var lastMsgAt = Date.now();
+  var offline = true;
+
+  function setOnline(isOnline) {
+    offline = !isOnline;
+    dot.classList.toggle("online", isOnline);
+    offlineBanner.classList.toggle("visible", !isOnline);
+  }
+  // Deliberately no setOnline(false) call at top level: the banner/dot
+  // markup already default to the offline look (see CSS), and at t=0
+  // neither trigger condition (no message for 10s / socket closed) is
+  // true yet. This avoids a flash of "Connection lost" on every fresh
+  // page load while the first WS handshake is still in flight.
+
+  // ---- WebSocket with reset-on-snapshot + reconnect backoff -----------------
+  var ws = null;
+  var reconnectAttempt = 0;
+  var reconnectTimer = null;
+
+  function wsUrl() {
+    var proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return withInitData(proto + "//" + window.location.host + "/ws");
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    var delay = RECONNECT_STEPS_MS[Math.min(reconnectAttempt, RECONNECT_STEPS_MS.length - 1)];
+    reconnectAttempt++;
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  function handleMessage(msg) {
+    if (!msg || typeof msg !== "object") return;
+
+    switch (msg.type) {
+      case "snapshot":
+        // BINDING: a snapshot is a full RESET — deltas can arrive before
+        // it (racing an in-flight reconnect), so it must clobber state
+        // rather than merge with whatever came before. It is NOT a
+        // feed-liveness signal, though: the server sends a snapshot on
+        // every WS connect regardless of whether the bridge is still
+        // pushing, purely reflecting whatever is left in FeedState. If
+        // a snapshot bumped lastMsgAt/setOnline(true), a dead bridge
+        // with the service still up would show ~10s of green-dot STALE
+        // prices per 1s of banner on every reconnect cycle — so it
+        // applies its data (chart/positions) without touching liveness
+        // state at all.
+        var tfs = Array.isArray(msg.tfs) && msg.tfs.length ? msg.tfs : DEFAULT_TFS;
+        if (tfs.indexOf(currentTf) === -1) currentTf = tfs[0];
+        renderTfButtons(tfs);
+        loadHistory(currentTf);
+        applyTick(msg.tick);
+        renderPositions(msg.positions);
+        break;
+
+      case "tick":
+        // Feed-liveness signal: the bridge pushes ticks ~every 0.5s, so
+        // seeing one means real upstream data is flowing right now.
+        lastMsgAt = Date.now();
+        setOnline(true);
+        applyTick(msg.tick);
+        break;
+
+      case "candle":
+        // Feed-liveness signal too (bridge pushes bars ~every 2s),
+        // regardless of which TF the candle is for — bump it before the
+        // TF-match gate below so an off-screen TF's candle still counts.
+        lastMsgAt = Date.now();
+        setOnline(true);
+        // Only apply candle updates for the TF currently on screen.
+        if (msg.tf !== currentTf) break;
+        if (isValidCandle(msg.candle)) {
+          try {
+            series.update(toLwCandle(msg.candle));
+          } catch (e) {
+            // Lightweight Charts throws if the update's time is older
+            // than the series' current tail (e.g. a stale delta landing
+            // just after a fresh setData from a TF switch/snapshot) —
+            // drop it; the next in-order update supersedes it anyway.
+            // handleMessage runs outside ws.onmessage's JSON.parse
+            // try/catch, so an uncaught throw here would otherwise kill
+            // this message dispatch (and, depending on the browser,
+            // possibly the socket's event handling).
+          }
+        }
+        break;
+
+      case "positions":
+        renderPositions(msg.positions);
+        break;
+
+      default:
+        break; // unknown message type: ignore, don't throw
+    }
+  }
+
+  function connect() {
+    try {
+      ws = new WebSocket(wsUrl());
+    } catch (e) {
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = function () {
+      reconnectAttempt = 0;
+      lastMsgAt = Date.now();
+    };
+
+    ws.onmessage = function (evt) {
+      var msg;
+      try {
+        msg = JSON.parse(evt.data);
+      } catch (e) {
+        return; // malformed frame: ignore, don't crash the socket handler
+      }
+      handleMessage(msg);
+    };
+
+    ws.onclose = function () {
+      setOnline(false);
+      scheduleReconnect();
+    };
+
+    ws.onerror = function () {
+      try { ws.close(); } catch (e) {}
+    };
+  }
+
+  // ---- Boot -----------------------------------------------------------------
+  // Runs once the document (including deferred scripts, guaranteed by
+  // spec to run before DOMContentLoaded) has parsed, so tg() reliably
+  // reflects a real Telegram WebView here — this is where ready()/
+  // expand() and the Telegram-themed chart colors actually take effect.
+  function boot() {
+    chartWrap = document.getElementById("chartWrap");
+    chartEl = document.getElementById("chart");
+    tfRow = document.getElementById("tfRow");
+    bidEl = document.getElementById("bidVal");
+    askEl = document.getElementById("askVal");
+    spreadEl = document.getElementById("spreadVal");
+    posCard = document.getElementById("posCard");
+    dot = document.getElementById("dot");
+    offlineBanner = document.getElementById("offlineBanner");
+
+    var t = tg();
+    if (t) {
+      try { t.ready(); } catch (e) {}
+      try { t.expand(); } catch (e) {}
+    }
+
+    var colors = themeColors();
+    chart = LightweightCharts.createChart(chartEl, {
+      layout: {
+        background: { type: "solid", color: colors.bg },
+        textColor: colors.text
+      },
+      grid: {
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid }
+      },
+      rightPriceScale: {
+        borderColor: colors.border
+      },
+      timeScale: {
+        borderColor: colors.border,
+        timeVisible: true,
+        secondsVisible: true
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal
+      },
+      autoSize: true
+    });
+
+    series = chart.addCandlestickSeries({
+      upColor: "#26a69a",
+      downColor: "#ef5350",
+      borderUpColor: "#26a69a",
+      borderDownColor: "#ef5350",
+      wickUpColor: "#26a69a",
+      wickDownColor: "#ef5350"
+    });
+
+    // Belt-and-suspenders resize: autoSize handles most cases, but
+    // Telegram WebApp viewport changes (keyboard, safe-area) don't
+    // always fire a window resize event.
+    window.addEventListener("resize", resizeChart);
+    if (t && t.onEvent) {
+      try { t.onEvent("viewportChanged", resizeChart); } catch (e) {}
+    }
+
+    setInterval(function () {
+      if (Date.now() - lastMsgAt > OFFLINE_TIMEOUT_MS) {
+        setOnline(false);
+        // A half-open socket (network dropped without a clean close
+        // frame ever arriving) never fires onclose on its own — force
+        // it shut so scheduleReconnect actually engages instead of
+        // waiting indefinitely on a connection that looks alive but
+        // isn't.
+        if (ws) {
+          try { ws.close(); } catch (e) {}
+        }
+      }
+    }, 1000);
+
+    renderTfButtons(DEFAULT_TFS);
+    loadHistory(currentTf);
+    connect();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
