@@ -91,3 +91,75 @@ def test_trades_table_stores_entry_mode(tmp_path):
                             "price": 4000.0})
     assert db.conn.execute("SELECT entry_mode FROM trades WHERE id=?",
                            (tid2,)).fetchone()[0] == ""
+
+
+# ---------------------------------------------------------------------------
+# FIXED-mode target alert: /notify with an EXIT button
+# ---------------------------------------------------------------------------
+
+def _notify_client(tmp_path, monkeypatch, positions):
+    import importlib
+
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "notify_em.db"))
+    from app import config, main
+    importlib.reload(config)
+    importlib.reload(main)
+    client = TestClient(main.app)
+    client.__enter__()
+
+    class FT:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, method, payload, files=None):
+            self.calls.append((method, payload, files))
+            return {"ok": True, "result": {"message_id": 1}}
+
+    from app.telegram import TelegramClient
+    ft = FT()
+    main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
+    hb = {"equity": 1.0, "balance": 1.0, "floating_pl": 0.0,
+          "positions": positions}
+    client.post("/heartbeat", json=hb)
+    ft.calls.clear()
+    return client, ft, main
+
+
+_POS = [{"ticket": 1, "direction": "SELL", "lots": 0.05,
+         "open_price": 4388.0, "sl": 4400.0, "profit": 95.0}]
+
+
+def test_notify_exit_button_attaches_exit_keyboard(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, _POS)
+    r = client.post("/notify", json={"text": "🎯 target hit", "exit_button": True})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "🎯 target hit"]   # exclude ticker sends
+    assert len(owner) == 1
+    markup = owner[0][1].get("reply_markup")
+    assert markup is not None
+    flat = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert any(cb.startswith("exitnow:") for cb in flat)
+
+
+def test_notify_exit_button_skipped_when_flat(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, [])
+    client.post("/notify", json={"text": "🎯 target hit", "exit_button": True})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "🎯 target hit"]
+    assert len(owner) == 1
+    assert "reply_markup" not in owner[0][1]
+
+
+def test_notify_default_has_no_button(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, _POS)
+    client.post("/notify", json={"text": "plain notice"})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "plain notice"]
+    assert len(owner) == 1
+    assert "reply_markup" not in owner[0][1]

@@ -27,6 +27,9 @@ private:
    // only while a basket exists — stale after CloseAll until the next open
    // overwrites it, same pattern as CycleKey (never reset on close).
    string BasketModeKey() { return "XAU_BASKET_MODE_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   // 1 = this FIXED basket already sent its one target alert (restart-safe;
+   // reset to 0 on every basket open)
+   string TpAlertKey()    { return "XAU_TP_ALERTED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
 
    // "adr"/"fixed" string for the CURRENT basket's mode — used to tag trade
    // events (open/add/close) with the mode that basket was actually running
@@ -354,6 +357,7 @@ public:
          GlobalVariableSet(CycleKey(), AccountInfoDouble(ACCOUNT_BALANCE));
          GlobalVariableSet(PeakKey(), 0);
          GlobalVariableSet(BasketModeKey(), entryModeFixed ? 1 : 0);
+         GlobalVariableSet(TpAlertKey(), 0);   // fresh basket, alert re-armed
          if(m_sink != NULL)
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
@@ -377,8 +381,25 @@ public:
       // the stop is broker-side on each leg). Nothing below this line has a
       // consumer without the lock/target/pyramid it belongs to (peak
       // tracking below exists only to feed the lock), so returning here is
-      // a full skip, not a partial one.
-      if(GlobalVariableGet(BasketModeKey()) > 0.5) return;
+      // a full skip, not a partial one — except the one-time TARGET ALERT:
+      // the ride still WATCHES the ADR target level and tells the owner
+      // (Telegram, with a tap-to-exit button) the first time it's crossed.
+      // The ride itself continues; only the owner's tap ends it early.
+      if(GlobalVariableGet(BasketModeKey()) > 0.5)
+        {
+         double cycleBalFixed = GlobalVariableGet(CycleKey());
+         if(m_targetPct > 0 && cycleBalFixed > 0 &&
+            GlobalVariableGet(TpAlertKey()) < 0.5 &&
+            BasketProfit() >= cycleBalFixed * m_targetPct / 100.0)
+           {
+            // Flag BEFORE the sink call: a notify hiccup must not re-alert
+            // every bar (fail-open — one shot per basket, delivered or not).
+            GlobalVariableSet(TpAlertKey(), 1);
+            if(m_sink != NULL)
+               m_sink.OnTargetAlert(BasketProfit());
+           }
+         return;
+        }
       // profit target: close everything at +targetPct of cycle-start balance
       double cycleBal = GlobalVariableGet(CycleKey());
       if(m_targetPct > 0 && cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)

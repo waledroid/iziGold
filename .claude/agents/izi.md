@@ -181,6 +181,19 @@ Data collection only; no UI yet.
   trade) rather than clamping up, so the existing `lots<=0 → return false`
   guard in `OnSignal` actually fires.
 
+  **FIXED-mode target alert** (2026-08-14): the ride still WATCHES the ADR
+  profit-target level (+`ProfitTargetPct`% of cycle balance). The FIRST
+  time a FIXED basket crosses it, `Manage()` fires ONE Telegram notice via
+  `CUiSink::OnTargetAlert` → `PostNotify(text, exitButton=true)` →
+  `/notify {exit_button: true}` → the message carries the existing
+  `exitnow:` EXIT button (only attached while a position is open; channel
+  mirror stays text-only). Tapping = the normal pre-approved close_all
+  ("remote exit"); ignoring = the ride continues. Once per basket:
+  `XAU_TP_ALERTED_<login>_<symbol>` global (reset to 0 on every basket
+  open, restart-safe; flag latched BEFORE the notify so a delivery hiccup
+  can't re-alert every bar — fail-open, one shot delivered or not). ADR
+  behavior untouched (alert code lives inside the FIXED early-out branch).
+
   **Switching is next-trade-only, and per-basket mode is sticky**: Telegram
   `tmode:adr`/`tmode:fixed` → `db.set_entry_mode` (kv `entry_mode`,
   validated to `"adr"`/`"fixed"`) → carried in the next `/heartbeat`
