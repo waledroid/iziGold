@@ -469,19 +469,22 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   trend as stale. The guarded catch-up entry (§3, 2026-08-12) makes that a
   real "yes, if the thesis still holds" instead of an unconditional no.
 
-# 8. Mini-app feed service (Telegram Mini App, Phase 1 of 3)
+# 8. Mini-app feed service (Telegram Mini App, Phase 2 of 3)
 
-Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plan:
-`docs/superpowers/plans/2026-08-14-miniapp-phase1.md`. Three-phase build —
-**Phase 1** (this section, 2026-08-14): bridge + feed backend, `FEED_KEY`
-generation, dev-bypass auth. **Phase 2**: vendored Lightweight Charts
-frontend, TF switching, position card, offline banner — testable in a plain
-browser at `127.0.0.1:9001` with dev bypass. **Phase 3**: real auth
-(Telegram `initData` HMAC validation + owner/channel-membership
-authorization replacing `require_viewer`'s bypass body), BotFather
-`/newapp` registration, ticker `[📈 Live Chart]` button + `/chart`
-repoint, Cloudflare named tunnel — **this is the only point at which port
-9001 becomes reachable from outside 127.0.0.1**. Checklist: set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on 127.0.0.1 but not through the tunnel), and replace the setup's `/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint. Until Phase 3 ships,
+Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plans:
+`docs/superpowers/plans/2026-08-14-miniapp-phase1.md`,
+`docs/superpowers/plans/2026-08-14-miniapp-phase2.md`. Three-phase build —
+**Phase 1** (2026-08-14): bridge + feed backend, `FEED_KEY`
+generation, dev-bypass auth. **Phase 2** (this section, 2026-08-14, landed):
+the chart page itself — `GET /` serves `app/static/miniapp.html`, vendored
+Lightweight Charts renders TF-switchable candles fed by `/api/history` +
+`/ws`, position overlays, offline banner — testable in a plain browser at
+`127.0.0.1:9001` with dev bypass (see verification procedure below).
+**Phase 3**: real auth (Telegram `initData` HMAC validation +
+owner/channel-membership authorization replacing `require_viewer`'s bypass
+body), BotFather `/newapp` registration, ticker `[📈 Live Chart]` button +
+`/chart` repoint, Cloudflare named tunnel — **this is the only point at
+which port 9001 becomes reachable from outside 127.0.0.1**. Checklist: set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on 127.0.0.1 but not through the tunnel), and replace the setup's `/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint. Until Phase 3 ships,
 treat the mini-app as a local-only dev surface.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
@@ -508,8 +511,66 @@ any failed push, see below).
   streams `{type:"tick"|"candle"|"positions", ...}` deltas; inbound
   messages are ignored (read-only feed); dead/slow clients are dropped on
   a 1 s broadcast timeout, never awaited to death.
-- No `GET /` page yet — that's Phase 2 (`app/static/miniapp.html` +
-  vendored Lightweight Charts).
+- `GET /` — the chart page (`app/static/miniapp.html`), served via
+  `FileResponse`, deliberately **NOT** behind `require_viewer` (Telegram
+  loads this URL directly in the WebApp webview before any `initData`
+  exists to check; only the data endpoints stay gated). `/static/vendor`
+  is mounted narrowly to the vendor subdirectory only — `static/` also
+  holds `main.py`'s `dashboard.html`/`onboarding.html` (the real trading
+  UI), and this process is the one Phase 3 tunnels publicly, so those must
+  stay unreachable from here (`test_shared_static_dir_not_exposed` guards
+  it).
+
+**Chart page** (`app/static/miniapp.html`, Phase 2, 2026-08-14): single
+self-contained file, dark theme inline `<style>`, all logic in one inline
+`<script>` (no build step), matching `dashboard.html`'s convention.
+Vendored library: **Lightweight Charts v4.2.3** (standalone UMD build,
+`app/static/vendor/lightweight-charts.standalone.production.js`, defines
+`window.LightweightCharts`, 163,684 bytes) — pulled once from unpkg, no
+CDN/network dependency at runtime. `telegram-web-app.js` is the one
+external `<script src>` (loaded `defer` from `https://telegram.org`;
+everything else is local).
+
+**WS client contract** (binding — any future edit to the handler must keep
+these): a `snapshot` message is a full **reset**, not a merge — deltas can
+race an in-flight reconnect and arrive first, so `snapshot` always clobbers
+current state (`renderTfButtons` + a fresh `loadHistory` `setData`, not an
+append). Every field from the wire is defensively parsed before touching
+the DOM or the chart: `isValidCandle`/`isNumeric` gate `t/o/h/l/c` as
+finite numbers (history rows and WS `candle` deltas alike), `applyTick`
+no-ops unless both `bid`/`ask` are finite, `isValidPosition` gates
+`entry`/`lots` the same way, and `direction` is whitelisted to exactly
+`"BUY"`/`"SELL"`/`"—"` before it ever reaches `innerHTML` (feed-derived
+strings must never become markup). `candle` deltas are applied via
+`series.update` only when `msg.tf === currentTf` (off-screen TFs are
+ignored) and wrapped in try/catch (Lightweight Charts throws on an
+out-of-order update, e.g. a stale delta landing just after a TF-switch
+`setData`). Reconnect backoff is `[1000, 2000, 5000]` ms, clamped at the
+last step; the offline banner/dot trip on `ws.onclose` immediately or a
+10 s no-message watchdog, which also force-closes a half-open socket (a
+dropped connection without a clean close frame never fires `onclose` on
+its own otherwise). `tg()` (the `window.Telegram.WebApp` accessor) is read
+lazily on every call, never captured once at parse time — the Telegram
+script loads `defer`, so it hasn't necessarily run yet when the page's own
+inline script executes; all Telegram-dependent setup (`ready()`/
+`expand()`, themed chart colors, `initData`) runs from a `boot()` gated on
+`DOMContentLoaded`, by which point deferred scripts are guaranteed done.
+
+**Browser/data-level verification procedure** (no headed browser in this
+environment — this is what "verified" means here): `curl -s 127.0.0.1:9001/`
+→ 200, body contains the chart div; vendor JS → 200 at
+`/static/vendor/lightweight-charts.standalone.production.js`;
+`curl -s "127.0.0.1:9001/api/history?tf=M5"` non-empty with
+`MINIAPP_DEV_BYPASS=true` (403 with it off); a scripted `websockets`
+client connected to `ws://127.0.0.1:9001/ws` for ~15 s against the LIVE
+server, counting message types — confirms real `tick`/`candle`/`positions`
+deltas are flowing, not just that the route exists. JS syntax: extract the
+inline `<script>` body to a temp file and run `node --check` (exit 0 = no
+syntax errors; this is a syntax check only, not a DOM/runtime execution —
+still no substitute for an eyeball check once a real browser is available).
+Verified 2026-08-14 against a live bridge feed: WS 15 s window captured 1
+`snapshot` + 28 `tick` + 49 `candle` + 7 `positions` messages, including a
+real open position (matches the account) rendered in the snapshot.
 
 **Auth**: `require_viewer`/`viewer_allowed()` in `app/miniapp.py` are
 Phase 1 stubs — `return settings.miniapp_dev_bypass` (`MINIAPP_DEV_BYPASS`
