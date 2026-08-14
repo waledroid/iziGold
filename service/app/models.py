@@ -102,3 +102,7 @@ class ProposalResultRequest(BaseModel):
 
 class NotifyRequest(BaseModel):
     text: str = Field(max_length=500)
+    # FIXED-mode target alert: attach an EXIT button to this notice (only
+    # honored while a position is actually open; the button reuses the
+    # existing exitnow close machinery).
+    exit_button: bool = False

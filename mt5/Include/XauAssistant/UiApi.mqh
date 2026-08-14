@@ -22,6 +22,10 @@ public:
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
                              bool isFinal = true, string entryMode = "") = 0;
+   // FIXED-mode target alert: the basket crossed the ADR profit target for
+   // the first time — the ride continues, the owner gets a tap-to-exit
+   // notice. Default no-op so sinks that don't care keep compiling.
+   virtual void OnTargetAlert(double basketProfit) {}
   };
 
 class CUiApi
@@ -230,9 +234,10 @@ public:
    // Field names match service/app/models.py NotifyRequest exactly.
    // Best-effort, fire-and-forget — callers pass fixed-literal-plus-reason
    // strings (no embedded quotes), so no JSON escaping is needed here.
-   void PostNotify(string text)
+   void PostNotify(string text, bool exitButton = false)
      {
-      string body = "{\"text\":\"" + text + "\"}";
+      string body = "{\"text\":\"" + text + "\"" +
+                    (exitButton ? ",\"exit_button\":true" : "") + "}";
       Post("/notify", body);
      }
 

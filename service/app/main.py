@@ -603,8 +603,17 @@ async def notify(req: NotifyRequest):
         return {"ok": False}
     tg = getattr(app.state, "telegram", None)
     if tg is not None:
+        # FIXED-mode target alert: attach the EXIT button only while a
+        # position is actually open — a late-arriving alert on a flat
+        # account degrades to a plain notice. The channel mirror stays
+        # text-only (no controls in the channel, ever).
+        markup = None
+        if req.exit_button:
+            latest = app.state.latest_heartbeat
+            if latest is not None and latest[1].positions:
+                markup = EXIT_NOW_KB(0)
         try:
-            await asyncio.to_thread(tg.send_message, text)
+            await asyncio.to_thread(tg.send_message, text, markup)
         except Exception:
             pass
         await _mirror(app, text=text)

@@ -127,6 +127,17 @@ void RollSpreadBar()
 class CUiSink : public CTradeEventSink
   {
 public:
+   // FIXED-mode target alert: one Telegram notice with a tap-to-exit
+   // button when the ride first crosses the ADR target. Fire-and-forget
+   // (PostNotify is best-effort; TradeManager already latched the
+   // once-per-basket flag before calling us).
+   virtual void OnTargetAlert(double basketProfit)
+     {
+      g_ui.PostNotify(StringFormat(
+         "🎯 FIXED ride hit the ADR target: +$%.2f. Exit now, or ignore to let it ride until the trend turns.",
+         basketProfit), true);
+     }
+
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
