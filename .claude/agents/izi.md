@@ -484,8 +484,26 @@ Lightweight Charts renders TF-switchable candles fed by `/api/history` +
 owner/channel-membership authorization replacing `require_viewer`'s bypass
 body), BotFather `/newapp` registration, ticker `[📈 Live Chart]` button +
 `/chart` repoint, Cloudflare named tunnel — **this is the only point at
-which port 9001 becomes reachable from outside 127.0.0.1**. Checklist: set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on 127.0.0.1 but not through the tunnel), and replace the setup's `/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint. Until Phase 3 ships,
-treat the mini-app as a local-only dev surface.
+which port 9001 becomes reachable from outside 127.0.0.1**. Checklist:
+set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls
+a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on
+127.0.0.1 but not through the tunnel), and replace the setup's
+`/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint.
+Also: (a) the `WS /ws` call site needs to change, not just
+`viewer_allowed()`'s body — see **Auth** below, `initData` has nowhere
+else to ride on a WS handshake than the query string; (b) the
+`/api/history` fetch's `initData`, which today rides the URL query
+string the same way (`miniapp.html`'s `withInitData()`), should move to
+a header for Phase 3 — a bearer-shaped credential sitting in a query
+string ends up in the Cloudflare tunnel's/any reverse proxy's access
+logs verbatim, whereas `WS /ws` has no such choice (browsers can't set
+custom headers on `new WebSocket(...)`, so the WS URL is stuck with
+query-string `initData` regardless); (c) a real headed-browser check —
+the owner opening the tunneled page and watching a live candle actually
+move — is an explicit Phase 3 acceptance step, not optional polish: every
+verification so far (see below) has been curl/websockets-script-level
+because no headed browser exists in this environment. Until Phase 3
+ships, treat the mini-app as a local-only dev surface.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
 dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
@@ -547,9 +565,17 @@ ignored) and wrapped in try/catch (Lightweight Charts throws on an
 out-of-order update, e.g. a stale delta landing just after a TF-switch
 `setData`). Reconnect backoff is `[1000, 2000, 5000]` ms, clamped at the
 last step; the offline banner/dot trip on `ws.onclose` immediately or a
-10 s no-message watchdog, which also force-closes a half-open socket (a
-dropped connection without a clean close frame never fires `onclose` on
-its own otherwise). `tg()` (the `window.Telegram.WebApp` accessor) is read
+10 s no-`tick`/`candle` watchdog, which also force-closes a half-open
+socket (a dropped connection without a clean close frame never fires
+`onclose` on its own otherwise). **Only `tick` and `candle` messages count
+as feed-liveness** (they're what the bridge actually streams
+continuously) — `snapshot` deliberately does NOT bump the watchdog clock
+even though it still applies its data (chart/positions), because the
+server sends a snapshot on every WS connect regardless of whether the
+bridge is still pushing; if snapshot counted, a dead bridge with the
+service still up would show ~10 s of green-dot stale prices per 1 s of
+banner on every reconnect cycle instead of a banner that stays up. `tg()`
+(the `window.Telegram.WebApp` accessor) is read
 lazily on every call, never captured once at parse time — the Telegram
 script loads `defer`, so it hasn't necessarily run yet when the page's own
 inline script executes; all Telegram-dependent setup (`ready()`/
@@ -573,12 +599,24 @@ Verified 2026-08-14 against a live bridge feed: WS 15 s window captured 1
 real open position (matches the account) rendered in the snapshot.
 
 **Auth**: `require_viewer`/`viewer_allowed()` in `app/miniapp.py` are
-Phase 1 stubs — `return settings.miniapp_dev_bypass` (`MINIAPP_DEV_BYPASS`
-in `.env`, default `false`). Same dependency, same call sites will carry
-the Phase 3 real check, so nothing at the call sites changes — only the
-body of `require_viewer`. **Never flip `MINIAPP_DEV_BYPASS=true` once the
-tunnel is live** — bypass=true behind a public URL means anyone with the
-link gets the read-only feed with no auth at all.
+Phase 1 stubs — `return settings.miniapp_dev_bypass`
+(`MINIAPP_DEV_BYPASS`, default `false`; pydantic-settings *can* read it
+from `.env`, but on this machine it's deliberately never written there —
+see **Restart** above — it's passed inline on the start command only, so
+it dies with the process). For `require_viewer` (the `GET /api/history`
+FastAPI dependency), the Phase 3 real check is a pure body swap — same
+dependency, same call site, no caller changes. That claim is **overstated
+for `WS /ws`**, though: `viewer_allowed()` is called directly inside
+`ws_feed` today with no request context at all, and Telegram `initData`
+has to come from somewhere on a WS handshake (browsers can't set custom
+headers on `new WebSocket(...)`, so it rides the connection URL's query
+string — see the mini-app's own `wsUrl()`/`withInitData()` in
+`miniapp.html`). Phase 3's real check therefore needs the **WS call site
+itself** changed too, to read `ws.query_params` (or `ws.scope["query_string"]`)
+and pass it into `viewer_allowed()` — not just a body swap. **Never flip
+`MINIAPP_DEV_BYPASS=true` once the tunnel is live** — bypass=true behind
+a public URL means anyone with the link gets the read-only feed with no
+auth at all.
 
 **`FEED_KEY`**: random secret in `service/.env` (`openssl rand -hex 24`,
 python `secrets.token_hex(24)` fallback — generated by `scripts/setup.sh`'s
@@ -616,11 +654,19 @@ when run by hand.
 
 **Restart** (same shape as the main service, different module/port):
 `pkill -f "uvicorn app.miniapp:app"` in its OWN command (exit 144 =
-normal), then from `service/`: `nohup .venv/bin/uvicorn app.miniapp:app
---host 127.0.0.1 --port 9001 >> miniapp.log 2>&1 &`. State is in-memory
-only, so a restart shows an empty feed until the bridge's next push (≤2 s
-tick, ≤2 s bars, full backfill automatically on the first successful push
-after any gap).
+normal), then from `service/`: `MINIAPP_DEV_BYPASS=true nohup
+.venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port 9001 >>
+/tmp/miniapp.log 2>&1 &`. Note the two things easy to get wrong here:
+`MINIAPP_DEV_BYPASS=true` is set **inline on the start command, not in
+`.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line at all, deliberately,
+so the bypass dies with the process and can never survive into the
+tunneled Phase 3 deployment by accident (see the **Auth** paragraph above
+— leaving it in `.env` would mean a stray `.env` copy or a forgotten
+un-set flips the read-only feed open to anyone with the tunnel URL). The
+log path is `/tmp/miniapp.log`, not `service/miniapp.log`. State is
+in-memory only, so a restart shows an empty feed until the bridge's next
+push (≤2 s tick, ≤2 s bars, full backfill automatically on the first
+successful push after any gap).
 
 **Setup**: `scripts/setup.sh`'s "Mini-app feed service" phase (between
 "Service" and "Telegram") ensures `FEED_KEY` exists in `.env` (SKIP if

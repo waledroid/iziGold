@@ -415,14 +415,20 @@ body {
 
   function handleMessage(msg) {
     if (!msg || typeof msg !== "object") return;
-    lastMsgAt = Date.now();
-    setOnline(true);
 
     switch (msg.type) {
       case "snapshot":
         // BINDING: a snapshot is a full RESET — deltas can arrive before
         // it (racing an in-flight reconnect), so it must clobber state
-        // rather than merge with whatever came before.
+        // rather than merge with whatever came before. It is NOT a
+        // feed-liveness signal, though: the server sends a snapshot on
+        // every WS connect regardless of whether the bridge is still
+        // pushing, purely reflecting whatever is left in FeedState. If
+        // a snapshot bumped lastMsgAt/setOnline(true), a dead bridge
+        // with the service still up would show ~10s of green-dot STALE
+        // prices per 1s of banner on every reconnect cycle — so it
+        // applies its data (chart/positions) without touching liveness
+        // state at all.
         var tfs = Array.isArray(msg.tfs) && msg.tfs.length ? msg.tfs : DEFAULT_TFS;
         if (tfs.indexOf(currentTf) === -1) currentTf = tfs[0];
         renderTfButtons(tfs);
@@ -432,10 +438,19 @@ body {
         break;
 
       case "tick":
+        // Feed-liveness signal: the bridge pushes ticks ~every 0.5s, so
+        // seeing one means real upstream data is flowing right now.
+        lastMsgAt = Date.now();
+        setOnline(true);
         applyTick(msg.tick);
         break;
 
       case "candle":
+        // Feed-liveness signal too (bridge pushes bars ~every 2s),
+        // regardless of which TF the candle is for — bump it before the
+        // TF-match gate below so an off-screen TF's candle still counts.
+        lastMsgAt = Date.now();
+        setOnline(true);
         // Only apply candle updates for the TF currently on screen.
         if (msg.tf !== currentTf) break;
         if (isValidCandle(msg.candle)) {
