@@ -148,14 +148,43 @@ phase 5 "Mini-app feed service"
 MINIAPP_URL="http://127.0.0.1:9001"
 miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/openapi.json" >/dev/null 2>&1; }
 
+feed_key_changed=0
 if grep -q '^FEED_KEY=.\+' "$SERVICE_DIR/.env"; then
   skip "FEED_KEY already set"
 else
   feed_key="$(openssl rand -hex 24 2>/dev/null || true)"
   [[ -n "$feed_key" ]] || feed_key="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_hex(24))')"
   [[ -n "$feed_key" ]] || fail "could not generate FEED_KEY"
-  printf 'FEED_KEY=%s\n' "$feed_key" >> "$SERVICE_DIR/.env"
-  ok "generated FEED_KEY into .env"
+  if grep -q '^FEED_KEY=$' "$SERVICE_DIR/.env"; then
+    # .env.example ships a blank FEED_KEY= line (so it's documented and
+    # diff-visible); fill that line in place rather than appending, or a
+    # second FEED_KEY= line would exist and the bridge's (pre-fix) first-
+    # match parser would keep reading the blank one forever.
+    sed -i "s/^FEED_KEY=\$/FEED_KEY=$feed_key/" "$SERVICE_DIR/.env"
+    ok "filled blank FEED_KEY in .env"
+  else
+    # No FEED_KEY= line at all: append one, guarding against a
+    # hand-truncated .env whose last line has no trailing newline (which
+    # would otherwise concatenate onto that line instead of adding a new
+    # one).
+    if [[ -s "$SERVICE_DIR/.env" ]] && [[ "$(tail -c1 "$SERVICE_DIR/.env" | wc -l)" -eq 0 ]]; then
+      printf '\n' >> "$SERVICE_DIR/.env"
+    fi
+    printf 'FEED_KEY=%s\n' "$feed_key" >> "$SERVICE_DIR/.env"
+    ok "generated FEED_KEY into .env"
+  fi
+  feed_key_changed=1
+fi
+
+if [[ "$feed_key_changed" == 1 ]] && miniapp_alive; then
+  echo "  FEED_KEY changed — restarting mini-app so it picks up the new key"
+  pkill -f "uvicorn app.miniapp:app" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    miniapp_alive || break
+    sleep 1
+  done
+  miniapp_alive && fail "could not stop the stale mini-app process (still holding the old FEED_KEY)"
+  ok "stopped stale mini-app process"
 fi
 
 if miniapp_alive; then

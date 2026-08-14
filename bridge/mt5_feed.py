@@ -30,14 +30,20 @@ BARS_EVERY = 2.0
 
 
 def feed_key() -> str:
+    # Keep the LAST matching line, not the first: this mirrors
+    # pydantic-settings/dotenv "last value wins" semantics, so if .env
+    # ever ends up with more than one FEED_KEY= line (e.g. a blank one
+    # shipped by .env.example plus a real one appended later) the bridge
+    # reads the same value the service does, rather than the stale blank.
     env = Path(__file__).resolve().parent.parent / "service" / ".env"
+    val = ""
     for line in env.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("FEED_KEY="):
-            val = line.split("=", 1)[1].strip()
-            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-                val = val[1:-1]
-            return val
-    return ""
+            v = line.split("=", 1)[1].strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            val = v
+    return val
 
 
 def push(key: str, batch: dict) -> bool:
