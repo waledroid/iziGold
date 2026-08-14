@@ -31,9 +31,12 @@ BARS_EVERY = 2.0
 
 def feed_key() -> str:
     env = Path(__file__).resolve().parent.parent / "service" / ".env"
-    for line in env.read_text().splitlines():
+    for line in env.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("FEED_KEY="):
-            return line.split("=", 1)[1].strip()
+            val = line.split("=", 1)[1].strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                val = val[1:-1]
+            return val
     return ""
 
 
@@ -68,8 +71,10 @@ def tick_batch() -> dict:
 
 def positions_batch() -> dict:
     poss = mt5.positions_get(symbol=SYMBOL)
+    if poss is None:
+        return {}   # fail-open: a failed read must never overwrite last known truth
     out = []
-    for p in (poss or []):
+    for p in poss:
         out.append({"ticket": int(p.ticket),
                     "direction": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                     "lots": float(p.volume), "entry": float(p.price_open),
@@ -88,8 +93,19 @@ def main() -> int:
     key = feed_key()
     if not key:
         print("mt5_feed: FEED_KEY missing in service/.env"); return 1
-    if not mt5.initialize():
-        print("mt5_feed: MT5 initialize failed:", mt5.last_error()); return 1
+    if once:
+        if not mt5.initialize():
+            print("mt5_feed: MT5 initialize failed:", mt5.last_error()); return 1
+    else:
+        # unattended: the bridge may start before the terminal finishes
+        # loading, or lose it mid-run — retry forever, don't exit.
+        last_print = 0.0
+        while not mt5.initialize():
+            now = time.time()
+            if now - last_print >= 60:
+                print("mt5_feed: MT5 initialize failed, retrying:", mt5.last_error())
+                last_print = now
+            time.sleep(10)
     try:
         if once:
             batch = {**tick_batch(), **bars_batch(2), **positions_batch()}
