@@ -480,30 +480,20 @@ the chart page itself — `GET /` serves `app/static/miniapp.html`, vendored
 Lightweight Charts renders TF-switchable candles fed by `/api/history` +
 `/ws`, position overlays, offline banner — testable in a plain browser at
 `127.0.0.1:9001` with dev bypass (see verification procedure below).
-**Phase 3**: real auth (Telegram `initData` HMAC validation +
-owner/channel-membership authorization replacing `require_viewer`'s bypass
-body), BotFather `/newapp` registration, ticker `[📈 Live Chart]` button +
-`/chart` repoint, Cloudflare named tunnel — **this is the only point at
-which port 9001 becomes reachable from outside 127.0.0.1**. Checklist:
-set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls
-a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on
-127.0.0.1 but not through the tunnel), and replace the setup's
-`/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint.
-Also: (a) the `WS /ws` call site needs to change, not just
-`viewer_allowed()`'s body — see **Auth** below, `initData` has nowhere
-else to ride on a WS handshake than the query string; (b) the
-`/api/history` fetch's `initData`, which today rides the URL query
-string the same way (`miniapp.html`'s `withInitData()`), should move to
-a header for Phase 3 — a bearer-shaped credential sitting in a query
-string ends up in the Cloudflare tunnel's/any reverse proxy's access
-logs verbatim, whereas `WS /ws` has no such choice (browsers can't set
-custom headers on `new WebSocket(...)`, so the WS URL is stuck with
-query-string `initData` regardless); (c) a real headed-browser check —
-the owner opening the tunneled page and watching a live candle actually
-move — is an explicit Phase 3 acceptance step, not optional polish: every
-verification so far (see below) has been curl/websockets-script-level
-because no headed browser exists in this environment. Until Phase 3
-ships, treat the mini-app as a local-only dev surface.
+**Phase 3, Task 1** (2026-08-15, landed): real auth — Telegram `initData`
+HMAC validation + owner/channel-membership authorization now live,
+replacing `require_viewer`'s dev-bypass-only body. See **Auth** below for
+the full algorithm/wiring. Still ahead in Phase 3: BotFather `/newapp`
+registration, ticker `[📈 Live Chart]` button + `/chart` repoint,
+Cloudflare named tunnel — **the tunnel is the only point at which port
+9001 becomes reachable from outside 127.0.0.1**, and it is NOT live yet.
+A real headed-browser check — the owner opening the tunneled page and
+watching a live candle actually move — is an explicit Phase 3 acceptance
+step once the tunnel exists, not optional polish: every verification so
+far (see below) has been curl/websockets-script-level because no headed
+browser exists in this environment. Until the tunnel ships, treat the
+mini-app as a local-only dev surface even though the auth code path
+itself is now real.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
 dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
@@ -626,25 +616,83 @@ Verified 2026-08-14 against a live bridge feed: WS 15 s window captured 1
 `snapshot` + 28 `tick` + 49 `candle` + 7 `positions` messages, including a
 real open position (matches the account) rendered in the snapshot.
 
-**Auth**: `require_viewer`/`viewer_allowed()` in `app/miniapp.py` are
-Phase 1 stubs — `return settings.miniapp_dev_bypass`
-(`MINIAPP_DEV_BYPASS`, default `false`; pydantic-settings *can* read it
-from `.env`, but on this machine it's deliberately never written there —
-see **Restart** above — it's passed inline on the start command only, so
-it dies with the process). For `require_viewer` (the `GET /api/history`
-FastAPI dependency), the Phase 3 real check is a pure body swap — same
-dependency, same call site, no caller changes. That claim is **overstated
-for `WS /ws`**, though: `viewer_allowed()` is called directly inside
-`ws_feed` today with no request context at all, and Telegram `initData`
-has to come from somewhere on a WS handshake (browsers can't set custom
-headers on `new WebSocket(...)`, so it rides the connection URL's query
-string — see the mini-app's own `wsUrl()`/`withInitData()` in
-`miniapp.html`). Phase 3's real check therefore needs the **WS call site
-itself** changed too, to read `ws.query_params` (or `ws.scope["query_string"]`)
-and pass it into `viewer_allowed()` — not just a body swap. **Never flip
-`MINIAPP_DEV_BYPASS=true` once the tunnel is live** — bypass=true behind
-a public URL means anyone with the link gets the read-only feed with no
+**Auth** (Phase 3 Task 1, 2026-08-15, landed — real algorithm now live):
+`require_viewer`/`viewer_allowed(init_data)` in `app/miniapp.py` still
+check `settings.miniapp_dev_bypass` **first, unconditionally** — same
+short-circuit as Phase 1, `MINIAPP_DEV_BYPASS` default `false`;
+pydantic-settings *can* read it from `.env`, but on this machine it's
+deliberately never written there — see **Restart** above — it's passed
+inline on the start command only, so it dies with the process. Past that
+check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
+`viewer_ok(init_data)`, the new module this task added:
+- **`validate_init_data(init_data, bot_token, max_age_s=86400)`** —
+  Telegram's documented WebApp signature check: parse the querystring,
+  pop `hash`, build the data-check-string from the remaining `k=v` pairs
+  sorted and joined by `\n`, derive `secret = HMAC_SHA256(key=b"WebAppData",
+  msg=bot_token)`, require `hexdigest(HMAC_SHA256(secret, dcs)) == hash`
+  via `hmac.compare_digest` (constant-time), and require `auth_date`
+  within `max_age_s` (`settings.miniapp_auth_max_age_s`, default 1 day —
+  a new config knob added purely for test control). Returns the parsed
+  `user` dict or `None` on any failure (malformed input, tampered/missing
+  hash, stale `auth_date`) — never raises.
+- **`viewer_ok(init_data)`** — dev bypass → `True`; else `validate_init_data`
+  must succeed; the signed-in user id matching the resolved owner chat id
+  admits with **no network call**; otherwise, if a channel is linked,
+  admission depends on Telegram's `getChatMember` (`httpx.get`, 5 s
+  timeout) — `status` in `{creator, administrator, member}` admits,
+  anything else (wrong status, non-200, timeout, network error) denies.
+  Membership results are cached 10 min per uid in an in-process dict,
+  **denials cached too** (so a rejected viewer can't hammer the Bot API
+  by reloading). This is **fail-closed, not fail-open** — CLAUDE.md's
+  non-negotiable #3 ("fail-open everywhere") is about the AI grading path
+  staying out of the trade path; it does not extend to auth. A missing
+  bot token, an unlinked channel, or a down Bot API all deny non-owners;
+  only the owner's local id comparison ever admits without a successful
+  network round trip.
+- **Credential resolution** (`miniapp_auth._resolve_credentials()`) opens
+  `settings.db_path` in a **read-only** sqlite connection
+  (`file:...?mode=ro` URI) and reads `profile.telegram_bot_token`/
+  `telegram_chat_id` (row `id=1`) and `kv['channel_id']` — same table/key
+  `app.main._effective_telegram`/`_linked_channel` and `app/telegram.py`'s
+  `/channel link` flow read and write. Profile values win when both
+  non-empty, else falls back to `settings.telegram_bot_token`/
+  `telegram_chat_id` (.env), matching `_effective_telegram`'s precedence
+  exactly. `miniapp.py` deliberately does **not** import `app.main` or
+  reuse `app.main`'s `SignalDb` instance — they're two separate uvicorn
+  processes (port 9000 vs 9001) with no shared Python object — and does
+  **not** instantiate `app.db.SignalDb` at all even though it's
+  importable, because `SignalDb.__init__` unconditionally runs
+  `CREATE TABLE IF NOT EXISTS` for every schema, which needs a writable
+  connection; a raw read-only URI connection keeps this public-facing
+  process from ever gaining implicit write access to the trading db. Any
+  sqlite error (db file missing, table missing, locked) is swallowed and
+  treated as "no profile row" — falls through to `.env` settings rather
+  than raising.
+- **REST vs WS initData transport differ, on purpose.** `require_viewer`
+  (the `GET /api/history` FastAPI dependency) reads the
+  `X-Telegram-Init-Data` **header first**, falling back to the
+  `?initData=` query param — a bearer-shaped credential in a URL ends up
+  verbatim in the Cloudflare tunnel's/any reverse proxy's access logs, so
+  the header is the safe path once the tunnel is live.
+  `miniapp.html`'s `loadHistory()` was updated to send the header instead
+  of `withInitData()`-appending the query string (`withInitData()` itself
+  is untouched, still used elsewhere). `WS /ws` has no such choice —
+  browsers can't set custom headers on `new WebSocket(...)` — so the WS
+  call site reads `ws.query_params.get("initData")` and always will;
+  `wsUrl()`/`withInitData()` in `miniapp.html` are unchanged. A refused
+  WS connect closes with code `4403` (mirrors the REST 403) before
+  `ws.accept()` is ever called. **Never flip `MINIAPP_DEV_BYPASS=true`
+  once the tunnel is live** — bypass=true behind a public URL means
+  anyone with the link gets the read-only feed with no
 auth at all.
+
+**Docs routes / liveness probe** (same task): the FastAPI app now sets
+`docs_url=None, redoc_url=None, openapi_url=None` — Swagger UI pulls a
+CDN script and all three routes were otherwise auth-free by FastAPI
+default (setting `docs_url=None` alone leaves `/openapi.json` registered;
+all three params are needed). `GET /healthz` is a new, deliberately
+auth-free `{"ok": true}` route; `scripts/setup.sh`'s `miniapp_alive()`
+probe now curls `/healthz` instead of the now-404 `/openapi.json`.
 
 **`FEED_KEY`**: random secret in `service/.env` (`openssl rand -hex 24`,
 python `secrets.token_hex(24)` fallback — generated by `scripts/setup.sh`'s
@@ -699,9 +747,11 @@ successful push after any gap).
 **Setup**: `scripts/setup.sh`'s "Mini-app feed service" phase (between
 "Service" and "Telegram") ensures `FEED_KEY` exists in `.env` (SKIP if
 already set) and starts the port-9001 uvicorn process if not already
-answering (liveness probed via `GET /openapi.json` — auth-free, unlike
-`/api/history` which 403s with dev bypass off) — SKIP if already running,
-same idempotent phase shape as every other step.
+answering (liveness probed via `GET /healthz` — auth-free, unlike
+`/api/history` which 403s with dev bypass off; `/openapi.json` is 404 now
+that docs routes are disabled, see **Docs routes / liveness probe**
+above) — SKIP if already running, same idempotent phase shape as every
+other step.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly

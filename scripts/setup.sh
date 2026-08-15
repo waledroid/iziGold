@@ -146,7 +146,7 @@ ok "service healthy + /analyze smoke passed"
 # ---------------------------------------------------- 5. Mini-app feed service
 phase 5 "Mini-app feed service"
 MINIAPP_URL="http://127.0.0.1:9001"
-miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/openapi.json" >/dev/null 2>&1; }
+miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/healthz" >/dev/null 2>&1; }
 
 feed_key_changed=0
 if grep -q '^FEED_KEY=.\+' "$SERVICE_DIR/.env"; then

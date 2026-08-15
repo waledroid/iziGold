@@ -12,8 +12,9 @@ TFS = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
 def client(monkeypatch):
     monkeypatch.setenv("FEED_KEY", "sekret")
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true")
-    from app import config, miniapp
+    from app import config, miniapp, miniapp_auth
     importlib.reload(config)
+    importlib.reload(miniapp_auth)  # keep its `settings` in sync -- see test_miniapp_auth.py
     importlib.reload(miniapp)
     with TestClient(miniapp.app) as c:
         yield c
@@ -56,8 +57,9 @@ def test_history_unknown_tf_400(client):
 def test_history_requires_viewer_auth(monkeypatch):
     monkeypatch.setenv("FEED_KEY", "sekret")
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "false")
-    from app import config, miniapp
+    from app import config, miniapp, miniapp_auth
     importlib.reload(config)
+    importlib.reload(miniapp_auth)  # keep its `settings` in sync -- see test_miniapp_auth.py
     importlib.reload(miniapp)
     with TestClient(miniapp.app) as c:
         assert c.get("/api/history", params={"tf": "M5"}).status_code == 403
@@ -90,8 +92,9 @@ def test_ws_snapshot_then_deltas(client):
 def test_ws_requires_viewer_auth(monkeypatch):
     monkeypatch.setenv("FEED_KEY", "sekret")
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "false")
-    from app import config, miniapp
+    from app import config, miniapp, miniapp_auth
     importlib.reload(config)
+    importlib.reload(miniapp_auth)  # keep its `settings` in sync -- see test_miniapp_auth.py
     importlib.reload(miniapp)
     with TestClient(miniapp.app) as c:
         with pytest.raises(Exception):
@@ -187,8 +190,9 @@ def test_page_route_returns_html_with_chart_div(client):
 def test_page_route_does_not_require_viewer_auth(monkeypatch):
     monkeypatch.setenv("FEED_KEY", "sekret")
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "false")
-    from app import config, miniapp
+    from app import config, miniapp, miniapp_auth
     importlib.reload(config)
+    importlib.reload(miniapp_auth)  # keep its `settings` in sync -- see test_miniapp_auth.py
     importlib.reload(miniapp)
     with TestClient(miniapp.app) as c:
         assert c.get("/").status_code == 200

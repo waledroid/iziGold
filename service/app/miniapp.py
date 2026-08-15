@@ -17,6 +17,7 @@ from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import miniapp_auth
 from app.config import settings
 from app.indicators import ema, halftrend
 from app.models import Candle
@@ -75,7 +76,11 @@ class FeedState:
         return deltas
 
 
-app = FastAPI(title="xau-miniapp")
+app = FastAPI(title="xau-miniapp", docs_url=None, redoc_url=None, openapi_url=None)
+# docs_url/redoc_url/openapi_url off: Swagger UI pulls a CDN script and
+# /docs, /redoc, /openapi.json are otherwise auth-free by FastAPI default
+# (docs_url=None alone leaves /openapi.json registered) -- harmless on
+# 127.0.0.1 but not once this process sits behind the public tunnel.
 # Mount ONLY the vendor subdirectory, not the whole shared static/ dir —
 # this process is the one Phase 3 tunnels publicly, and static/ also holds
 # main.py's dashboard.html/onboarding.html (trading controls), which must
@@ -106,18 +111,25 @@ state = FeedState()
 hub = _Hub()
 
 
-def viewer_allowed() -> bool:
-    """Check if viewer is allowed. Shared by REST and WS.
-    Phase 1: dev bypass only. Phase 3 replaces the body with Telegram
-    initData validation + owner/channel-membership authorization."""
-    return settings.miniapp_dev_bypass
+def viewer_allowed(init_data: str | None) -> bool:
+    """Check if viewer is allowed. Shared by REST and WS. Dev bypass is
+    the first check, unchanged from Phase 1 (`settings.miniapp_dev_bypass`,
+    short-circuits before `init_data` is even looked at). Past that,
+    Phase 3's real Telegram initData validation + owner/channel-membership
+    authorization lives in `app.miniapp_auth.viewer_ok`."""
+    if settings.miniapp_dev_bypass:
+        return True
+    return miniapp_auth.viewer_ok(init_data)
 
 
-def require_viewer(request: Request = None):
-    """Phase 1: dev bypass only. Phase 3 replaces the body with Telegram
-    initData validation + owner/channel-membership authorization — same
-    dependency, same call sites."""
-    if viewer_allowed():
+def require_viewer(request: Request):
+    """REST dependency (`GET /api/history`): initData comes from the
+    `X-Telegram-Init-Data` header first (so it never lands in a reverse
+    proxy's/tunnel's URL access log), falling back to the `?initData=`
+    query param for parity with the WS path and manual testing."""
+    init_data = request.headers.get("X-Telegram-Init-Data") \
+        or request.query_params.get("initData")
+    if viewer_allowed(init_data):
         return True
     raise HTTPException(status_code=403, detail="viewer auth required")
 
@@ -138,6 +150,13 @@ async def feed_push(request: Request):
     for d in deltas:
         await hub.broadcast(d)
     return {"ok": True, "deltas": len(deltas)}
+
+
+@app.get("/healthz")
+def healthz():
+    """Auth-free liveness probe (setup.sh's start/restart check uses this,
+    not /openapi.json -- that route is gone now that docs are disabled)."""
+    return {"ok": True}
 
 
 @app.get("/")
@@ -180,7 +199,10 @@ def _indicator_series(rows: list[dict]) -> dict:
 
 @app.websocket("/ws")
 async def ws_feed(ws: WebSocket):
-    if not viewer_allowed():
+    # Browsers can't set custom headers on a WS handshake, so initData
+    # rides the connection URL's query string here -- no header option
+    # exists for this call site (see require_viewer for the REST path).
+    if not viewer_allowed(ws.query_params.get("initData")):
         await ws.close(code=4403)
         return
     await ws.accept()

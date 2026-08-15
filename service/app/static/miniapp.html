@@ -342,7 +342,13 @@ body {
   }
 
   function loadHistory(tf) {
-    return fetch(withInitData("/api/history?tf=" + encodeURIComponent(tf)))
+    // REST reads initData from a header, not the URL, so it never lands in
+    // a reverse proxy's/tunnel's access log (WS has no such choice — see
+    // wsUrl() below, browsers can't set custom headers on a WS handshake).
+    var t = tg();
+    return fetch("/api/history?tf=" + encodeURIComponent(tf), {
+        headers: { "X-Telegram-Init-Data": t ? (t.initData || "") : "" }
+      })
       .then(function (r) {
         if (!r.ok) throw new Error("history http " + r.status);
         return r.json();
