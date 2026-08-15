@@ -8,6 +8,7 @@ Runs as its own process: uvicorn app.miniapp:app --host 127.0.0.1
 bridge's next backfill push (fail-open).
 """
 import asyncio
+import hmac
 import math
 from collections import deque
 from pathlib import Path
@@ -136,8 +137,15 @@ def require_viewer(request: Request):
 
 @app.post("/feed/push")
 async def feed_push(request: Request):
-    if request.headers.get("X-Feed-Key", "") != settings.feed_key \
-            or not settings.feed_key:
+    # Constant-time comparison (security-review fix, 2026-08-15): a plain
+    # `!=` leaks timing proportional to the matching-prefix length, which
+    # is a real side channel for a bearer-shaped secret sent over the
+    # network. `not settings.feed_key` still guards first -- an
+    # unconfigured key must fail closed even though
+    # `hmac.compare_digest(b"", b"")` alone would return True.
+    provided_key = request.headers.get("X-Feed-Key", "")
+    if not settings.feed_key or not hmac.compare_digest(
+            provided_key.encode("utf-8"), settings.feed_key.encode("utf-8")):
         raise HTTPException(status_code=403, detail="bad feed key")
     try:
         batch = await request.json()

@@ -530,7 +530,16 @@ any failed push, see below).
   refused); sends one `{type:"snapshot", tick, positions, tfs}` then
   streams `{type:"tick"|"candle"|"positions", ...}` deltas; inbound
   messages are ignored (read-only feed); dead/slow clients are dropped on
-  a 1 s broadcast timeout, never awaited to death.
+  a 1 s broadcast timeout, never awaited to death. **The close code is an
+  in-process test artifact, not what ships over the wire**: `ws.close(code=
+  4403)` runs *before* `ws.accept()`, so the WS upgrade never completes —
+  a real browser/Telegram client sees a rejected HTTP handshake (403), not
+  a WS close frame carrying 4403 (the protocol has no way to deliver a
+  close code without a completed upgrade). `4403` is only observable
+  through Starlette's in-process `TestClient`/`WebSocketDisconnect`, which
+  is why the tests and the paragraphs below cite it — treat it as "the
+  REST 403, at the point WS diverges from REST," not as wire-visible
+  behavior.
 - `GET /` — the chart page (`app/static/miniapp.html`), served via
   `FileResponse`, deliberately **NOT** behind `require_viewer` (Telegram
   loads this URL directly in the WebApp webview before any `initData`
@@ -651,7 +660,11 @@ check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
   (`computed_hash.encode("ascii")` vs
   `received_hash.encode("utf-8", errors="replace")`), and require
   `auth_date` within `max_age_s` (`settings.miniapp_auth_max_age_s`,
-  default 1 day — a new config knob added purely for test control).
+  default 1 hour as of 2026-08-15 — tightened from the original 1-day
+  default to shrink the initData replay window through logs 24x; a
+  config knob originally added purely for test control, the function's
+  own parameter default (`validate_init_data(..., max_age_s=86400)`)
+  stays 1 day since it's a generic utility default, not the live path).
   Returns the parsed `user` dict or `None` on any failure (malformed
   input, tampered/missing hash, stale `auth_date`) — the whole function
   body is wrapped in `try/except Exception: return None`, so it is
@@ -843,21 +856,41 @@ account with no config swap needed later). Domain on this machine:
 - **Start**: `scripts/setup.sh`'s "ngrok static-domain tunnel" phase
   (phase 6/9, directly after "Mini-app feed service"). Installs the
   `ngrok` v3 linux-amd64 binary into `~/.local/bin` from the official
-  `bin.equinox.io` tarball if not already present; runs `ngrok config
-  add-authtoken <NGROK_AUTHTOKEN from .env>` only if
-  `~/.config/ngrok/ngrok.yml` has no `authtoken:` line yet; then `nohup
-  ngrok http --url=<domain> 9001 --log /tmp/ngrok.log &`, where `<domain>`
-  is `MINIAPP_PUBLIC_URL` with the `https://` scheme stripped inside the
+  `bin.equinox.io` tarball if not already present (atomic: downloads and
+  extracts into a `mktemp -d` temp dir, checks `curl`'s and `tar`'s exit
+  status, then `mv`s the binary into place — a truncated/corrupt download
+  can never masquerade as "installed" the way a straight extract-in-place
+  with only a presence check would); runs `ngrok config add-authtoken
+  <NGROK_AUTHTOKEN from .env>` only if `~/.config/ngrok/ngrok.yml` has no
+  `authtoken:` line yet; then `nohup ngrok http --url=<domain>
+  --inspect=false 9001 --log /tmp/ngrok.log &`, where `<domain>` is
+  `MINIAPP_PUBLIC_URL` with the `https://` scheme stripped inside the
   script (single source of truth — the phase never hardcodes the domain
-  string). Confirms the tunnel actually came up by polling the local
-  ngrok agent API (`http://127.0.0.1:4040/api/tunnels`) for the domain,
-  not by trusting the backgrounded `nohup` blindly. Idempotent on all
-  three sub-steps independently — SKIPs binary-install if the binary
-  exists, SKIPs authtoken-config if one is already set, SKIPs the tunnel
-  start if `pgrep -f "ngrok http"` already matches — and SKIPs the whole
-  phase cleanly (no fail) if `NGROK_AUTHTOKEN` or `MINIAPP_PUBLIC_URL` is
-  missing from `.env`, same "safe to run without this configured" shape
-  as the Telegram phase.
+  string). **`--inspect=false`** (security-review fix, 2026-08-15): with
+  inspection on (ngrok's default), the local port-4040 web UI/agent API
+  keeps a rolling capture buffer of full request/response traffic —
+  including raw request URIs and headers, which means a viewer's
+  Telegram `initData` (carried as `?initData=` on the WS path, and
+  replayable from the REST header too) would sit there fully replayable
+  to anything with access to `127.0.0.1:4040`. Verified empirically
+  (2026-08-15): with the flag, `GET 127.0.0.1:4040/api/requests/http`
+  returns an empty `requests` list even right after driving traffic
+  through the public tunnel, while `GET 127.0.0.1:4040/api/tunnels`
+  (the endpoint the SKIP check below depends on) is unaffected — the
+  tunnels/agent API and the request-capture buffer are independent
+  features, so disabling the leaky one costs nothing operationally.
+  Confirms the tunnel actually came up by polling that same agent API
+  (`http://127.0.0.1:4040/api/tunnels`) **for the configured domain
+  string**, not just "is ngrok running" (`pgrep -f "ngrok http"` would be
+  satisfied by any unrelated tunnel on the box) and not by trusting the
+  backgrounded `nohup` blindly; an unreachable port 4040 is treated as
+  not-running too, never as "assume it's fine." Idempotent on all three
+  sub-steps independently — SKIPs binary-install if the binary exists,
+  SKIPs authtoken-config if one is already set, SKIPs the tunnel start if
+  the domain already appears live — and SKIPs the whole phase cleanly (no
+  fail) if `NGROK_AUTHTOKEN` or `MINIAPP_PUBLIC_URL` is missing from
+  `.env`, same "safe to run without this configured" shape as the
+  Telegram phase.
 - **Stop**: `pkill -f "ngrok http"`.
 - **Log**: `/tmp/ngrok.log` (not `service/`-relative, matching the
   `/tmp/miniapp.log` convention).
@@ -887,7 +920,16 @@ account with no config swap needed later). Domain on this machine:
   Task 1's auth work: it holds through the real public tunnel, not just
   against localhost. Re-running the setup phase afterward printed SKIP on
   all three sub-steps (binary/authtoken/tunnel), confirming idempotency
-  with the tunnel already up.
+  with the tunnel already up. **Follow-up (2026-08-15, `--inspect=false`
+  landed):** the ngrok process was restarted alone (`pkill -f "ngrok
+  http"` then the new start command with the flag) — the mini-app and
+  main service were left untouched throughout, since the flag only
+  changes ngrok's own local inspection behavior. Re-verified after
+  restart: `/api/tunnels` still reports the domain (`tunnel_running()`
+  needed no change) and the same `/healthz` → `{"ok":true}` /
+  `/api/history?tf=M5` → 403 pair still holds through the public domain,
+  while `/api/requests/http` on the local agent API now returns no
+  captured traffic.
 - **Upgrade path** (unchanged from the spec's ngrok amendment): moving to
   a paid domain behind a named tunnel (e.g. Cloudflare) later is a pure
   config swap — repoint `MINIAPP_PUBLIC_URL` at the new domain and start

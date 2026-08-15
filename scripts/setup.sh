@@ -258,7 +258,12 @@ else
   # "ngrok http" would be satisfied by any unrelated tunnel on the box and
   # SKIP without ever exposing 9001. Query the local agent API for the
   # configured domain; if 4040 isn't answering at all, treat that as
-  # not-running too (never mistake "can't tell" for "already up").
+  # not-running too (never mistake "can't tell" for "already up"). This
+  # keeps working with --inspect=false below — confirmed empirically
+  # (2026-08-15): the agent/tunnels API (port 4040) stays up and still
+  # reports the tunnel's domain/config; only the separate request-capture
+  # buffer (/api/requests/http) goes empty. No need to fall back to
+  # probing the tunnel domain's /healthz directly.
   tunnel_running() {
     curl -sf -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -q "$tunnel_domain"
   }
@@ -266,7 +271,16 @@ else
   if tunnel_running; then
     skip "tunnel already running for $tunnel_domain"
   else
-    nohup "$ngrok_bin" http --url="$tunnel_domain" 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
+    # --inspect=false (security-review fix, 2026-08-15): with inspection
+    # on (ngrok's default), the local 4040 web UI/API retains a rolling
+    # buffer of full request/response captures — including raw request
+    # URIs and headers, which for this app means a viewer's initData
+    # (sent as ?initData= on the WS path, or replayed via the REST
+    # header) sits there fully replayable to anything with access to
+    # 127.0.0.1:4040. Only the mini-app (9001) is ever meant to be
+    # reachable from outside this box; the inspection buffer must not
+    # become a second, higher-privilege leak of the same secret.
+    nohup "$ngrok_bin" http --url="$tunnel_domain" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
     up=""
     for _ in $(seq 1 20); do
       if tunnel_running; then up=yes; break; fi

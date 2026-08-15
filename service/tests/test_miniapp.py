@@ -33,6 +33,23 @@ def test_push_requires_key(client):
     assert _push(client, {"tick": None}).status_code == 200
 
 
+def test_push_rejects_when_no_key_configured(monkeypatch):
+    """An unconfigured FEED_KEY must fail closed. This is the case
+    hmac.compare_digest's constant-time comparison can't protect on its
+    own -- compare_digest(b"", b"") is True, so an empty configured key
+    plus an empty (or absent) header would otherwise "match"."""
+    monkeypatch.setenv("FEED_KEY", "")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true")
+    from app import config, miniapp, miniapp_auth
+    importlib.reload(config)
+    importlib.reload(miniapp_auth)
+    importlib.reload(miniapp)
+    with TestClient(miniapp.app) as c:
+        assert c.post("/feed/push", json={"tick": None},
+                       headers={"X-Feed-Key": ""}).status_code == 403
+        assert c.post("/feed/push", json={"tick": None}).status_code == 403
+
+
 def test_history_appends_and_replaces_forming_bar(client):
     _push(client, {"candles": {"M5": [_candle(1000, 4000.0)]}})
     _push(client, {"candles": {"M5": [_candle(1000, 4001.5)]}})   # same t -> replace
