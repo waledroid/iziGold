@@ -630,44 +630,74 @@ check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
   pop `hash`, build the data-check-string from the remaining `k=v` pairs
   sorted and joined by `\n`, derive `secret = HMAC_SHA256(key=b"WebAppData",
   msg=bot_token)`, require `hexdigest(HMAC_SHA256(secret, dcs)) == hash`
-  via `hmac.compare_digest` (constant-time), and require `auth_date`
-  within `max_age_s` (`settings.miniapp_auth_max_age_s`, default 1 day —
-  a new config knob added purely for test control). Returns the parsed
-  `user` dict or `None` on any failure (malformed input, tampered/missing
-  hash, stale `auth_date`) — never raises.
+  via `hmac.compare_digest` **compared as bytes**
+  (`computed_hash.encode("ascii")` vs
+  `received_hash.encode("utf-8", errors="replace")`), and require
+  `auth_date` within `max_age_s` (`settings.miniapp_auth_max_age_s`,
+  default 1 day — a new config knob added purely for test control).
+  Returns the parsed `user` dict or `None` on any failure (malformed
+  input, tampered/missing hash, stale `auth_date`) — the whole function
+  body is wrapped in `try/except Exception: return None`, so it is
+  unconditionally raise-proof. **Security-review fix (2026-08-15,
+  same-day follow-up commit):** comparing as `str` used to let a crafted
+  `hash=%C3%A9abc` (non-ASCII) raise `TypeError` straight out of
+  `hmac.compare_digest` — `hmac.compare_digest('abc', 'éabc')` really does
+  raise `TypeError: comparing strings with non-ASCII characters is not
+  supported` — which surfaced as an unhandled 500 on `GET /api/history`
+  and, worse, crashed the `WS /ws` handshake *before* the mandated 4403
+  close could run (the `viewer_allowed()` call sits above `ws_feed`'s
+  `try/except`). Bytes comparison + the catch-all wrapper close both
+  holes; `ws_feed`'s call site also grew a defensive `try/except` around
+  `viewer_allowed()` as a second line of defense.
 - **`viewer_ok(init_data)`** — dev bypass → `True`; else `validate_init_data`
   must succeed; the signed-in user id matching the resolved owner chat id
   admits with **no network call**; otherwise, if a channel is linked,
   admission depends on Telegram's `getChatMember` (`httpx.get`, 5 s
   timeout) — `status` in `{creator, administrator, member}` admits,
   anything else (wrong status, non-200, timeout, network error) denies.
-  Membership results are cached 10 min per uid in an in-process dict,
-  **denials cached too** (so a rejected viewer can't hammer the Bot API
-  by reloading). This is **fail-closed, not fail-open** — CLAUDE.md's
-  non-negotiable #3 ("fail-open everywhere") is about the AI grading path
-  staying out of the trade path; it does not extend to auth. A missing
-  bot token, an unlinked channel, or a down Bot API all deny non-owners;
-  only the owner's local id comparison ever admits without a successful
-  network round trip.
+  Membership results are cached 10 min, **keyed by `(channel_id, uid)`**
+  (not `uid` alone — a security-review fix: keying by uid alone let a
+  `/channel` unlink+relink to a *different* channel, or a bot-token
+  rotation, serve back a grant that was only ever verified against the
+  *old* channel), **denials cached too** (so a rejected viewer can't
+  hammer the Bot API by reloading). This is **fail-closed, not
+  fail-open** — CLAUDE.md's non-negotiable #3 ("fail-open everywhere") is
+  about the AI grading path staying out of the trade path; it does not
+  extend to auth. A missing bot token, an unlinked channel, or a down Bot
+  API all deny non-owners; only the owner's local id comparison ever
+  admits without a successful network round trip. `ws_feed` runs
+  `viewer_allowed()` via `await asyncio.to_thread(...)`, not inline —
+  another security-review fix: `viewer_ok` can do a sync sqlite open plus
+  a sync 5 s `httpx.get` on a membership-cache miss, and calling that
+  inline inside the `async def ws_feed` blocked the whole event loop,
+  freezing every other connected client's broadcasts and every other
+  in-flight handshake for up to ~5 s.
 - **Credential resolution** (`miniapp_auth._resolve_credentials()`) opens
   `settings.db_path` in a **read-only** sqlite connection
-  (`file:...?mode=ro` URI) and reads `profile.telegram_bot_token`/
-  `telegram_chat_id` (row `id=1`) and `kv['channel_id']` — same table/key
-  `app.main._effective_telegram`/`_linked_channel` and `app/telegram.py`'s
-  `/channel link` flow read and write. Profile values win when both
-  non-empty, else falls back to `settings.telegram_bot_token`/
-  `telegram_chat_id` (.env), matching `_effective_telegram`'s precedence
-  exactly. `miniapp.py` deliberately does **not** import `app.main` or
-  reuse `app.main`'s `SignalDb` instance — they're two separate uvicorn
-  processes (port 9000 vs 9001) with no shared Python object — and does
-  **not** instantiate `app.db.SignalDb` at all even though it's
-  importable, because `SignalDb.__init__` unconditionally runs
-  `CREATE TABLE IF NOT EXISTS` for every schema, which needs a writable
-  connection; a raw read-only URI connection keeps this public-facing
-  process from ever gaining implicit write access to the trading db. Any
-  sqlite error (db file missing, table missing, locked) is swallowed and
-  treated as "no profile row" — falls through to `.env` settings rather
-  than raising.
+  (`file:...?mode=ro` URI, `timeout=1.0` so lock contention fails fast
+  rather than blocking — a security-review fix) and reads
+  `profile.telegram_bot_token`/`telegram_chat_id` (row `id=1`) and
+  `kv['channel_id']` — same table/key `app.main._effective_telegram`/
+  `_linked_channel` and `app/telegram.py`'s `/channel link` flow read and
+  write. Profile values win when both non-empty, else falls back to
+  `settings.telegram_bot_token`/`telegram_chat_id` (.env), matching
+  `_effective_telegram`'s precedence exactly. Result is **cached 60 s**
+  (`_CRED_CACHE_TTL_S`, another security-review fix — this function runs
+  on every unvalidated request, since it resolves the token
+  `validate_init_data` needs, so without a cache a flood of garbage
+  `initData` would each cost a sqlite open; still fail-closed, worst case
+  is a credential set up to 60 s stale, never a hang). `miniapp.py`
+  deliberately does **not** import `app.main` or reuse `app.main`'s
+  `SignalDb` instance — they're two separate uvicorn processes (port 9000
+  vs 9001) with no shared Python object — and does **not** instantiate
+  `app.db.SignalDb` at all even though it's importable, because
+  `SignalDb.__init__` unconditionally runs `CREATE TABLE IF NOT EXISTS`
+  for every schema, which needs a writable connection; a raw read-only
+  URI connection keeps this public-facing process from ever gaining
+  implicit write access to the trading db. Any sqlite error (db file
+  missing, table missing, locked, contended past the 1 s timeout) is
+  swallowed and treated as "no profile row" — falls through to `.env`
+  settings rather than raising.
 - **REST vs WS initData transport differ, on purpose.** `require_viewer`
   (the `GET /api/history` FastAPI dependency) reads the
   `X-Telegram-Init-Data` **header first**, falling back to the
