@@ -469,7 +469,7 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   trend as stale. The guarded catch-up entry (§3, 2026-08-12) makes that a
   real "yes, if the thesis still holds" instead of an unconditional no.
 
-# 8. Mini-app feed service (Telegram Mini App, Phase 2 of 3)
+# 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plans:
 `docs/superpowers/plans/2026-08-14-miniapp-phase1.md`,
@@ -488,16 +488,24 @@ the full algorithm/wiring.
 **Phase 3, Task 2** (2026-08-15, landed): the ngrok static-domain
 tunnel — **the mini-app's first public exposure**, and the only point at
 which port 9001 becomes reachable from outside 127.0.0.1. See **Tunnel**
-below for start/stop/verification. Still ahead in Phase 3: BotFather
-`/newapp` registration, ticker `[📈 Live Chart]` button + `/chart`
-repoint (Task 3). A real headed-browser check — the owner opening the
-tunneled page and watching a live candle actually move — is an explicit
-Phase 3 acceptance step, not optional polish: every verification so far
-(see below and **Tunnel**) has been curl/websockets-script-level because
-no headed browser exists in this environment. The tunnel is live and
+below for start/stop/verification.
+
+**Phase 3, Task 3** (2026-08-15, landed): Telegram wiring — the `[📈 Live
+Chart]` button on the owner ticker and the `/chart` repoint. See
+**Telegram wiring** below for the full shape. This is the last of the
+three Phase 3 tasks; the design's mini-app rollout is code-complete. A
+real headed-browser check — the owner opening the tunneled page and
+watching a live candle actually move — remains the one acceptance step
+not yet done: every verification so far (see below, **Tunnel**, and
+**Telegram wiring**) has been curl/websockets/tests-level because no
+headed browser exists in this environment. The tunnel is live and
 security-verified (real auth holds through the public URL — see
-**Tunnel**), but until Task 3's headed check lands, treat the owner-facing
-experience as unconfirmed even though the wire-level path is real.
+**Tunnel**), and the button/repoint code is unit-tested, but until an
+owner tap-test lands, treat the end-to-end owner-facing experience as
+unconfirmed even though every leg of the wire-level path is real. The
+BotFather `/newapp` registration (needed only for the channel's `t.me`
+link — see **Telegram wiring**) is a separate owner action, relayed but
+not automated here.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
 dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
@@ -815,6 +823,23 @@ domain, and ngrok's free tier gives one permanent static domain per
 account with no config swap needed later). Domain on this machine:
 `tribute-obscurity-monday.ngrok-free.dev`, driven entirely by
 `MINIAPP_PUBLIC_URL` in `service/.env` — nothing hardcodes it elsewhere.
+
+> **SAFETY INVARIANT — never run these two together:**
+> `MINIAPP_DEV_BYPASS=true` and the ngrok tunnel being up. Bypass mode
+> skips `viewer_ok()`'s Telegram `initData` check entirely (see **Auth**
+> above); with the tunnel live, that check is the *only* thing standing
+> between the read-only feed (`/api/history`, `/ws`) and the open
+> internet. Bypass + tunnel simultaneously = anyone with the ngrok URL
+> gets live account/position data, no auth at all. This is why
+> `MINIAPP_DEV_BYPASS` is never written to `.env` (see **Restart** below)
+> and why the two restart recipes are named "Local browser dev check
+> ONLY" vs "Deployed state (the tunnel is live and public)" — pick the
+> dev-bypass one while the tunnel stays up from a previous session and
+> the invariant is silently broken. Before starting the tunnel (or
+> leaving it running), confirm the miniapp process is in its no-bypass
+> form; before flipping on `MINIAPP_DEV_BYPASS` for local debugging,
+> `pkill -f "ngrok http"` first.
+
 - **Start**: `scripts/setup.sh`'s "ngrok static-domain tunnel" phase
   (phase 6/9, directly after "Mini-app feed service"). Installs the
   `ngrok` v3 linux-amd64 binary into `~/.local/bin` from the official
@@ -869,6 +894,75 @@ account with no config swap needed later). Domain on this machine:
   that tunnel product instead of ngrok. No app code changes, since the
   setup phase and every consumer of the public URL already read it from
   that single `.env` value rather than hardcoding ngrok's domain anywhere.
+
+**Telegram wiring** (Phase 3, Task 3, 2026-08-15, landed): the
+`[📈 Live Chart]` button and the `/chart` repoint, both gated on
+`settings.miniapp_public_url` (new `Settings` field, empty string default,
+reads `MINIAPP_PUBLIC_URL` from `.env` — same field the **Tunnel** section
+above already relies on for the domain string; Task 3 is the first thing
+that reads it from `app/config.py` rather than just `scripts/setup.sh`).
+- **Owner ticker button** (`app/ticker.py`): the LIVE-open send (flat→open
+  transition, `ticker_tick`) attaches
+  `{"inline_keyboard": [[{"text": "📈 Live Chart", "web_app": {"url":
+  <miniapp_public_url>}}]]}` via `TelegramClient.send_message`'s existing
+  `reply_markup` param, when the URL is configured; omitted (no
+  `reply_markup` key at all) when it isn't. Owner-only, attached on the
+  initial open send only — the open→open silent edits and the CLOSED
+  freeze edit never carry it (simpler, and Telegram doesn't require the
+  keyboard to persist through edits for the button to have already done
+  its job). The channel ticker copy (`send_message_to`) is structurally
+  incapable of carrying markup — that call has no `reply_markup`
+  parameter at all — so the privacy/no-interactive-controls invariant for
+  the channel holds by construction, not convention. `_live_chart_kb()`
+  does a **lazy** `from app.config import settings` inside the function
+  body rather than at module import time — a deliberate fix during this
+  task's own test run: several other test files
+  `importlib.reload(app.config)` without reloading `app.ticker`, which
+  left a module-level `settings` binding pointing at a stale
+  pre-reload `Settings()` object (`test_ticker.py`'s two new
+  URL-gating tests failed only in the *full* suite, never in isolation,
+  until this was fixed) — same lazy-import convention `telegram.py`'s
+  `/config` command handler already used for exactly this reason.
+- **`/chart` repoint** (`app/main.py`, `_send_chart_snapshot`): when
+  `settings.miniapp_public_url` is set, replies "📈 Live chart:" with the
+  same web_app button instead of rendering/sending the PNG at all (no
+  `render_snapshot_chart` call, no `sendPhoto`); the channel mirror
+  becomes a plain text line (`f"👤 /chart\n📈 Live chart:
+  {settings.miniapp_public_url}"` via the existing `_mirror(app,
+  text=...)` path) instead of the photo mirror — still no markup on the
+  channel side. When the URL is unset, behavior is byte-identical to
+  before this task (PNG render + caption + photo mirror). `main.py`'s
+  `settings` import is module-level (not lazy like `ticker.py`'s) because
+  every test that reloads `app.config` also reloads `app.main` in the
+  same breath (existing convention across the test suite) — the staleness
+  bug above is specific to modules that get imported once and never
+  reloaded alongside `app.config`.
+- **web_app buttons need no BotFather registration for the owner path** —
+  Telegram delivers `initData` (and thus a working authorized session) to
+  any bot's `web_app` button tapped from a **private chat with that bot**,
+  no `/newapp` Mini App registration required. The owner's `[📈 Live
+  Chart]` ticker button and `/chart` button both work day one purely from
+  this task's code. BotFather `/newapp` registration is required **only**
+  for the channel's direct `t.me/<bot>/<app>` deep link (channel members
+  tapping a link outside a bot DM) — that registration is a one-time
+  manual owner action in BotFather, not something this codebase can
+  automate, and the controller relays those instructions to the owner
+  separately. Until it's done, the channel-side experience degrades
+  gracefully to "read `/chart` in the owner chat" — nothing breaks, the
+  channel mirror text line still shows the URL.
+- **Pinned help** (`app/telegram.py`): `PINNED_HELP_VERSION` bumped
+  `"6"` → `"7"`; the `/chart` line reads "open the live chart" instead of
+  "current chart snapshot", reflecting the repoint above regardless of
+  whether `miniapp_public_url` happens to be set (the pinned help text is
+  static, not templated per-request).
+- **Tests**: `tests/test_ticker.py` and `tests/test_chart_cmd.py` both
+  gained an autouse `monkeypatch.setattr(settings, "miniapp_public_url",
+  "")` fixture — necessary because this machine's real `service/.env` has
+  `MINIAPP_PUBLIC_URL` set (it drives the live tunnel), so leaving it
+  unpatched would make every pre-existing PNG/no-button test in those
+  files assert against the wrong branch on this machine specifically. New
+  tests in both files monkeypatch it back on to cover the button/URL-set
+  branch explicitly.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly

@@ -3,8 +3,20 @@
 import time
 import types
 
+import pytest
+
 from app.telegram import TelegramClient
 from app.ticker import TICKER_MIN_EDIT_S, TickerState, format_ticker, ticker_tick
+
+
+@pytest.fixture(autouse=True)
+def _no_miniapp_url_by_default(monkeypatch):
+    """MINIAPP_PUBLIC_URL may be set in the developer's real .env (it drives
+    the live ngrok tunnel) -- tests must not depend on that machine-local
+    state. Default it off; tests that specifically cover the button-present
+    path opt back in with their own monkeypatch.setattr."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url", "")
 
 
 class FakeTransport:
@@ -212,6 +224,44 @@ def test_open_to_open_edit_failure_retries():
 
     # Now the edit should have succeeded and text updated
     assert "60.00" in app.state.ticker.owner_text
+
+
+def test_open_posts_live_chart_button_when_url_set(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url",
+                        "https://tribute-obscurity-monday.ngrok-free.dev")
+    app, t = _app()
+    ticker_tick(app, _hb([_pos()]), now=1000.0)
+    sends = t.of("sendMessage")
+    assert len(sends) == 1
+    markup = sends[0][1]["reply_markup"]
+    assert markup == {"inline_keyboard": [[
+        {"text": "📈 Live Chart",
+         "web_app": {"url": "https://tribute-obscurity-monday.ngrok-free.dev"}}
+    ]]}
+
+
+def test_open_posts_no_button_when_url_unset(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url", "")
+    app, t = _app()
+    ticker_tick(app, _hb([_pos()]), now=1000.0)
+    sends = t.of("sendMessage")
+    assert "reply_markup" not in sends[0][1]
+
+
+def test_channel_ticker_copy_never_has_markup_even_when_url_set(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url",
+                        "https://tribute-obscurity-monday.ngrok-free.dev")
+    app, t = _app(channel_id="-1001234")
+    ticker_tick(app, _hb([_pos()]), now=1000.0)
+    sends = t.of("sendMessage")
+    assert len(sends) == 2
+    assert sends[0][1]["chat_id"] == "555"        # owner: has the button
+    assert "reply_markup" in sends[0][1]
+    assert sends[1][1]["chat_id"] == "-1001234"   # channel: never a button
+    assert "reply_markup" not in sends[1][1]
 
 
 def test_heartbeat_endpoint_triggers_ticker(tmp_path, monkeypatch):

@@ -12,6 +12,23 @@ from dataclasses import dataclass
 TICKER_MIN_EDIT_S = 5
 
 
+def _live_chart_kb() -> dict | None:
+    """Inline web_app button opening the mini app, or None when no public
+    URL is configured. Owner-only (see ticker_tick) -- the channel ticker
+    copy must stay markup-free (structural no-markup rule).
+
+    Imports settings lazily (not at module level) so tests that
+    importlib.reload(app.config) without also reloading this module still
+    see the current value -- same convention as telegram.py's /config
+    handler."""
+    from app.config import settings
+    if not settings.miniapp_public_url:
+        return None
+    return {"inline_keyboard": [[
+        {"text": "📈 Live Chart", "web_app": {"url": settings.miniapp_public_url}}
+    ]]}
+
+
 @dataclass
 class TickerState:
     owner_msg_id: int | None = None
@@ -70,7 +87,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
         # flat -> open: post the LIVE message(s)
         text = format_ticker(hb, mode, ts_str)
         try:
-            sent = tg.send_message(text)
+            sent = tg.send_message(text, reply_markup=_live_chart_kb())
         except Exception:
             sent = None
         msg_id = (sent or {}).get("result", {}).get("message_id")

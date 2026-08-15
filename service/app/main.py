@@ -180,8 +180,21 @@ _CHART_HB_FRESH_S = 60
 async def _send_chart_snapshot(app) -> None:
     """/chart: render closed candles + the heartbeat's forming bar and send
     as a photo (owner first, channel mirror after). Every failure path
-    replies with text instead; never raises into the poller."""
+    replies with text instead; never raises into the poller.
+
+    When a mini-app public URL is configured, /chart instead opens the live
+    mini app (owner: text + web_app button; channel: plain URL text line,
+    no markup) rather than rendering a static PNG."""
     tg = app.state.telegram
+    if settings.miniapp_public_url:
+        kb = {"inline_keyboard": [[
+            {"text": "📈 Live Chart",
+             "web_app": {"url": settings.miniapp_public_url}}
+        ]]}
+        await asyncio.to_thread(tg.send_message, "📈 Live chart:", kb)
+        await _mirror(app, text=(
+            f"👤 /chart\n📈 Live chart: {settings.miniapp_public_url}"))
+        return
     rc = app.state.recent_candles
     if not rc or not rc.get("candles"):
         await asyncio.to_thread(

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     feed_key: str = ""
     miniapp_dev_bypass: bool = False
     miniapp_auth_max_age_s: int = 86400
+    miniapp_public_url: str = ""
 
 
 settings = Settings()
