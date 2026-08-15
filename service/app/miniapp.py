@@ -202,7 +202,17 @@ async def ws_feed(ws: WebSocket):
     # Browsers can't set custom headers on a WS handshake, so initData
     # rides the connection URL's query string here -- no header option
     # exists for this call site (see require_viewer for the REST path).
-    if not viewer_allowed(ws.query_params.get("initData")):
+    # viewer_allowed() is sync and can do real blocking work on a
+    # membership-cache miss (sqlite open + a 5 s httpx.get) -- run it off
+    # the event loop so it can't freeze every other client's broadcasts
+    # and handshakes while it waits. Also defensively caught: an
+    # unhandled exception here must still produce the mandated 4403
+    # close, never a bare crash of the handshake.
+    try:
+        allowed = await asyncio.to_thread(viewer_allowed, ws.query_params.get("initData"))
+    except Exception:
+        allowed = False
+    if not allowed:
         await ws.close(code=4403)
         return
     await ws.accept()
