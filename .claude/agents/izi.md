@@ -902,8 +902,62 @@ account with no config swap needed later). Domain on this machine:
 > form; before flipping on `MINIAPP_DEV_BYPASS` for local debugging,
 > `pkill -f "ngrok http"` first.
 
+**Onboarding + setup profile→.env sync** (2026-08-15, landed): the
+onboarding page (`app/static/onboarding.html`) now has a fourth fieldset,
+"Live Chart (Telegram Mini App)", after the Telegram one — three inputs
+(`ngrok_authtoken`, `ngrok_domain`, `miniapp_direct_link`) plus a numbered
+`<details>` guide (ngrok signup → authtoken → claim a free static domain →
+save → re-run the launcher → BotFather `/newapp` → paste the resulting
+`t.me/<bot>/<name>` link back). Same profile/`_PROFILE_SCHEMA` this whole
+section already relies on gained the three columns, added to
+`PROFILE_FIELDS` (completion % denominator moved 12 → 15) via a guarded
+`ALTER TABLE` migration (same try/except `OperationalError` pattern as the
+`trades`-table migrations, so opening a pre-existing db just gains the
+columns in place). `ngrok_authtoken` is masked on `GET /ui/profile`
+(`_mask_secret`, identical treatment to `telegram_bot_token`) and the same
+"a masked value round-tripped back in a POST must never overwrite the
+real stored secret" guard in `ui_profile_save` now covers it too.
+`ngrok_domain` is normalized on save (`SignalDb.save_profile`): stripped,
+a leading `https://`/`http://` removed, a trailing `/` removed — stored
+bare (`tribute-obscurity-monday.ngrok-free.dev`), matching what the
+**Tunnel** section below and `MINIAPP_PUBLIC_URL` already expect.
+`scripts/setup.sh` gained a new phase, "Live chart config (profile →
+.env)" (now phase 6/10, right after "Mini-app feed service" and BEFORE
+the ngrok phase below — the renumbering below reflects it), that reads
+the profile via `curl $BASE_URL/ui/profile` for `ngrok_domain` /
+`miniapp_direct_link` (plain, unmasked) but reads `ngrok_authtoken`
+**directly from the sqlite `profile` row** via a read-only URI connection
+(`file:<path>?mode=ro`) — the GET's masking means the raw token can never
+come from that endpoint, same reasoning as everywhere else a "need the
+real secret, not the masked echo" problem shows up in this codebase. For
+each of `NGROK_AUTHTOKEN` / `MINIAPP_PUBLIC_URL` (built as
+`https://<ngrok_domain>`) / `MINIAPP_DIRECT_LINK`: if the profile has a
+value it's upserted into `service/.env` via a small `env_upsert()` helper
+(replace an existing `KEY=` line in place, append if absent, guarding a
+missing trailing newline first — the same FEED_KEY in-place/append
+lessons as the ngrok phase already applies to `FEED_KEY`); if neither the
+profile nor `.env` has a value, that field SKIPs with a hint pointing at
+`$BASE_URL/ui/onboarding`. The raw token is never echoed anywhere — only
+a `••••last4` form reaches stdout on a successful sync. Because
+`app/config.py`'s `Settings` are read once at process startup, a value
+that actually changed prints an "OK restart the service to apply" line —
+but the phase never auto-restarts `app.main` itself (trading-critical),
+mirroring the FEED_KEY-changed handling in the mini-app phase, which
+restarts only the mini-app process, never the main service. The existing
+ngrok phase immediately below runs unchanged and just picks up whatever
+landed in `.env`. Tests: `service/tests/test_profile.py` covers the
+column round-trip, masking, the no-overwrite-by-masked-value guard,
+`ngrok_domain` normalization, and migration of a hand-built legacy
+`profile` table (no new columns) opened through `SignalDb`; the
+`env_upsert()` shell function and the read-only-sqlite-read snippet were
+exercised directly against scratch `.env`/db files (never against the
+owner's real `service/.env` or `service/xau_assistant.db`) rather than
+via a live setup.sh run, since a real run's Telegram/MT5 phases are
+interactive/hardware-dependent.
+
 - **Start**: `scripts/setup.sh`'s "ngrok static-domain tunnel" phase
-  (phase 6/9, directly after "Mini-app feed service"). Installs the
+  (phase 7/10, directly after "Live chart config (profile → .env)", which
+  is directly after "Mini-app feed service"). Installs the
   `ngrok` v3 linux-amd64 binary into `~/.local/bin` from the official
   `bin.equinox.io` tarball if not already present (atomic: downloads and
   extracts into a `mktemp -d` temp dir, checks `curl`'s and `tar`'s exit

@@ -200,6 +200,30 @@ button {
     </fieldset>
 
     <fieldset>
+      <legend>Live Chart (Telegram Mini App)</legend>
+      <label>ngrok authtoken</label><input name="ngrok_authtoken">
+      <label>ngrok static domain</label><input name="ngrok_domain" placeholder="your-domain.ngrok-free.dev">
+      <label>Mini app direct link (from BotFather)</label><input name="miniapp_direct_link" placeholder="https://t.me/YourBot/chart">
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer; color:var(--text-muted); font-size:12px;">How to set this up (guide)</summary>
+        <ol style="margin:10px 0 0 18px; padding:0; font-size:13px; color:var(--text-muted); line-height:1.7;">
+          <li>Go to <strong>ngrok.com</strong> and sign up (free).</li>
+          <li>Dashboard → <strong>"Your Authtoken"</strong> → copy it → paste it above.</li>
+          <li>Dashboard → <strong>Domains</strong> → <strong>"+ New Domain"</strong> → claim your free static
+          domain → paste the bare domain (no https://) above.</li>
+          <li>Save this page, then re-run the launcher once so the tunnel comes up. After that, open
+          <strong>@BotFather</strong> → <code>/newapp</code> → pick your bot → title
+          "Live Chart" → <code>/empty</code> for the photo and GIF prompts → Web App URL =
+          <code>https://&lt;your ngrok domain&gt;</code> → short name <code>chart</code> → paste the resulting
+          <code>t.me/&lt;bot&gt;/&lt;name&gt;</code> link above.</li>
+        </ol>
+        <p class="note" style="margin-top:8px;">The free ngrok tier shows a one-time "Visit site" page to
+        browser visitors; a paid ngrok domain removes it. None of this is required to trade — the strategy,
+        risk rules, and alerts all work without it.</p>
+      </details>
+    </fieldset>
+
+    <fieldset>
       <legend>Risk profile (your declared preferences — the EA enforces its own inputs)</legend>
       <div class="row">
         <div><label>Risk % per trade</label><input name="risk_per_trade_pct" type="number" step="0.1" value="0.5"></div>
@@ -250,6 +274,7 @@ f.onsubmit=async e=>{e.preventDefault();
   if(el.type==='checkbox') body[el.name]=el.checked?1:0;
   else if(el.value!=='') body[el.name]=el.type==='number'?Number(el.value):el.value; }
  if(typeof body.telegram_bot_token==='string' && body.telegram_bot_token.startsWith('•')) delete body.telegram_bot_token;
+ if(typeof body.ngrok_authtoken==='string' && body.ngrok_authtoken.startsWith('•')) delete body.ngrok_authtoken;
  await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  location.href='/ui';};
 document.getElementById('skip').onclick=async()=>{

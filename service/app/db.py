@@ -53,7 +53,8 @@ _PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
   window_start_hour INTEGER, window_end_hour INTEGER,
   broker_name TEXT, account_login TEXT, account_type TEXT,
   experience_level TEXT, risk_ack INTEGER,
-  created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER
+  created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER,
+  ngrok_authtoken TEXT, ngrok_domain TEXT, miniapp_direct_link TEXT
 )"""
 
 _SPREAD_SCHEMA = """CREATE TABLE IF NOT EXISTS spread_history (
@@ -80,7 +81,8 @@ _PROPOSALS_SCHEMA = """CREATE TABLE IF NOT EXISTS proposals (
 PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
                   "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
                   "profit_target_pct", "broker_name", "account_login",
-                  "account_type", "risk_ack"]
+                  "account_type", "risk_ack",
+                  "ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"]
 
 
 def profile_completion(profile) -> int:
@@ -109,6 +111,13 @@ class SignalDb:
             self.conn.execute("ALTER TABLE signals ADD COLUMN is_active INTEGER DEFAULT 1")
         if "timeframe" not in cols:
             self.conn.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
+        profile_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(profile)")}
+        for col in ("ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"):
+            if col not in profile_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE profile ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass
         trade_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
         if "profit" not in trade_cols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN profit REAL DEFAULT 0")
@@ -307,6 +316,15 @@ class SignalDb:
                 "INSERT INTO profile (id, created_ts, updated_ts) VALUES (1, ?, ?)",
                 (now, now))
         updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
+        if isinstance(updates.get("ngrok_domain"), str):
+            # Store the bare domain: strip whitespace, a leading scheme, and
+            # a trailing slash -- the ngrok phase in setup.sh and every
+            # consumer of MINIAPP_PUBLIC_URL build "https://<domain>"
+            # themselves, so a scheme or trailing slash here would double up.
+            domain = updates["ngrok_domain"].strip()
+            domain = domain.removeprefix("https://").removeprefix("http://")
+            domain = domain.rstrip("/")
+            updates["ngrok_domain"] = domain
         if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
             updates["risk_ack_ts"] = now
         updates["updated_ts"] = now

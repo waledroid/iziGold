@@ -793,6 +793,9 @@ def ui_profile_get():
         token = row.get("telegram_bot_token")
         if token:
             row["telegram_bot_token"] = _mask_secret(str(token))
+        ngrok_token = row.get("ngrok_authtoken")
+        if ngrok_token:
+            row["ngrok_authtoken"] = _mask_secret(str(ngrok_token))
     return {"profile": row, "completion_pct": completion_pct}
 
 
@@ -800,11 +803,13 @@ def ui_profile_get():
 async def ui_profile_save(body: dict):
     body = dict(body) if isinstance(body, dict) else {}
     # Belt and braces: the onboarding page never sends a masked value back,
-    # but guard here too so a masked telegram_bot_token (from the GET
-    # response, e.g. round-tripped by a stale client) can never overwrite
-    # the real stored token.
+    # but guard here too so a masked telegram_bot_token/ngrok_authtoken
+    # (from the GET response, e.g. round-tripped by a stale client) can
+    # never overwrite the real stored secret.
     if str(body.get("telegram_bot_token", "")).startswith("•"):
         body.pop("telegram_bot_token", None)
+    if str(body.get("ngrok_authtoken", "")).startswith("•"):
+        body.pop("ngrok_authtoken", None)
     row = app.state.db.save_profile(body)
     if "telegram_bot_token" in body or "telegram_chat_id" in body:
         try:

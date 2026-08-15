@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
 VENV="$SERVICE_DIR/.venv"
 BASE_URL="http://127.0.0.1:9000"
-TOTAL=9
+TOTAL=10
 MT5_DIR=""
 METAEDITOR=""
 
@@ -204,8 +204,121 @@ else
   ok "started in background (logs: service/miniapp.log)"
 fi
 
-# ------------------------------------------------------- 6. ngrok tunnel
-phase 6 "ngrok static-domain tunnel"
+# -------------------------------------- 6. Live chart config (profile -> .env)
+phase 6 "Live chart config (profile -> .env)"
+# The onboarding page (/ui/onboarding) collects ngrok_authtoken, ngrok_domain
+# and miniapp_direct_link into the service profile alongside the Telegram
+# fields. This phase syncs whatever's in the profile into service/.env
+# BEFORE the ngrok phase below runs, mirroring the Telegram phase's
+# profile-first-then-.env precedence. GET /ui/profile masks ngrok_authtoken
+# the same way it masks telegram_bot_token (see app/main.py's
+# _mask_secret) -- "****" + last 4 chars -- so the raw token cannot come
+# from that endpoint. It's read directly from the sqlite profile row
+# instead (read-only URI connection; never opened for writes).
+db_path="$(grep -oP '^DB_PATH=\K.+' "$SERVICE_DIR/.env" || true)"
+[[ -n "$db_path" ]] || db_path="xau_assistant.db"
+[[ "$db_path" = /* ]] || db_path="$SERVICE_DIR/$db_path"
+
+profile_json="$(curl -sf "$BASE_URL/ui/profile" || true)"
+raw_ngrok_token=""
+if [[ -f "$db_path" ]]; then
+  raw_ngrok_token="$("$VENV/bin/python" - "$db_path" <<'PY' || true
+import sqlite3, sys
+path = sys.argv[1]
+try:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    row = conn.execute("SELECT ngrok_authtoken FROM profile WHERE id=1").fetchone()
+    print((row[0] or "") if row else "")
+except sqlite3.OperationalError:
+    print("")
+PY
+)"
+fi
+profile_domain="$(echo "$profile_json" | "$VENV/bin/python" -c '
+import json, sys
+p = (json.load(sys.stdin).get("profile") or {})
+print(p.get("ngrok_domain") or "")' 2>/dev/null || true)"
+profile_link="$(echo "$profile_json" | "$VENV/bin/python" -c '
+import json, sys
+p = (json.load(sys.stdin).get("profile") or {})
+print(p.get("miniapp_direct_link") or "")' 2>/dev/null || true)"
+
+# Upsert KEY=VAL into a .env file (default: service/.env; a third arg lets
+# tests point this at a scratch copy instead). Replaces an existing
+# KEY=... line in place; appends a new line if absent, guarding a missing
+# trailing newline first (the FEED_KEY in-place/append lessons -- a
+# hand-truncated .env's last line must not get concatenated onto). Returns
+# 1 (no-op) when the stored value already matches, so callers can tell
+# "changed" from "already correct" for the apply-hint below. The token
+# itself is never echoed anywhere -- only a ••••last4 form reaches stdout.
+env_upsert() {
+  local key="$1" val="$2" target="${3:-$SERVICE_DIR/.env}"
+  local existing
+  existing="$(grep -oP "^${key}=\K.*" "$target" 2>/dev/null || true)"
+  [[ "$existing" == "$val" ]] && return 1
+  if grep -q "^${key}=" "$target" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$target"
+  else
+    if [[ -s "$target" ]] && [[ "$(tail -c1 "$target" | wc -l)" -eq 0 ]]; then
+      printf '\n' >>"$target"
+    fi
+    printf '%s=%s\n' "$key" "$val" >>"$target"
+  fi
+  return 0
+}
+
+livechart_changed=0
+if [[ -n "$raw_ngrok_token" ]]; then
+  if env_upsert NGROK_AUTHTOKEN "$raw_ngrok_token"; then
+    ok "NGROK_AUTHTOKEN synced from profile (••••${raw_ngrok_token: -4})"
+    livechart_changed=1
+  else
+    skip "NGROK_AUTHTOKEN already up to date"
+  fi
+elif grep -q '^NGROK_AUTHTOKEN=.\+' "$SERVICE_DIR/.env"; then
+  skip "NGROK_AUTHTOKEN already set in .env"
+else
+  skip "no ngrok authtoken in profile or .env -- add it at $BASE_URL/ui/onboarding"
+fi
+
+if [[ -n "$profile_domain" ]]; then
+  public_url="https://$profile_domain"
+  if env_upsert MINIAPP_PUBLIC_URL "$public_url"; then
+    ok "MINIAPP_PUBLIC_URL synced from profile ($public_url)"
+    livechart_changed=1
+  else
+    skip "MINIAPP_PUBLIC_URL already up to date"
+  fi
+elif grep -q '^MINIAPP_PUBLIC_URL=.\+' "$SERVICE_DIR/.env"; then
+  skip "MINIAPP_PUBLIC_URL already set in .env"
+else
+  skip "no ngrok domain in profile or .env -- add it at $BASE_URL/ui/onboarding"
+fi
+
+if [[ -n "$profile_link" ]]; then
+  if env_upsert MINIAPP_DIRECT_LINK "$profile_link"; then
+    ok "MINIAPP_DIRECT_LINK synced from profile"
+    livechart_changed=1
+  else
+    skip "MINIAPP_DIRECT_LINK already up to date"
+  fi
+elif grep -q '^MINIAPP_DIRECT_LINK=.\+' "$SERVICE_DIR/.env"; then
+  skip "MINIAPP_DIRECT_LINK already set in .env"
+else
+  skip "no mini-app direct link in profile or .env yet (set it after the BotFather /newapp step) -- add it at $BASE_URL/ui/onboarding"
+fi
+
+# Settings are read once at process startup (app/config.py's Settings()).
+# A changed value here won't take effect until the MAIN service restarts --
+# but this script never auto-restarts trading-critical processes (same
+# stance as the FEED_KEY-changed handling in the mini-app phase above,
+# which restarts only the mini-app, never app.main), so just say so.
+if [[ "$livechart_changed" == 1 ]]; then
+  ok "live chart config changed -- restart the service to apply"
+fi
+
+# ------------------------------------------------------- 7. ngrok tunnel
+phase 7 "ngrok static-domain tunnel"
 env_ngrok_token="$(grep -oP '^NGROK_AUTHTOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
 env_miniapp_url="$(grep -oP '^MINIAPP_PUBLIC_URL=\K.+' "$SERVICE_DIR/.env" || true)"
 
@@ -294,8 +407,8 @@ else
   fi
 fi
 
-# ----------------------------------------------------------------- 7. Telegram
-phase 7 "Telegram"
+# ----------------------------------------------------------------- 8. Telegram
+phase 8 "Telegram"
 profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
 import json, sys
 p = json.load(sys.stdin).get("profile") or {}
@@ -344,8 +457,8 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
 
-# ------------------------------------------------------ 8. MT5 install + compile
-phase 8 "MT5 install + compile"
+# ------------------------------------------------------ 9. MT5 install + compile
+phase 9 "MT5 install + compile"
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -370,8 +483,8 @@ fi
 [[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
 
-# ------------------------------------------- 9. Handoff + end-to-end verification
-phase 9 "Handoff + end-to-end verify"
+# ------------------------------------------ 10. Handoff + end-to-end verification
+phase 10 "Handoff + end-to-end verify"
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
