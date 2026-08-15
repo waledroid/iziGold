@@ -251,13 +251,37 @@ print(p.get("miniapp_direct_link") or "")' 2>/dev/null || true)"
 # 1 (no-op) when the stored value already matches, so callers can tell
 # "changed" from "already correct" for the apply-hint below. The token
 # itself is never echoed anywhere -- only a ••••last4 form reaches stdout.
+#
+# The in-place replace is done in Python, not sed: sed's replacement text
+# treats `&` (whole match) and `\` as special, so a value containing either
+# (e.g. a t.me deep link with `?startapp=...&x=y`) would silently corrupt
+# the line on a second run if spliced into a sed `s|...|...|` script. The
+# value is passed as a plain argv element (never interpolated into a shell
+# string that gets re-parsed or eval'd), so no escaping class of bug
+# applies here at all.
 env_upsert() {
   local key="$1" val="$2" target="${3:-$SERVICE_DIR/.env}"
   local existing
   existing="$(grep -oP "^${key}=\K.*" "$target" 2>/dev/null || true)"
   [[ "$existing" == "$val" ]] && return 1
   if grep -q "^${key}=" "$target" 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "$target"
+    "$VENV/bin/python" - "$target" "$key" "$val" <<'PY'
+import sys
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+prefix = key + "="
+with open(path) as f:
+    lines = f.readlines()
+out = []
+replaced = False
+for line in lines:
+    if not replaced and line.startswith(prefix):
+        out.append(f"{key}={val}\n")
+        replaced = True
+    else:
+        out.append(line)
+with open(path, "w") as f:
+    f.writelines(out)
+PY
   else
     if [[ -s "$target" ]] && [[ "$(tail -c1 "$target" | wc -l)" -eq 0 ]]; then
       printf '\n' >>"$target"

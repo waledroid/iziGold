@@ -317,13 +317,17 @@ class SignalDb:
                 (now, now))
         updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
         if isinstance(updates.get("ngrok_domain"), str):
-            # Store the bare domain: strip whitespace, a leading scheme, and
-            # a trailing slash -- the ngrok phase in setup.sh and every
-            # consumer of MINIAPP_PUBLIC_URL build "https://<domain>"
-            # themselves, so a scheme or trailing slash here would double up.
+            # Store the bare hostname only: strip whitespace, a leading
+            # scheme, and anything after the host (path and/or query) --
+            # the ngrok phase in setup.sh and every consumer of
+            # MINIAPP_PUBLIC_URL build "https://<domain>" themselves, so a
+            # scheme, path, or query here would double up or corrupt the
+            # built URL. A pasted full tunnel URL (e.g. copied straight out
+            # of a browser's address bar with a path/query still attached)
+            # normalizes down to just the host.
             domain = updates["ngrok_domain"].strip()
             domain = domain.removeprefix("https://").removeprefix("http://")
-            domain = domain.rstrip("/")
+            domain = domain.split("/", 1)[0].split("?", 1)[0]
             updates["ngrok_domain"] = domain
         if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
             updates["risk_ack_ts"] = now

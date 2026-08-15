@@ -167,6 +167,15 @@ def test_onboarding_page_served(client):
         assert needle in r.text
 
 
+def test_onboarding_secret_inputs_are_password_type(client):
+    """telegram_bot_token and ngrok_authtoken are secrets -- neither should
+    render as plain text in the browser."""
+    r = client.get("/ui/onboarding")
+    assert r.status_code == 200
+    assert 'name="telegram_bot_token" type="password"' in r.text
+    assert 'name="ngrok_authtoken" type="password"' in r.text
+
+
 def test_ngrok_domain_normalized_on_save(tmp_path):
     db = SignalDb(str(tmp_path / "p.db"))
     row = db.save_profile({"ngrok_domain": "  https://my-domain.ngrok-free.dev/  "})
@@ -175,6 +184,10 @@ def test_ngrok_domain_normalized_on_save(tmp_path):
     assert row["ngrok_domain"] == "plain.example.com"
     row = db.save_profile({"ngrok_domain": "already-bare.example.com"})
     assert row["ngrok_domain"] == "already-bare.example.com"
+    row = db.save_profile({"ngrok_domain": "https://x.ngrok-free.dev/foo?bar"})
+    assert row["ngrok_domain"] == "x.ngrok-free.dev"
+    row = db.save_profile({"ngrok_domain": "x.ngrok-free.dev?bar"})
+    assert row["ngrok_domain"] == "x.ngrok-free.dev"
 
 
 def test_livechart_fields_roundtrip(tmp_path):

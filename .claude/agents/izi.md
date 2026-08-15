@@ -905,7 +905,10 @@ account with no config swap needed later). Domain on this machine:
 **Onboarding + setup profile→.env sync** (2026-08-15, landed): the
 onboarding page (`app/static/onboarding.html`) now has a fourth fieldset,
 "Live Chart (Telegram Mini App)", after the Telegram one — three inputs
-(`ngrok_authtoken`, `ngrok_domain`, `miniapp_direct_link`) plus a numbered
+(`ngrok_authtoken` and `telegram_bot_token` both `type="password"` — same
+convention, so neither secret renders as plain text in the browser;
+`ngrok_domain`/`miniapp_direct_link` stay plain `text` since they're not
+secrets) plus a numbered
 `<details>` guide (ngrok signup → authtoken → claim a free static domain →
 save → re-run the launcher → BotFather `/newapp` → paste the resulting
 `t.me/<bot>/<name>` link back). Same profile/`_PROFILE_SCHEMA` this whole
@@ -918,9 +921,13 @@ columns in place). `ngrok_authtoken` is masked on `GET /ui/profile`
 "a masked value round-tripped back in a POST must never overwrite the
 real stored secret" guard in `ui_profile_save` now covers it too.
 `ngrok_domain` is normalized on save (`SignalDb.save_profile`): stripped,
-a leading `https://`/`http://` removed, a trailing `/` removed — stored
-bare (`tribute-obscurity-monday.ngrok-free.dev`), matching what the
-**Tunnel** section below and `MINIAPP_PUBLIC_URL` already expect.
+a leading `https://`/`http://` removed, then anything after the host
+(path and/or query — split on `/` then `?`, keep `[0]`) removed — stored
+as a bare hostname (`tribute-obscurity-monday.ngrok-free.dev`), matching
+what the **Tunnel** section below and `MINIAPP_PUBLIC_URL` already
+expect. A pasted full tunnel URL with a path/query still attached (e.g.
+`https://x.ngrok-free.dev/foo?bar`, copied straight out of a browser
+address bar) normalizes down to just `x.ngrok-free.dev`.
 `scripts/setup.sh` gained a new phase, "Live chart config (profile →
 .env)" (now phase 6/10, right after "Mini-app feed service" and BEFORE
 the ngrok phase below — the renumbering below reflects it), that reads
@@ -935,7 +942,15 @@ each of `NGROK_AUTHTOKEN` / `MINIAPP_PUBLIC_URL` (built as
 value it's upserted into `service/.env` via a small `env_upsert()` helper
 (replace an existing `KEY=` line in place, append if absent, guarding a
 missing trailing newline first — the same FEED_KEY in-place/append
-lessons as the ngrok phase already applies to `FEED_KEY`); if neither the
+lessons as the ngrok phase already applies to `FEED_KEY`). The in-place
+replace runs through `$VENV/bin/python` (read all lines, rewrite the
+matching `KEY=` line as a literal string, write back), not `sed` — a
+`sed -i "s|^KEY=.*|KEY=$val|"` splice treats `&` (whole-match) and `\` as
+replacement-side special characters, so a value containing either (e.g. a
+BotFather deep link with `?startapp=...&x=y`) would silently corrupt the
+`.env` line on a later re-run; passing the value as a plain argv element
+to the Python snippet sidesteps that whole class of bug rather than
+trying to escape it. If neither the
 profile nor `.env` has a value, that field SKIPs with a hint pointing at
 `$BASE_URL/ui/onboarding`. The raw token is never echoed anywhere — only
 a `••••last4` form reaches stdout on a successful sync. Because
