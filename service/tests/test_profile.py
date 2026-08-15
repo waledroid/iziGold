@@ -41,8 +41,8 @@ def test_completion_percent(tmp_path):
     assert profile_completion(None) == 0
     assert profile_completion(db.save_profile({})) == 0
     row = db.save_profile({"name": "W", "email": "e", "phone": "p"})
-    assert profile_completion(row) == 25            # 3 of 12
-    assert profile_completion(db.save_profile({"name": ""})) == 17  # empty string unsets → 2/12
+    assert profile_completion(row) == 20            # 3 of 15
+    assert profile_completion(db.save_profile({"name": ""})) == 13  # empty string unsets → 2/15
 
 
 @pytest.fixture()
@@ -67,7 +67,7 @@ def test_profile_roundtrip_and_completion(client):
     assert client.get("/ui/profile").json() == {"profile": None, "completion_pct": 0}
     body = client.post("/ui/profile", json={"name": "Wale", "risk_ack": 1}).json()
     assert body["profile"]["name"] == "Wale"
-    assert body["completion_pct"] == 17          # 2 of 12
+    assert body["completion_pct"] == 13          # 2 of 15
 
 
 def test_telegram_live_apply(client, monkeypatch):
@@ -162,5 +162,99 @@ async def test_apply_telegram_concurrent_calls_leave_no_orphan_tasks(monkeypatch
 def test_onboarding_page_served(client):
     r = client.get("/ui/onboarding")
     assert r.status_code == 200
-    for needle in ("Identity", "Telegram", "Risk profile", "Account", "/ui/profile"):
+    for needle in ("Identity", "Telegram", "Risk profile", "Account", "/ui/profile",
+                  "Live Chart", "ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"):
         assert needle in r.text
+
+
+def test_onboarding_secret_inputs_are_password_type(client):
+    """telegram_bot_token and ngrok_authtoken are secrets -- neither should
+    render as plain text in the browser."""
+    r = client.get("/ui/onboarding")
+    assert r.status_code == 200
+    assert 'name="telegram_bot_token" type="password"' in r.text
+    assert 'name="ngrok_authtoken" type="password"' in r.text
+
+
+def test_ngrok_domain_normalized_on_save(tmp_path):
+    db = SignalDb(str(tmp_path / "p.db"))
+    row = db.save_profile({"ngrok_domain": "  https://my-domain.ngrok-free.dev/  "})
+    assert row["ngrok_domain"] == "my-domain.ngrok-free.dev"
+    row = db.save_profile({"ngrok_domain": "http://plain.example.com"})
+    assert row["ngrok_domain"] == "plain.example.com"
+    row = db.save_profile({"ngrok_domain": "already-bare.example.com"})
+    assert row["ngrok_domain"] == "already-bare.example.com"
+    row = db.save_profile({"ngrok_domain": "https://x.ngrok-free.dev/foo?bar"})
+    assert row["ngrok_domain"] == "x.ngrok-free.dev"
+    row = db.save_profile({"ngrok_domain": "x.ngrok-free.dev?bar"})
+    assert row["ngrok_domain"] == "x.ngrok-free.dev"
+
+
+def test_livechart_fields_roundtrip(tmp_path):
+    db = SignalDb(str(tmp_path / "p.db"))
+    row = db.save_profile({
+        "ngrok_authtoken": "2abcXYZ_token",
+        "ngrok_domain": "https://my-domain.ngrok-free.dev/",
+        "miniapp_direct_link": "https://t.me/MyBot/chart",
+    })
+    assert row["ngrok_authtoken"] == "2abcXYZ_token"
+    assert row["ngrok_domain"] == "my-domain.ngrok-free.dev"
+    assert row["miniapp_direct_link"] == "https://t.me/MyBot/chart"
+
+
+def test_ngrok_authtoken_masked_on_get(client):
+    client.post("/ui/profile", json={"ngrok_authtoken": "2abcXYZLONGTOKEN7890"})
+    profile = client.get("/ui/profile").json()["profile"]
+    token = profile["ngrok_authtoken"]
+    assert "2abcXYZLONGTOKEN7890" not in token
+    assert token.endswith("7890") and token.startswith("•")
+
+
+def test_masked_ngrok_authtoken_post_does_not_overwrite_stored_token(client):
+    from app import main
+    client.post("/ui/profile", json={"ngrok_authtoken": "REALTOKEN123"})
+    masked = client.get("/ui/profile").json()["profile"]["ngrok_authtoken"]
+    assert masked.startswith("•")
+    client.post("/ui/profile", json={"ngrok_authtoken": masked, "name": "Wale"})
+    stored = main.app.state.db.get_profile()["ngrok_authtoken"]
+    assert stored == "REALTOKEN123"
+
+
+def test_legacy_profile_db_migrates_livechart_columns(tmp_path):
+    """A profile table created before this feature (no ngrok_authtoken /
+    ngrok_domain / miniapp_direct_link columns) must gain them via the
+    guarded ALTER TABLE migration when SignalDb opens it, same pattern as
+    the trades-table migrations above it in db.py."""
+    import sqlite3
+    path = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT, email TEXT, phone TEXT,
+      telegram_bot_token TEXT, telegram_chat_id TEXT,
+      risk_per_trade_pct REAL, max_drawdown_pct REAL, profit_target_pct REAL,
+      window_start_hour INTEGER, window_end_hour INTEGER,
+      broker_name TEXT, account_login TEXT, account_type TEXT,
+      experience_level TEXT, risk_ack INTEGER,
+      created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER
+    )""")
+    conn.execute("INSERT INTO profile (id, name, created_ts, updated_ts) VALUES (1, 'Old', 0, 0)")
+    conn.commit()
+    conn.close()
+
+    db = SignalDb(path)
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(profile)")}
+    assert {"ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"} <= cols
+    row = db.get_profile()
+    assert row["name"] == "Old"          # pre-existing data untouched
+    assert row["ngrok_authtoken"] is None
+    # And it's fully writable post-migration.
+    row = db.save_profile({"ngrok_domain": "migrated.example.com"})
+    assert row["ngrok_domain"] == "migrated.example.com"
+
+
+def test_ngrok_domain_uppercase_scheme_normalized(tmp_path):
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "p.db"))
+    db.save_profile({"ngrok_domain": "HTTPS://Mixed.Case.Ngrok-Free.dev/path?x=1"})
+    assert db.get_profile()["ngrok_domain"] == "mixed.case.ngrok-free.dev"
