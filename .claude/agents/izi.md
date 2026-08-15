@@ -469,7 +469,7 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   trend as stale. The guarded catch-up entry (§3, 2026-08-12) makes that a
   real "yes, if the thesis still holds" instead of an unconditional no.
 
-# 8. Mini-app feed service (Telegram Mini App, Phase 2 of 3)
+# 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plans:
 `docs/superpowers/plans/2026-08-14-miniapp-phase1.md`,
@@ -480,35 +480,37 @@ the chart page itself — `GET /` serves `app/static/miniapp.html`, vendored
 Lightweight Charts renders TF-switchable candles fed by `/api/history` +
 `/ws`, position overlays, offline banner — testable in a plain browser at
 `127.0.0.1:9001` with dev bypass (see verification procedure below).
-**Phase 3**: real auth (Telegram `initData` HMAC validation +
-owner/channel-membership authorization replacing `require_viewer`'s bypass
-body), BotFather `/newapp` registration, ticker `[📈 Live Chart]` button +
-`/chart` repoint, Cloudflare named tunnel — **this is the only point at
-which port 9001 becomes reachable from outside 127.0.0.1**. Checklist:
-set `docs_url=None, redoc_url=None` in the FastAPI app (Swagger UI pulls
-a CDN; `/docs` and `/openapi.json` are auth-free today which is fine on
-127.0.0.1 but not through the tunnel), and replace the setup's
-`/openapi.json` liveness probe with a tiny auth-free `/healthz` endpoint.
-Also: (a) the `WS /ws` call site needs to change, not just
-`viewer_allowed()`'s body — see **Auth** below, `initData` has nowhere
-else to ride on a WS handshake than the query string; (b) the
-`/api/history` fetch's `initData`, which today rides the URL query
-string the same way (`miniapp.html`'s `withInitData()`), should move to
-a header for Phase 3 — a bearer-shaped credential sitting in a query
-string ends up in the Cloudflare tunnel's/any reverse proxy's access
-logs verbatim, whereas `WS /ws` has no such choice (browsers can't set
-custom headers on `new WebSocket(...)`, so the WS URL is stuck with
-query-string `initData` regardless); (c) a real headed-browser check —
-the owner opening the tunneled page and watching a live candle actually
-move — is an explicit Phase 3 acceptance step, not optional polish: every
-verification so far (see below) has been curl/websockets-script-level
-because no headed browser exists in this environment. Until Phase 3
-ships, treat the mini-app as a local-only dev surface.
+**Phase 3, Task 1** (2026-08-15, landed): real auth — Telegram `initData`
+HMAC validation + owner/channel-membership authorization now live,
+replacing `require_viewer`'s dev-bypass-only body. See **Auth** below for
+the full algorithm/wiring.
+
+**Phase 3, Task 2** (2026-08-15, landed): the ngrok static-domain
+tunnel — **the mini-app's first public exposure**, and the only point at
+which port 9001 becomes reachable from outside 127.0.0.1. See **Tunnel**
+below for start/stop/verification.
+
+**Phase 3, Task 3** (2026-08-15, landed): Telegram wiring — the `[📈 Live
+Chart]` button on the owner ticker and the `/chart` repoint. See
+**Telegram wiring** below for the full shape. This is the last of the
+three Phase 3 tasks; the design's mini-app rollout is code-complete. A
+real headed-browser check — the owner opening the tunneled page and
+watching a live candle actually move — remains the one acceptance step
+not yet done: every verification so far (see below, **Tunnel**, and
+**Telegram wiring**) has been curl/websockets/tests-level because no
+headed browser exists in this environment. The tunnel is live and
+security-verified (real auth holds through the public URL — see
+**Tunnel**), and the button/repoint code is unit-tested, but until an
+owner tap-test lands, treat the end-to-end owner-facing experience as
+unconfirmed even though every leg of the wire-level path is real. The
+BotFather `/newapp` registration (needed only for the channel's `t.me`
+link — see **Telegram wiring**) is a separate owner action, relayed but
+not automated here.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
 dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
-through the eventual tunnel, and it is read-only by construction — no
-order/modify call appears anywhere in its call graph.
+through the tunnel, and it is read-only by construction — no order/modify
+call appears anywhere in its call graph.
 
 **Service** (`app/miniapp.py`, its own FastAPI app + uvicorn process — NOT
 part of `app.main`, no `/health` route): in-memory `FeedState` (per-TF ring
@@ -528,7 +530,16 @@ any failed push, see below).
   refused); sends one `{type:"snapshot", tick, positions, tfs}` then
   streams `{type:"tick"|"candle"|"positions", ...}` deltas; inbound
   messages are ignored (read-only feed); dead/slow clients are dropped on
-  a 1 s broadcast timeout, never awaited to death.
+  a 1 s broadcast timeout, never awaited to death. **The close code is an
+  in-process test artifact, not what ships over the wire**: `ws.close(code=
+  4403)` runs *before* `ws.accept()`, so the WS upgrade never completes —
+  a real browser/Telegram client sees a rejected HTTP handshake (403), not
+  a WS close frame carrying 4403 (the protocol has no way to deliver a
+  close code without a completed upgrade). `4403` is only observable
+  through Starlette's in-process `TestClient`/`WebSocketDisconnect`, which
+  is why the tests and the paragraphs below cite it — treat it as "the
+  REST 403, at the point WS diverges from REST," not as wire-visible
+  behavior.
 - `GET /` — the chart page (`app/static/miniapp.html`), served via
   `FileResponse`, deliberately **NOT** behind `require_viewer` (Telegram
   loads this URL directly in the WebApp webview before any `initData`
@@ -562,12 +573,17 @@ it expects over the dict-shaped ring buffer. `ema`/`halftrend` already
 degrade to all-`None`/empty on short input, so `<2`-candle TFs need no
 special-casing. `miniapp.html` draws EMA-9/21 as dim gray (`#888888`,
 width 1), EMA-55 gold, EMA-200 purple (width 2), all with price-line/
-last-value labels off; HalfTrend as two line series (`dodgerblue`=up,
-`orangered`=down, width 2) carrying a value only where their trend
-matches and a whitespace point (`{time}` only) elsewhere, so a flip breaks
-the segment instead of interpolating across it — all six overlay series
-are added to the chart *before* the candlestick series so candles paint on
-top. Live: each `candle` WS delta advances the four EMA lines client-side
+last-value labels off; HalfTrend (2026-08-15: single continuous line, not
+two) as ONE line series (width 2) using Lightweight Charts v4's per-point
+`color` field (`#1e90ff`=up/trend 0, `#ff4500`=down/trend 1) so it flips
+color at the flip point like the MT5 indicator, with a whitespace point
+(`{time}` only) where no value exists — all five overlay series are added
+to the chart *before* the candlestick series so candles paint on top. A
+static top-left `#legend` overlay div (non-interactive, dark translucent,
+~11px) lists all five lines with color-matched swatches (HalfTrend gets a
+blue/red split gradient) and renders unconditionally regardless of whether
+the indicator arrays are present. Live: each `candle` WS delta advances the
+four EMA lines client-side
 with the exact recurrence (`k = 2/(n+1)`) from a baseline captured at the
 last *closed* bar (`setEmaBaseline`, index `length-2` of the last history
 fetch); HalfTrend is never advanced client-side (its state machine needs
@@ -626,25 +642,117 @@ Verified 2026-08-14 against a live bridge feed: WS 15 s window captured 1
 `snapshot` + 28 `tick` + 49 `candle` + 7 `positions` messages, including a
 real open position (matches the account) rendered in the snapshot.
 
-**Auth**: `require_viewer`/`viewer_allowed()` in `app/miniapp.py` are
-Phase 1 stubs — `return settings.miniapp_dev_bypass`
-(`MINIAPP_DEV_BYPASS`, default `false`; pydantic-settings *can* read it
-from `.env`, but on this machine it's deliberately never written there —
-see **Restart** above — it's passed inline on the start command only, so
-it dies with the process). For `require_viewer` (the `GET /api/history`
-FastAPI dependency), the Phase 3 real check is a pure body swap — same
-dependency, same call site, no caller changes. That claim is **overstated
-for `WS /ws`**, though: `viewer_allowed()` is called directly inside
-`ws_feed` today with no request context at all, and Telegram `initData`
-has to come from somewhere on a WS handshake (browsers can't set custom
-headers on `new WebSocket(...)`, so it rides the connection URL's query
-string — see the mini-app's own `wsUrl()`/`withInitData()` in
-`miniapp.html`). Phase 3's real check therefore needs the **WS call site
-itself** changed too, to read `ws.query_params` (or `ws.scope["query_string"]`)
-and pass it into `viewer_allowed()` — not just a body swap. **Never flip
-`MINIAPP_DEV_BYPASS=true` once the tunnel is live** — bypass=true behind
-a public URL means anyone with the link gets the read-only feed with no
+**Auth** (Phase 3 Task 1, 2026-08-15, landed — real algorithm now live):
+`require_viewer`/`viewer_allowed(init_data)` in `app/miniapp.py` still
+check `settings.miniapp_dev_bypass` **first, unconditionally** — same
+short-circuit as Phase 1, `MINIAPP_DEV_BYPASS` default `false`;
+pydantic-settings *can* read it from `.env`, but on this machine it's
+deliberately never written there — see **Restart** above — it's passed
+inline on the start command only, so it dies with the process. Past that
+check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
+`viewer_ok(init_data)`, the new module this task added:
+- **`validate_init_data(init_data, bot_token, max_age_s=86400)`** —
+  Telegram's documented WebApp signature check: parse the querystring,
+  pop `hash`, build the data-check-string from the remaining `k=v` pairs
+  sorted and joined by `\n`, derive `secret = HMAC_SHA256(key=b"WebAppData",
+  msg=bot_token)`, require `hexdigest(HMAC_SHA256(secret, dcs)) == hash`
+  via `hmac.compare_digest` **compared as bytes**
+  (`computed_hash.encode("ascii")` vs
+  `received_hash.encode("utf-8", errors="replace")`), and require
+  `auth_date` within `max_age_s` (`settings.miniapp_auth_max_age_s`,
+  default 1 hour as of 2026-08-15 — tightened from the original 1-day
+  default to shrink the initData replay window through logs 24x; a
+  config knob originally added purely for test control, the function's
+  own parameter default (`validate_init_data(..., max_age_s=86400)`)
+  stays 1 day since it's a generic utility default, not the live path).
+  Returns the parsed `user` dict or `None` on any failure (malformed
+  input, tampered/missing hash, stale `auth_date`) — the whole function
+  body is wrapped in `try/except Exception: return None`, so it is
+  unconditionally raise-proof. **Security-review fix (2026-08-15,
+  same-day follow-up commit):** comparing as `str` used to let a crafted
+  `hash=%C3%A9abc` (non-ASCII) raise `TypeError` straight out of
+  `hmac.compare_digest` — `hmac.compare_digest('abc', 'éabc')` really does
+  raise `TypeError: comparing strings with non-ASCII characters is not
+  supported` — which surfaced as an unhandled 500 on `GET /api/history`
+  and, worse, crashed the `WS /ws` handshake *before* the mandated 4403
+  close could run (the `viewer_allowed()` call sits above `ws_feed`'s
+  `try/except`). Bytes comparison + the catch-all wrapper close both
+  holes; `ws_feed`'s call site also grew a defensive `try/except` around
+  `viewer_allowed()` as a second line of defense.
+- **`viewer_ok(init_data)`** — dev bypass → `True`; else `validate_init_data`
+  must succeed; the signed-in user id matching the resolved owner chat id
+  admits with **no network call**; otherwise, if a channel is linked,
+  admission depends on Telegram's `getChatMember` (`httpx.get`, 5 s
+  timeout) — `status` in `{creator, administrator, member}` admits,
+  anything else (wrong status, non-200, timeout, network error) denies.
+  Membership results are cached 10 min, **keyed by `(channel_id, uid)`**
+  (not `uid` alone — a security-review fix: keying by uid alone let a
+  `/channel` unlink+relink to a *different* channel, or a bot-token
+  rotation, serve back a grant that was only ever verified against the
+  *old* channel), **denials cached too** (so a rejected viewer can't
+  hammer the Bot API by reloading). This is **fail-closed, not
+  fail-open** — CLAUDE.md's non-negotiable #3 ("fail-open everywhere") is
+  about the AI grading path staying out of the trade path; it does not
+  extend to auth. A missing bot token, an unlinked channel, or a down Bot
+  API all deny non-owners; only the owner's local id comparison ever
+  admits without a successful network round trip. `ws_feed` runs
+  `viewer_allowed()` via `await asyncio.to_thread(...)`, not inline —
+  another security-review fix: `viewer_ok` can do a sync sqlite open plus
+  a sync 5 s `httpx.get` on a membership-cache miss, and calling that
+  inline inside the `async def ws_feed` blocked the whole event loop,
+  freezing every other connected client's broadcasts and every other
+  in-flight handshake for up to ~5 s.
+- **Credential resolution** (`miniapp_auth._resolve_credentials()`) opens
+  `settings.db_path` in a **read-only** sqlite connection
+  (`file:...?mode=ro` URI, `timeout=1.0` so lock contention fails fast
+  rather than blocking — a security-review fix) and reads
+  `profile.telegram_bot_token`/`telegram_chat_id` (row `id=1`) and
+  `kv['channel_id']` — same table/key `app.main._effective_telegram`/
+  `_linked_channel` and `app/telegram.py`'s `/channel link` flow read and
+  write. Profile values win when both non-empty, else falls back to
+  `settings.telegram_bot_token`/`telegram_chat_id` (.env), matching
+  `_effective_telegram`'s precedence exactly. Result is **cached 60 s**
+  (`_CRED_CACHE_TTL_S`, another security-review fix — this function runs
+  on every unvalidated request, since it resolves the token
+  `validate_init_data` needs, so without a cache a flood of garbage
+  `initData` would each cost a sqlite open; still fail-closed, worst case
+  is a credential set up to 60 s stale, never a hang). `miniapp.py`
+  deliberately does **not** import `app.main` or reuse `app.main`'s
+  `SignalDb` instance — they're two separate uvicorn processes (port 9000
+  vs 9001) with no shared Python object — and does **not** instantiate
+  `app.db.SignalDb` at all even though it's importable, because
+  `SignalDb.__init__` unconditionally runs `CREATE TABLE IF NOT EXISTS`
+  for every schema, which needs a writable connection; a raw read-only
+  URI connection keeps this public-facing process from ever gaining
+  implicit write access to the trading db. Any sqlite error (db file
+  missing, table missing, locked, contended past the 1 s timeout) is
+  swallowed and treated as "no profile row" — falls through to `.env`
+  settings rather than raising.
+- **REST vs WS initData transport differ, on purpose.** `require_viewer`
+  (the `GET /api/history` FastAPI dependency) reads the
+  `X-Telegram-Init-Data` **header first**, falling back to the
+  `?initData=` query param — a bearer-shaped credential in a URL ends up
+  verbatim in the ngrok tunnel's/any reverse proxy's access logs, so the
+  header is the safe path now that the tunnel is live (see **Tunnel**).
+  `miniapp.html`'s `loadHistory()` was updated to send the header instead
+  of `withInitData()`-appending the query string (`withInitData()` itself
+  is untouched, still used elsewhere). `WS /ws` has no such choice —
+  browsers can't set custom headers on `new WebSocket(...)` — so the WS
+  call site reads `ws.query_params.get("initData")` and always will;
+  `wsUrl()`/`withInitData()` in `miniapp.html` are unchanged. A refused
+  WS connect closes with code `4403` (mirrors the REST 403) before
+  `ws.accept()` is ever called. **Never flip `MINIAPP_DEV_BYPASS=true`
+  once the tunnel is live** — bypass=true behind a public URL means
+  anyone with the link gets the read-only feed with no
 auth at all.
+
+**Docs routes / liveness probe** (same task): the FastAPI app now sets
+`docs_url=None, redoc_url=None, openapi_url=None` — Swagger UI pulls a
+CDN script and all three routes were otherwise auth-free by FastAPI
+default (setting `docs_url=None` alone leaves `/openapi.json` registered;
+all three params are needed). `GET /healthz` is a new, deliberately
+auth-free `{"ok": true}` route; `scripts/setup.sh`'s `miniapp_alive()`
+probe now curls `/healthz` instead of the now-404 `/openapi.json`.
 
 **`FEED_KEY`**: random secret in `service/.env` (`openssl rand -hex 24`,
 python `secrets.token_hex(24)` fallback — generated by `scripts/setup.sh`'s
@@ -680,28 +788,223 @@ process running. **Launcher wiring for the bridge itself (starting it
 alongside MT5) lands in Phase 3** — Phase 1 only proves the bridge works
 when run by hand.
 
-**Restart** (same shape as the main service, different module/port):
-`pkill -f "uvicorn app.miniapp:app"` in its OWN command (exit 144 =
-normal), then from `service/`: `MINIAPP_DEV_BYPASS=true nohup
-.venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port 9001 >>
-/tmp/miniapp.log 2>&1 &`. Note the two things easy to get wrong here:
-`MINIAPP_DEV_BYPASS=true` is set **inline on the start command, not in
-`.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line at all, deliberately,
-so the bypass dies with the process and can never survive into the
-tunneled Phase 3 deployment by accident (see the **Auth** paragraph above
-— leaving it in `.env` would mean a stray `.env` copy or a forgotten
-un-set flips the read-only feed open to anyone with the tunnel URL). The
-log path is `/tmp/miniapp.log`, not `service/miniapp.log`. State is
-in-memory only, so a restart shows an empty feed until the bridge's next
-push (≤2 s tick, ≤2 s bars, full backfill automatically on the first
-successful push after any gap).
+**Restart** (same shape as the main service, different module/port). Two
+different restart commands now exist — **do not mix them up now that the
+tunnel is live** (§8 Tunnel, below):
+- **Local browser dev check ONLY** (no headed browser in this
+  environment, but this is how a local curl/websockets check against a
+  fresh process is done): `pkill -f "uvicorn app.miniapp:app"` in its OWN
+  command (exit 144 = normal), then from `service/`:
+  `MINIAPP_DEV_BYPASS=true nohup .venv/bin/uvicorn app.miniapp:app --host
+  127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1 &`. Note the two things
+  easy to get wrong here: `MINIAPP_DEV_BYPASS=true` is set **inline on the
+  start command, not in `.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line
+  at all, deliberately, so the bypass dies with the process and can never
+  survive into the deployed state by accident (see the **Auth** paragraph
+  above — leaving it in `.env` would mean a stray `.env` copy or a
+  forgotten un-set flips the read-only feed open to anyone with the
+  tunnel URL). The log path is `/tmp/miniapp.log`, not `service/
+  miniapp.log`.
+- **Deployed state (the tunnel is live and public)**: the SAME command
+  with `MINIAPP_DEV_BYPASS` simply omitted: `pkill -f "uvicorn
+  app.miniapp:app"`, then from `service/`: `nohup .venv/bin/uvicorn
+  app.miniapp:app --host 127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1
+  &`. This is the only form that may run while the ngrok tunnel is up —
+  verified 2026-08-15 (see **Tunnel**): with the bypass restarted away,
+  `.../api/history?tf=M5` through the public domain returns 403, not the
+  feed.
+
+Either way, state is in-memory only, so a restart shows an empty feed
+until the bridge's next push (≤2 s tick, ≤2 s bars, full backfill
+automatically on the first successful push after any gap).
 
 **Setup**: `scripts/setup.sh`'s "Mini-app feed service" phase (between
-"Service" and "Telegram") ensures `FEED_KEY` exists in `.env` (SKIP if
-already set) and starts the port-9001 uvicorn process if not already
-answering (liveness probed via `GET /openapi.json` — auth-free, unlike
-`/api/history` which 403s with dev bypass off) — SKIP if already running,
-same idempotent phase shape as every other step.
+"Service" and the ngrok tunnel phase) ensures `FEED_KEY` exists in `.env`
+(SKIP if already set) and starts the port-9001 uvicorn process if not
+already answering (liveness probed via `GET /healthz` — auth-free, unlike
+`/api/history` which 403s with dev bypass off; `/openapi.json` is 404 now
+that docs routes are disabled, see **Docs routes / liveness probe**
+above) — SKIP if already running, same idempotent phase shape as every
+other step. It never sets `MINIAPP_DEV_BYPASS` — a setup-started mini-app
+is always in the deployed (no-bypass) state described above.
+
+**Tunnel** (Phase 3, Task 2, 2026-08-15, landed): ngrok v3, free tier,
+static domain — the mini-app's first public exposure, and the answer to
+the "Cloudflare named tunnel" placeholder in earlier Phase 3 notes (the
+design spec amended §5 to ngrok before this landed: the owner has no
+domain, and ngrok's free tier gives one permanent static domain per
+account with no config swap needed later). Domain on this machine:
+`tribute-obscurity-monday.ngrok-free.dev`, driven entirely by
+`MINIAPP_PUBLIC_URL` in `service/.env` — nothing hardcodes it elsewhere.
+
+> **SAFETY INVARIANT — never run these two together:**
+> `MINIAPP_DEV_BYPASS=true` and the ngrok tunnel being up. Bypass mode
+> skips `viewer_ok()`'s Telegram `initData` check entirely (see **Auth**
+> above); with the tunnel live, that check is the *only* thing standing
+> between the read-only feed (`/api/history`, `/ws`) and the open
+> internet. Bypass + tunnel simultaneously = anyone with the ngrok URL
+> gets live account/position data, no auth at all. This is why
+> `MINIAPP_DEV_BYPASS` is never written to `.env` (see **Restart** below)
+> and why the two restart recipes are named "Local browser dev check
+> ONLY" vs "Deployed state (the tunnel is live and public)" — pick the
+> dev-bypass one while the tunnel stays up from a previous session and
+> the invariant is silently broken. Before starting the tunnel (or
+> leaving it running), confirm the miniapp process is in its no-bypass
+> form; before flipping on `MINIAPP_DEV_BYPASS` for local debugging,
+> `pkill -f "ngrok http"` first.
+
+- **Start**: `scripts/setup.sh`'s "ngrok static-domain tunnel" phase
+  (phase 6/9, directly after "Mini-app feed service"). Installs the
+  `ngrok` v3 linux-amd64 binary into `~/.local/bin` from the official
+  `bin.equinox.io` tarball if not already present (atomic: downloads and
+  extracts into a `mktemp -d` temp dir, checks `curl`'s and `tar`'s exit
+  status, then `mv`s the binary into place — a truncated/corrupt download
+  can never masquerade as "installed" the way a straight extract-in-place
+  with only a presence check would); runs `ngrok config add-authtoken
+  <NGROK_AUTHTOKEN from .env>` only if `~/.config/ngrok/ngrok.yml` has no
+  `authtoken:` line yet; then `nohup ngrok http --url=<domain>
+  --inspect=false 9001 --log /tmp/ngrok.log &`, where `<domain>` is
+  `MINIAPP_PUBLIC_URL` with the `https://` scheme stripped inside the
+  script (single source of truth — the phase never hardcodes the domain
+  string). **`--inspect=false`** (security-review fix, 2026-08-15): with
+  inspection on (ngrok's default), the local port-4040 web UI/agent API
+  keeps a rolling capture buffer of full request/response traffic —
+  including raw request URIs and headers, which means a viewer's
+  Telegram `initData` (carried as `?initData=` on the WS path, and
+  replayable from the REST header too) would sit there fully replayable
+  to anything with access to `127.0.0.1:4040`. Verified empirically
+  (2026-08-15): with the flag, `GET 127.0.0.1:4040/api/requests/http`
+  returns an empty `requests` list even right after driving traffic
+  through the public tunnel, while `GET 127.0.0.1:4040/api/tunnels`
+  (the endpoint the SKIP check below depends on) is unaffected — the
+  tunnels/agent API and the request-capture buffer are independent
+  features, so disabling the leaky one costs nothing operationally.
+  Confirms the tunnel actually came up by polling that same agent API
+  (`http://127.0.0.1:4040/api/tunnels`) **for the configured domain
+  string**, not just "is ngrok running" (`pgrep -f "ngrok http"` would be
+  satisfied by any unrelated tunnel on the box) and not by trusting the
+  backgrounded `nohup` blindly; an unreachable port 4040 is treated as
+  not-running too, never as "assume it's fine." Idempotent on all three
+  sub-steps independently — SKIPs binary-install if the binary exists,
+  SKIPs authtoken-config if one is already set, SKIPs the tunnel start if
+  the domain already appears live — and SKIPs the whole phase cleanly (no
+  fail) if `NGROK_AUTHTOKEN` or `MINIAPP_PUBLIC_URL` is missing from
+  `.env`, same "safe to run without this configured" shape as the
+  Telegram phase.
+- **Stop**: `pkill -f "ngrok http"`.
+- **Log**: `/tmp/ngrok.log` (not `service/`-relative, matching the
+  `/tmp/miniapp.log` convention).
+- **Interstitial**: ngrok's free tier serves a one-tap "Visit Site"
+  warning page on a plain browser's first visit per session before
+  forwarding to the app. `curl`/scripted clients bypass it by sending
+  `ngrok-skip-browser-warning: 1` — required on every scripted check
+  against the tunnel domain (both verification curls below use it); a
+  check that omits the header and gets HTML back instead of JSON is
+  hitting the interstitial, not a real failure. Telegram's own WebApp
+  webview is expected to pass through without seeing it (not ngrok's
+  definition of a "browser visit") — to be confirmed by Task 3's headed
+  check, not yet verified either way.
+- **Only 9001 is ever exposed** (invariant, same as the **Non-negotiable**
+  paragraph above, now backed by a live process): the tunnel forwards to
+  `127.0.0.1:9001` exclusively. The main service (port 9000 — MT5 wiring,
+  broker credentials, the trading dashboard, direct db access) has no
+  tunnel pointed at it and stays reachable only from 127.0.0.1, tunnel or
+  no tunnel.
+- **Verified live** (2026-08-15): mini-app restarted in the deployed
+  (no-bypass) form (see **Restart** above), then through the public
+  domain: `curl -s -H "ngrok-skip-browser-warning: 1"
+  https://tribute-obscurity-monday.ngrok-free.dev/healthz` → `{"ok":
+  true}`; `curl -s -H "ngrok-skip-browser-warning: 1"
+  "https://tribute-obscurity-monday.ngrok-free.dev/api/history?tf=M5"` →
+  `403 {"detail":"viewer auth required"}`. This is the security proof for
+  Task 1's auth work: it holds through the real public tunnel, not just
+  against localhost. Re-running the setup phase afterward printed SKIP on
+  all three sub-steps (binary/authtoken/tunnel), confirming idempotency
+  with the tunnel already up. **Follow-up (2026-08-15, `--inspect=false`
+  landed):** the ngrok process was restarted alone (`pkill -f "ngrok
+  http"` then the new start command with the flag) — the mini-app and
+  main service were left untouched throughout, since the flag only
+  changes ngrok's own local inspection behavior. Re-verified after
+  restart: `/api/tunnels` still reports the domain (`tunnel_running()`
+  needed no change) and the same `/healthz` → `{"ok":true}` /
+  `/api/history?tf=M5` → 403 pair still holds through the public domain,
+  while `/api/requests/http` on the local agent API now returns no
+  captured traffic.
+- **Upgrade path** (unchanged from the spec's ngrok amendment): moving to
+  a paid domain behind a named tunnel (e.g. Cloudflare) later is a pure
+  config swap — repoint `MINIAPP_PUBLIC_URL` at the new domain and start
+  that tunnel product instead of ngrok. No app code changes, since the
+  setup phase and every consumer of the public URL already read it from
+  that single `.env` value rather than hardcoding ngrok's domain anywhere.
+
+**Telegram wiring** (Phase 3, Task 3, 2026-08-15, landed): the
+`[📈 Live Chart]` button and the `/chart` repoint, both gated on
+`settings.miniapp_public_url` (new `Settings` field, empty string default,
+reads `MINIAPP_PUBLIC_URL` from `.env` — same field the **Tunnel** section
+above already relies on for the domain string; Task 3 is the first thing
+that reads it from `app/config.py` rather than just `scripts/setup.sh`).
+- **Owner ticker button** (`app/ticker.py`): the LIVE-open send (flat→open
+  transition, `ticker_tick`) attaches
+  `{"inline_keyboard": [[{"text": "📈 Live Chart", "web_app": {"url":
+  <miniapp_public_url>}}]]}` via `TelegramClient.send_message`'s existing
+  `reply_markup` param, when the URL is configured; omitted (no
+  `reply_markup` key at all) when it isn't. Owner-only, attached on the
+  initial open send only — the open→open silent edits and the CLOSED
+  freeze edit never carry it (simpler, and Telegram doesn't require the
+  keyboard to persist through edits for the button to have already done
+  its job). The channel ticker copy (`send_message_to`) is structurally
+  incapable of carrying markup — that call has no `reply_markup`
+  parameter at all — so the privacy/no-interactive-controls invariant for
+  the channel holds by construction, not convention. `_live_chart_kb()`
+  does a **lazy** `from app.config import settings` inside the function
+  body rather than at module import time — a deliberate fix during this
+  task's own test run: several other test files
+  `importlib.reload(app.config)` without reloading `app.ticker`, which
+  left a module-level `settings` binding pointing at a stale
+  pre-reload `Settings()` object (`test_ticker.py`'s two new
+  URL-gating tests failed only in the *full* suite, never in isolation,
+  until this was fixed) — same lazy-import convention `telegram.py`'s
+  `/config` command handler already used for exactly this reason.
+- **`/chart` repoint** (`app/main.py`, `_send_chart_snapshot`): when
+  `settings.miniapp_public_url` is set, replies "📈 Live chart:" with the
+  same web_app button instead of rendering/sending the PNG at all (no
+  `render_snapshot_chart` call, no `sendPhoto`); the channel mirror
+  becomes a plain text line (`f"👤 /chart\n📈 Live chart:
+  {settings.miniapp_public_url}"` via the existing `_mirror(app,
+  text=...)` path) instead of the photo mirror — still no markup on the
+  channel side. When the URL is unset, behavior is byte-identical to
+  before this task (PNG render + caption + photo mirror). `main.py`'s
+  `settings` import is module-level (not lazy like `ticker.py`'s) because
+  every test that reloads `app.config` also reloads `app.main` in the
+  same breath (existing convention across the test suite) — the staleness
+  bug above is specific to modules that get imported once and never
+  reloaded alongside `app.config`.
+- **web_app buttons need no BotFather registration for the owner path** —
+  Telegram delivers `initData` (and thus a working authorized session) to
+  any bot's `web_app` button tapped from a **private chat with that bot**,
+  no `/newapp` Mini App registration required. The owner's `[📈 Live
+  Chart]` ticker button and `/chart` button both work day one purely from
+  this task's code. BotFather `/newapp` registration is required **only**
+  for the channel's direct `t.me/<bot>/<app>` deep link (channel members
+  tapping a link outside a bot DM) — that registration is a one-time
+  manual owner action in BotFather, not something this codebase can
+  automate, and the controller relays those instructions to the owner
+  separately. Until it's done, the channel-side experience degrades
+  gracefully to "read `/chart` in the owner chat" — nothing breaks, the
+  channel mirror text line still shows the URL.
+- **Pinned help** (`app/telegram.py`): `PINNED_HELP_VERSION` bumped
+  `"6"` → `"7"`; the `/chart` line reads "open the live chart" instead of
+  "current chart snapshot", reflecting the repoint above regardless of
+  whether `miniapp_public_url` happens to be set (the pinned help text is
+  static, not templated per-request).
+- **Tests**: `tests/test_ticker.py` and `tests/test_chart_cmd.py` both
+  gained an autouse `monkeypatch.setattr(settings, "miniapp_public_url",
+  "")` fixture — necessary because this machine's real `service/.env` has
+  `MINIAPP_PUBLIC_URL` set (it drives the live tunnel), so leaving it
+  unpatched would make every pre-existing PNG/no-button test in those
+  files assert against the wrong branch on this machine specifically. New
+  tests in both files monkeypatch it back on to cover the button/URL-set
+  branch explicitly.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly

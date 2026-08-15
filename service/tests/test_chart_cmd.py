@@ -88,7 +88,19 @@ def test_heartbeat_model_accepts_old_and_new_payloads():
 import asyncio
 import pathlib
 
+import pytest
+
 from app.telegram import PINNED_HELP_VERSION, TelegramClient, format_pinned_help
+
+
+@pytest.fixture(autouse=True)
+def _no_miniapp_url_by_default(monkeypatch):
+    """MINIAPP_PUBLIC_URL may be set in the developer's real .env (it drives
+    the live ngrok tunnel) -- tests must not depend on that machine-local
+    state. Default it off; tests that specifically cover the mini-app
+    button path opt back in with their own monkeypatch.setattr."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url", "")
 
 
 class FakeTransport:
@@ -172,6 +184,52 @@ def test_chart_mirrors_photo_to_channel_owner_first(tmp_path):
     assert "reply_markup" not in photos[1][1]
 
 
+def test_chart_sends_button_when_miniapp_url_set(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url",
+                        "https://tribute-obscurity-monday.ngrok-free.dev")
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300))
+    asyncio.run(m._send_chart_snapshot(app))
+    assert t.of("sendPhoto") == []                # no PNG render
+    sends = t.of("sendMessage")
+    assert len(sends) == 1
+    assert sends[0][1]["chat_id"] == "555"
+    assert sends[0][1]["text"] == "📈 Live chart:"
+    assert sends[0][1]["reply_markup"] == {"inline_keyboard": [[
+        {"text": "📈 Live Chart",
+         "web_app": {"url": "https://tribute-obscurity-monday.ngrok-free.dev"}}
+    ]]}
+
+
+def test_chart_mirrors_url_text_to_channel_no_markup(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url",
+                        "https://tribute-obscurity-monday.ngrok-free.dev")
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300),
+                          channel_id="-1001234")
+    asyncio.run(m._send_chart_snapshot(app))
+    sends = t.of("sendMessage")
+    assert [s[1]["chat_id"] for s in sends] == ["555", "-1001234"]
+    assert "reply_markup" not in sends[1][1]
+    assert "https://tribute-obscurity-monday.ngrok-free.dev" in sends[1][1]["text"]
+
+
+def test_chart_renders_png_when_miniapp_url_unset(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url", "")
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300))
+    asyncio.run(m._send_chart_snapshot(app))
+    photos = t.of("sendPhoto")
+    assert len(photos) == 1
+    assert t.of("sendMessage") == []
+
+
 def test_pinned_help_lists_chart_and_version_bumped():
     assert "/chart" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "6"
+    assert PINNED_HELP_VERSION == "7"

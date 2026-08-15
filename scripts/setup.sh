@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
 VENV="$SERVICE_DIR/.venv"
 BASE_URL="http://127.0.0.1:9000"
-TOTAL=8
+TOTAL=9
 MT5_DIR=""
 METAEDITOR=""
 
@@ -146,7 +146,7 @@ ok "service healthy + /analyze smoke passed"
 # ---------------------------------------------------- 5. Mini-app feed service
 phase 5 "Mini-app feed service"
 MINIAPP_URL="http://127.0.0.1:9001"
-miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/openapi.json" >/dev/null 2>&1; }
+miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/healthz" >/dev/null 2>&1; }
 
 feed_key_changed=0
 if grep -q '^FEED_KEY=.\+' "$SERVICE_DIR/.env"; then
@@ -204,8 +204,98 @@ else
   ok "started in background (logs: service/miniapp.log)"
 fi
 
-# ----------------------------------------------------------------- 6. Telegram
-phase 6 "Telegram"
+# ------------------------------------------------------- 6. ngrok tunnel
+phase 6 "ngrok static-domain tunnel"
+env_ngrok_token="$(grep -oP '^NGROK_AUTHTOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
+env_miniapp_url="$(grep -oP '^MINIAPP_PUBLIC_URL=\K.+' "$SERVICE_DIR/.env" || true)"
+
+if [[ -z "$env_ngrok_token" || -z "$env_miniapp_url" ]]; then
+  skip "NGROK_AUTHTOKEN / MINIAPP_PUBLIC_URL not set in .env — tunnel not started"
+else
+  tunnel_domain="${env_miniapp_url#https://}"
+  tunnel_domain="${tunnel_domain#http://}"
+  ngrok_bin="$HOME/.local/bin/ngrok"
+
+  if [[ -x "$ngrok_bin" ]]; then
+    skip "ngrok binary already installed"
+  else
+    mkdir -p "$HOME/.local/bin"
+    ngrok_tmpdir="$(mktemp -d)"
+    # bin.equinox.io is ngrok's own CDN for release binaries; if it's ever
+    # unreachable, ngrok also publishes an apt repo (apt.ngrok.com) as a
+    # fallback — not used here so this stays a no-sudo, no-package-manager
+    # install into the user's own ~/.local/bin.
+    if ! curl -sfL -o "$ngrok_tmpdir/ngrok.tgz" "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"; then
+      rm -rf "$ngrok_tmpdir"
+      fail "ngrok download failed"
+    fi
+    # Extract into the temp dir and check tar's own exit status — extracting
+    # straight into ~/.local/bin with only a presence check afterward would
+    # let a truncated/corrupt download become the permanently "installed"
+    # binary (a later re-run would see -x true and SKIP forever). mv is
+    # atomic on the same filesystem, so ngrok_bin only ever points at a
+    # binary that extracted cleanly.
+    if ! tar xzf "$ngrok_tmpdir/ngrok.tgz" -C "$ngrok_tmpdir" ngrok; then
+      rm -rf "$ngrok_tmpdir"
+      fail "ngrok extract failed"
+    fi
+    [[ -x "$ngrok_tmpdir/ngrok" ]] || { rm -rf "$ngrok_tmpdir"; fail "ngrok binary missing after extract"; }
+    mv -f "$ngrok_tmpdir/ngrok" "$ngrok_bin"
+    rm -rf "$ngrok_tmpdir"
+    [[ -x "$ngrok_bin" ]] || fail "ngrok binary missing after install"
+    ok "installed ngrok to $ngrok_bin"
+  fi
+
+  if grep -q '^ *authtoken:' "$HOME/.config/ngrok/ngrok.yml" 2>/dev/null; then
+    skip "ngrok authtoken already configured"
+  else
+    "$ngrok_bin" config add-authtoken "$env_ngrok_token" >/dev/null \
+      || fail "ngrok config add-authtoken failed"
+    ok "ngrok authtoken configured"
+  fi
+
+  # Verify by DOMAIN, not by "some ngrok http process exists" — pgrep -f
+  # "ngrok http" would be satisfied by any unrelated tunnel on the box and
+  # SKIP without ever exposing 9001. Query the local agent API for the
+  # configured domain; if 4040 isn't answering at all, treat that as
+  # not-running too (never mistake "can't tell" for "already up"). This
+  # keeps working with --inspect=false below — confirmed empirically
+  # (2026-08-15): the agent/tunnels API (port 4040) stays up and still
+  # reports the tunnel's domain/config; only the separate request-capture
+  # buffer (/api/requests/http) goes empty. No need to fall back to
+  # probing the tunnel domain's /healthz directly.
+  tunnel_running() {
+    curl -sf -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -q "$tunnel_domain"
+  }
+
+  if tunnel_running; then
+    skip "tunnel already running for $tunnel_domain"
+  else
+    # --inspect=false (security-review fix, 2026-08-15): with inspection
+    # on (ngrok's default), the local 4040 web UI/API retains a rolling
+    # buffer of full request/response captures — including raw request
+    # URIs and headers, which for this app means a viewer's initData
+    # (sent as ?initData= on the WS path, or replayed via the REST
+    # header) sits there fully replayable to anything with access to
+    # 127.0.0.1:4040. Only the mini-app (9001) is ever meant to be
+    # reachable from outside this box; the inspection buffer must not
+    # become a second, higher-privilege leak of the same secret.
+    nohup "$ngrok_bin" http --url="$tunnel_domain" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
+    up=""
+    for _ in $(seq 1 20); do
+      if tunnel_running; then up=yes; break; fi
+      sleep 1
+    done
+    if [[ -z "$up" ]]; then
+      tail -25 /tmp/ngrok.log >&2
+      fail "tunnel did not come up in 20s — see /tmp/ngrok.log"
+    fi
+    ok "tunnel live at https://$tunnel_domain (logs: /tmp/ngrok.log)"
+  fi
+fi
+
+# ----------------------------------------------------------------- 7. Telegram
+phase 7 "Telegram"
 profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
 import json, sys
 p = json.load(sys.stdin).get("profile") or {}
@@ -254,8 +344,8 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
 
-# ------------------------------------------------------ 7. MT5 install + compile
-phase 7 "MT5 install + compile"
+# ------------------------------------------------------ 8. MT5 install + compile
+phase 8 "MT5 install + compile"
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -280,8 +370,8 @@ fi
 [[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
 
-# ------------------------------------------- 8. Handoff + end-to-end verification
-phase 8 "Handoff + end-to-end verify"
+# ------------------------------------------- 9. Handoff + end-to-end verification
+phase 9 "Handoff + end-to-end verify"
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):

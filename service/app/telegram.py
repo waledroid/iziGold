@@ -339,7 +339,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "6"
+PINNED_HELP_VERSION = "7"
 
 
 def format_pinned_help() -> str:
@@ -352,7 +352,7 @@ def format_pinned_help() -> str:
         "/mode — execution (AUTO/MANUAL) + entry mode (ADR/FIXED)",
         "/strategy — switch active strategy",
         "/config — current settings",
-        "/chart — current chart snapshot",
+        "/chart — open the live chart",
         "/stats — per-strategy signal hit-rates",
         "/history — last 10 trade events",
         "/switch <id> — queue a strategy switch (/switch cancel)",

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     screenshot_dir: str = "screenshots"
     feed_key: str = ""
     miniapp_dev_bypass: bool = False
+    miniapp_auth_max_age_s: int = 3600
+    miniapp_public_url: str = ""
 
 
 settings = Settings()
