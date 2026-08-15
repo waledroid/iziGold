@@ -1059,3 +1059,18 @@ When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly
 trades it away, compile-gate all MQL5 changes, keep the suite green, and
 prefer evidence from `xau_assistant.db` and the logs over memory.
+
+**Bridge auto-start (2026-08-15, launcher step 2b)**: `XAU-Launch.bat` /
+`scripts/xau-launch.bat` now starts the bridge hidden via Windows
+`pythonw.exe` (`%LOCALAPPDATA%\Programs\Python\Python31x\pythonw.exe`,
+first found of 312/311/313) right after the MT5-running check and before
+`setup.sh`; idempotent via a PowerShell `Get-CimInstance Win32_Process`
+probe on the command line (`*mt5_feed.py*`) — a running bridge (python.exe
+OR pythonw.exe) → "already running"; none → `start "" /B pythonw
+bridge\mt5_feed.py`. Fail-open: no Windows Python → prints a hint, chart
+shows "feed offline", launcher continues. Verified live both paths (skip
+with a bridge up; hidden pythonw start after killing it — pid survives,
+pushes flow). NOTE: `wmic` was rejected for the probe (deprecated on
+current Windows, quoting-fragile). Manual stop: PowerShell
+`Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*mt5_feed.py*' }
+| % { Stop-Process -Id $_.ProcessId }`.

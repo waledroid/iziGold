@@ -38,5 +38,26 @@ if not exist "C:\Program Files\MetaTrader 5\terminal64.exe" (
 tasklist /FI "IMAGENAME eq terminal64.exe" | find /I "terminal64.exe" >nul
 if errorlevel 1 start "" "C:\Program Files\MetaTrader 5\terminal64.exe" /config:"%REPO_WIN%\scripts\mt5-start.ini"
 
+rem --- 2b. MT5 feed bridge (mini-app live chart): start hidden if not running ---
+rem Windows Python with the MetaTrader5 package (same interpreter dump_bars.py
+rem uses). Idempotent: skips when a bridge process already exists. Read-only by
+rem construction (bridge/mt5_feed.py) -- never touches trading. Fail-open: if
+rem Python isn't installed the launcher just prints a hint and continues.
+set "PYW="
+for %%P in ("%LOCALAPPDATA%\Programs\Python\Python312\pythonw.exe" "%LOCALAPPDATA%\Programs\Python\Python311\pythonw.exe" "%LOCALAPPDATA%\Programs\Python\Python313\pythonw.exe") do (
+  if not defined PYW if exist %%P set "PYW=%%~P"
+)
+if not defined PYW (
+  echo [i] Windows Python not found - live-chart bridge not started ^(chart shows "feed offline"^).
+) else (
+  powershell -NoProfile -Command "if (Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*mt5_feed.py*' }) { exit 0 } else { exit 1 }" >nul 2>&1
+  if errorlevel 1 (
+    echo [*] Starting MT5 feed bridge ^(hidden^) ...
+    start "" /B "%PYW%" "%REPO_WIN%\bridge\mt5_feed.py"
+  ) else (
+    echo [=] MT5 feed bridge already running.
+  )
+)
+
 rem --- 3. service: idempotent setup (first run: venv+deps+telegram; later: skips) ---
 start "XAU Service" wsl.exe -d Ubuntu-24.04 --cd "%REPO_WIN%" -e bash -c "bash scripts/setup.sh; echo; read -p Done._Press_Enter_to_close _"
