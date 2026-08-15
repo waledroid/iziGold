@@ -42,6 +42,13 @@ def _money(x: float) -> str:
     return f"{'+' if x >= 0 else '-'}${abs(x):,.2f}"
 
 
+def _channel_chart_link() -> str:
+    """Tap-to-open link for channel copies (web_app buttons are private-chat
+    only). Prefers the BotFather direct link; empty when nothing configured."""
+    from app.config import settings
+    return settings.miniapp_direct_link or settings.miniapp_public_url or ""
+
+
 def format_ticker(hb, mode: str, ts_str: str, closed=False,
                   redacted=False) -> str:
     direction = hb.positions[0].direction if hb.positions else "?"
@@ -55,6 +62,12 @@ def format_ticker(hb, mode: str, ts_str: str, closed=False,
         lines.append(f"{p.direction} {p.lots:g} @ {p.open_price:g}   "
                      f"{_money(p.profit)}")
     lines.append("")
+    if redacted and not closed:
+        # channel copies can't carry buttons — give members a tap link;
+        # placed ABOVE the timestamp so _body()'s last-line strip still works
+        link = _channel_chart_link()
+        if link:
+            lines.append(f"📈 Live chart: {link}")
     if closed:
         lines.append(f"closed {ts_str} — final P/L in the close report")
     else:

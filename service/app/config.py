@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     miniapp_dev_bypass: bool = False
     miniapp_auth_max_age_s: int = 3600
     miniapp_public_url: str = ""
+    # BotFather-registered direct link (t.me/<bot>/<shortname>) — works in
+    # channels where web_app buttons cannot; falls back to the raw public URL.
+    miniapp_direct_link: str = ""
 
 
 settings = Settings()

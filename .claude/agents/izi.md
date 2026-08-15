@@ -491,6 +491,17 @@ which port 9001 becomes reachable from outside 127.0.0.1. See **Tunnel**
 below for start/stop/verification.
 
 **Phase 3, Task 3** (2026-08-15, landed): Telegram wiring — the `[📈 Live
+  **Channel direct link** (2026-08-15): web_app buttons are private-chat
+  only, so channel copies (ticker LIVE text + `/chart` mirror) carry a
+  tap-to-open TEXT line `📈 Live chart: <link>` using
+  `MINIAPP_DIRECT_LINK` (the BotFather `/newapp` link,
+  `https://t.me/IziGold2026_bot/iziGold_chart`) when set, else the raw
+  `MINIAPP_PUBLIC_URL`. In the ticker the line sits ABOVE the timestamp so
+  `_body()`'s last-line strip (unchanged-body edit skip) keeps working;
+  omitted on the CLOSED freeze. Members tapping it still pass the initData
+  auth (channel membership); ngrok free-tier interstitial appears once per
+  browser session — the "ngrok-skip-browser-warning" header bypass only
+  applies to API clients, not to Telegram's webview.
 Chart]` button on the owner ticker and the `/chart` repoint. See
 **Telegram wiring** below for the full shape. This is the last of the
 three Phase 3 tasks; the design's mini-app rollout is code-complete. A

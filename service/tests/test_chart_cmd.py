@@ -207,6 +207,7 @@ def test_chart_mirrors_url_text_to_channel_no_markup(tmp_path, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "miniapp_public_url",
                         "https://tribute-obscurity-monday.ngrok-free.dev")
+    monkeypatch.setattr(settings, "miniapp_direct_link", "", raising=False)
     candles = _candles()
     app, t, m = _snap_app(tmp_path, candles,
                           hb=_full_hb(candles[-1].t + 300),
@@ -233,3 +234,21 @@ def test_chart_renders_png_when_miniapp_url_unset(tmp_path, monkeypatch):
 def test_pinned_help_lists_chart_and_version_bumped():
     assert "/chart" in format_pinned_help()
     assert PINNED_HELP_VERSION == "7"
+
+
+def test_chart_channel_mirror_prefers_direct_link(tmp_path, monkeypatch):
+    """When the BotFather direct link is configured, the channel /chart line
+    uses it (tap-to-open in channels) instead of the raw public URL."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "miniapp_public_url", "https://x.example")
+    monkeypatch.setattr(settings, "miniapp_direct_link",
+                        "https://t.me/bot/chart", raising=False)
+    candles = _candles()
+    app, t, m = _snap_app(tmp_path, candles,
+                          hb=_full_hb(candles[-1].t + 300),
+                          channel_id="-1001234")
+    asyncio.run(m._send_chart_snapshot(app))
+    sends = [c for c in t.calls if c[0] == "sendMessage"]
+    chan = [s for s in sends if s[1]["chat_id"] == "-1001234"][0]
+    assert "https://t.me/bot/chart" in chan[1]["text"]
+    assert "reply_markup" not in chan[1]

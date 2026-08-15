@@ -192,8 +192,8 @@ async def _send_chart_snapshot(app) -> None:
              "web_app": {"url": settings.miniapp_public_url}}
         ]]}
         await asyncio.to_thread(tg.send_message, "📈 Live chart:", kb)
-        await _mirror(app, text=(
-            f"👤 /chart\n📈 Live chart: {settings.miniapp_public_url}"))
+        chan_link = settings.miniapp_direct_link or settings.miniapp_public_url
+        await _mirror(app, text=f"👤 /chart\n📈 Live chart: {chan_link}")
         return
     rc = app.state.recent_candles
     if not rc or not rc.get("candles"):

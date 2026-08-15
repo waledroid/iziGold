@@ -296,3 +296,25 @@ def test_heartbeat_endpoint_triggers_ticker(tmp_path, monkeypatch):
             time.sleep(0.05)
         sends = transport.of("sendMessage")
         assert len(sends) == 1 and "LIVE" in sends[0][1]["text"]
+
+
+def test_channel_ticker_carries_direct_link_line_when_configured(monkeypatch):
+    """Channel copies can't carry web_app buttons — they get a tap link line
+    (BotFather direct link preferred), placed above the timestamp so the
+    unchanged-body check keeps working; owner text does not get the line."""
+    from app import config
+    monkeypatch.setattr(config.settings, "miniapp_direct_link",
+                        "https://t.me/bot/chart", raising=False)
+    monkeypatch.setattr(config.settings, "miniapp_public_url",
+                        "https://x.example", raising=False)
+    from app.ticker import format_ticker
+    hb = types.SimpleNamespace(equity=1.0, floating_pl=0.0, positions=[
+        types.SimpleNamespace(direction="SELL", lots=0.05, open_price=4000.0,
+                              profit=1.0)])
+    chan = format_ticker(hb, "auto", "10:00:00", redacted=True)
+    owner = format_ticker(hb, "auto", "10:00:00")
+    assert "📈 Live chart: https://t.me/bot/chart" in chan
+    assert chan.rstrip().endswith("updated 10:00:00")     # link above timestamp
+    assert "Live chart" not in owner
+    closed = format_ticker(hb, "auto", "10:00:00", closed=True, redacted=True)
+    assert "Live chart" not in closed
