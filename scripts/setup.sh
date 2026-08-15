@@ -220,12 +220,29 @@ else
     skip "ngrok binary already installed"
   else
     mkdir -p "$HOME/.local/bin"
-    ngrok_tgz="$(mktemp)"
-    curl -sfL -o "$ngrok_tgz" "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz" \
-      || fail "ngrok download failed"
-    tar xzf "$ngrok_tgz" -C "$HOME/.local/bin" ngrok
-    rm -f "$ngrok_tgz"
-    [[ -x "$ngrok_bin" ]] || fail "ngrok binary missing after extract"
+    ngrok_tmpdir="$(mktemp -d)"
+    # bin.equinox.io is ngrok's own CDN for release binaries; if it's ever
+    # unreachable, ngrok also publishes an apt repo (apt.ngrok.com) as a
+    # fallback — not used here so this stays a no-sudo, no-package-manager
+    # install into the user's own ~/.local/bin.
+    if ! curl -sfL -o "$ngrok_tmpdir/ngrok.tgz" "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"; then
+      rm -rf "$ngrok_tmpdir"
+      fail "ngrok download failed"
+    fi
+    # Extract into the temp dir and check tar's own exit status — extracting
+    # straight into ~/.local/bin with only a presence check afterward would
+    # let a truncated/corrupt download become the permanently "installed"
+    # binary (a later re-run would see -x true and SKIP forever). mv is
+    # atomic on the same filesystem, so ngrok_bin only ever points at a
+    # binary that extracted cleanly.
+    if ! tar xzf "$ngrok_tmpdir/ngrok.tgz" -C "$ngrok_tmpdir" ngrok; then
+      rm -rf "$ngrok_tmpdir"
+      fail "ngrok extract failed"
+    fi
+    [[ -x "$ngrok_tmpdir/ngrok" ]] || { rm -rf "$ngrok_tmpdir"; fail "ngrok binary missing after extract"; }
+    mv -f "$ngrok_tmpdir/ngrok" "$ngrok_bin"
+    rm -rf "$ngrok_tmpdir"
+    [[ -x "$ngrok_bin" ]] || fail "ngrok binary missing after install"
     ok "installed ngrok to $ngrok_bin"
   fi
 
@@ -237,15 +254,22 @@ else
     ok "ngrok authtoken configured"
   fi
 
-  if pgrep -f "ngrok http" >/dev/null; then
-    skip "tunnel already running"
+  # Verify by DOMAIN, not by "some ngrok http process exists" — pgrep -f
+  # "ngrok http" would be satisfied by any unrelated tunnel on the box and
+  # SKIP without ever exposing 9001. Query the local agent API for the
+  # configured domain; if 4040 isn't answering at all, treat that as
+  # not-running too (never mistake "can't tell" for "already up").
+  tunnel_running() {
+    curl -sf -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -q "$tunnel_domain"
+  }
+
+  if tunnel_running; then
+    skip "tunnel already running for $tunnel_domain"
   else
     nohup "$ngrok_bin" http --url="$tunnel_domain" 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
     up=""
     for _ in $(seq 1 20); do
-      if curl -sf -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -q "$tunnel_domain"; then
-        up=yes; break
-      fi
+      if tunnel_running; then up=yes; break; fi
       sleep 1
     done
     if [[ -z "$up" ]]; then
