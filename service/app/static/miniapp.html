@@ -106,6 +106,39 @@ body {
   inset: 0;
 }
 
+/* Indicator legend */
+#legend {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  background: rgba(16, 21, 31, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-main);
+  pointer-events: none;
+  user-select: none;
+}
+#legend .legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+#legend .legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+#legend .legend-ht {
+  background: linear-gradient(90deg, #1e90ff 50%, #ff4500 50%);
+}
+
 /* Position card */
 #posCard {
   position: absolute;
@@ -167,6 +200,13 @@ body {
 <div id="chartWrap">
   <div id="offlineBanner">Connection lost — reconnecting…</div>
   <div id="chart"></div>
+  <div id="legend">
+    <div class="legend-row"><span class="legend-swatch legend-ht"></span>HalfTrend</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 9</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 21</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#f5c542"></span>EMA 55</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:mediumpurple"></span>EMA 200</div>
+  </div>
   <div id="posCard"></div>
 </div>
 
@@ -223,7 +263,13 @@ body {
   // series (in boot()) so candles paint on top, matching render.py's PNG
   // zorder (overlays under the OHLC bars).
   var ema9Series, ema21Series, ema55Series, ema200Series;
-  var htUpSeries, htDownSeries;
+  var htSeries;
+  // HalfTrend renders as ONE continuous line with per-point color (Lightweight
+  // Charts v4 LineData supports a `color` field per point) so it flips blue
+  // <-> red at trend changes exactly like the MT5 indicator, instead of two
+  // series with whitespace gaps at every flip.
+  var HT_UP_COLOR = "#1e90ff";   // dodgerblue -- trend 0
+  var HT_DOWN_COLOR = "#ff4500"; // orangered  -- trend 1
   // Baseline for the live EMA recurrence: the EMA value AT the last
   // CLOSED bar (server truth), i.e. index length-2 of the just-fetched
   // history (index length-1 is the still-forming bar). Reset on every
@@ -244,7 +290,7 @@ body {
   // indicator arrays (old server) degrade to "no points for that series"
   // -- overlays just don't draw, the candle chart still works.
   function setIndicatorSeriesData(body, idxMap, times) {
-    var e9 = [], e21 = [], e55 = [], e200 = [], up = [], down = [];
+    var e9 = [], e21 = [], e55 = [], e200 = [], ht = [];
     for (var i = 0; i < idxMap.length; i++) {
       var orig = idxMap[i], t = times[i];
       var v9 = arrAt(body.ema9, orig);
@@ -255,23 +301,20 @@ body {
       if (isNumeric(v55)) e55.push({ time: t, value: v55 });
       var v200 = arrAt(body.ema200, orig);
       if (isNumeric(v200)) e200.push({ time: t, value: v200 });
-      var ht = arrAt(body.halftrend, orig);
-      if (ht && isNumeric(ht.v) && (ht.trend === 0 || ht.trend === 1)) {
-        if (ht.trend === 0) { up.push({ time: t, value: ht.v }); down.push({ time: t }); }
-        else { down.push({ time: t, value: ht.v }); up.push({ time: t }); }
+      var htPt = arrAt(body.halftrend, orig);
+      if (htPt && isNumeric(htPt.v) && (htPt.trend === 0 || htPt.trend === 1)) {
+        ht.push({ time: t, value: htPt.v, color: htPt.trend === 0 ? HT_UP_COLOR : HT_DOWN_COLOR });
       } else {
-        // Whitespace-only point on BOTH series: keeps the time axis dense
-        // for both lines so a later flip breaks cleanly instead of
-        // interpolating across the gap.
-        up.push({ time: t }); down.push({ time: t });
+        // Whitespace point: keeps the time axis dense so the line resumes
+        // cleanly instead of interpolating across a gap in the data.
+        ht.push({ time: t });
       }
     }
     try { ema9Series.setData(e9); } catch (e) {}
     try { ema21Series.setData(e21); } catch (e) {}
     try { ema55Series.setData(e55); } catch (e) {}
     try { ema200Series.setData(e200); } catch (e) {}
-    try { htUpSeries.setData(up); } catch (e) {}
-    try { htDownSeries.setData(down); } catch (e) {}
+    try { htSeries.setData(ht); } catch (e) {}
   }
 
   // Records the EMA baseline (last CLOSED bar) and the forming-bar time,
@@ -688,10 +731,12 @@ body {
       { color: "#f5c542", lineWidth: 2 }, noLabel));       // gold
     ema200Series = chart.addLineSeries(Object.assign(
       { color: "mediumpurple", lineWidth: 2 }, noLabel));
-    htUpSeries = chart.addLineSeries(Object.assign(
-      { color: "dodgerblue", lineWidth: 2 }, noLabel));
-    htDownSeries = chart.addLineSeries(Object.assign(
-      { color: "orangered", lineWidth: 2 }, noLabel));
+    // Base `color` is just the series-level fallback (e.g. for an empty
+    // series) -- actual rendering uses the per-point `color` set on each
+    // data item in setIndicatorSeriesData(), so the line itself flips
+    // blue/red at trend changes.
+    htSeries = chart.addLineSeries(Object.assign(
+      { color: HT_UP_COLOR, lineWidth: 2 }, noLabel));
 
     series = chart.addCandlestickSeries({
       upColor: "#26a69a",

@@ -552,12 +552,17 @@ it expects over the dict-shaped ring buffer. `ema`/`halftrend` already
 degrade to all-`None`/empty on short input, so `<2`-candle TFs need no
 special-casing. `miniapp.html` draws EMA-9/21 as dim gray (`#888888`,
 width 1), EMA-55 gold, EMA-200 purple (width 2), all with price-line/
-last-value labels off; HalfTrend as two line series (`dodgerblue`=up,
-`orangered`=down, width 2) carrying a value only where their trend
-matches and a whitespace point (`{time}` only) elsewhere, so a flip breaks
-the segment instead of interpolating across it — all six overlay series
-are added to the chart *before* the candlestick series so candles paint on
-top. Live: each `candle` WS delta advances the four EMA lines client-side
+last-value labels off; HalfTrend (2026-08-15: single continuous line, not
+two) as ONE line series (width 2) using Lightweight Charts v4's per-point
+`color` field (`#1e90ff`=up/trend 0, `#ff4500`=down/trend 1) so it flips
+color at the flip point like the MT5 indicator, with a whitespace point
+(`{time}` only) where no value exists — all five overlay series are added
+to the chart *before* the candlestick series so candles paint on top. A
+static top-left `#legend` overlay div (non-interactive, dark translucent,
+~11px) lists all five lines with color-matched swatches (HalfTrend gets a
+blue/red split gradient) and renders unconditionally regardless of whether
+the indicator arrays are present. Live: each `candle` WS delta advances the
+four EMA lines client-side
 with the exact recurrence (`k = 2/(n+1)`) from a baseline captured at the
 last *closed* bar (`setEmaBaseline`, index `length-2` of the last history
 fetch); HalfTrend is never advanced client-side (its state machine needs
