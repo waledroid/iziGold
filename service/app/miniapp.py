@@ -10,6 +10,8 @@ bridge's next backfill push (fail-open).
 import asyncio
 import hmac
 import math
+import sqlite3
+import urllib.parse
 from collections import deque
 from pathlib import Path
 
@@ -203,6 +205,83 @@ def _indicator_series(rows: list[dict]) -> dict:
         "ema200": ema(closes, 200),
         "halftrend": [({"v": e[0], "trend": e[1]} if e else None) for e in ht],
     }
+
+
+TRADES_DEFAULT_LIMIT = 50
+TRADES_MAX_LIMIT = 500   # server-side ceiling: a viewer can never force a full-table scan
+BASKETS_MAX = 30
+
+
+def _open_trades_db_ro() -> sqlite3.Connection:
+    """Same read-only open pattern as `miniapp_auth._resolve_credentials`:
+    a `file:...?mode=ro` URI against `settings.db_path` with `timeout=1.0`
+    so lock contention fails fast. This module must never write to the
+    trading db (see miniapp_auth's module docstring) and must not import
+    `app.main`/`app.db` (separate uvicorn processes, no shared writable
+    SignalDb instance to reuse)."""
+    uri = f"file:{urllib.parse.quote(settings.db_path, safe='/:')}?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=1.0)
+
+
+def _group_baskets(rows: list[dict]) -> list[dict]:
+    """Mirrors `_basket_legs` in app/main.py: a basket is the run of
+    'open'/'add' rows since the previous FINAL 'close' row, closed by the
+    next FINAL 'close'. Non-final closes (a single leg stopping out while
+    the rest of the basket survives) are ignored entirely for boundary
+    purposes -- they neither end a basket nor count as an entry. `rows`
+    must be ordered by id ascending. The trailing basket (still open, no
+    close row yet in the fetched window) gets `exit: None`. Capped to the
+    last BASKETS_MAX baskets."""
+    baskets: list[dict] = []
+    current: dict | None = None
+    for r in rows:
+        event = r.get("event")
+        if event in ("open", "add"):
+            if current is None:
+                current = {"direction": r.get("direction"), "entries": [], "exit": None}
+            current["entries"].append(
+                {"ts": r.get("ts"), "price": r.get("price"), "lots": r.get("lots")})
+        elif event == "close" and r.get("final"):
+            if current is not None:
+                current["exit"] = {"ts": r.get("ts"), "price": r.get("price"),
+                                   "profit": r.get("profit")}
+                baskets.append(current)
+                current = None
+            # a final close with no open basket in the fetched window is a
+            # stray boundary marker (the basket it closed started before
+            # our window) -- nothing to attach it to, so it's dropped.
+    if current is not None:
+        baskets.append(current)
+    return baskets[-BASKETS_MAX:]
+
+
+@app.get("/api/trades")
+def trades(limit: int = TRADES_DEFAULT_LIMIT, _=Depends(require_viewer)):
+    """Last `limit` trade-log rows + server-grouped baskets for the
+    mini-app's past-trade markers. Fail-open like every other read here:
+    ANY error (db missing, table missing, locked, garbage row) returns
+    200 with empty lists rather than a 500 -- the chart must still render
+    with no markers."""
+    try:
+        conn = _open_trades_db_ro()
+        try:
+            cur = conn.execute(
+                "SELECT id, ts, event, direction, lots, price, profit, final "
+                "FROM trades ORDER BY id DESC LIMIT ?",
+                (min(max(int(limit), 0), TRADES_MAX_LIMIT),))
+            raw = cur.fetchall()
+        finally:
+            conn.close()
+        raw.reverse()  # ascending id order for basket grouping
+        rows = [
+            {"id": r[0], "ts": r[1], "event": r[2], "direction": r[3],
+             "lots": r[4], "price": r[5], "profit": r[6], "final": r[7]}
+            for r in raw
+        ]
+        baskets = _group_baskets(rows)
+        return {"trades": rows, "baskets": baskets}
+    except Exception:
+        return {"trades": [], "baskets": []}
 
 
 @app.websocket("/ws")

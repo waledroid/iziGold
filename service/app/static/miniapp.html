@@ -362,6 +362,152 @@ body {
       && isNumeric(c.l) && isNumeric(c.c);
   }
 
+  // ---- Past-trade markers (entries/exits + entry->exit dotted lines) -----
+  // TF name -> seconds, used to snap a trade's raw `ts` to the containing
+  // bar of whatever TF is currently loaded.
+  var TF_SECONDS = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 };
+  var BASKETS_LINE_MAX = 30;
+  var basketLineSeries = [];   // dotted entry->exit LineSeries, cleared+rebuilt every refresh
+
+  // Snap `ts` to the containing bar time for the current TF, but only
+  // return a time that is actually a loaded candle -- markers/lines must
+  // reference real candle times or Lightweight Charts misbehaves. Falls
+  // back to the nearest loaded candle time <= ts; returns null if none.
+  function snapToLoadedBar(ts, tfSeconds, sortedCandleTimes) {
+    if (!isNumeric(ts) || !isNumeric(tfSeconds) || tfSeconds <= 0) return null;
+    if (!Array.isArray(sortedCandleTimes) || !sortedCandleTimes.length) return null;
+    var floored = Math.floor(ts / tfSeconds) * tfSeconds;
+    // Binary search for floored in sortedCandleTimes; if present, use it.
+    var lo = 0, hi = sortedCandleTimes.length - 1, exact = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (sortedCandleTimes[mid] === floored) { exact = mid; break; }
+      if (sortedCandleTimes[mid] < floored) lo = mid + 1; else hi = mid - 1;
+    }
+    if (exact !== -1) return sortedCandleTimes[exact];
+    // Nearest loaded candle time <= ts (not <= floored -- ts itself is the
+    // real anchor; floored may sit before the first loaded candle).
+    lo = 0; hi = sortedCandleTimes.length - 1;
+    var best = -1;
+    while (lo <= hi) {
+      var m = (lo + hi) >> 1;
+      if (sortedCandleTimes[m] <= ts) { best = m; lo = m + 1; } else hi = m - 1;
+    }
+    return best === -1 ? null : sortedCandleTimes[best];
+  }
+
+  function clearBasketLines() {
+    basketLineSeries.forEach(function (s) {
+      try { chart.removeSeries(s); } catch (e) {}
+    });
+    basketLineSeries = [];
+  }
+
+  function lotWeightedAvg(entries) {
+    var totLots = 0, totVal = 0;
+    entries.forEach(function (e) {
+      var lots = isNumeric(e.lots) ? e.lots : 0;
+      var price = isNumeric(e.price) ? e.price : null;
+      if (price === null) return;
+      totLots += lots;
+      totVal += lots * price;
+    });
+    if (totLots > 0) return totVal / totLots;
+    // No usable lots -- fall back to a plain average of valid prices.
+    var prices = entries.map(function (e) { return e.price; }).filter(isNumeric);
+    if (!prices.length) return null;
+    return prices.reduce(function (a, b) { return a + b; }, 0) / prices.length;
+  }
+
+  function renderTradeMarkers(body, tf, sortedCandleTimes) {
+    clearBasketLines();
+    if (!series) return;
+    var tfSeconds = TF_SECONDS[tf];
+    var baskets = (body && Array.isArray(body.baskets)) ? body.baskets : [];
+    var markers = [];
+    var lineCount = 0;
+    baskets.forEach(function (basket) {
+      if (!basket || !Array.isArray(basket.entries)) return;
+      var direction = basket.direction;
+      var isBuy = direction === "BUY" || direction === "buy";
+      var isSell = direction === "SELL" || direction === "sell";
+      if (!isBuy && !isSell) return;
+      var validEntries = [];
+      basket.entries.forEach(function (e) {
+        if (!e || !isNumeric(e.ts) || !isNumeric(e.price)) return;
+        var t = snapToLoadedBar(e.ts, tfSeconds, sortedCandleTimes);
+        if (t === null) return;
+        var lots = isNumeric(e.lots) ? e.lots : 0;
+        markers.push({
+          time: t,
+          position: isBuy ? "belowBar" : "aboveBar",
+          color: isBuy ? "#26a69a" : "#ef5350",
+          shape: isBuy ? "arrowUp" : "arrowDown",
+          text: (isBuy ? "B " : "S ") + lots.toFixed(2)
+        });
+        validEntries.push({ t: t, ts: e.ts, price: e.price, lots: lots });
+      });
+      var exit = basket.exit;
+      var exitT = null;
+      if (exit && isNumeric(exit.ts) && isNumeric(exit.price)) {
+        exitT = snapToLoadedBar(exit.ts, tfSeconds, sortedCandleTimes);
+        if (exitT !== null) {
+          markers.push({
+            time: exitT,
+            position: isBuy ? "aboveBar" : "belowBar",
+            color: "#9aa5b8",
+            shape: "circle",
+            text: "X"
+          });
+        }
+      }
+      // Dotted entry->exit line for a CLOSED basket only, capped at 30.
+      if (exitT !== null && validEntries.length && lineCount < BASKETS_LINE_MAX) {
+        var entryPrice = lotWeightedAvg(validEntries);
+        var entryTimes = validEntries.map(function (e) { return e.t; });
+        var entryTime = Math.min.apply(null, entryTimes);
+        if (entryPrice !== null && entryTime !== exitT) {
+          var profit = isNumeric(exit.profit) ? exit.profit : 0;
+          try {
+            var lineSeries = chart.addLineSeries({
+              lineStyle: LightweightCharts.LineStyle.Dotted,
+              lineWidth: 1,
+              color: profit >= 0 ? "#26a69a" : "#ef5350",
+              priceLineVisible: false,
+              lastValueVisible: false
+            });
+            lineSeries.setData([
+              { time: entryTime, value: entryPrice },
+              { time: exitT, value: exit.price }
+            ]);
+            basketLineSeries.push(lineSeries);
+            lineCount++;
+          } catch (e) {}
+        }
+      }
+    });
+    markers.sort(function (a, b) { return a.time - b.time; });
+    try { series.setMarkers(markers); } catch (e) {}
+  }
+
+  function fetchAndDrawTrades(tf, sortedCandleTimes) {
+    var t = tg();
+    fetch("/api/trades?limit=50", {
+        headers: { "X-Telegram-Init-Data": t ? (t.initData || "") : "" }
+      })
+      .then(function (r) {
+        if (!r.ok) throw new Error("trades http " + r.status);
+        return r.json();
+      })
+      .then(function (body) {
+        if (tf !== currentTf) return;   // stale response, TF moved on
+        renderTradeMarkers(body, tf, sortedCandleTimes);
+      })
+      .catch(function () {
+        // Fail open: no markers this refresh, chart itself is unaffected.
+      });
+  }
+
   // ---- TF state + buttons -------------------------------------------------
   var currentTf = "M5";
 
@@ -413,6 +559,12 @@ body {
         series.setData(rows);
         setIndicatorSeriesData(body, idxMap, times);
         setEmaBaseline(body);
+        // Past-trade markers: refetched after every successful history
+        // load (initial boot, TF switch, and the bar-rollover refetch in
+        // handleMessage's "candle" branch all funnel through here), using
+        // this response's own candle times to snap trade timestamps onto
+        // loaded bars for whichever TF is now on screen.
+        fetchAndDrawTrades(tf, times);
       })
       .catch(function () {
         // Fail open: keep whatever is currently on the chart, the WS
