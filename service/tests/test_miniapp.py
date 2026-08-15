@@ -210,6 +210,58 @@ def test_shared_static_dir_not_exposed(client):
     assert client.get("/static/onboarding.html").status_code == 404
 
 
+def test_history_includes_indicator_arrays_aligned_to_candles(client):
+    n = 60
+    _push(client, {"candles": {"M5": [_candle(1000 + 300 * i, 4000.0 + i)
+                                       for i in range(n)]}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == n
+    for key in ("ema9", "ema21", "ema55", "ema200", "halftrend"):
+        assert key in body
+        assert len(body[key]) == n
+    # ema9 (period 9) has settled by bar 60; ema55/200 (periods 55/200)
+    # are still warming up (55 <= 60 so ema55 just settled, ema200 not).
+    assert body["ema9"][-1] is not None
+    assert body["ema55"][-1] is not None
+    assert body["ema200"][-1] is None
+    # halftrend entries are either null or {"v": ..., "trend": 0|1}.
+    non_null_ht = [e for e in body["halftrend"] if e is not None]
+    assert non_null_ht
+    for e in non_null_ht:
+        assert set(e) == {"v", "trend"}
+        assert e["trend"] in (0, 1)
+
+
+def test_history_short_buffer_has_warmup_nulls(client):
+    _push(client, {"candles": {"M5": [_candle(1000, 4000.0), _candle(1300, 4001.0)]}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert len(body["candles"]) == 2
+    assert body["ema9"] == [None, None]
+    assert body["ema200"] == [None, None]
+    assert body["halftrend"] == [None, None]
+
+
+def test_history_ema55_matches_indicators_module_directly(client):
+    """Parity check: the served ema55 must equal app.indicators.ema computed
+    directly over the same closes -- the server must not be re-deriving the
+    math, just calling the shared module."""
+    from app import indicators
+    closes = [4000.0 + i * 0.7 for i in range(80)]
+    rows = [_candle(1000 + 300 * i, closes[i]) for i in range(80)]
+    _push(client, {"candles": {"M5": rows}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    expected = indicators.ema(closes, 55)
+    assert body["ema55"] == expected
+    assert body["ema55"][-1] == pytest.approx(expected[-1])
+
+
+def test_history_empty_tf_arrays_empty_200(client):
+    body = client.get("/api/history", params={"tf": "M15"}).json()
+    assert body["candles"] == []
+    for key in ("ema9", "ema21", "ema55", "ema200", "halftrend"):
+        assert body[key] == []
+
+
 def test_string_v_rejected(client):
     """Volume (v) must be numeric too — string-v should be rejected."""
     resp = _push(client, {"candles": {"M5": [{"t": 1000, "o": 4000, "h": 4002, "l": 3999, "c": 4001, "v": "NOT_A_NUMBER"}]}})

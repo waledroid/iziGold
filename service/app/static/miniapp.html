@@ -216,6 +216,90 @@ body {
   var chartWrap, chartEl, chart, series;
   var tfRow, bidEl, askEl, spreadEl, posCard, dot, offlineBanner;
 
+  // ---- Indicator overlays (EMA 9/21/55/200 + HalfTrend) ------------------
+  // Server-computed (app/indicators.py, the exact EA-math port) on every
+  // /api/history response; advanced client-side between server refreshes
+  // for the live EMA lines. Added to the chart BEFORE the candlestick
+  // series (in boot()) so candles paint on top, matching render.py's PNG
+  // zorder (overlays under the OHLC bars).
+  var ema9Series, ema21Series, ema55Series, ema200Series;
+  var htUpSeries, htDownSeries;
+  // Baseline for the live EMA recurrence: the EMA value AT the last
+  // CLOSED bar (server truth), i.e. index length-2 of the just-fetched
+  // history (index length-1 is the still-forming bar). Reset on every
+  // successful loadHistory(); consumed by advanceEma() as ticks arrive
+  // for the still-forming bar between refreshes.
+  var emaPrev = { e9: null, e21: null, e55: null, e200: null };
+  var emaK = { e9: 2 / 10, e21: 2 / 22, e55: 2 / 56, e200: 2 / 201 };
+  var lastBarT = null;
+
+  function arrAt(arr, i) {
+    return (Array.isArray(arr) && i >= 0 && i < arr.length) ? arr[i] : null;
+  }
+
+  // Builds per-series point arrays aligned to `times` (the SAME time
+  // values used for the candlestick series) via idxMap[i] -> the row's
+  // original index in body.candles, so a client-side isValidCandle()
+  // filter can never desync overlays from the candle series. Missing/short
+  // indicator arrays (old server) degrade to "no points for that series"
+  // -- overlays just don't draw, the candle chart still works.
+  function setIndicatorSeriesData(body, idxMap, times) {
+    var e9 = [], e21 = [], e55 = [], e200 = [], up = [], down = [];
+    for (var i = 0; i < idxMap.length; i++) {
+      var orig = idxMap[i], t = times[i];
+      var v9 = arrAt(body.ema9, orig);
+      if (isNumeric(v9)) e9.push({ time: t, value: v9 });
+      var v21 = arrAt(body.ema21, orig);
+      if (isNumeric(v21)) e21.push({ time: t, value: v21 });
+      var v55 = arrAt(body.ema55, orig);
+      if (isNumeric(v55)) e55.push({ time: t, value: v55 });
+      var v200 = arrAt(body.ema200, orig);
+      if (isNumeric(v200)) e200.push({ time: t, value: v200 });
+      var ht = arrAt(body.halftrend, orig);
+      if (ht && isNumeric(ht.v) && (ht.trend === 0 || ht.trend === 1)) {
+        if (ht.trend === 0) { up.push({ time: t, value: ht.v }); down.push({ time: t }); }
+        else { down.push({ time: t, value: ht.v }); up.push({ time: t }); }
+      } else {
+        // Whitespace-only point on BOTH series: keeps the time axis dense
+        // for both lines so a later flip breaks cleanly instead of
+        // interpolating across the gap.
+        up.push({ time: t }); down.push({ time: t });
+      }
+    }
+    try { ema9Series.setData(e9); } catch (e) {}
+    try { ema21Series.setData(e21); } catch (e) {}
+    try { ema55Series.setData(e55); } catch (e) {}
+    try { ema200Series.setData(e200); } catch (e) {}
+    try { htUpSeries.setData(up); } catch (e) {}
+    try { htDownSeries.setData(down); } catch (e) {}
+  }
+
+  // Records the EMA baseline (last CLOSED bar) and the forming-bar time,
+  // both consumed by the live "candle" WS handler between history
+  // refreshes. Safe to call with a body that has no/short indicator
+  // arrays -- baseline just stays null and advanceEma() no-ops.
+  function setEmaBaseline(body) {
+    var rows = Array.isArray(body.candles) ? body.candles : [];
+    var n = rows.length;
+    lastBarT = n ? rows[n - 1].t : null;
+    var closedIdx = n - 2; // n-1 is the still-forming bar
+    function baseline(arr) {
+      var v = arrAt(arr, closedIdx);
+      return isNumeric(v) ? v : null;
+    }
+    emaPrev.e9 = baseline(body.ema9);
+    emaPrev.e21 = baseline(body.ema21);
+    emaPrev.e55 = baseline(body.ema55);
+    emaPrev.e200 = baseline(body.ema200);
+  }
+
+  function advanceEma(seriesRef, key, time, close) {
+    var prev = emaPrev[key];
+    if (!isNumeric(prev) || !isNumeric(close) || !isNumeric(time)) return;
+    var next = prev + emaK[key] * (close - prev);
+    try { seriesRef.update({ time: time, value: next }); } catch (e) {}
+  }
+
   function resizeChart() {
     if (!chart || !chartWrap) return;
     chart.resize(chartWrap.clientWidth, chartWrap.clientHeight);
@@ -269,8 +353,17 @@ body {
         // response must not clobber the newer selection.
         if (tf !== currentTf) return;
         if (!body || !Array.isArray(body.candles)) return;
-        var rows = body.candles.filter(isValidCandle).map(toLwCandle);
+        var rows = [], times = [], idxMap = [];
+        for (var i = 0; i < body.candles.length; i++) {
+          if (!isValidCandle(body.candles[i])) continue;
+          var lw = toLwCandle(body.candles[i]);
+          rows.push(lw);
+          times.push(lw.time);
+          idxMap.push(i);
+        }
         series.setData(rows);
+        setIndicatorSeriesData(body, idxMap, times);
+        setEmaBaseline(body);
       })
       .catch(function () {
         // Fail open: keep whatever is currently on the chart, the WS
@@ -466,6 +559,26 @@ body {
             // this message dispatch (and, depending on the browser,
             // possibly the socket's event handling).
           }
+          // Indicator live update. HalfTrend only recomputes correctly
+          // from the full closed-bar history (its state machine walks
+          // bar-by-bar), so it is NOT advanced client-side: a bar
+          // ROLLOVER (a genuinely new t, not just the forming bar being
+          // re-pushed) instead triggers a full /api/history refetch,
+          // which redraws every overlay -- including HalfTrend -- from
+          // server truth. Same-bar updates (t === lastBarT) advance only
+          // the EMA lines with the exact recurrence, using the baseline
+          // captured from the last server-provided closed bar.
+          if (lastBarT === null || msg.candle.t > lastBarT) {
+            loadHistory(currentTf);
+          } else if (msg.candle.t === lastBarT) {
+            advanceEma(ema9Series, "e9", msg.candle.t, msg.candle.c);
+            advanceEma(ema21Series, "e21", msg.candle.t, msg.candle.c);
+            advanceEma(ema55Series, "e55", msg.candle.t, msg.candle.c);
+            advanceEma(ema200Series, "e200", msg.candle.t, msg.candle.c);
+          }
+          // msg.candle.t < lastBarT: stale/out-of-order delta -- ignored
+          // for indicator purposes too (the candle series update above
+          // already dropped it via its own catch).
         }
         break;
 
@@ -556,6 +669,23 @@ body {
       },
       autoSize: true
     });
+
+    // Overlays are added BEFORE the candlestick series so candles paint on
+    // top of them (Lightweight Charts draws later-added series on top),
+    // matching render.py's PNG zorder (indicators under the OHLC bars).
+    var noLabel = { priceLineVisible: false, lastValueVisible: false };
+    ema9Series = chart.addLineSeries(Object.assign(
+      { color: "#888888", lineWidth: 1 }, noLabel));
+    ema21Series = chart.addLineSeries(Object.assign(
+      { color: "#888888", lineWidth: 1 }, noLabel));
+    ema55Series = chart.addLineSeries(Object.assign(
+      { color: "#f5c542", lineWidth: 2 }, noLabel));       // gold
+    ema200Series = chart.addLineSeries(Object.assign(
+      { color: "mediumpurple", lineWidth: 2 }, noLabel));
+    htUpSeries = chart.addLineSeries(Object.assign(
+      { color: "dodgerblue", lineWidth: 2 }, noLabel));
+    htDownSeries = chart.addLineSeries(Object.assign(
+      { color: "orangered", lineWidth: 2 }, noLabel));
 
     series = chart.addCandlestickSeries({
       upColor: "#26a69a",
