@@ -295,3 +295,144 @@ def test_string_v_rejected(client):
     assert resp.status_code == 200
     body = client.get("/api/history", params={"tf": "M5"}).json()
     assert len(body["candles"]) == 1
+
+
+# ---- /api/trades: past-trade markers -------------------------------------
+
+# Copied verbatim from app.db._TRADES_SCHEMA -- miniapp_auth.py's docstring
+# explains why this module opens the SAME db read-only rather than
+# importing app.db.SignalDb (that class's __init__ needs a writable
+# connection to run CREATE TABLE IF NOT EXISTS).
+_TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  event TEXT NOT NULL,
+  strategy_id TEXT,
+  direction TEXT,
+  lots REAL,
+  price REAL,
+  sl REAL,
+  reason TEXT,
+  ticket INTEGER,
+  screenshot_path TEXT,
+  profit REAL DEFAULT 0,
+  render_path TEXT,
+  tp REAL DEFAULT 0,
+  final INTEGER DEFAULT 1
+)"""
+
+
+def _make_trades_db(path, rows):
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    conn.execute(_TRADES_SCHEMA)
+    for r in rows:
+        conn.execute(
+            "INSERT INTO trades (ts, event, direction, lots, price, profit, final) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (r["ts"], r["event"], r.get("direction"), r.get("lots"), r.get("price"),
+             r.get("profit", 0), r.get("final", 1)))
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def trades_client(tmp_path, monkeypatch):
+    """Returns a builder: pass trade rows, get back a TestClient (dev
+    bypass on) wired to a fresh sqlite db populated with those rows via
+    the exact trades schema app.db uses."""
+    def _build(rows, dev_bypass=True):
+        db_path = tmp_path / "trades.db"
+        _make_trades_db(db_path, rows)
+        monkeypatch.setenv("FEED_KEY", "sekret")
+        monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true" if dev_bypass else "false")
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        from app import config, miniapp, miniapp_auth
+        importlib.reload(config)
+        importlib.reload(miniapp_auth)
+        importlib.reload(miniapp)
+        return TestClient(miniapp.app)
+    return _build
+
+
+def test_trades_requires_viewer_auth(trades_client):
+    c = trades_client([], dev_bypass=False)
+    assert c.get("/api/trades").status_code == 403
+
+
+def test_trades_missing_db_returns_empty_200(monkeypatch, tmp_path):
+    monkeypatch.setenv("FEED_KEY", "sekret")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "does_not_exist.db"))
+    from app import config, miniapp, miniapp_auth
+    importlib.reload(config)
+    importlib.reload(miniapp_auth)
+    importlib.reload(miniapp)
+    with TestClient(miniapp.app) as c:
+        resp = c.get("/api/trades")
+        assert resp.status_code == 200
+        assert resp.json() == {"trades": [], "baskets": []}
+
+
+def test_trades_broken_db_returns_empty_200(monkeypatch, tmp_path):
+    db_path = tmp_path / "corrupt.db"
+    db_path.write_bytes(b"not a sqlite file at all")
+    monkeypatch.setenv("FEED_KEY", "sekret")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true")
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    from app import config, miniapp, miniapp_auth
+    importlib.reload(config)
+    importlib.reload(miniapp_auth)
+    importlib.reload(miniapp)
+    with TestClient(miniapp.app) as c:
+        resp = c.get("/api/trades")
+        assert resp.status_code == 200
+        assert resp.json() == {"trades": [], "baskets": []}
+
+
+def test_trades_groups_baskets(trades_client):
+    rows = [
+        {"ts": 100, "event": "open", "direction": "BUY", "lots": 0.05, "price": 4000.0},
+        {"ts": 200, "event": "add", "direction": "BUY", "lots": 0.05, "price": 4005.0},
+        # non-final close: a leg stops out but the basket survives
+        {"ts": 250, "event": "close", "direction": "BUY", "lots": 0.05,
+         "price": 4002.0, "profit": -5.0, "final": 0},
+        # final close ends the basket
+        {"ts": 300, "event": "close", "direction": "BUY", "lots": 0.1,
+         "price": 4010.0, "profit": 50.0, "final": 1},
+        # a following open starts a second, still-open basket
+        {"ts": 400, "event": "open", "direction": "SELL", "lots": 0.05, "price": 4020.0},
+    ]
+    c = trades_client(rows)
+    resp = c.get("/api/trades")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["trades"]) == 5
+    baskets = body["baskets"]
+    assert len(baskets) == 2
+
+    first = baskets[0]
+    assert first["direction"] == "BUY"
+    assert len(first["entries"]) == 2
+    assert first["entries"][0] == {"ts": 100, "price": 4000.0, "lots": 0.05}
+    assert first["entries"][1] == {"ts": 200, "price": 4005.0, "lots": 0.05}
+    assert first["exit"] == {"ts": 300, "price": 4010.0, "profit": 50.0}
+
+    second = baskets[1]
+    assert second["direction"] == "SELL"
+    assert len(second["entries"]) == 1
+    assert second["exit"] is None
+
+
+def test_trades_respects_limit(trades_client):
+    rows = [{"ts": 100 + i, "event": "open" if i % 2 == 0 else "close",
+             "direction": "BUY", "lots": 0.01, "price": 4000.0 + i,
+             "profit": 1.0, "final": 1}
+            for i in range(10)]
+    c = trades_client(rows)
+    resp = c.get("/api/trades", params={"limit": 4})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["trades"]) == 4
+    # Ordered ascending by id (oldest of the last 4 first)
+    assert [t["ts"] for t in body["trades"]] == [106, 107, 108, 109]

@@ -604,6 +604,44 @@ triggers a full `loadHistory()` refetch that redraws every overlay from
 server truth. All defensively guarded: missing/short indicator arrays (old
 server) just mean that overlay draws no points, never a crash.
 
+**Past-trade markers** (2026-08-15, owner request): `GET /api/trades?limit=50`
+(viewer-auth'd via the same `require_viewer` dependency as `/api/history`)
+opens `settings.db_path` **read-only** — the exact `file:...?mode=ro` +
+`timeout=1.0` URI pattern from `app/miniapp_auth.py`'s credential
+resolution, reused rather than importing `app.db.SignalDb` (a separate
+uvicorn process, and that class's `__init__` needs a writable connection) —
+and returns the last `limit` rows of the `trades` table plus a server-side
+`baskets` grouping capped at the last 30. `app/miniapp.py`'s
+`_group_baskets` mirrors `app/main.py`'s `_basket_legs`: a basket is the run
+of `open`/`add` rows since the previous **final** `close`, closed by the
+next final close; a non-final close (one leg stopping out while the rest of
+the basket survives) ends nothing and isn't counted as an entry, matching
+the trade-log semantics exactly. Fail-open like every other read here —
+missing db, missing table, or a corrupt file all land in one `except
+Exception: return {"trades": [], "baskets": []}`, never a 500, so the chart
+renders with no markers rather than breaking. `miniapp.html`'s
+`fetchAndDrawTrades()` is called from inside `loadHistory()`'s own success
+handler — the single choke point already reached by initial boot, TF
+switches, and the bar-rollover refetch — so past trades refresh on the same
+cadence as the candles themselves, using that same response's candle times
+for snapping. Each basket entry draws as an arrow marker (`BUY` → green
+`arrowUp` below the bar, `SELL` → red `arrowDown` above, labelled `"B/S
+<lots>"`), each closed basket's exit as a gray circle (`"X"`, opposite
+side from its entries), and a closed basket additionally gets a dotted
+lot-weighted-average-entry → exit `LineSeries` (green/red by profit sign,
+no price line/last-value label) tracked in a client array and fully
+`chart.removeSeries`'d before every redraw so stale lines never accumulate.
+All marker/line times are snapped via `snapToLoadedBar` to `floor(ts /
+tfSeconds) * tfSeconds` for the *current* TF and then validated against the
+actually-loaded candle times (exact match, else nearest loaded time ≤ ts,
+else the point is dropped) — Lightweight Charts requires marker times to be
+real, ascending series times, so a trade timestamp that doesn't land on a
+loaded bar must never reach `setMarkers`. Markers across all baskets are
+sorted ascending before `series.setMarkers()` (LW's hard requirement, not
+just a nicety). Defensively parsed throughout — an absent endpoint, empty
+`trades`/`baskets`, or a basket missing a recognized `direction` all just
+mean fewer/no markers, never a broken chart.
+
 **WS client contract** (binding — any future edit to the handler must keep
 these): a `snapshot` message is a full **reset**, not a merge — deltas can
 race an in-flight reconnect and arrive first, so `snapshot` always clobbers
