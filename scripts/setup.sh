@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
 VENV="$SERVICE_DIR/.venv"
 BASE_URL="http://127.0.0.1:9000"
-TOTAL=8
+TOTAL=9
 MT5_DIR=""
 METAEDITOR=""
 
@@ -204,8 +204,60 @@ else
   ok "started in background (logs: service/miniapp.log)"
 fi
 
-# ----------------------------------------------------------------- 6. Telegram
-phase 6 "Telegram"
+# ------------------------------------------------------- 6. ngrok tunnel
+phase 6 "ngrok static-domain tunnel"
+env_ngrok_token="$(grep -oP '^NGROK_AUTHTOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
+env_miniapp_url="$(grep -oP '^MINIAPP_PUBLIC_URL=\K.+' "$SERVICE_DIR/.env" || true)"
+
+if [[ -z "$env_ngrok_token" || -z "$env_miniapp_url" ]]; then
+  skip "NGROK_AUTHTOKEN / MINIAPP_PUBLIC_URL not set in .env — tunnel not started"
+else
+  tunnel_domain="${env_miniapp_url#https://}"
+  tunnel_domain="${tunnel_domain#http://}"
+  ngrok_bin="$HOME/.local/bin/ngrok"
+
+  if [[ -x "$ngrok_bin" ]]; then
+    skip "ngrok binary already installed"
+  else
+    mkdir -p "$HOME/.local/bin"
+    ngrok_tgz="$(mktemp)"
+    curl -sfL -o "$ngrok_tgz" "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz" \
+      || fail "ngrok download failed"
+    tar xzf "$ngrok_tgz" -C "$HOME/.local/bin" ngrok
+    rm -f "$ngrok_tgz"
+    [[ -x "$ngrok_bin" ]] || fail "ngrok binary missing after extract"
+    ok "installed ngrok to $ngrok_bin"
+  fi
+
+  if grep -q '^ *authtoken:' "$HOME/.config/ngrok/ngrok.yml" 2>/dev/null; then
+    skip "ngrok authtoken already configured"
+  else
+    "$ngrok_bin" config add-authtoken "$env_ngrok_token" >/dev/null \
+      || fail "ngrok config add-authtoken failed"
+    ok "ngrok authtoken configured"
+  fi
+
+  if pgrep -f "ngrok http" >/dev/null; then
+    skip "tunnel already running"
+  else
+    nohup "$ngrok_bin" http --url="$tunnel_domain" 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
+    up=""
+    for _ in $(seq 1 20); do
+      if curl -sf -m 3 "http://127.0.0.1:4040/api/tunnels" 2>/dev/null | grep -q "$tunnel_domain"; then
+        up=yes; break
+      fi
+      sleep 1
+    done
+    if [[ -z "$up" ]]; then
+      tail -25 /tmp/ngrok.log >&2
+      fail "tunnel did not come up in 20s — see /tmp/ngrok.log"
+    fi
+    ok "tunnel live at https://$tunnel_domain (logs: /tmp/ngrok.log)"
+  fi
+fi
+
+# ----------------------------------------------------------------- 7. Telegram
+phase 7 "Telegram"
 profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
 import json, sys
 p = json.load(sys.stdin).get("profile") or {}
@@ -254,8 +306,8 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
 
-# ------------------------------------------------------ 7. MT5 install + compile
-phase 7 "MT5 install + compile"
+# ------------------------------------------------------ 8. MT5 install + compile
+phase 8 "MT5 install + compile"
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -280,8 +332,8 @@ fi
 [[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
 
-# ------------------------------------------- 8. Handoff + end-to-end verification
-phase 8 "Handoff + end-to-end verify"
+# ------------------------------------------- 9. Handoff + end-to-end verification
+phase 9 "Handoff + end-to-end verify"
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):

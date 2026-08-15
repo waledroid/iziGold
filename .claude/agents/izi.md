@@ -483,22 +483,26 @@ Lightweight Charts renders TF-switchable candles fed by `/api/history` +
 **Phase 3, Task 1** (2026-08-15, landed): real auth — Telegram `initData`
 HMAC validation + owner/channel-membership authorization now live,
 replacing `require_viewer`'s dev-bypass-only body. See **Auth** below for
-the full algorithm/wiring. Still ahead in Phase 3: BotFather `/newapp`
-registration, ticker `[📈 Live Chart]` button + `/chart` repoint,
-Cloudflare named tunnel — **the tunnel is the only point at which port
-9001 becomes reachable from outside 127.0.0.1**, and it is NOT live yet.
-A real headed-browser check — the owner opening the tunneled page and
-watching a live candle actually move — is an explicit Phase 3 acceptance
-step once the tunnel exists, not optional polish: every verification so
-far (see below) has been curl/websockets-script-level because no headed
-browser exists in this environment. Until the tunnel ships, treat the
-mini-app as a local-only dev surface even though the auth code path
-itself is now real.
+the full algorithm/wiring.
+
+**Phase 3, Task 2** (2026-08-15, landed): the ngrok static-domain
+tunnel — **the mini-app's first public exposure**, and the only point at
+which port 9001 becomes reachable from outside 127.0.0.1. See **Tunnel**
+below for start/stop/verification. Still ahead in Phase 3: BotFather
+`/newapp` registration, ticker `[📈 Live Chart]` button + `/chart`
+repoint (Task 3). A real headed-browser check — the owner opening the
+tunneled page and watching a live candle actually move — is an explicit
+Phase 3 acceptance step, not optional polish: every verification so far
+(see below and **Tunnel**) has been curl/websockets-script-level because
+no headed browser exists in this environment. The tunnel is live and
+security-verified (real auth holds through the public URL — see
+**Tunnel**), but until Task 3's headed check lands, treat the owner-facing
+experience as unconfirmed even though the wire-level path is real.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
 dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
-through the eventual tunnel, and it is read-only by construction — no
-order/modify call appears anywhere in its call graph.
+through the tunnel, and it is read-only by construction — no order/modify
+call appears anywhere in its call graph.
 
 **Service** (`app/miniapp.py`, its own FastAPI app + uvicorn process — NOT
 part of `app.main`, no `/health` route): in-memory `FeedState` (per-TF ring
@@ -707,8 +711,8 @@ check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
   (the `GET /api/history` FastAPI dependency) reads the
   `X-Telegram-Init-Data` **header first**, falling back to the
   `?initData=` query param — a bearer-shaped credential in a URL ends up
-  verbatim in the Cloudflare tunnel's/any reverse proxy's access logs, so
-  the header is the safe path once the tunnel is live.
+  verbatim in the ngrok tunnel's/any reverse proxy's access logs, so the
+  header is the safe path now that the tunnel is live (see **Tunnel**).
   `miniapp.html`'s `loadHistory()` was updated to send the header instead
   of `withInitData()`-appending the query string (`withInitData()` itself
   is untouched, still used elsewhere). `WS /ws` has no such choice —
@@ -763,30 +767,108 @@ process running. **Launcher wiring for the bridge itself (starting it
 alongside MT5) lands in Phase 3** — Phase 1 only proves the bridge works
 when run by hand.
 
-**Restart** (same shape as the main service, different module/port):
-`pkill -f "uvicorn app.miniapp:app"` in its OWN command (exit 144 =
-normal), then from `service/`: `MINIAPP_DEV_BYPASS=true nohup
-.venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port 9001 >>
-/tmp/miniapp.log 2>&1 &`. Note the two things easy to get wrong here:
-`MINIAPP_DEV_BYPASS=true` is set **inline on the start command, not in
-`.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line at all, deliberately,
-so the bypass dies with the process and can never survive into the
-tunneled Phase 3 deployment by accident (see the **Auth** paragraph above
-— leaving it in `.env` would mean a stray `.env` copy or a forgotten
-un-set flips the read-only feed open to anyone with the tunnel URL). The
-log path is `/tmp/miniapp.log`, not `service/miniapp.log`. State is
-in-memory only, so a restart shows an empty feed until the bridge's next
-push (≤2 s tick, ≤2 s bars, full backfill automatically on the first
-successful push after any gap).
+**Restart** (same shape as the main service, different module/port). Two
+different restart commands now exist — **do not mix them up now that the
+tunnel is live** (§8 Tunnel, below):
+- **Local browser dev check ONLY** (no headed browser in this
+  environment, but this is how a local curl/websockets check against a
+  fresh process is done): `pkill -f "uvicorn app.miniapp:app"` in its OWN
+  command (exit 144 = normal), then from `service/`:
+  `MINIAPP_DEV_BYPASS=true nohup .venv/bin/uvicorn app.miniapp:app --host
+  127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1 &`. Note the two things
+  easy to get wrong here: `MINIAPP_DEV_BYPASS=true` is set **inline on the
+  start command, not in `.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line
+  at all, deliberately, so the bypass dies with the process and can never
+  survive into the deployed state by accident (see the **Auth** paragraph
+  above — leaving it in `.env` would mean a stray `.env` copy or a
+  forgotten un-set flips the read-only feed open to anyone with the
+  tunnel URL). The log path is `/tmp/miniapp.log`, not `service/
+  miniapp.log`.
+- **Deployed state (the tunnel is live and public)**: the SAME command
+  with `MINIAPP_DEV_BYPASS` simply omitted: `pkill -f "uvicorn
+  app.miniapp:app"`, then from `service/`: `nohup .venv/bin/uvicorn
+  app.miniapp:app --host 127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1
+  &`. This is the only form that may run while the ngrok tunnel is up —
+  verified 2026-08-15 (see **Tunnel**): with the bypass restarted away,
+  `.../api/history?tf=M5` through the public domain returns 403, not the
+  feed.
+
+Either way, state is in-memory only, so a restart shows an empty feed
+until the bridge's next push (≤2 s tick, ≤2 s bars, full backfill
+automatically on the first successful push after any gap).
 
 **Setup**: `scripts/setup.sh`'s "Mini-app feed service" phase (between
-"Service" and "Telegram") ensures `FEED_KEY` exists in `.env` (SKIP if
-already set) and starts the port-9001 uvicorn process if not already
-answering (liveness probed via `GET /healthz` — auth-free, unlike
+"Service" and the ngrok tunnel phase) ensures `FEED_KEY` exists in `.env`
+(SKIP if already set) and starts the port-9001 uvicorn process if not
+already answering (liveness probed via `GET /healthz` — auth-free, unlike
 `/api/history` which 403s with dev bypass off; `/openapi.json` is 404 now
 that docs routes are disabled, see **Docs routes / liveness probe**
 above) — SKIP if already running, same idempotent phase shape as every
-other step.
+other step. It never sets `MINIAPP_DEV_BYPASS` — a setup-started mini-app
+is always in the deployed (no-bypass) state described above.
+
+**Tunnel** (Phase 3, Task 2, 2026-08-15, landed): ngrok v3, free tier,
+static domain — the mini-app's first public exposure, and the answer to
+the "Cloudflare named tunnel" placeholder in earlier Phase 3 notes (the
+design spec amended §5 to ngrok before this landed: the owner has no
+domain, and ngrok's free tier gives one permanent static domain per
+account with no config swap needed later). Domain on this machine:
+`tribute-obscurity-monday.ngrok-free.dev`, driven entirely by
+`MINIAPP_PUBLIC_URL` in `service/.env` — nothing hardcodes it elsewhere.
+- **Start**: `scripts/setup.sh`'s "ngrok static-domain tunnel" phase
+  (phase 6/9, directly after "Mini-app feed service"). Installs the
+  `ngrok` v3 linux-amd64 binary into `~/.local/bin` from the official
+  `bin.equinox.io` tarball if not already present; runs `ngrok config
+  add-authtoken <NGROK_AUTHTOKEN from .env>` only if
+  `~/.config/ngrok/ngrok.yml` has no `authtoken:` line yet; then `nohup
+  ngrok http --url=<domain> 9001 --log /tmp/ngrok.log &`, where `<domain>`
+  is `MINIAPP_PUBLIC_URL` with the `https://` scheme stripped inside the
+  script (single source of truth — the phase never hardcodes the domain
+  string). Confirms the tunnel actually came up by polling the local
+  ngrok agent API (`http://127.0.0.1:4040/api/tunnels`) for the domain,
+  not by trusting the backgrounded `nohup` blindly. Idempotent on all
+  three sub-steps independently — SKIPs binary-install if the binary
+  exists, SKIPs authtoken-config if one is already set, SKIPs the tunnel
+  start if `pgrep -f "ngrok http"` already matches — and SKIPs the whole
+  phase cleanly (no fail) if `NGROK_AUTHTOKEN` or `MINIAPP_PUBLIC_URL` is
+  missing from `.env`, same "safe to run without this configured" shape
+  as the Telegram phase.
+- **Stop**: `pkill -f "ngrok http"`.
+- **Log**: `/tmp/ngrok.log` (not `service/`-relative, matching the
+  `/tmp/miniapp.log` convention).
+- **Interstitial**: ngrok's free tier serves a one-tap "Visit Site"
+  warning page on a plain browser's first visit per session before
+  forwarding to the app. `curl`/scripted clients bypass it by sending
+  `ngrok-skip-browser-warning: 1` — required on every scripted check
+  against the tunnel domain (both verification curls below use it); a
+  check that omits the header and gets HTML back instead of JSON is
+  hitting the interstitial, not a real failure. Telegram's own WebApp
+  webview is expected to pass through without seeing it (not ngrok's
+  definition of a "browser visit") — to be confirmed by Task 3's headed
+  check, not yet verified either way.
+- **Only 9001 is ever exposed** (invariant, same as the **Non-negotiable**
+  paragraph above, now backed by a live process): the tunnel forwards to
+  `127.0.0.1:9001` exclusively. The main service (port 9000 — MT5 wiring,
+  broker credentials, the trading dashboard, direct db access) has no
+  tunnel pointed at it and stays reachable only from 127.0.0.1, tunnel or
+  no tunnel.
+- **Verified live** (2026-08-15): mini-app restarted in the deployed
+  (no-bypass) form (see **Restart** above), then through the public
+  domain: `curl -s -H "ngrok-skip-browser-warning: 1"
+  https://tribute-obscurity-monday.ngrok-free.dev/healthz` → `{"ok":
+  true}`; `curl -s -H "ngrok-skip-browser-warning: 1"
+  "https://tribute-obscurity-monday.ngrok-free.dev/api/history?tf=M5"` →
+  `403 {"detail":"viewer auth required"}`. This is the security proof for
+  Task 1's auth work: it holds through the real public tunnel, not just
+  against localhost. Re-running the setup phase afterward printed SKIP on
+  all three sub-steps (binary/authtoken/tunnel), confirming idempotency
+  with the tunnel already up.
+- **Upgrade path** (unchanged from the spec's ngrok amendment): moving to
+  a paid domain behind a named tunnel (e.g. Cloudflare) later is a pure
+  config swap — repoint `MINIAPP_PUBLIC_URL` at the new domain and start
+  that tunnel product instead of ngrok. No app code changes, since the
+  setup phase and every consumer of the public URL already read it from
+  that single `.env` value rather than hardcoding ngrok's domain anywhere.
 
 When working on this system: read the actual code before asserting (it has
 evolved fast), keep every safety rail intact unless the user explicitly
