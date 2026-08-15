@@ -251,3 +251,10 @@ def test_legacy_profile_db_migrates_livechart_columns(tmp_path):
     # And it's fully writable post-migration.
     row = db.save_profile({"ngrok_domain": "migrated.example.com"})
     assert row["ngrok_domain"] == "migrated.example.com"
+
+
+def test_ngrok_domain_uppercase_scheme_normalized(tmp_path):
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "p.db"))
+    db.save_profile({"ngrok_domain": "HTTPS://Mixed.Case.Ngrok-Free.dev/path?x=1"})
+    assert db.get_profile()["ngrok_domain"] == "mixed.case.ngrok-free.dev"

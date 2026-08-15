@@ -326,7 +326,9 @@ class SignalDb:
             # of a browser's address bar with a path/query still attached)
             # normalizes down to just the host.
             domain = updates["ngrok_domain"].strip()
-            domain = domain.removeprefix("https://").removeprefix("http://")
+            # scheme is case-insensitive ("HTTPS://x" pastes happen); host is
+            # case-insensitive too, so lowercase the whole thing
+            domain = domain.lower().removeprefix("https://").removeprefix("http://")
             domain = domain.split("/", 1)[0].split("?", 1)[0]
             updates["ngrok_domain"] = domain
         if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
