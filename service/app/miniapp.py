@@ -208,6 +208,7 @@ def _indicator_series(rows: list[dict]) -> dict:
 
 
 TRADES_DEFAULT_LIMIT = 50
+TRADES_MAX_LIMIT = 500   # server-side ceiling: a viewer can never force a full-table scan
 BASKETS_MAX = 30
 
 
@@ -266,7 +267,8 @@ def trades(limit: int = TRADES_DEFAULT_LIMIT, _=Depends(require_viewer)):
         try:
             cur = conn.execute(
                 "SELECT id, ts, event, direction, lots, price, profit, final "
-                "FROM trades ORDER BY id DESC LIMIT ?", (max(int(limit), 0),))
+                "FROM trades ORDER BY id DESC LIMIT ?",
+                (min(max(int(limit), 0), TRADES_MAX_LIMIT),))
             raw = cur.fetchall()
         finally:
             conn.close()

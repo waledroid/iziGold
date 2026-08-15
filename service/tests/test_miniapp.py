@@ -436,3 +436,40 @@ def test_trades_respects_limit(trades_client):
     assert len(body["trades"]) == 4
     # Ordered ascending by id (oldest of the last 4 first)
     assert [t["ts"] for t in body["trades"]] == [106, 107, 108, 109]
+
+
+def test_trades_limit_is_capped_server_side(client, monkeypatch, tmp_path):
+    """An authenticated viewer must not be able to force an unbounded scan
+    via ?limit= — the server clamps to TRADES_MAX_LIMIT."""
+    from app import miniapp
+    calls = {}
+
+    class _Cur:
+        def execute(self, sql, params):
+            calls["params"] = params
+            return self
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def execute(self, sql, params=()):
+            calls["params"] = params
+            return _Cur()
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(miniapp.sqlite3, "connect", lambda *a, **k: _Conn())
+    r = client.get("/api/trades", params={"limit": 999999})
+    assert r.status_code == 200
+    assert calls["params"] == (miniapp.TRADES_MAX_LIMIT,)
