@@ -25,7 +25,8 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--adx N] [--expo MIN] [--risk PCT] [--days N]
                    [--confirm N] [--stop-buffer ATR]
                    [--entry-mode adr|fixed] [--fixed-lots L]
-                   [--regime-gate off|range|range-strict]
+                   [--regime-gate off|range|range-strict|highvol]
+                   [--atr-spike-gate RATIO]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -52,11 +53,22 @@ flatten the replay already models.
 classifier (app.regime.classify_regime — ADX(14) >= 25 => trend, ATR(14)
 in the top 20% of its last 100 values => high_volatility, else range) on
 the exact 300-closed-bar window the EA posts to /analyze (AiApi.mqh), and
-refuses NEW entries when the bar's regime is "range" (range) or "range" /
-"high_volatility" (range-strict). Adds, exits, stops are untouched. Every
-trade is tagged with its entry regime and the summary breaks P/L down per
-regime, so an --regime-gate off run shows what a gate WOULD have skipped.
+refuses NEW entries when the bar's regime is "range" (range), "range" /
+"high_volatility" (range-strict), or "high_volatility" only (highvol —
+i.e. skip entries while ATR(14) ranks in the top 20% of its last 100
+values). Adds, exits, stops are untouched. Every trade is tagged with its
+entry regime and the summary breaks P/L down per regime, so an
+--regime-gate off run shows what a gate WOULD have skipped.
 Default off is byte-identical to the previous baseline.
+
+--atr-spike-gate RATIO (volatility-spike experiment): parametric cousin of
+the highvol gate using the replay's own Wilder ATR(14): refuse a NEW entry
+when ATR(14) at the entry bar > RATIO x the median of ATR(14) over the last
+ATR_SPIKE_N=100 closed bars (current bar included — the same 100-value
+lookback regime.py uses for its percentile rank). Every trade is tagged with
+its entry atr_ratio and the summary buckets P/L by ratio, so an off run
+shows what each threshold WOULD have skipped. Default 0 = off (byte-
+identical baseline). Combines freely with --regime-gate.
 """
 import argparse
 import datetime as dt
@@ -112,9 +124,18 @@ FIXED_LOTS = 0.05         # lots (1 lot = 100 oz) when ENTRY_MODE == "fixed"
 # off          : baseline (entries tagged with their regime, nothing refused)
 # range        : refuse new entries when the service classifier says "range"
 # range-strict : also refuse "high_volatility" (only "trend" bars may enter)
-REGIME_GATES = ("off", "range", "range-strict")
+# highvol      : refuse new entries when the classifier says "high_volatility"
+REGIME_GATES = ("off", "range", "range-strict", "highvol")
 REGIME_GATE = "off"
 REGIME_WINDOW = 300       # closed bars the EA posts per /analyze (AiApi.mqh)
+
+# --- ATR-spike gate experiment ---
+# refuse new entries when ATR(14) > ATR_SPIKE_RATIO * median(ATR(14) over the
+# last ATR_SPIKE_N bars, current included); 0 = off. Reported buckets are the
+# thresholds the sweep looks at.
+ATR_SPIKE_RATIO = 0.0
+ATR_SPIKE_N = 100
+ATR_SPIKE_BUCKETS = (1.3, 1.5, 1.8, 2.2)
 
 
 class _Bar:
@@ -129,6 +150,19 @@ def regime_at(candles, i):
     the same 300-bar window the EA would have posted after that bar."""
     win = candles[max(0, i - REGIME_WINDOW + 1):i + 1]
     return classify_regime([_Bar(x) for x in win])
+
+
+def atr_ratio_at(atr, i, n=None):
+    """ATR(14) at bar i relative to the median of its last n values (bar i
+    included), mirroring regime.py's 100-value lookback. None if <14 values."""
+    n = n or ATR_SPIKE_N
+    recent = [v for v in atr[max(0, i - n + 1):i + 1] if v is not None]
+    if len(recent) < 14 or atr[i] is None:
+        return None
+    srt = sorted(recent)
+    k = len(srt)
+    med = srt[k // 2] if k % 2 else (srt[k // 2 - 1] + srt[k // 2]) / 2
+    return atr[i] / med if med > 0 else None
 
 
 def floor_price(legs, s, amount):
@@ -196,7 +230,7 @@ def run(candles, start_balance, verbose):
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
-    skipped = []           # entries the regime gate refused: (when, dir, regime)
+    skipped = []           # entries a gate refused: (when, dir, reason)
 
     def basket_pl(px):
         s = 1 if basket["dir"] == "BUY" else -1
@@ -211,6 +245,7 @@ def run(candles, start_balance, verbose):
                        "exit": px, "when": when, "why": why, "pl": pl,
                        "opened": basket.get("opened"),
                        "regime": basket.get("regime"),
+                       "atr_ratio": basket.get("atr_ratio"),
                        "floor": basket.get("floor"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
@@ -345,13 +380,21 @@ def run(candles, start_balance, verbose):
             expo_ok = EXPO_MIN <= 0 or expo.get(day, 0) < EXPO_MIN
             if in_window and trending and expo_ok:
                 regime = regime_at(candles, i)
-                blocked = (REGIME_GATE == "range" and regime == "range") or \
-                    (REGIME_GATE == "range-strict" and regime != "trend")
+                aratio = atr_ratio_at(atr, i)
+                blocked = None
+                if (REGIME_GATE == "range" and regime == "range") or \
+                        (REGIME_GATE == "range-strict" and regime != "trend") or \
+                        (REGIME_GATE == "highvol" and regime == "high_volatility"):
+                    blocked = regime
+                elif ATR_SPIKE_RATIO > 0 and aratio is not None \
+                        and aratio > ATR_SPIKE_RATIO:
+                    blocked = f"atr_spike>{ATR_SPIKE_RATIO:g}"
                 if blocked:
-                    skipped.append((when, signal, regime))
+                    skipped.append((when, signal, blocked))
                     if verbose:
                         print(f"  skip  {when:%m-%d %H:%M} {signal} "
-                              f"regime={regime}")
+                              f"{blocked} (regime={regime}, "
+                              f"atr_ratio={aratio if aratio is None else round(aratio, 2)})")
                     signal = None
             if in_window and trending and expo_ok and signal:
                 pad = STOP_BUFFER_ATR * a
@@ -365,7 +408,8 @@ def run(candles, start_balance, verbose):
                         oz = max(MIN_OZ, int(risk / dist))
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
-                              "opened": when, "regime": regime}
+                              "opened": when, "regime": regime,
+                              "atr_ratio": aratio}
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})")
@@ -456,13 +500,18 @@ def main():
     ap.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
                     help="refuse new entries by the service's live regime "
                          "classifier: range = skip 'range' bars, "
-                         "range-strict = only enter on 'trend' bars")
+                         "range-strict = only enter on 'trend' bars, "
+                         "highvol = skip 'high_volatility' bars")
+    ap.add_argument("--atr-spike-gate", type=float, default=0.0,
+                    help="refuse new entries when ATR(14) > RATIO x its "
+                         "median over the last 100 bars (0 = off)")
     args = ap.parse_args()
-    global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE
+    global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     EXIT_SCHEME = args.exit_scheme
     ENTRY_MODE = args.entry_mode
     FIXED_LOTS = args.fixed_lots
     REGIME_GATE = args.regime_gate
+    ATR_SPIKE_RATIO = args.atr_spike_gate
     if args.adx is not None:
         global ADX_MIN
         ADX_MIN = args.adx
@@ -495,7 +544,8 @@ def main():
             if ENTRY_MODE == "fixed" else "")
     print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
           f"(server time) | start balance ${args.balance:,.0f} "
-          f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}\n")
+          f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}"
+          f" | atr-spike gate {ATR_SPIKE_RATIO:g}\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -537,11 +587,18 @@ def main():
         w = [t for t in sub if t["pl"] > 0]
         print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
               f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+    print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
+    for r in ATR_SPIKE_BUCKETS:
+        sub = [t for t in trades if (t.get("atr_ratio") or 0) > r]
+        w = [t for t in sub if t["pl"] > 0]
+        print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
     sk = getattr(run, "skipped", [])
-    if REGIME_GATE != "off":
+    if REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0:
         from collections import Counter
         cnt = Counter(r for _, _, r in sk)
-        print(f"regime gate {REGIME_GATE}: refused {len(sk)} entries "
+        print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
+              f"refused {len(sk)} entries "
               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
