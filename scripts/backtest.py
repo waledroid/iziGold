@@ -25,6 +25,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--adx N] [--expo MIN] [--risk PCT] [--days N]
                    [--confirm N] [--stop-buffer ATR]
                    [--entry-mode adr|fixed] [--fixed-lots L]
+                   [--regime-gate off|range|range-strict]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -46,6 +47,16 @@ every entry is --fixed-lots lots (default 0.05, no 1%-risk sizing), no
 pyramid adds, no profit target, no profit lock. Exits only on the confirmed
 opposite signal (reversal), the shared wick-extreme stop, or the pre-break
 flatten the replay already models.
+
+--regime-gate (range-filter experiment): replays the SERVICE's live regime
+classifier (app.regime.classify_regime — ADX(14) >= 25 => trend, ATR(14)
+in the top 20% of its last 100 values => high_volatility, else range) on
+the exact 300-closed-bar window the EA posts to /analyze (AiApi.mqh), and
+refuses NEW entries when the bar's regime is "range" (range) or "range" /
+"high_volatility" (range-strict). Adds, exits, stops are untouched. Every
+trade is tagged with its entry regime and the summary breaks P/L down per
+regime, so an --regime-gate off run shows what a gate WOULD have skipped.
+Default off is byte-identical to the previous baseline.
 """
 import argparse
 import datetime as dt
@@ -56,6 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
 from app.indicators import ema, halftrend  # noqa: E402
+from app.regime import classify_regime  # noqa: E402
 
 # --- current EA inputs ---
 RISK_PCT = 1.0
@@ -95,6 +107,28 @@ FLOOR_ARM_ATR = 0.25      # the 0.25*ATR(14) margin in both variants
 #         confirmed reversal, the shared stop, or the pre-break flatten
 ENTRY_MODE = "adr"
 FIXED_LOTS = 0.05         # lots (1 lot = 100 oz) when ENTRY_MODE == "fixed"
+
+# --- regime-gate experiment ---
+# off          : baseline (entries tagged with their regime, nothing refused)
+# range        : refuse new entries when the service classifier says "range"
+# range-strict : also refuse "high_volatility" (only "trend" bars may enter)
+REGIME_GATES = ("off", "range", "range-strict")
+REGIME_GATE = "off"
+REGIME_WINDOW = 300       # closed bars the EA posts per /analyze (AiApi.mqh)
+
+
+class _Bar:
+    __slots__ = ("h", "l", "c")
+
+    def __init__(self, x):
+        self.h, self.l, self.c = x["h"], x["l"], x["c"]
+
+
+def regime_at(candles, i):
+    """The service's live verdict for closed bar i: classify_regime() over
+    the same 300-bar window the EA would have posted after that bar."""
+    win = candles[max(0, i - REGIME_WINDOW + 1):i + 1]
+    return classify_regime([_Bar(x) for x in win])
 
 
 def floor_price(legs, s, amount):
@@ -162,6 +196,7 @@ def run(candles, start_balance, verbose):
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
+    skipped = []           # entries the regime gate refused: (when, dir, regime)
 
     def basket_pl(px):
         s = 1 if basket["dir"] == "BUY" else -1
@@ -175,6 +210,7 @@ def run(candles, start_balance, verbose):
         trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
                        "exit": px, "when": when, "why": why, "pl": pl,
                        "opened": basket.get("opened"),
+                       "regime": basket.get("regime"),
                        "floor": basket.get("floor"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
@@ -308,6 +344,16 @@ def run(candles, start_balance, verbose):
             trending = adx[i] is not None and adx[i] >= ADX_MIN
             expo_ok = EXPO_MIN <= 0 or expo.get(day, 0) < EXPO_MIN
             if in_window and trending and expo_ok:
+                regime = regime_at(candles, i)
+                blocked = (REGIME_GATE == "range" and regime == "range") or \
+                    (REGIME_GATE == "range-strict" and regime != "trend")
+                if blocked:
+                    skipped.append((when, signal, regime))
+                    if verbose:
+                        print(f"  skip  {when:%m-%d %H:%M} {signal} "
+                              f"regime={regime}")
+                    signal = None
+            if in_window and trending and expo_ok and signal:
                 pad = STOP_BUFFER_ATR * a
                 stop = extreme - pad if signal == "BUY" else extreme + pad
                 dist = abs(px - stop)
@@ -319,7 +365,7 @@ def run(candles, start_balance, verbose):
                         oz = max(MIN_OZ, int(risk / dist))
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
-                              "opened": when}
+                              "opened": when, "regime": regime}
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})")
@@ -331,6 +377,7 @@ def run(candles, start_balance, verbose):
 
     if basket:
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
+    run.skipped = skipped
     return trades, bal, max_dd, max_valley
 
 
@@ -406,11 +453,16 @@ def main():
                     help="adr = live behavior; fixed = fixed lots, no adds/"
                          "target/lock, exit on confirmed reversal or stop")
     ap.add_argument("--fixed-lots", type=float, default=0.05)
+    ap.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
+                    help="refuse new entries by the service's live regime "
+                         "classifier: range = skip 'range' bars, "
+                         "range-strict = only enter on 'trend' bars")
     args = ap.parse_args()
-    global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS
+    global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE
     EXIT_SCHEME = args.exit_scheme
     ENTRY_MODE = args.entry_mode
     FIXED_LOTS = args.fixed_lots
+    REGIME_GATE = args.regime_gate
     if args.adx is not None:
         global ADX_MIN
         ADX_MIN = args.adx
@@ -443,7 +495,7 @@ def main():
             if ENTRY_MODE == "fixed" else "")
     print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
           f"(server time) | start balance ${args.balance:,.0f} "
-          f"| exit scheme {EXIT_SCHEME}{mode}\n")
+          f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -474,6 +526,23 @@ def main():
             fl = f"  floor {t['floor']:+.2f}" if t.get("floor") is not None else ""
             print(f"  {t['when']:%m-%d %H:%M} {t['dir']:4} [{legs}] -> "
                   f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}{fl}")
+    tdays = len({hhmm(x["t"])[0].date() for x in candles})
+    print(f"trading days {tdays}  trades/day {len(trades) / max(1, tdays):.2f}  "
+          f"win% {100 * len(wins) / max(1, len(trades)):.1f}  "
+          f"avg winner {sum(t['pl'] for t in wins) / max(1, len(wins)):+.2f}  "
+          f"avg loser {sum(t['pl'] for t in losses) / max(1, len(losses)):+.2f}")
+    print("entry regime breakdown (service classifier on the 300-bar window):")
+    for rg in ("trend", "range", "high_volatility"):
+        sub = [t for t in trades if t.get("regime") == rg]
+        w = [t for t in sub if t["pl"] > 0]
+        print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+    sk = getattr(run, "skipped", [])
+    if REGIME_GATE != "off":
+        from collections import Counter
+        cnt = Counter(r for _, _, r in sk)
+        print(f"regime gate {REGIME_GATE}: refused {len(sk)} entries "
+              f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
