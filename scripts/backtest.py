@@ -28,6 +28,8 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--regime-gate off|range|range-strict|highvol]
                    [--atr-spike-gate RATIO] [--ema-len N]
                    [--confirm-mode close|open] [--start T] [--end T]
+                   [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
+                   [--chop-mode skip|soft|off]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -86,6 +88,23 @@ mode fires on the SAME bar as the close rule and exists to demonstrate that
 EA that acts on closed bars. Fill stays at close[i]; the run prints how many
 decision bars actually differed. Adds' condition-still-true stays close-based
 (EA ConditionStillTrue).
+
+--chop-flips F / --chop-bars N / --chop-box-atr X / --chop-mode M (chop-filter
+experiment, 2026-08-17 whipsaw autopsy #3): a bar is "chop" when HalfTrend has
+flipped >= F times within the last N closed bars (bar i included; a flip is
+counted on the bar whose trend differs from the previous bar's) AND the price
+box over those N bars (max high - min low) is < X * ATR(14) at bar i. X = 0
+drops the box condition (flip count alone). F = 0 (default) = off, byte-
+identical baseline. Every entry is tagged chop/not-chop with its flip count and
+box/ATR ratio, and the summary breaks P/L down by tag so a --chop-mode off run
+shows exactly what the rule WOULD have skipped or shrunk (opportunity cost).
+--chop-mode: skip (default, H1) refuses NEW entries on chop bars; soft (H2)
+still enters but sizes at HALF the risk percent (--risk / 2) and takes NO
+pyramid adds for that basket — target, lock, stop, reversal unchanged (the
+lock still arms at TRAIL_ACTIVATE_R x the FULL risk budget, as the EA's
+TradeManager reads m_risk.RiskPct(), so a half-size basket needs twice the
+move to arm it); off = tag and report only, nothing refused or resized.
+Adds/exits are otherwise untouched; the rule lives only in the entry block.
 """
 import argparse
 import datetime as dt
@@ -161,6 +180,16 @@ ATR_SPIKE_BUCKETS = (1.3, 1.5, 1.8, 2.2)
 CONFIRM_MODES = ("close", "open")
 CONFIRM_MODE = "close"
 
+# --- chop-filter experiment ---
+# chop bar := HalfTrend flips in the last CHOP_BARS bars >= CHOP_FLIPS and
+# (CHOP_BOX_ATR == 0 or box(CHOP_BARS) < CHOP_BOX_ATR * ATR14). CHOP_FLIPS 0 = off.
+CHOP_FLIPS = 0
+CHOP_BARS = 24
+CHOP_BOX_ATR = 2.0
+CHOP_MODES = ("skip", "soft", "off")
+CHOP_MODE = "skip"
+CHOP_SOFT_RISK_DIV = 2.0   # soft mode: risk percent divided by this
+
 
 class _Bar:
     __slots__ = ("h", "l", "c")
@@ -187,6 +216,28 @@ def atr_ratio_at(atr, i, n=None):
     k = len(srt)
     med = srt[k // 2] if k % 2 else (srt[k // 2 - 1] + srt[k // 2]) / 2
     return atr[i] / med if med > 0 else None
+
+
+def chop_at(candles, ht, atr, i, flips=None, bars=None, box_atr=None):
+    """Chop diagnostics for closed bar i: (is_chop, n_flips, box_ratio,
+    flip_times). Flips counted on bars j in (i-bars, i] where ht[j].trend !=
+    ht[j-1].trend; box = max high - min low over the same bars; box_ratio =
+    box / ATR14[i] (None if ATR missing)."""
+    flips = CHOP_FLIPS if flips is None else flips
+    bars = CHOP_BARS if bars is None else bars
+    box_atr = CHOP_BOX_ATR if box_atr is None else box_atr
+    lo = max(1, i - bars + 1)
+    n, ft = 0, []
+    for j in range(lo, i + 1):
+        if ht[j] and ht[j - 1] and ht[j][1] != ht[j - 1][1]:
+            n += 1
+            ft.append(hhmm(candles[j]["t"])[0])
+    seg = candles[lo:i + 1]
+    box = max(x["h"] for x in seg) - min(x["l"] for x in seg)
+    ratio = (box / atr[i]) if atr[i] else None
+    is_chop = flips > 0 and n >= flips and \
+        (box_atr <= 0 or (ratio is not None and ratio < box_atr))
+    return is_chop, n, ratio, ft
 
 
 def floor_price(legs, s, amount):
@@ -273,6 +324,10 @@ def run(candles, start_balance, verbose):
                        "regime": basket.get("regime"),
                        "atr_ratio": basket.get("atr_ratio"),
                        "floor": basket.get("floor"),
+                       "chop": basket.get("chop"),
+                       "chop_flips": basket.get("chop_flips"),
+                       "chop_box": basket.get("chop_box"),
+                       "soft": basket.get("soft", False),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -377,8 +432,9 @@ def run(candles, start_balance, verbose):
                 elif ENTRY_MODE != "fixed":  # no pyramid adds in fixed mode
                     # pyramid add (frozen once the floor is armed, except
                     # in the floor-a-adds erosion probe)
-                    frozen = basket.get("floor") is not None \
-                        and EXIT_SCHEME != "floor-a-adds"
+                    frozen = (basket.get("floor") is not None
+                              and EXIT_SCHEME != "floor-a-adds") \
+                        or basket.get("soft", False)
                     cond = (basket["dir"] == "BUY" and trend == 0 and px > e) or \
                            (basket["dir"] == "SELL" and trend == 1 and px < e)
                     adv = (px - basket["legs"][-1]["px"]) * s
@@ -420,6 +476,19 @@ def run(candles, start_balance, verbose):
                 elif ATR_SPIKE_RATIO > 0 and aratio is not None \
                         and aratio > ATR_SPIKE_RATIO:
                     blocked = f"atr_spike>{ATR_SPIKE_RATIO:g}"
+                chop, nfl, boxr, ftimes = (False, 0, None, [])
+                soft = False
+                if CHOP_FLIPS > 0:
+                    chop, nfl, boxr, ftimes = chop_at(candles, ht, atr, i)
+                    if chop and verbose:
+                        print(f"  chop  {when:%m-%d %H:%M} {signal} flips={nfl} "
+                              f"box/atr={boxr if boxr is None else round(boxr, 2)} "
+                              f"flip times "
+                              f"{', '.join(f'{f:%m-%d %H:%M}' for f in ftimes)}")
+                    if chop and not blocked and CHOP_MODE == "skip":
+                        blocked = "chop"
+                    elif chop and CHOP_MODE == "soft":
+                        soft = True
                 if blocked:
                     skipped.append((when, signal, blocked))
                     if verbose:
@@ -435,15 +504,19 @@ def run(candles, start_balance, verbose):
                     if ENTRY_MODE == "fixed":
                         oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
                     else:
-                        risk = bal * RISK_PCT / 100
+                        rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
+                        risk = bal * rp / 100
                         oz = max(MIN_OZ, int(risk / dist))
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
                               "opened": when, "regime": regime,
-                              "atr_ratio": aratio}
+                              "atr_ratio": aratio, "chop": chop,
+                              "chop_flips": nfl, "chop_box": boxr,
+                              "soft": soft}
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
-                              f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})")
+                              f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})"
+                              f"{' SOFT (half risk, no adds)' if soft else ''}")
 
         # open-equity valley (marked at bar close)
         eq = bal + (basket_pl(px) if basket else 0.0)
@@ -547,9 +620,22 @@ def main():
     ap.add_argument("--confirm-mode", choices=CONFIRM_MODES, default="close",
                     help="close = EA behavior (closes beyond the EMA); open = "
                          "next bar's open beyond the EMA (same decision bar)")
+    ap.add_argument("--chop-flips", type=int, default=0,
+                    help="chop filter: HalfTrend flips within --chop-bars "
+                         "that mark a bar as chop (0 = off)")
+    ap.add_argument("--chop-bars", type=int, default=24,
+                    help="chop filter lookback in closed bars (default 24)")
+    ap.add_argument("--chop-box-atr", type=float, default=2.0,
+                    help="chop filter: box over the lookback must be < X x "
+                         "ATR(14) (default 2.0; 0 = flip count alone)")
+    ap.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
+                    help="skip = refuse chop entries (H1); soft = enter at "
+                         "half risk with no adds (H2); off = tag/report only")
     args = ap.parse_args()
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
-    global CONFIRM_MODE
+    global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+    CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
+    CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
     CONFIRM_MODE = args.confirm_mode
     if args.ema_len is not None:
         global EMA_LEN
@@ -599,7 +685,9 @@ def main():
           f"(server time) | start balance ${args.balance:,.0f} "
           f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}"
           f" | atr-spike gate {ATR_SPIKE_RATIO:g} | ema {EMA_LEN} "
-          f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})\n")
+          f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"
+          + (f" | chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}/X{CHOP_BOX_ATR:g}"
+             if CHOP_FLIPS > 0 else "") + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -654,6 +742,19 @@ def main():
         print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
               f"refused {len(sk)} entries "
               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
+    if CHOP_FLIPS > 0:
+        ch = [t for t in trades if t.get("chop")]
+        nc = [t for t in trades if not t.get("chop")]
+        for lab, sub in (("chop-tagged", ch), ("not chop", nc)):
+            w = [t for t in sub if t["pl"] > 0]
+            l = [t for t in sub if t["pl"] <= 0]
+            print(f"chop {lab:12} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                  f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+                  f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}")
+        nchop = sum(1 for _, _, r in sk if r == "chop")
+        print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
+              f"soft-sized {sum(1 for t in trades if t.get('soft'))} baskets")
     if CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
