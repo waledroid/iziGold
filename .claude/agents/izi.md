@@ -518,6 +518,21 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   diagnostic. Next candidate if pursued: a HalfTrend FLIP-COUNT chop filter
   (skip when ≥2 flips in the last N bars inside a <X·ATR box) — targets the
   actual 08-17 pattern; and/or a soft "chop mode" (half size, no adds).
+  **Chop-filter study (same day, `.superpowers/chop-filter-study.md`): DON'T
+  implement — hard OR soft.** The literal rule (2 flips/24 bars/box<2 ATR)
+  fires 0 times in 17 mo (two flips can't fit in 2 ATR; 08-17's box was
+  2.6–3.4 ATR — the tightest 2-flip box ever entered). Widened (2/18/<3
+  ATR): fixes 08-17 (−$83 → +$5) but fires 1–2×/month and is a coin toss
+  (30 d +$109, 17 mo −$200). Flip count alone is ANTI-predictive: ≥2-flip
+  entries win 38.5% vs 34.4% single-flip (p=0.046; 41.9% vs 34.9% current
+  era) — skipping them: 30 d +$949→+$194, current era +$1,481→−$287
+  (skips $8.8k of winners vs $7.2k of losers). Soft (half risk, no adds)
+  beats skip but never beats baseline in the profitable eras. Backtester
+  gained `--chop-flips/--chop-bars/--chop-box-atr/--chop-mode` (defaults
+  byte-identical). Three studies this week (confirm variants, regime gate,
+  chop filter) all say the same thing: the 08-17 losses are the accepted
+  cost of a flip-and-confirm system, and every tag that would have skipped
+  them skips more winner-dollars than loser-dollars.
   Rule of the house re-affirmed: any regime/chop gate must be an EA-side
   `CanEnter` refusal, never a service-side veto via `/analyze` (fail-open +
   execute-first). Backtester gained `--ema-len`, `--confirm-mode close|open`,
