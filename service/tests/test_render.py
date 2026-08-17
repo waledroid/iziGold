@@ -310,7 +310,7 @@ class _FakeTransport:
         return self.result
 
 
-def test_trade_event_close_sends_render_photo_when_telegram_configured(client):
+def test_trade_event_close_sends_no_photo_but_still_renders_to_disk(client):
     from app import main
     from app.telegram import TelegramClient
 
@@ -318,14 +318,16 @@ def test_trade_event_close_sends_render_photo_when_telegram_configured(client):
     ft = _FakeTransport()
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
 
-    client.post("/trade-event", json=_trade(event="close", reason="tp hit"))
+    trade_id = client.post(
+        "/trade-event", json=_trade(event="close", reason="tp hit")).json()["id"]
     _drain()
 
-    photo_calls = [c for c in ft.calls if c[0] == "sendPhoto"]
-    assert len(photo_calls) == 1
-    _, payload, files = photo_calls[0]
-    assert "render" in payload["caption"]
-    assert files is not None
+    # Owner request 2026-08-17: no more "render:" photos to Telegram — the
+    # PNG is still written for the dashboard, but only the P/L text goes out.
+    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
+    row = main.app.state.db.conn.execute(
+        "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
+    assert row[0] is not None
 
 
 def test_trade_event_close_sends_profit_message(client):
@@ -496,17 +498,24 @@ def test_add_event_sends_no_photo_close_render_still_carries_add_leg(client):
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
     _drain()
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+    # No render photos any more; the open sends ONE text message that carries
+    # the EXIT button (it used to ride on the photo).
+    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
+    open_msgs = [c for c in ft.calls if c[0] == "sendMessage"
+                 and c[1].get("chat_id") == "555"
+                 and "reply_markup" in c[1]
+                 and "exitnow:" in str(c[1]["reply_markup"])]
+    assert len(open_msgs) == 1
 
     client.post("/trade-event", json=_trade(event="add", price=2405.0))
     _drain()
-    # The add must NOT trigger a second render/photo.
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+    # The add must NOT trigger any Telegram traffic of its own.
+    assert len(open_msgs) == 1 and [c for c in ft.calls if c[0] == "sendPhoto"] == []
 
     close_id = client.post(
         "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
     _drain()
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 2
+    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
 
     legs = _basket_legs(main.app.state.db, close_id)
     assert [leg["event"] for leg in legs] == ["open", "add"]
@@ -526,7 +535,8 @@ def test_non_final_close_sends_no_pl_message_and_no_photo(client):
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
     _drain()
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+    msgs_after_open = len([c for c in ft.calls if c[0] == "sendMessage"])
+    assert msgs_after_open >= 1          # the open's EXIT-button text message
 
     r = client.post(
         "/trade-event",
@@ -536,9 +546,9 @@ def test_non_final_close_sends_no_pl_message_and_no_photo(client):
     assert r.status_code == 200
     trade_id = r.json()["id"]
 
-    assert [c for c in ft.calls if c[0] == "sendMessage"] == []
-    # still just the open's photo -- the non-final close renders nothing
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 1
+    # non-final close: no P/L message, no photo, nothing new at all
+    assert len([c for c in ft.calls if c[0] == "sendMessage"]) == msgs_after_open
+    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
 
     row = main.app.state.db.conn.execute(
         "SELECT event, final FROM trades WHERE id=?", (trade_id,)).fetchone()
@@ -564,7 +574,7 @@ def test_basket_legs_span_a_non_final_close_row(client):
     assert id_open < id_add < id_close_final
 
 
-def test_final_close_after_non_final_leg_sends_render_and_pl_message(client):
+def test_final_close_after_non_final_leg_sends_pl_message_no_photos(client):
     from app import main
     from app.telegram import TelegramClient
 
@@ -584,10 +594,9 @@ def test_final_close_after_non_final_leg_sends_render_and_pl_message(client):
                     reason="profit target"))
     _drain()
 
-    msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
-    assert len(msg_calls) == 1
-    assert "profit" in msg_calls[0][1]["text"]
-
-    # open's photo + the final close's photo -- the non-final close in
-    # between contributes no photo of its own.
-    assert len([c for c in ft.calls if c[0] == "sendPhoto"]) == 2
+    pl_msgs = [c for c in ft.calls if c[0] == "sendMessage"
+               and "Trade closed" in c[1].get("text", "")]
+    assert len(pl_msgs) == 1
+    assert "profit" in pl_msgs[0][1]["text"]
+    # no render photos at all any more (open, non-final close, final close)
+    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []

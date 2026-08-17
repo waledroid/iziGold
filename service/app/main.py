@@ -929,14 +929,20 @@ async def _report_trade_event(ev: TradeEventRequest, trade_id: int,
             if ok:
                 app.state.db.set_render(trade_id, str(render_path))
                 await asyncio.to_thread(_prune_screenshots, app.state.screenshot_dir)
-                if app.state.telegram is not None:
-                    caption = f"render: {ev.reason}"
-                    markup = EXIT_NOW_KB(trade_id) if ev.event == "open" else None
-                    await asyncio.to_thread(
-                        _send_render_photo, app.state.telegram, caption,
-                        render_path, markup)
-                    await _mirror(app, photo_bytes=render_path.read_bytes(),
-                                  caption=caption)
+                # The PNG is kept ON DISK for the dashboard's trade list; it
+                # is no longer sent to Telegram (owner request 2026-08-17 —
+                # the live ticker + [📈 Live Chart] mini app cover the
+                # visual, and the extra "render:" photos were noise).
+        except Exception:
+            pass
+    if ev.event == "open" and app.state.telegram is not None:
+        # The EXIT button used to ride on the open-render photo; keep it on
+        # a short text message so the one-tap close stays available.
+        try:
+            await asyncio.to_thread(
+                app.state.telegram.send_message,
+                f"📥 {ev.direction} {ev.lots:g} @ {ev.price:g} — {ev.reason}",
+                EXIT_NOW_KB(trade_id))
         except Exception:
             pass
     if ev.event == "close" and ev.final and app.state.telegram is not None:

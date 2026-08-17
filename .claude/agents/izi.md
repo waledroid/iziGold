@@ -357,8 +357,15 @@ Quiet by default: only proposals, executions, failures, command replies.
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
   report honestly ("N of M legs still open"); messageless failures send a
   fresh message.
-- Close notifications: annotated render photo + P/L text with lot-weighted
-  avg entry → exit (`💰 Trade closed: +$102.82 profit (BUY 4043.75 → 4057.48)`).
+- Close notifications: P/L text with lot-weighted avg entry → exit
+  (`💰 Trade closed: +$102.82 profit (BUY 4043.75 → 4057.48)`). **No render
+  photos to Telegram any more (owner request 2026-08-17)** — the annotated
+  PNGs are still rendered to disk for the dashboard's trade list, but the
+  old "render: <reason>" photos on open/close were dropped as noise once the
+  live ticker + [📈 Live Chart] mini app existed. The open event now sends
+  a short text (`📥 BUY 0.05 @ 4333.74 — signal BUY`) carrying the
+  `exitnow:` EXIT button that used to ride on the open photo. `/chart`'s PNG
+  fallback (when no mini-app URL is configured) is unaffected.
 - Single-chat security on messages AND callbacks; bot credentials live in
   the service profile (onboarding page), overriding `.env`.
 
