@@ -6,6 +6,7 @@ first open-position heartbeat simply starts a fresh LIVE message and the
 old one stops updating. Every Telegram call is fail-open: a failed send
 or edit is dropped and the next heartbeat retries naturally.
 """
+import sqlite3
 import time
 from dataclasses import dataclass
 
@@ -94,24 +95,42 @@ _KV_CHANNEL = "ticker_channel_msg_id"
 _KV_CHANNEL_TEXT = "ticker_channel_text"
 
 
-def _persist(app, st) -> None:
+def _kv_write(app, pairs) -> None:
+    """Write kv pairs on a SHORT-LIVED PRIVATE connection. ticker_tick runs
+    in a worker thread (asyncio.to_thread) concurrently with request
+    handlers using app.state.db's single shared sqlite connection; the
+    sqlite3 module forbids simultaneous calls on one connection
+    (`InterfaceError: bad parameter or other API misuse`), and SignalDb has
+    no statement lock. A private connection sidesteps that entirely —
+    SQLite's own file locking serializes the two connections. Writes are
+    ≥5 s apart, so the open/close cost is irrelevant. Fail-open."""
+    path = getattr(app.state, "ticker_db_path", None)   # resolved once at startup
+    if not path:
+        return
     try:
-        db = app.state.db
-        db.set_kv(_KV_OWNER, str(st.owner_msg_id or ""))
-        db.set_kv(_KV_OWNER_TEXT, st.owner_text or "")
-        db.set_kv(_KV_CHANNEL, str(st.channel_msg_id or ""))
-        db.set_kv(_KV_CHANNEL_TEXT, st.channel_text or "")
+        conn = sqlite3.connect(path, timeout=2.0)
+        try:
+            for k, v in pairs:
+                conn.execute(
+                    "INSERT INTO kv (key, value) VALUES (?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         pass  # fail-open: persistence is a nicety, never a blocker
 
 
+def _persist(app, st) -> None:
+    _kv_write(app, [(_KV_OWNER, str(st.owner_msg_id or "")),
+                    (_KV_OWNER_TEXT, st.owner_text or ""),
+                    (_KV_CHANNEL, str(st.channel_msg_id or "")),
+                    (_KV_CHANNEL_TEXT, st.channel_text or "")])
+
+
 def _clear_persisted(app) -> None:
-    try:
-        db = app.state.db
-        for k in (_KV_OWNER, _KV_OWNER_TEXT, _KV_CHANNEL, _KV_CHANNEL_TEXT):
-            db.set_kv(k, "")
-    except Exception:
-        pass
+    _kv_write(app, [(k, "") for k in
+                    (_KV_OWNER, _KV_OWNER_TEXT, _KV_CHANNEL, _KV_CHANNEL_TEXT)])
 
 
 def load_ticker_state(app) -> "TickerState":
@@ -120,6 +139,13 @@ def load_ticker_state(app) -> "TickerState":
     st = TickerState()
     try:
         db = app.state.db
+        # Capture the db file path ONCE, on the startup thread, for the
+        # worker-thread writer (_kv_write) — it must never touch db.conn.
+        try:
+            app.state.ticker_db_path = db.conn.execute(
+                "PRAGMA database_list").fetchone()[2]
+        except Exception:
+            app.state.ticker_db_path = None
         owner = db.get_kv(_KV_OWNER)
         if owner:
             st.owner_msg_id = int(owner)
