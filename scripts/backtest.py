@@ -26,7 +26,8 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--confirm N] [--stop-buffer ATR]
                    [--entry-mode adr|fixed] [--fixed-lots L]
                    [--regime-gate off|range|range-strict|highvol]
-                   [--atr-spike-gate RATIO]
+                   [--atr-spike-gate RATIO] [--ema-len N]
+                   [--confirm-mode close|open] [--start T] [--end T]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -69,6 +70,22 @@ lookback regime.py uses for its percentile rank). Every trade is tagged with
 its entry atr_ratio and the summary buckets P/L by ratio, so an off run
 shows what each threshold WOULD have skipped. Default 0 = off (byte-
 identical baseline). Combines freely with --regime-gate.
+
+--ema-len N (EMA-length experiment): the trading EMA the HalfTrend flip must
+be confirmed against (EA input EmaLength). Default 55 = byte-identical.
+
+--confirm-mode close|open (confirmation-price experiment, 2026-08-17 whipsaw
+autopsy): close (default, byte-identical) counts closed-bar CLOSES beyond the
+EMA, exactly like the EA. open counts bar OPENS beyond the EMA: at the
+EA's decision moment (bar i just closed = bar i+1 just opened) it tests
+open[i+1] against EMA[i] instead of close[i] against EMA[i]. Because on M5
+open[i+1] == close[i] except for the rare tick gap, and because the EA's
+counter already starts on the flip bar itself (no extra bar of delay), this
+mode fires on the SAME bar as the close rule and exists to demonstrate that
+"enter when a candle opens beyond the EMA" is not an earlier signal for an
+EA that acts on closed bars. Fill stays at close[i]; the run prints how many
+decision bars actually differed. Adds' condition-still-true stays close-based
+(EA ConditionStillTrue).
 """
 import argparse
 import datetime as dt
@@ -136,6 +153,13 @@ REGIME_WINDOW = 300       # closed bars the EA posts per /analyze (AiApi.mqh)
 ATR_SPIKE_RATIO = 0.0
 ATR_SPIKE_N = 100
 ATR_SPIKE_BUCKETS = (1.3, 1.5, 1.8, 2.2)
+
+# --- confirmation-price experiment ---
+# close : EA behavior — closes beyond the EMA feed the ConfirmCloses counter
+# open  : the NEXT bar's open (== this close bar the EA acts on, minus tick
+#         gaps) feeds the counter; see module docstring
+CONFIRM_MODES = ("close", "open")
+CONFIRM_MODE = "close"
 
 
 class _Bar:
@@ -231,6 +255,8 @@ def run(candles, start_balance, verbose):
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
     skipped = []           # entries a gate refused: (when, dir, reason)
+    open_diff_bars = []    # confirm-mode open: bars where open[i+1] vs EMA
+                           # landed on a different side than close[i]
 
     def basket_pl(px):
         s = 1 if basket["dir"] == "BUY" else -1
@@ -268,9 +294,14 @@ def run(candles, start_balance, verbose):
             consec_above = consec_below = 0   # flip re-arms the filter
         else:
             extreme = min(extreme, x["l"]) if trend == 0 else max(extreme, x["h"])
-        if px > e:
+        cpx = px                     # price tested against the EMA
+        if CONFIRM_MODE == "open" and i + 1 < len(candles):
+            cpx = candles[i + 1]["o"]   # first price of the bar now opening
+            if (cpx > e) != (px > e) or (cpx < e) != (px < e):
+                open_diff_bars.append(when)
+        if cpx > e:
             consec_above, consec_below = consec_above + 1, 0
-        elif px < e:
+        elif cpx < e:
             consec_below, consec_above = consec_below + 1, 0
 
         day = when.date()
@@ -285,9 +316,9 @@ def run(candles, start_balance, verbose):
 
         signal = None
         if fired_flip != last_flip:
-            if trend == 0 and px > e and consec_above >= CONFIRM_CLOSES:
+            if trend == 0 and cpx > e and consec_above >= CONFIRM_CLOSES:
                 signal = "BUY"
-            elif trend == 1 and px < e and consec_below >= CONFIRM_CLOSES:
+            elif trend == 1 and cpx < e and consec_below >= CONFIRM_CLOSES:
                 signal = "SELL"
             if signal:
                 fired_flip = last_flip
@@ -422,6 +453,7 @@ def run(candles, start_balance, verbose):
     if basket:
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
     run.skipped = skipped
+    run.open_diff_bars = open_diff_bars
     return trades, bal, max_dd, max_valley
 
 
@@ -505,8 +537,23 @@ def main():
     ap.add_argument("--atr-spike-gate", type=float, default=0.0,
                     help="refuse new entries when ATR(14) > RATIO x its "
                          "median over the last 100 bars (0 = off)")
+    ap.add_argument("--start", default=None,
+                    help="drop candles before this server time "
+                         "(YYYY-MM-DD[THH:MM]); indicators warm up from here")
+    ap.add_argument("--end", default=None,
+                    help="drop candles after this server time (YYYY-MM-DD[THH:MM])")
+    ap.add_argument("--ema-len", type=int, default=None,
+                    help="override the trading EMA length (default 55)")
+    ap.add_argument("--confirm-mode", choices=CONFIRM_MODES, default="close",
+                    help="close = EA behavior (closes beyond the EMA); open = "
+                         "next bar's open beyond the EMA (same decision bar)")
     args = ap.parse_args()
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
+    global CONFIRM_MODE
+    CONFIRM_MODE = args.confirm_mode
+    if args.ema_len is not None:
+        global EMA_LEN
+        EMA_LEN = args.ema_len
     EXIT_SCHEME = args.exit_scheme
     ENTRY_MODE = args.entry_mode
     FIXED_LOTS = args.fixed_lots
@@ -536,6 +583,12 @@ def main():
     if args.days:
         cutoff = candles[-1]["t"] - int(args.days * 86400)
         candles = [c for c in candles if c["t"] >= cutoff]
+    if args.start:
+        t = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC).timestamp()
+        candles = [c for c in candles if c["t"] >= t]
+    if args.end:
+        t = dt.datetime.fromisoformat(args.end).replace(tzinfo=dt.UTC).timestamp()
+        candles = [c for c in candles if c["t"] <= t]
     if len(candles) < 100:
         sys.exit(f"only {len(candles)} candles available - need at least 100")
 
@@ -545,7 +598,8 @@ def main():
     print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
           f"(server time) | start balance ${args.balance:,.0f} "
           f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}"
-          f" | atr-spike gate {ATR_SPIKE_RATIO:g}\n")
+          f" | atr-spike gate {ATR_SPIKE_RATIO:g} | ema {EMA_LEN} "
+          f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -600,6 +654,10 @@ def main():
         print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
               f"refused {len(sk)} entries "
               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
+    if CONFIRM_MODE == "open":
+        od = getattr(run, "open_diff_bars", [])
+        print(f"confirm-mode open: {len(od)} decision bars where the next "
+              f"open sat on a different side of the EMA than the close")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "

@@ -468,6 +468,30 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   gap. The answer was no — warm-up always treated any already-confirmed
   trend as stale. The guarded catch-up entry (§3, 2026-08-12) makes that a
   real "yes, if the thesis still holds" instead of an unconditional no.
+- **2026-08-17 morning whipsaw pair (−$77.76 total) — and the strategy
+  source-of-truth check.** Two ADR losses inside a 4388–4399 range box,
+  05:00–07:50 server: SELL 05:55 @4390.39 (confirm was a ONE-CENT close
+  below EMA-55: 4390.43 vs 4390.44), closed by the dual-confirm reversal
+  07:00 @4397.40 (−$27.40 — cheaper than its −$45 stop); the reversal leg
+  BUY 07:00 @4397.03 stopped 07:28 @4390.97 (−$49.92) within $2 of the local
+  low. Regime classifier said `range` on both; AI grader 3% / 30% (no
+  conviction). Every rule behaved as designed; daily-loss brake ~53% used,
+  not tripped. The owner then brought the strategy author's (Ife's) written
+  rules: HalfTrend amplitude **4** (✅ ours everywhere: EA input, renders,
+  mini-app, backtester), the 55 EMA as the noise filter (✅), and — the one
+  gap — confirmation = **MULTIPLE** closes beyond the EMA vs our
+  `ConfirmCloses=1`. Prior 17-month sweep showed `ConfirmCloses=2` LOST more
+  over the long window (later, worse-priced entries in strong trends), so
+  it's a range-vs-trend trade-off, not a free win. Owner-requested backtests
+  in flight (see `.superpowers/confirm-variants-report.md` when written):
+  ConfirmCloses=2, an "open-beyond-EMA" confirm mode (suspected to collapse
+  to the current close rule since bar opens = prior closes — verify), and
+  EMA-50 vs 55 — evaluated on that morning AND the last 30 days. Rulebook
+  unchanged until those numbers land. Exit taxonomy explained to the owner
+  and worth restating: (1) trend-says-over = confirmed reversal (fires
+  regardless of P/L, ADR+FIXED — usually the SMALLER loss because it fires
+  the moment the thesis dies); (2) money-says-over = broker stop / +2%
+  target / 50%-of-peak lock (ADR only) + the 23:54 flatten and remote EXIT.
 
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
