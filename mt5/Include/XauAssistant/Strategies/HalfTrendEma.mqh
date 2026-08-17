@@ -1,7 +1,11 @@
 // HalfTrendEma.mqh — Half Trend (amplitude 4) + EMA 55 dual confirmation.
 // Adapted from the Crypto9ite TradingView strategy for XAUUSD M15.
-// Entry: Half Trend color + ConfirmCloses consecutive closes beyond the EMA,
-// fired once per Half Trend flip. Stop: wick extreme since the flip.
+// Entry (STRICT WINDOW, 2026-08-17): Half Trend arrow bar, then ConfirmCloses
+// waiting bar(s); the NEXT bar is the entry bar and it must OPEN on the
+// trend's side of the EMA (== the last waiting bar CLOSED there). Decided
+// exactly once; a miss kills the signal until the next flip — a later drift
+// across the EMA never fires. Fired once per flip. Stop: wick extreme since
+// the flip.
 // Paints the trading 55 EMA (green) plus context EMAs 9/21/200 — the context
 // lines are display-only and never touch signal logic.
 #ifndef XAU_STRAT_HALFTREND_EMA_MQH
@@ -27,6 +31,8 @@ private:
    double   m_extreme;       // lowest low since flip to blue / highest high since flip to red
    int      m_consecAbove;
    int      m_consecBelow;
+   int      m_barsSinceFlip; // 0 = the flip (arrow) bar itself
+   bool     m_signalDead;    // strict window missed -> ignore until next flip
    bool     m_fired;         // one entry per Half Trend flip
    datetime m_lastProcessed;
 
@@ -115,6 +121,7 @@ private:
          m_trend = 0; m_nextTrend = 0;
          m_maxLowPrice = prevLow; m_minHighPrice = prevHigh;
          m_extreme = lowPrice;
+         m_signalDead = true;   // a synthetic seed is not an arrow: never a confirm
         }
 
       int prevTrend = m_trend;
@@ -136,18 +143,25 @@ private:
       if(m_trend != prevTrend)
         {
          m_fired = false;   // a flip re-arms the once-per-trend entry
+         m_signalDead = false;
+         m_barsSinceFlip = 0;                   // this IS the arrow bar
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
          m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print("halftrend_ema_v1: HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
-                  " — fake-out filter armed, need ", m_confirm, " closes ",
-                  m_trend == 0 ? "above" : "below", " EMA", m_emaLen);
+                  " — strict window armed: the entry bar (", m_confirm,
+                  " waiting bar(s) after the arrow) must OPEN ",
+                  m_trend == 0 ? "above" : "below", " EMA", m_emaLen,
+                  " (else the signal is ignored until the next flip)");
         }
       else
+        {
          m_extreme = (m_trend == 0) ? MathMin(m_extreme, barLow)
                                     : MathMax(m_extreme, barHigh);
+         m_barsSinceFlip++;
+        }
 
       double emaBuf[];
       bool haveEma = (CopyBuffer(m_emaHandle, 0, shift, 1, emaBuf) == 1);
@@ -155,10 +169,30 @@ private:
         {
          if(close > emaBuf[0])      { m_consecAbove++; m_consecBelow = 0; }
          else if(close < emaBuf[0]) { m_consecBelow++; m_consecAbove = 0; }
-         if(m_confirmShift == 0 &&
-            ((m_trend == 0 && m_consecAbove == m_confirm) ||
-             (m_trend == 1 && m_consecBelow == m_confirm)))
-           { m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift); }
+         // STRICT 3-BAR WINDOW (owner's rule, 2026-08-17): the arrow bar,
+         // then m_confirm waiting bar(s); the entry bar is the NEXT one and
+         // it must OPEN on the trend's side of the EMA — i.e. the LAST
+         // waiting bar must CLOSE there (open == previous close). This is
+         // decided exactly ONCE, when that waiting bar closes. Pass ->
+         // confirm recorded (entry fires on this closed bar = the entry
+         // bar's open). Fail -> the signal is DEAD until the next flip; a
+         // later drift across the EMA never revives it. m_consec* stay only
+         // as diagnostics/paint inputs.
+         if(!m_signalDead && m_confirmShift == 0 && m_barsSinceFlip == m_confirm)
+           {
+            bool ok = (m_trend == 0) ? (close > emaBuf[0]) : (close < emaBuf[0]);
+            if(ok)
+              { m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift); }
+            else
+              {
+               m_signalDead = true;
+               if(m_lastProcessed != 0)
+                  Print("halftrend_ema_v1: ", m_trend == 0 ? "BUY" : "SELL",
+                        " arrow — entry bar would open on the wrong side of EMA",
+                        m_emaLen, " (", DoubleToString(close, 2), " vs ",
+                        DoubleToString(emaBuf[0], 2), "): signal ignored until next flip");
+              }
+           }
         }
       PaintBar(shift, haveEma ? emaBuf[0] : 0);
      }
@@ -226,7 +260,7 @@ public:
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
-        m_consecAbove(0), m_consecBelow(0), m_fired(false), m_lastProcessed(0),
+        m_consecAbove(0), m_consecBelow(0), m_barsSinceFlip(0), m_signalDead(false), m_fired(false), m_lastProcessed(0),
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
@@ -257,12 +291,22 @@ public:
          // catch-up guards say the thesis is still intact right now, in
          // which case m_fired stays false and the first Evaluate() below
          // emits the signal through the normal gate path.
-         if((m_trend == 0 && m_consecAbove >= m_confirm) ||
-            (m_trend == 1 && m_consecBelow >= m_confirm))
+         // "Would I have entered if I had been here from the beginning?" —
+         // the warm-up replay applied the SAME strict window to the real
+         // bars, so a recorded confirm (m_confirmShift != 0) means yes and a
+         // dead/unrecorded signal means no. Only a yes may be caught up.
+         if(m_confirmShift != 0)
            {
             if(!CatchupOk())
                m_fired = true;
            }
+         else if(m_signalDead || m_barsSinceFlip >= m_confirm)
+            m_fired = true;   // decided (dead) or past the window -> nothing to enter
+         // else: the arrow just happened (fewer than m_confirm waiting bars seen)
+         // -> the decision is still PENDING; leave m_fired false so the next
+         // live bar can record a legitimate bar-3 confirm (review 2026-08-17:
+         // an unconditional m_fired=true here silently missed that entry
+         // after every restart landing within one bar of an arrow).
         }
       else
         {
@@ -271,22 +315,21 @@ public:
         }
       m_lastProcessed = closed;
 
-      if(!m_fired)
+      // Emit ONLY on a strict-window confirm (recorded by ProcessClosedBar
+      // exactly once per flip, on the last waiting bar's close). A late
+      // drift across the EMA can never fire: it never records a confirm.
+      if(!m_fired && m_confirmShift != 0)
         {
-         if(m_trend == 0 && m_consecAbove >= m_confirm)
+         m_fired = true;
+         if(m_trend == 0)
            {
-            m_fired = true;
-            Print("halftrend_ema_v1: BUY confirmed — ", m_consecAbove,
-                  " closes above EMA", m_emaLen, ", fake-out filter passed");
+            Print("halftrend_ema_v1: BUY confirmed — entry bar opens above EMA",
+                  m_emaLen, " (", DoubleToString(m_confirmClose, 2), ")");
             return SIGNAL_BUY;
            }
-         if(m_trend == 1 && m_consecBelow >= m_confirm)
-           {
-            m_fired = true;
-            Print("halftrend_ema_v1: SELL confirmed — ", m_consecBelow,
-                  " closes below EMA", m_emaLen, ", fake-out filter passed");
-            return SIGNAL_SELL;
-           }
+         Print("halftrend_ema_v1: SELL confirmed — entry bar opens below EMA",
+               m_emaLen, " (", DoubleToString(m_confirmClose, 2), ")");
+         return SIGNAL_SELL;
         }
       return SIGNAL_NONE;
      }

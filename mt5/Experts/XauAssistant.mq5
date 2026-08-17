@@ -54,7 +54,7 @@ input double          FixedLots  = 0.05;       // FIXED-mode entry size (broker-
 input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
-input int    ConfirmCloses  = 1;                  // consecutive closes beyond EMA (1 suits XAU; 2 was tuned for crypto volatility)
+input int    ConfirmCloses  = 1;                  // waiting bars after the HT arrow; entry bar (next) must OPEN beyond EMA, else signal dead until next flip
 input double StopBufferATR  = 0.75;               // pad wick stop by k*ATR(14); 0 = exact wick (old behavior)
 input bool   CatchupEnabled     = true;  // take a missed entry after downtime if still valid
 input int    CatchupMaxAgeBars  = 12;    // signal at most this many trade-TF bars old

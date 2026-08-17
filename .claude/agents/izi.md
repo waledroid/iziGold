@@ -81,9 +81,29 @@ Data collection only; no UI yet.
   `TradeBoxes.OnBarUpdate()` also now runs once per TRADE-TF bar rather than
   once per chart bar (can fire multiple times per visible candle on a higher
   chart TF) — each call just re-anchors the same box, so this is harmless.
-- **Entry**: `halftrend_ema_v1` — HalfTrend flip (amplitude 4) + `ConfirmCloses=1`
-  closes beyond EMA-55, once per flip (fake-out filter). Shadow:
-  `boll_stochrsi_v1`.
+- **Entry**: `halftrend_ema_v1` — **STRICT 3-BAR WINDOW (2026-08-17, owner
+  bug report + Ife's written rule)**: bar 1 = HalfTrend arrow (amplitude
+  4); bar 2 = waiting bar (`ConfirmCloses` of them, default 1); bar 3 =
+  the entry bar, taken at its OPEN only if it opens on the trend's side of
+  EMA-55 (== bar 2 CLOSED there). Decided exactly ONCE when bar 2 closes.
+  Miss → `m_signalDead`: the signal is ignored until the NEXT flip — a
+  later drift across the EMA can never fire (that late drift-in was the
+  bug: the old code fired on the FIRST close beyond the EMA whenever it
+  happened, bar 2 or bar 20). Catch-up after restart obeys the same law
+  ("would I have entered from the beginning?" — warm-up replays the real
+  bars through the strict rule; only a recorded confirm can be caught up,
+  and a pending arrow within one bar of restart is left pending, not
+  killed). Consequence for reversals: a reversal IS the opposite entry, so
+  it now also fires at bar 3's open, and a dead opposite flip = NO
+  reversal exit (basket rides to stop/target/lock/flatten). Backtest
+  (`.superpowers/strict-window-report.md`, `--strict-window`): removes 360
+  late-drift entries over 17 mo (net −$1,293 — they were losers) and 161
+  failed-window arrow entries (−$1,897), BUT enters every surviving flip
+  one bar later, which costs ~$3.7k → net −$581 last 30 d, −$788 over 17
+  mo, worse in all sub-periods; valley slightly better. Owner chose the
+  rule anyway: it IS the strategy. `ConfirmCloses` semantics changed:
+  N = waiting bars (decide at their last close); 0 = enter at bar 2's
+  open. Shadow: `boll_stochrsi_v1` (unchanged, its own confirm logic).
 - **Guarded catch-up entry** (2026-08-12, `HalfTrendEma.mqh`): before this,
   restarting MT5/EA after ANY gap that spanned a fresh flip+confirm always
   suppressed that entry as "stale — wait for the next flip", even seconds
