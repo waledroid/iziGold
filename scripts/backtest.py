@@ -29,7 +29,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--atr-spike-gate RATIO] [--ema-len N]
                    [--confirm-mode close|open] [--start T] [--end T]
                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
-                   [--chop-mode skip|soft|off]
+                   [--chop-mode skip|soft|off] [--strict-window]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -105,6 +105,22 @@ lock still arms at TRAIL_ACTIVATE_R x the FULL risk budget, as the EA's
 TradeManager reads m_risk.RiskPct(), so a half-size basket needs twice the
 move to arm it); off = tag and report only, nothing refused or resized.
 Adds/exits are otherwise untouched; the rule lives only in the entry block.
+
+--strict-window (entry-window correctness fix, 2026-08-17 owner's rule):
+the TRUE halftrend_ema_v1 entry is "arrow on bar 1; wait bar 2; ENTER at
+bar 3's OPEN if bar 3 opens on the trend's side of the EMA (= bar 2 CLOSED
+there); otherwise the signal is DEAD until the next HalfTrend flip". Off
+(default, byte-identical) reproduces what the EA did until today: fire on
+the FIRST close beyond the EMA after a flip, whenever that came (the arrow
+bar itself, bar 2, or a late drift 20 bars on). On: exactly one decision
+per flip, at the close of the bar CONFIRM_CLOSES bars after the arrow bar
+(default 1 = bar 2): pass -> signal on that closed bar (fill at its close,
+which IS bar 3's open barring the tick gap — the replay's usual entry-at-close
+convention, unchanged); fail -> no entry for that flip, ever. Same for the
+reversal exit, since a reversal is the opposite direction's entry. Every
+trade is tagged with its entry offset in bars after the arrow (0 = arrow
+bar, 1 = strict bar, >=2 = late drift) so a baseline run can be diffed
+against a strict run per flip.
 """
 import argparse
 import datetime as dt
@@ -189,6 +205,11 @@ CHOP_BOX_ATR = 2.0
 CHOP_MODES = ("skip", "soft", "off")
 CHOP_MODE = "skip"
 CHOP_SOFT_RISK_DIV = 2.0   # soft mode: risk percent divided by this
+
+# --- strict entry window (owner's rule 2026-08-17) ---
+# False: legacy latch (first close beyond the EMA after the flip, any bar).
+# True : one-shot decision at bar (flip + CONFIRM_CLOSES) close; miss = dead.
+STRICT_WINDOW = False
 
 
 class _Bar:
@@ -308,6 +329,8 @@ def run(candles, start_balance, verbose):
     skipped = []           # entries a gate refused: (when, dir, reason)
     open_diff_bars = []    # confirm-mode open: bars where open[i+1] vs EMA
                            # landed on a different side than close[i]
+    dead_signals = []      # strict window: (when, dir) flips whose decision
+                           # bar closed on the wrong side -> no entry ever
 
     def basket_pl(px):
         s = 1 if basket["dir"] == "BUY" else -1
@@ -328,6 +351,8 @@ def run(candles, start_balance, verbose):
                        "chop_flips": basket.get("chop_flips"),
                        "chop_box": basket.get("chop_box"),
                        "soft": basket.get("soft", False),
+                       "flip_t": basket.get("flip_t"),
+                       "entry_offset": basket.get("entry_offset"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -371,12 +396,26 @@ def run(candles, start_balance, verbose):
 
         signal = None
         if fired_flip != last_flip:
-            if trend == 0 and cpx > e and consec_above >= CONFIRM_CLOSES:
-                signal = "BUY"
-            elif trend == 1 and cpx < e and consec_below >= CONFIRM_CLOSES:
-                signal = "SELL"
-            if signal:
-                fired_flip = last_flip
+            if STRICT_WINDOW:
+                # one-shot decision on the bar CONFIRM_CLOSES bars after the
+                # arrow bar (i - last_flip == CONFIRM_CLOSES); this bar's
+                # close is the entry bar's open. Pass -> signal now; fail ->
+                # dead until the next flip (fired_flip latched either way).
+                if i - last_flip == CONFIRM_CLOSES:
+                    if trend == 0 and cpx > e:
+                        signal = "BUY"
+                    elif trend == 1 and cpx < e:
+                        signal = "SELL"
+                    else:
+                        dead_signals.append((when, "BUY" if trend == 0 else "SELL"))
+                    fired_flip = last_flip
+            else:
+                if trend == 0 and cpx > e and consec_above >= CONFIRM_CLOSES:
+                    signal = "BUY"
+                elif trend == 1 and cpx < e and consec_below >= CONFIRM_CLOSES:
+                    signal = "SELL"
+                if signal:
+                    fired_flip = last_flip
 
         # ---- manage open basket
         if basket:
@@ -512,7 +551,9 @@ def run(candles, start_balance, verbose):
                               "opened": when, "regime": regime,
                               "atr_ratio": aratio, "chop": chop,
                               "chop_flips": nfl, "chop_box": boxr,
-                              "soft": soft}
+                              "soft": soft,
+                              "flip_t": candles[last_flip]["t"],
+                              "entry_offset": i - last_flip}
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})"
@@ -527,6 +568,7 @@ def run(candles, start_balance, verbose):
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
     run.skipped = skipped
     run.open_diff_bars = open_diff_bars
+    run.dead_signals = dead_signals
     return trades, bal, max_dd, max_valley
 
 
@@ -631,9 +673,16 @@ def main():
     ap.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
                     help="skip = refuse chop entries (H1); soft = enter at "
                          "half risk with no adds (H2); off = tag/report only")
+    ap.add_argument("--strict-window", action="store_true",
+                    help="owner's entry rule: arrow bar, wait --confirm "
+                         "bar(s), enter at the next bar's open only if that "
+                         "bar opens on the trend's side of the EMA; else the "
+                         "flip is dead (default off = legacy first-close latch)")
     args = ap.parse_args()
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+    global STRICT_WINDOW
+    STRICT_WINDOW = args.strict_window
     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
     CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
     CONFIRM_MODE = args.confirm_mode
@@ -687,7 +736,8 @@ def main():
           f" | atr-spike gate {ATR_SPIKE_RATIO:g} | ema {EMA_LEN} "
           f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"
           + (f" | chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}/X{CHOP_BOX_ATR:g}"
-             if CHOP_FLIPS > 0 else "") + "\n")
+             if CHOP_FLIPS > 0 else "")
+          + (" | STRICT WINDOW" if STRICT_WINDOW else "") + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -755,6 +805,11 @@ def main():
         nchop = sum(1 for _, _, r in sk if r == "chop")
         print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
               f"soft-sized {sum(1 for t in trades if t.get('soft'))} baskets")
+    if STRICT_WINDOW:
+        dd = getattr(run, "dead_signals", [])
+        print(f"strict window: {len(dd)} flips died at the decision bar "
+              f"(entry bar would open on the wrong side of the EMA); "
+              f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
     if CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
