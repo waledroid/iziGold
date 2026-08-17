@@ -318,3 +318,75 @@ def test_channel_ticker_carries_direct_link_line_when_configured(monkeypatch):
     assert "Live chart" not in owner
     closed = format_ticker(hb, "auto", "10:00:00", closed=True, redacted=True)
     assert "Live chart" not in closed
+
+
+# ---------------------------------------------------------------------------
+# restart persistence: a mid-trade restart must RESUME the LIVE message
+# (2026-08-17: three deploys during one BUY produced three LIVE messages)
+# ---------------------------------------------------------------------------
+
+def _persist_app(db):
+    """App with a REAL kv-backed db so persistence round-trips."""
+    transport = FakeTransport()
+    tg = TelegramClient("tok", "555", transport=transport)
+    from app.ticker import load_ticker_state
+    app = types.SimpleNamespace(state=types.SimpleNamespace(
+        telegram=tg, db=db, ticker=None))
+    app.state.ticker = load_ticker_state(app)
+    return app, transport
+
+
+def test_restart_mid_trade_resumes_same_live_message(tmp_path):
+    from app.db import SignalDb
+    from app.ticker import load_ticker_state
+    db = SignalDb(str(tmp_path / "persist.db"))
+    app, t = _persist_app(db)
+    ticker_tick(app, _hb([_pos(profit=10.0)]), now=1000.0)
+    assert len(t.of("sendMessage")) == 1
+    live_id = app.state.ticker.owner_msg_id
+
+    # --- simulate a service restart: fresh process, same db ---
+    app2, t2 = _persist_app(db)
+    assert app2.state.ticker.owner_msg_id == live_id      # resumed, not None
+    ticker_tick(app2, _hb([_pos(profit=25.0)]),
+                now=1000.0 + TICKER_MIN_EDIT_S + 1)
+    assert t2.of("sendMessage") == []                     # NO second LIVE post
+    edits = t2.of("editMessageText")
+    assert len(edits) == 1 and edits[0][1]["message_id"] == live_id
+
+
+def test_close_clears_persisted_state_so_next_trade_posts_fresh(tmp_path):
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "persist2.db"))
+    app, t = _persist_app(db)
+    ticker_tick(app, _hb([_pos()]), now=1000.0)
+    ticker_tick(app, _hb([]), now=1000.0 + TICKER_MIN_EDIT_S + 1)   # close
+    app2, t2 = _persist_app(db)                       # restart after close
+    assert app2.state.ticker.owner_msg_id is None
+    ticker_tick(app2, _hb([_pos()]), now=3000.0)
+    assert len(t2.of("sendMessage")) == 1             # a NEW cycle posts fresh
+
+
+def test_deleted_live_message_is_forgotten_and_reposted(tmp_path):
+    """If the persisted message was deleted server-side, the edit fails with
+    'message to edit not found' -> forget it and post a fresh LIVE next
+    tick instead of editing a ghost forever."""
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "persist3.db"))
+    app, t = _persist_app(db)
+    ticker_tick(app, _hb([_pos(profit=10.0)]), now=1000.0)
+
+    class GhostTransport(FakeTransport):
+        def __call__(self, method, payload, files=None):
+            self.calls.append((method, payload, files))
+            if method == "editMessageText":
+                return {"ok": False, "description": "Bad Request: message to edit not found"}
+            self.next_message_id += 1
+            return {"ok": True, "result": {"message_id": self.next_message_id}}
+
+    gt = GhostTransport()
+    app.state.telegram = TelegramClient("tok", "555", transport=gt)
+    ticker_tick(app, _hb([_pos(profit=30.0)]), now=1000.0 + TICKER_MIN_EDIT_S + 1)
+    assert app.state.ticker.owner_msg_id is None          # forgotten
+    ticker_tick(app, _hb([_pos(profit=30.0)]), now=1000.0 + 2 * TICKER_MIN_EDIT_S + 2)
+    assert len(gt.of("sendMessage")) == 1                 # reposted fresh

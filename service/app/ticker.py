@@ -82,6 +82,57 @@ def _channel_id(app) -> str | None:
         return None
 
 
+# --- restart persistence -----------------------------------------------
+# The LIVE message ids live in the db kv store so a service restart
+# mid-trade RESUMES editing the same Telegram message instead of posting a
+# second one (2026-08-17: three deploys during one BUY produced three LIVE
+# messages). Only the ids + last text are persisted; the edit throttle
+# clock is per-process and simply restarts.
+_KV_OWNER = "ticker_owner_msg_id"
+_KV_OWNER_TEXT = "ticker_owner_text"
+_KV_CHANNEL = "ticker_channel_msg_id"
+_KV_CHANNEL_TEXT = "ticker_channel_text"
+
+
+def _persist(app, st) -> None:
+    try:
+        db = app.state.db
+        db.set_kv(_KV_OWNER, str(st.owner_msg_id or ""))
+        db.set_kv(_KV_OWNER_TEXT, st.owner_text or "")
+        db.set_kv(_KV_CHANNEL, str(st.channel_msg_id or ""))
+        db.set_kv(_KV_CHANNEL_TEXT, st.channel_text or "")
+    except Exception:
+        pass  # fail-open: persistence is a nicety, never a blocker
+
+
+def _clear_persisted(app) -> None:
+    try:
+        db = app.state.db
+        for k in (_KV_OWNER, _KV_OWNER_TEXT, _KV_CHANNEL, _KV_CHANNEL_TEXT):
+            db.set_kv(k, "")
+    except Exception:
+        pass
+
+
+def load_ticker_state(app) -> "TickerState":
+    """Rebuild TickerState from the kv store at startup. Empty/absent → a
+    fresh state (nothing to resume). Never raises."""
+    st = TickerState()
+    try:
+        db = app.state.db
+        owner = db.get_kv(_KV_OWNER)
+        if owner:
+            st.owner_msg_id = int(owner)
+            st.owner_text = db.get_kv(_KV_OWNER_TEXT) or ""
+            chan = db.get_kv(_KV_CHANNEL)
+            if chan:
+                st.channel_msg_id = int(chan)
+                st.channel_text = db.get_kv(_KV_CHANNEL_TEXT) or ""
+    except Exception:
+        return TickerState()
+    return st
+
+
 def ticker_tick(app, hb, now: float, previous=None) -> None:
     """One heartbeat's worth of ticker work. Sync (call via to_thread or
     directly in tests); never raises."""
@@ -117,6 +168,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
             ch_id = (ch_sent or {}).get("result", {}).get("message_id")
             if ch_id is not None:
                 st.channel_msg_id, st.channel_text = ch_id, ch_text
+        _persist(app, st)
         return
 
     if hb.positions and st.owner_msg_id is not None:
@@ -135,6 +187,14 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
         if (edit_result or {}).get("ok", False):
             st.owner_text = text
             st.last_edit_ts = now
+        elif (edit_result or {}).get("ok") is False and \
+                "message to edit not found" in str(edit_result).lower():
+            # The persisted message was deleted (or the id is stale from a
+            # different chat): forget it so the next tick posts a fresh
+            # LIVE instead of editing a ghost forever.
+            app.state.ticker = TickerState()
+            _clear_persisted(app)
+            return
         else:
             return  # retry on next tick if edit failed
         if cid and st.channel_msg_id is not None:
@@ -145,6 +205,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
                 ch_edit_result = None
             if (ch_edit_result or {}).get("ok", False):
                 st.channel_text = ch_text
+        _persist(app, st)
         return
 
     if not hb.positions and st.owner_msg_id is not None:
@@ -166,6 +227,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
             except Exception:
                 pass
         app.state.ticker = TickerState()
+        _clear_persisted(app)
 
 
 def _body(text: str) -> str:

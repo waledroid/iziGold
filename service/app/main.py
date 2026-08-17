@@ -21,7 +21,7 @@ from app.render import render_snapshot_chart, render_trade_chart
 from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
-from app.ticker import TickerState, ticker_tick
+from app.ticker import TickerState, load_ticker_state, ticker_tick
 from app.verdict import combine
 
 _SCREENSHOT_RETENTION = 500
@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
-    app.state.ticker = TickerState()
+    app.state.ticker = load_ticker_state(app)   # resume a mid-trade LIVE message across restarts
     app.state.ticker_busy = False
     app.state.ticker_task = None
     app.state.report_tasks = set()
