@@ -8,6 +8,7 @@ Runs as its own process: uvicorn app.miniapp:app --host 127.0.0.1
 bridge's next backfill push (fail-open).
 """
 import asyncio
+import time
 import hmac
 import math
 import sqlite3
@@ -79,6 +80,7 @@ class FeedState:
         return deltas
 
 
+_STARTED = time.time()
 app = FastAPI(title="xau-miniapp", docs_url=None, redoc_url=None, openapi_url=None)
 # docs_url/redoc_url/openapi_url off: Swagger UI pulls a CDN script and
 # /docs, /redoc, /openapi.json are otherwise auth-free by FastAPI default
@@ -155,6 +157,7 @@ async def feed_push(request: Request):
         return {"ok": False}
     try:
         deltas = state.apply_push(batch)
+        state.last_push_ts = time.time()
     except Exception:
         return {"ok": False}
     for d in deltas:
@@ -171,7 +174,13 @@ async def feed_push(request: Request):
 def healthz():
     """Auth-free liveness probe (setup.sh's start/restart check uses this,
     not /openapi.json -- that route is gone now that docs are disabled)."""
-    return {"ok": True}
+    # feed_age_s: seconds since the last bridge push (None = never). The
+    # watchdog reads this to decide the Windows bridge is dead — the earlier
+    # "miniapp.log mtime" proxy was fooled by the watchdog's OWN probes.
+    lp = getattr(state, "last_push_ts", None)
+    return {"ok": True,
+            "feed_age_s": (None if lp is None else round(time.time() - lp, 1)),
+            "uptime_s": round(time.time() - _STARTED, 1)}
 
 
 @app.get("/")

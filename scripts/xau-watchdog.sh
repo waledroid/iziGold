@@ -38,12 +38,16 @@ miniapp_ok() { curl -sf -m 4 http://127.0.0.1:9001/healthz >/dev/null; }
 tunnel_ok()  { [[ -n "$TUNNEL_DOMAIN" ]] || return 0   # unconfigured = not our job
                curl -sf -m 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -q "$TUNNEL_DOMAIN" \
                && curl -sf -m 8 -H "ngrok-skip-browser-warning: 1" "https://$TUNNEL_DOMAIN/healthz" >/dev/null; }
-feed_ok()    { # bridge alive = a /feed/push landed recently
-               local last; last=$(grep -n "POST /feed/push" /tmp/miniapp.log 2>/dev/null | tail -1 | cut -d: -f1)
-               [[ -n "$last" ]] || return 1
-               # cheap freshness proxy: log file mtime (pushes are the dominant writer)
-               local age=$(( $(date +%s) - $(stat -c %Y /tmp/miniapp.log) ))
-               (( age < FEED_STALE_S )); }
+feed_ok()    { # bridge alive = the miniapp saw a /feed/push recently. /healthz gives
+               # feed_age_s (null = never since this process started) + uptime_s.
+               # null is only excusable while the miniapp is YOUNG; a null older
+               # than FEED_STALE_S means no bridge push has arrived at all -> dead.
+               local hz; hz=$(curl -sf -m 4 http://127.0.0.1:9001/healthz 2>/dev/null) || return 0  # miniapp down: not the bridge's fault
+               local age up
+               age=$(grep -oP '"feed_age_s":\s*\K[0-9.]+' <<<"$hz")
+               up=$(grep -oP '"uptime_s":\s*\K[0-9.]+' <<<"$hz")
+               if [[ -z "$age" ]]; then (( ${up%.*} < FEED_STALE_S )); return; fi
+               (( ${age%.*} < FEED_STALE_S )); }
 # stale-code: newest mtime of the code the process runs vs its start time
 proc_started() { local pid; pid=$(pgrep -f "$1" | head -1); [[ -n "$pid" ]] && stat -c %Y "/proc/$pid" 2>/dev/null; }
 newest_mtime()  { find "$@" -type f \( -name '*.py' -o -name '*.html' \) -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1; }
@@ -58,10 +62,22 @@ restart_miniapp() { pkill -f "uvicorn app.miniapp:app" || true; sleep 2
 restart_tunnel()  { pkill -f "ngrok http" || true; sleep 2
                     [[ -n "$NGROK_TOKEN" && -n "$TUNNEL_DOMAIN" ]] || return 0
                     nohup "$HOME/.local/bin/ngrok" http --url="$TUNNEL_DOMAIN" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 & }
-restart_bridge()  { # same hidden-pythonw pattern the launcher uses (izi §8 bridge auto-start)
-                    local ps='$p=Get-CimInstance Win32_Process | ? { $_.CommandLine -like "*mt5_feed.py*" }; if($p){ $p | % { Stop-Process -Id $_.ProcessId -Force } }; ' \
-                          'foreach($v in "312","311","313"){ $py="$env:LOCALAPPDATA\Programs\Python\Python$v\pythonw.exe"; if(Test-Path $py){ Start-Process -WindowStyle Hidden -FilePath $py -ArgumentList "bridge\mt5_feed.py" -WorkingDirectory "'"$(wslpath -w "$REPO")"'"; break } }'
-                    powershell.exe -NoProfile -Command "$ps" >/dev/null 2>&1 || true; }
+restart_bridge()  { # Kill any old bridge, then launch a DETACHED hidden pythonw.
+                    # Lessons (2026-08-17): a Start-Process from a WSL-invoked
+                    # PowerShell dies with its wrapper; `cmd /c start "" /B` with
+                    # ABSOLUTE Windows paths (not a /mnt/c cwd) survives — the
+                    # wrapper itself may hang from WSL's view, hence `timeout`.
+                    local win_repo; win_repo="$(wslpath -w "$REPO" 2>/dev/null)"
+                    powershell.exe -NoProfile -Command \
+                      '$p=Get-CimInstance Win32_Process | ? { $_.Name -like "python*" -and $_.CommandLine -like "*mt5_feed.py*" }; if($p){ $p | % { Stop-Process -Id $_.ProcessId -Force } }' >/dev/null 2>&1 || true
+                    sleep 2
+                    local py=""
+                    for v in 312 311 313; do
+                      local cand; cand="$(wslpath -u "$(cmd.exe /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\r')")/Programs/Python/Python$v/pythonw.exe"
+                      [[ -f "$cand" ]] && { py="$(wslpath -w "$cand")"; break; }
+                    done
+                    [[ -n "$py" ]] || { log "bridge: no Windows pythonw found"; return 0; }
+                    timeout 25 cmd.exe /c start "" /B "$py" "$win_repo\\bridge\\mt5_feed.py" >/dev/null 2>&1 || true; }
 
 # ---- supervise one link ---------------------------------------------------
 supervise() {   # $1 name  $2 check-fn  $3 restart-fn
