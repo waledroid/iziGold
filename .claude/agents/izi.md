@@ -486,8 +486,18 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   in flight (see `.superpowers/confirm-variants-report.md` when written):
   ConfirmCloses=2, an "open-beyond-EMA" confirm mode (suspected to collapse
   to the current close rule since bar opens = prior closes — verify), and
-  EMA-50 vs 55 — evaluated on that morning AND the last 30 days. Rulebook
-  unchanged until those numbers land. Exit taxonomy explained to the owner
+  EMA-50 vs 55 — evaluated on that morning AND the last 30 days. **Numbers
+  landed (2026-08-17, `.superpowers/confirm-variants-report.md`): none
+  avoids the morning box (all variants take the same trades) and ALL earn
+  less over 30 days than the current rule** — today 55/1close morning −$82 /
+  30d +$949 (111 trades, 47% win, valley $387); 2 closes −$125 / +$643;
+  "open-beyond-EMA" IS the current rule (opens = prior closes; EA acts on
+  closes; 10 tick-gap decisions in ~5,600 bars, $2 delta); EMA-50 −$82
+  (identical morning) / +$736; EMA-50 + 2 closes −$141 / +$332. Verdict:
+  rulebook unchanged; the only idea with a plausible edge on range mornings
+  is `--regime-gate` (skip `range`-classified entries) — untested as of this
+  note. Backtester gained `--ema-len`, `--confirm-mode close|open`,
+  `--start/--end` (defaults byte-identical). Exit taxonomy explained to the owner
   and worth restating: (1) trend-says-over = confirmed reversal (fires
   regardless of P/L, ADR+FIXED — usually the SMALLER loss because it fires
   the moment the thesis dies); (2) money-says-over = broker stop / +2%
