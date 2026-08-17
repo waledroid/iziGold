@@ -544,7 +544,7 @@ process. Backoff: 3 consecutive failed restarts → 10-min cooldown + a
 Telegram warning. Every restart posts `♻️ watchdog: <link> restarted` via
 `/notify` (fail-open). It supervises PROCESSES only — never trading
 decisions. Proven live: killed the miniapp → detected, restarted, tunnel
-back within ~10 s. Manual stop: `pkill -f scripts/xau-watchdog.sh`.
+back within ~10 s. **Follow-up the same day**: the recovered miniapp came back with EMPTY ring buffers (the bridge only backfilled on startup or after a FAILED push, and the watchdog restart was faster than one push cycle) → chart showed 1-2 candles, no indicators. Fix: `/feed/push` now returns `depth` (shallowest TF buffer) and the bridge re-sends its 500-bar backfill whenever `depth < 250` — restart-timing-independent recovery. Manual stop: `pkill -f scripts/xau-watchdog.sh`.
 Caveat: the main-service stale-code guard restarts on ANY `service/app`
 file change — commit + deploy in one motion (or expect the watchdog to do
 the deploy for you ~30 s after the file lands, with a 25 s cold start).

@@ -46,13 +46,26 @@ def feed_key() -> str:
     return val
 
 
+_last_depth = None   # buffer depth the service reported on the last push
+
+
 def push(key: str, batch: dict) -> bool:
+    """POST one batch. Returns True on HTTP 200. Also records the service's
+    reported ring-buffer depth (`depth` in the response) so the run loop can
+    re-backfill a service that came back empty after a restart."""
+    global _last_depth
     req = urllib.request.Request(
         PUSH_URL, data=json.dumps(batch).encode(),
         headers={"Content-Type": "application/json", "X-Feed-Key": key})
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status == 200
+            if r.status != 200:
+                return False
+            try:
+                _last_depth = json.loads(r.read().decode() or "{}").get("depth")
+            except Exception:
+                _last_depth = None
+            return True
     except Exception:
         return False
 
@@ -138,8 +151,13 @@ def main() -> int:
                 batch.update(positions_batch())
                 last_bars = now
             if batch and not push(key, batch):
-                need_backfill = True     # service restarted -> refill buffers
+                need_backfill = True     # service down -> refill when it's back
                 time.sleep(3)
+            elif _last_depth is not None and _last_depth < BACKFILL // 2:
+                # Service is up but SHALLOW (it restarted between two of our
+                # pushes and lost its buffers): re-send the full backfill now
+                # instead of feeding it 2 bars per push forever.
+                need_backfill = True
             time.sleep(TICK_EVERY)
     finally:
         mt5.shutdown()

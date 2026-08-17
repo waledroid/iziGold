@@ -159,7 +159,12 @@ async def feed_push(request: Request):
         return {"ok": False}
     for d in deltas:
         await hub.broadcast(d)
-    return {"ok": True, "deltas": len(deltas)}
+    # `depth` = the shallowest TF ring buffer. The bridge uses it to detect a
+    # service that came back EMPTY (watchdog/deploy restart) and re-send its
+    # 500-bar backfill — a restart faster than one push cycle would otherwise
+    # leave the chart with 1-2 candles and no indicators (2026-08-17).
+    depth = min((len(state.candles[tf]) for tf in TFS), default=0)
+    return {"ok": True, "deltas": len(deltas), "depth": depth}
 
 
 @app.get("/healthz")

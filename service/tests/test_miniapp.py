@@ -473,3 +473,16 @@ def test_trades_limit_is_capped_server_side(client, monkeypatch, tmp_path):
     r = client.get("/api/trades", params={"limit": 999999})
     assert r.status_code == 200
     assert calls["params"] == (miniapp.TRADES_MAX_LIMIT,)
+
+
+def test_push_response_reports_shallowest_buffer_depth(client):
+    """The bridge re-backfills when `depth` is shallow — a service that
+    restarted between two pushes must not stay at 1-2 candles forever."""
+    r = _push(client, {"tick": None})
+    assert r.json()["depth"] == 0                     # fresh service: empty
+    _push(client, {"candles": {"M5": [_candle(1000 + 300 * i) for i in range(50)]}})
+    r = _push(client, {"tick": None})
+    assert r.json()["depth"] == 0                     # M1 etc still empty -> min is 0
+    body = {"candles": {tf: [_candle(1000 + 60 * i) for i in range(20)] for tf in TFS}}
+    r = _push(client, body)
+    assert r.json()["depth"] == 20                    # every TF has 20 -> min 20
