@@ -527,6 +527,28 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   the moment the thesis dies); (2) money-says-over = broker stop / +2%
   target / 50%-of-peak lock (ADR only) + the 23:54 flatten and remote EXIT.
 
+# 7b. Watchdog — the chart chain (and service processes) self-heal
+
+`scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
+idempotent via pgrep; log `/tmp/xau-watchdog.log`). Every 30 s it checks
+each link and restarts ONLY the failed one: main service (`:9000/health`),
+miniapp (`:9001/healthz`), ngrok tunnel (domain in the 4040 agent API AND
+public `/healthz`), Windows bridge (feed freshness — `/tmp/miniapp.log`
+mtime < 90 s; restart via the launcher's hidden-`pythonw` PowerShell
+pattern). **Stale-code guard**: a process whose start time predates the
+newest mtime of its code files is restarted (miniapp: miniapp.py /
+miniapp_auth.py / miniapp.html; main: `service/app`) — born from the 08-17
+incident where the miniapp served two-day-old code because a deploy forgot
+the restart, so the page (read fresh from disk) mismatched the old server
+process. Backoff: 3 consecutive failed restarts → 10-min cooldown + a
+Telegram warning. Every restart posts `♻️ watchdog: <link> restarted` via
+`/notify` (fail-open). It supervises PROCESSES only — never trading
+decisions. Proven live: killed the miniapp → detected, restarted, tunnel
+back within ~10 s. Manual stop: `pkill -f scripts/xau-watchdog.sh`.
+Caveat: the main-service stale-code guard restarts on ANY `service/app`
+file change — commit + deploy in one motion (or expect the watchdog to do
+the deploy for you ~30 s after the file lands, with a 25 s cold start).
+
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plans:

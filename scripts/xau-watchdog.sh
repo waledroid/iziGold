@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# xau-watchdog.sh — keeps the LIVE CHART chain (and the main service process)
+# up: checks every link every INTERVAL seconds and restarts ONLY the failed
+# one. Born 2026-08-17 after the mini-app served two-day-old code (a deploy
+# forgot the restart) and a restart window produced tunnel 502s.
+#
+# Supervises PROCESSES only — never trading decisions. Every restart is
+# reported to Telegram via the main service's /notify (fail-open).
+#
+# Links:  main service :9000 /health   | miniapp :9001 /healthz
+#         ngrok tunnel  (agent API domain match + public /healthz)
+#         Windows bridge (feed freshness: /feed/push seen in the miniapp log
+#                        within FEED_STALE_S)
+# Stale-code guard: a service whose process is OLDER than its code files on
+#         disk is restarted (the exact 08-17 failure).
+# Backoff: a link that fails MAX_FAILS restarts in a row is left alone for
+#         COOLDOWN_S (and reported), so a truly broken component doesn't loop.
+set -uo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SVC="$REPO/service"
+INTERVAL="${WATCHDOG_INTERVAL:-30}"
+FEED_STALE_S="${WATCHDOG_FEED_STALE_S:-90}"
+MAX_FAILS=3
+COOLDOWN_S=600
+LOG="/tmp/xau-watchdog.log"
+declare -A fails cooldown_until
+env_get() { grep -oP "^$1=\K.+" "$SVC/.env" 2>/dev/null | tail -1 | tr -d '"'"'" ; }
+PUBLIC_URL="$(env_get MINIAPP_PUBLIC_URL)"; TUNNEL_DOMAIN="${PUBLIC_URL#https://}"
+NGROK_TOKEN="$(env_get NGROK_AUTHTOKEN)"
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+notify() { curl -s -m 5 -X POST http://127.0.0.1:9000/notify \
+              -H 'Content-Type: application/json' \
+              -d "{\"text\":\"♻️ watchdog: $1\"}" >/dev/null 2>&1 || true; }
+
+# ---- checks -----------------------------------------------------------
+main_ok()    { curl -sf -m 4 http://127.0.0.1:9000/health >/dev/null; }
+miniapp_ok() { curl -sf -m 4 http://127.0.0.1:9001/healthz >/dev/null; }
+tunnel_ok()  { [[ -n "$TUNNEL_DOMAIN" ]] || return 0   # unconfigured = not our job
+               curl -sf -m 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -q "$TUNNEL_DOMAIN" \
+               && curl -sf -m 8 -H "ngrok-skip-browser-warning: 1" "https://$TUNNEL_DOMAIN/healthz" >/dev/null; }
+feed_ok()    { # bridge alive = a /feed/push landed recently
+               local last; last=$(grep -n "POST /feed/push" /tmp/miniapp.log 2>/dev/null | tail -1 | cut -d: -f1)
+               [[ -n "$last" ]] || return 1
+               # cheap freshness proxy: log file mtime (pushes are the dominant writer)
+               local age=$(( $(date +%s) - $(stat -c %Y /tmp/miniapp.log) ))
+               (( age < FEED_STALE_S )); }
+# stale-code: newest mtime of the code the process runs vs its start time
+proc_started() { local pid; pid=$(pgrep -f "$1" | head -1); [[ -n "$pid" ]] && stat -c %Y "/proc/$pid" 2>/dev/null; }
+newest_mtime()  { find "$@" -type f \( -name '*.py' -o -name '*.html' \) -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1; }
+stale_code()    { local started; started=$(proc_started "$1") || return 1
+                  local code; code=$(newest_mtime "${@:2}"); [[ -n "$code" && -n "$started" ]] && (( code > started )); }
+
+# ---- restarts ---------------------------------------------------------
+restart_main()    { pkill -f "uvicorn app.main:app" || true; sleep 2
+                    (cd "$SVC" && nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 >> /tmp/xau-service.log 2>&1 &) ; }
+restart_miniapp() { pkill -f "uvicorn app.miniapp:app" || true; sleep 2
+                    (cd "$SVC" && nohup .venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1 &) ; }
+restart_tunnel()  { pkill -f "ngrok http" || true; sleep 2
+                    [[ -n "$NGROK_TOKEN" && -n "$TUNNEL_DOMAIN" ]] || return 0
+                    nohup "$HOME/.local/bin/ngrok" http --url="$TUNNEL_DOMAIN" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 & }
+restart_bridge()  { # same hidden-pythonw pattern the launcher uses (izi §8 bridge auto-start)
+                    local ps='$p=Get-CimInstance Win32_Process | ? { $_.CommandLine -like "*mt5_feed.py*" }; if($p){ $p | % { Stop-Process -Id $_.ProcessId -Force } }; ' \
+                          'foreach($v in "312","311","313"){ $py="$env:LOCALAPPDATA\Programs\Python\Python$v\pythonw.exe"; if(Test-Path $py){ Start-Process -WindowStyle Hidden -FilePath $py -ArgumentList "bridge\mt5_feed.py" -WorkingDirectory "'"$(wslpath -w "$REPO")"'"; break } }'
+                    powershell.exe -NoProfile -Command "$ps" >/dev/null 2>&1 || true; }
+
+# ---- supervise one link ---------------------------------------------------
+supervise() {   # $1 name  $2 check-fn  $3 restart-fn
+  local name="$1" now; now=$(date +%s)
+  if (( ${cooldown_until[$name]:-0} > now )); then return; fi
+  if "$2"; then fails[$name]=0; return; fi
+  fails[$name]=$(( ${fails[$name]:-0} + 1 ))
+  log "$name DOWN (fail ${fails[$name]}/$MAX_FAILS) — restarting"
+  "$3"; sleep 8
+  if "$2"; then log "$name recovered"; notify "$name restarted (recovered)"; fails[$name]=0
+  elif (( fails[$name] >= MAX_FAILS )); then
+    log "$name still down after $MAX_FAILS restarts — cooling down ${COOLDOWN_S}s"
+    notify "$name still DOWN after $MAX_FAILS restarts — pausing $((COOLDOWN_S/60)) min (check /tmp/xau-watchdog.log)"
+    cooldown_until[$name]=$(( now + COOLDOWN_S ))
+  fi
+}
+
+log "watchdog start (interval ${INTERVAL}s, tunnel=${TUNNEL_DOMAIN:-none})"
+while true; do
+  # stale-code guard first (a restart here also clears any transient DOWN)
+  if stale_code "uvicorn app.miniapp:app" "$SVC/app/miniapp.py" "$SVC/app/miniapp_auth.py" "$SVC/app/static/miniapp.html"; then
+     log "miniapp running code older than disk — restarting"; restart_miniapp; sleep 6; notify "miniapp restarted (stale code)"; fi
+  if stale_code "uvicorn app.main:app" "$SVC/app"; then
+     log "main service running code older than disk — restarting"; restart_main; sleep 25; notify "main service restarted (stale code)"; fi
+  supervise main    main_ok    restart_main
+  supervise miniapp miniapp_ok restart_miniapp
+  supervise tunnel  tunnel_ok  restart_tunnel
+  supervise bridge  feed_ok    restart_bridge
+  sleep "$INTERVAL"
+done

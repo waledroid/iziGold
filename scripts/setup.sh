@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_DIR="$REPO_ROOT/service"
 VENV="$SERVICE_DIR/.venv"
 BASE_URL="http://127.0.0.1:9000"
-TOTAL=10
+TOTAL=11
 MT5_DIR=""
 METAEDITOR=""
 
@@ -431,8 +431,22 @@ else
   fi
 fi
 
-# ----------------------------------------------------------------- 8. Telegram
-phase 8 "Telegram"
+# ------------------------------------------------------- 7b. Watchdog (supervisor)
+phase 8 "Watchdog (keeps main/miniapp/tunnel/bridge up)"
+if pgrep -f "scripts/xau-watchdog.sh" >/dev/null 2>&1; then
+  skip "watchdog already running (log: /tmp/xau-watchdog.log)"
+else
+  nohup bash "$REPO_ROOT/scripts/xau-watchdog.sh" >/dev/null 2>&1 &
+  sleep 1
+  if pgrep -f "scripts/xau-watchdog.sh" >/dev/null 2>&1; then
+    ok "watchdog started — restarts any dead link every 30 s, reports to Telegram (log: /tmp/xau-watchdog.log)"
+  else
+    fail "watchdog failed to start"
+  fi
+fi
+
+# ----------------------------------------------------------------- 9. Telegram
+phase 9 "Telegram"
 profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
 import json, sys
 p = json.load(sys.stdin).get("profile") or {}
@@ -482,7 +496,7 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
 fi
 
 # ------------------------------------------------------ 9. MT5 install + compile
-phase 9 "MT5 install + compile"
+phase 10 "MT5 install + compile"
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -508,7 +522,7 @@ fi
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
 
 # ------------------------------------------ 10. Handoff + end-to-end verification
-phase 10 "Handoff + end-to-end verify"
+phase 11 "Handoff + end-to-end verify"
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
