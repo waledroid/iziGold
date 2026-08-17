@@ -498,19 +498,14 @@ def test_add_event_sends_no_photo_close_render_still_carries_add_leg(client):
 
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
     _drain()
-    # No render photos any more; the open sends ONE text message that carries
-    # the EXIT button (it used to ride on the photo).
-    assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
-    open_msgs = [c for c in ft.calls if c[0] == "sendMessage"
-                 and c[1].get("chat_id") == "555"
-                 and "reply_markup" in c[1]
-                 and "exitnow:" in str(c[1]["reply_markup"])]
-    assert len(open_msgs) == 1
+    # /trade-event sends NOTHING to Telegram for an open: the EA's own
+    # /screenshot post (with the EXIT button) is the single chart per entry.
+    assert [c for c in ft.calls if c[0] in ("sendPhoto", "sendMessage")] == []
 
     client.post("/trade-event", json=_trade(event="add", price=2405.0))
     _drain()
     # The add must NOT trigger any Telegram traffic of its own.
-    assert len(open_msgs) == 1 and [c for c in ft.calls if c[0] == "sendPhoto"] == []
+    assert [c for c in ft.calls if c[0] in ("sendPhoto", "sendMessage")] == []
 
     close_id = client.post(
         "/trade-event", json=_trade(event="close", price=2415.0)).json()["id"]
@@ -536,7 +531,7 @@ def test_non_final_close_sends_no_pl_message_and_no_photo(client):
     client.post("/trade-event", json=_trade(event="open", price=2400.0))
     _drain()
     msgs_after_open = len([c for c in ft.calls if c[0] == "sendMessage"])
-    assert msgs_after_open >= 1          # the open's EXIT-button text message
+    assert msgs_after_open == 0          # opens are silent on /trade-event
 
     r = client.post(
         "/trade-event",

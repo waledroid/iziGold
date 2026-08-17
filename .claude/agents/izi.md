@@ -362,10 +362,13 @@ Quiet by default: only proposals, executions, failures, command replies.
   photos to Telegram any more (owner request 2026-08-17)** — the annotated
   PNGs are still rendered to disk for the dashboard's trade list, but the
   old "render: <reason>" photos on open/close were dropped as noise once the
-  live ticker + [📈 Live Chart] mini app existed. The open event now sends
-  a short text (`📥 BUY 0.05 @ 4333.74 — signal BUY`) carrying the
-  `exitnow:` EXIT button that used to ride on the open photo. `/chart`'s PNG
-  fallback (when no mini-app URL is configured) is unaffected.
+  live ticker + [📈 Live Chart] mini app existed. **The ONE chart per entry
+  is the EA's own screenshot** (`POST /screenshot`, caption `open BUY
+  0.09@4399.17 — signal BUY`) which already carries the `exitnow:` EXIT
+  button — `/trade-event` sends nothing to Telegram on open (a first
+  attempt added a text message with the button; that was a duplicate and
+  was removed the same day). `/chart`'s PNG fallback (when no mini-app URL
+  is configured) is unaffected.
 - Single-chat security on messages AND callbacks; bot credentials live in
   the service profile (onboarding page), overriding `.env`.
 

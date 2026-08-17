@@ -935,16 +935,11 @@ async def _report_trade_event(ev: TradeEventRequest, trade_id: int,
                 # visual, and the extra "render:" photos were noise).
         except Exception:
             pass
-    if ev.event == "open" and app.state.telegram is not None:
-        # The EXIT button used to ride on the open-render photo; keep it on
-        # a short text message so the one-tap close stays available.
-        try:
-            await asyncio.to_thread(
-                app.state.telegram.send_message,
-                f"📥 {ev.direction} {ev.lots:g} @ {ev.price:g} — {ev.reason}",
-                EXIT_NOW_KB(trade_id))
-        except Exception:
-            pass
+    # No open-time Telegram message here at all: the EA's own chart
+    # screenshot (POST /screenshot, caption "open BUY 0.09@4399.17 — signal
+    # BUY") already arrives with the EXIT button — that is the ONE chart the
+    # owner wants per entry (2026-08-17). Anything sent here would be a
+    # duplicate.
     if ev.event == "close" and ev.final and app.state.telegram is not None:
         try:
             await asyncio.to_thread(
