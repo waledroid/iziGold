@@ -412,7 +412,12 @@ def test_healthz_ok_without_viewer_auth(monkeypatch):
     with TestClient(miniapp.app) as c:
         r = c.get("/healthz")
         assert r.status_code == 200
-        assert r.json() == {"ok": True}
+        body = r.json()
+        assert body["ok"] is True
+        # watchdog liveness fields (2026-08-17): feed_age_s null until the
+        # first bridge push; uptime_s always present. Auth-free by design.
+        assert "feed_age_s" in body and "uptime_s" in body
+        assert body["feed_age_s"] is None and body["uptime_s"] >= 0
 
 
 def test_docs_and_openapi_json_404(monkeypatch):
