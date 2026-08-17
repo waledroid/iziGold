@@ -495,8 +495,22 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   closes; 10 tick-gap decisions in ~5,600 bars, $2 delta); EMA-50 −$82
   (identical morning) / +$736; EMA-50 + 2 closes −$141 / +$332. Verdict:
   rulebook unchanged; the only idea with a plausible edge on range mornings
-  is `--regime-gate` (skip `range`-classified entries) — untested as of this
-  note. Backtester gained `--ema-len`, `--confirm-mode close|open`,
+  is `--regime-gate` (skip `range`-classified entries) — **TESTED same day
+  (`.superpowers/regime-gate-study.md`): DON'T.** "Range" entries win as
+  often as "trend" ones (36.3% vs 36.1% over 17 mo, p=0.94; 45% vs 42% last
+  30 d) — the label isn't predictive. Range gate: last 30 d +$780 → +$437
+  (skips 29 winners + 35 losers, net −$343 for a $34 smaller valley);
+  current-rulebook era −$1,575 (range entries supplied 85% of its profit);
+  08-17 itself only +$11 net (dodges the two whipsaws but skips the +$85
+  winner 3 bars later). range-strict/highvol flip sign across sub-periods =
+  regime-tuned. "Range" is just the plurality tape state (~41% of enterable
+  bars at the classifier's ADX-25) — seeing it on losers is expected, not
+  diagnostic. Next candidate if pursued: a HalfTrend FLIP-COUNT chop filter
+  (skip when ≥2 flips in the last N bars inside a <X·ATR box) — targets the
+  actual 08-17 pattern; and/or a soft "chop mode" (half size, no adds).
+  Rule of the house re-affirmed: any regime/chop gate must be an EA-side
+  `CanEnter` refusal, never a service-side veto via `/analyze` (fail-open +
+  execute-first). Backtester gained `--ema-len`, `--confirm-mode close|open`,
   `--start/--end` (defaults byte-identical). Exit taxonomy explained to the owner
   and worth restating: (1) trend-says-over = confirmed reversal (fires
   regardless of P/L, ADR+FIXED — usually the SMALLER loss because it fires
