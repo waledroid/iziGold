@@ -30,7 +30,10 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--confirm-mode close|open] [--start T] [--end T]
                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
                    [--chop-mode skip|soft|off] [--strict-window]
-                   [--min-stop-atr K]
+                   [--min-stop-atr K] [--bias-ema N]
+                   [--bias-mode tag|target|target_lock|size_target|skip]
+                   [--bias-tf M5|M15]
+                   [--window-start H] [--window-end H] [--hour-table]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -141,6 +144,55 @@ while open), so the summary can count the "noise stops saved" — floored
 entries the old stop would have killed within the first 3 bars — and the
 "should have died" entries the floor let bleed further. K = 0 (default) =
 off, byte-identical baseline.
+
+--bias-ema N / --bias-mode M / --bias-tf TF (EMA-200 market-bias experiment,
+owner's idea 2026-08-18: "price above EMA-200 = bullish, below = bearish;
+trades WITH the bias keep the profit target, trades AGAINST it get HALF the
+target — counter-trend bounces are short"). N = 0 (default) = off, byte-
+identical baseline. N > 0: at the ENTRY bar the bias is close[i] vs EMA-N;
+a BUY above / SELL below the EMA is "with", the opposite is "counter" (close
+exactly on the EMA = with, never happens in practice). The bias is decided
+once at entry and is basket-sticky: a mid-trade flip does not touch an open
+basket's target/lock. Every trade is tagged with/counter and the summary
+splits count / win% / net / max loser by tag, so `--bias-mode tag` on the
+baseline shows whether counter-trend trades are actually the losers.
+--bias-mode:
+  tag         : tag and report only, nothing changes (default when N > 0);
+  target      : owner's literal version — counter-trend basket profit target
+                x BIAS_TARGET_MULT (0.5: +1% of cycle balance instead of +2%).
+                The profit lock is NOT touched, because in the EA and in this
+                replay the lock's arming threshold is tied to the RISK budget
+                (TRAIL_ACTIVATE_R x RiskPct of cycle balance), not to the
+                target — so with a 1% target and a 1R = 1% arm the target
+                check (which runs first) always wins and the lock is
+                effectively dead for counter-trend baskets;
+  target_lock : as target, plus the lock's arming threshold x the same 0.5
+                (arms at 0.5R), keeping the baseline's lock-at-half-target
+                proportion — the fair comparison for the target idea;
+  size_target : counter-trend target x 0.5 AND risk x BIAS_RISK_MULT (0.5:
+                0.5% instead of 1% — same reward:risk as with-trend, smaller
+                bet against the tide); the lock's risk budget scales with the
+                actual risk taken (arms at 1R of the HALVED budget), i.e. the
+                whole counter-trend basket is a half-scale copy;
+  skip        : counter-trend entries refused entirely (tagged in skipped).
+--bias-tf: M5 (default) = EMA-N on the trading bars; M15 = EMA-N on the M5
+bars resampled to M15 (bucket = t // 900 s; a bucket closes on its last M5
+bar), read as the LAST COMPLETED M15 bar's EMA (iMA(M15, shift 1) at the M5
+close moment) vs the M5 close — entries, exits, everything else stay M5. The
+summary always prints how often the bias flipped per day on both M5 and M15
+so the two clocks can be compared.
+
+--window-start H / --window-end H / --hour-table (trading-hours experiment,
+2026-08-18): the EA's TradingWindowStartHour / TradingWindowEndHour (server
+time, GMT+3). Defaults 4 and 23 reproduce the live window byte-identically.
+The window gates NEW ENTRIES only — exactly like the EA, whose RiskManager
+checks the hour in the entry path and never in the exit path — so a narrower
+window does NOT force an early flatten: a basket opened at 17:55 under
+--window-end 18 keeps running until its target / lock / stop / reversal, and
+the 23:50 pre-break flatten is unchanged in every window. --hour-table (off
+by default, so the summary stays byte-identical) prints an entry-hour
+breakdown: for each server hour 0-23, trades / win% / net / avg P/L, each
+trade attributed to the hour its FIRST leg opened.
 """
 import argparse
 import datetime as dt
@@ -165,7 +217,9 @@ ADD_SHRINK = 0.7
 PROFIT_TARGET_PCT = 2.0
 TRAIL_LOCK_PCT = 50.0
 TRAIL_ACTIVATE_R = 1.0
-WINDOW = (4, 23)          # server hours
+WINDOW = (4, 23)          # server hours (EA TradingWindowStart/EndHour);
+                          # gates NEW ENTRIES only, never exits
+HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
 EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
@@ -237,6 +291,18 @@ STRICT_WINDOW = False
 MIN_STOP_ATR = 0.0
 NOISE_BARS = 3            # "stopped in the first N bars" = noise stop
 
+# --- EMA-200 market-bias experiment (owner's idea 2026-08-18) ---
+# BIAS_EMA 0 = off. bias := close vs EMA-N at the entry bar; with/counter
+# tags every trade; BIAS_MODE decides what a counter-trend entry gets.
+BIAS_EMA = 0
+BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
+BIAS_MODE = "tag"
+BIAS_TFS = ("M5", "M15")
+BIAS_TF = "M5"
+BIAS_TARGET_MULT = 0.5    # counter-trend profit target multiplier
+BIAS_RISK_MULT = 0.5      # counter-trend risk multiplier (size_target only)
+M15_SEC = 900
+
 
 class _Bar:
     __slots__ = ("h", "l", "c")
@@ -285,6 +351,51 @@ def chop_at(candles, ht, atr, i, flips=None, bars=None, box_atr=None):
     is_chop = flips > 0 and n >= flips and \
         (box_atr <= 0 or (ratio is not None and ratio < box_atr))
     return is_chop, n, ratio, ft
+
+
+def bias_ema_series(candles, n, tf):
+    """Per-M5-bar bias EMA value (None while warming up). tf M5: ema(closes,
+    n). tf M15: resample to M15 buckets (t // 900); a bucket closes on its
+    last M5 bar (the next bar belongs to a later bucket, or the bar sits at
+    the bucket's last 5-minute slot); each M5 bar reads the EMA of the last
+    COMPLETED M15 bar (iMA(M15, shift 1) at the M5 close moment)."""
+    if tf == "M5":
+        return ema([x["c"] for x in candles], n)
+    m15_closes, out, last = [], [None] * len(candles), None
+    k = 2.0 / (n + 1.0)
+    for i, x in enumerate(candles):
+        b = x["t"] // M15_SEC
+        nxt = candles[i + 1]["t"] // M15_SEC if i + 1 < len(candles) else None
+        closes_now = nxt != b or (x["t"] % M15_SEC) == M15_SEC - 300
+        if closes_now:
+            m15_closes.append(x["c"])
+            if len(m15_closes) == n:
+                last = sum(m15_closes) / n
+            elif len(m15_closes) > n:
+                last = x["c"] * k + last * (1.0 - k)
+        out[i] = last
+    return out
+
+
+def bias_flips_per_day(candles, series, m15_only=False):
+    """Mean number of bias sign changes per server day. m15_only counts only
+    at bars that close an M15 bucket (the M15 clock); otherwise every M5 bar."""
+    days, flips, prev = set(), 0, None
+    for i, x in enumerate(candles):
+        e = series[i]
+        if e is None:
+            continue
+        if m15_only:
+            b = x["t"] // M15_SEC
+            nxt = candles[i + 1]["t"] // M15_SEC if i + 1 < len(candles) else None
+            if not (nxt != b or (x["t"] % M15_SEC) == M15_SEC - 300):
+                continue
+        side = 1 if x["c"] > e else (-1 if x["c"] < e else prev)
+        days.add(hhmm(x["t"])[0].date())
+        if prev is not None and side is not None and side != prev:
+            flips += 1
+        prev = side
+    return flips / max(1, len(days)), flips, len(days)
 
 
 def floor_price(legs, s, amount):
@@ -341,6 +452,8 @@ def run(candles, start_balance, verbose):
     ht = halftrend(
         [type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
     atr, adx = atr_adx(candles)
+    bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
+        else None
 
     bal = start_balance
     basket = None          # dict: dir, legs[{px,oz}], stop, peak, cycle_bal
@@ -387,6 +500,8 @@ def run(candles, start_balance, verbose):
                        "entry_stop": basket.get("entry_stop"),
                        "orig_hit_bar": basket.get("orig_hit_bar"),
                        "bars_open": basket.get("bars_open", 0),
+                       "bias": basket.get("bias"),
+                       "bias_ema": basket.get("bias_ema"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -475,8 +590,10 @@ def run(candles, start_balance, verbose):
             else:
                 pl = basket_pl(px)
                 basket["peak"] = max(basket["peak"], pl)
-                risk_budget = basket["cycle_bal"] * RISK_PCT / 100
-                target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100
+                risk_budget = basket["cycle_bal"] * RISK_PCT / 100 \
+                    * basket.get("lock_mult", 1.0)
+                target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
+                    * basket.get("target_mult", 1.0)
                 closed = False
                 if ENTRY_MODE == "fixed":
                     pass   # pure ride: no profit target / floor in fixed mode
@@ -571,6 +688,16 @@ def run(candles, start_balance, verbose):
                         blocked = "chop"
                     elif chop and CHOP_MODE == "soft":
                         soft = True
+                bias, bval = None, None
+                if bias_ema is not None and bias_ema[i] is not None:
+                    bval = bias_ema[i]
+                    if px == bval:
+                        bias = "with"
+                    else:
+                        bias = "with" if ((px > bval) == (signal == "BUY")) \
+                            else "counter"
+                    if bias == "counter" and BIAS_MODE == "skip" and not blocked:
+                        blocked = "counter-trend"
                 if blocked:
                     skipped.append((when, signal, blocked))
                     if verbose:
@@ -594,6 +721,8 @@ def run(candles, start_balance, verbose):
                         orig_oz = oz
                     else:
                         rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
+                        if bias == "counter" and BIAS_MODE == "size_target":
+                            rp *= BIAS_RISK_MULT
                         risk = bal * rp / 100
                         oz = max(MIN_OZ, int(risk / dist))
                         orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
@@ -610,11 +739,24 @@ def run(candles, start_balance, verbose):
                               "chop_flips": nfl, "chop_box": boxr,
                               "soft": soft,
                               "flip_t": candles[last_flip]["t"],
-                              "entry_offset": i - last_flip}
+                              "entry_offset": i - last_flip,
+                              "bias": bias, "bias_ema": bval}
+                    if bias == "counter" and BIAS_MODE in (
+                            "target", "target_lock", "size_target"):
+                        # basket-sticky: decided once, here, at entry
+                        basket["target_mult"] = BIAS_TARGET_MULT
+                        if BIAS_MODE == "target_lock":
+                            basket["lock_mult"] = BIAS_TARGET_MULT
+                        elif BIAS_MODE == "size_target":
+                            basket["lock_mult"] = BIAS_RISK_MULT
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})"
                               f"{' SOFT (half risk, no adds)' if soft else ''}"
+                              + (f" bias {bias} (ema{BIAS_EMA} {bval:.2f}"
+                                 f"{', target x' + format(BIAS_TARGET_MULT, 'g') if basket.get('target_mult') else ''}"
+                                 f"{', lock x' + format(basket['lock_mult'], 'g') if basket.get('lock_mult') else ''})"
+                                 if bias else "")
                               + (f" FLOORED from {orig_stop:.2f} "
                                  f"(dist {orig_dist:.2f}, {orig_oz}oz)"
                                  if floored else ""))
@@ -629,6 +771,11 @@ def run(candles, start_balance, verbose):
     run.skipped = skipped
     run.open_diff_bars = open_diff_bars
     run.dead_signals = dead_signals
+    run.bias_flips = None
+    if BIAS_EMA > 0:
+        run.bias_flips = {
+            "M5": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M5")),
+            "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
     return trades, bal, max_dd, max_valley
 
 
@@ -743,7 +890,35 @@ def main():
                          "an ENTRY stop closer than K x ATR is pushed out to "
                          "exactly K x ATR and lots are sized over the wider "
                          "distance (0 = off, byte-identical)")
+    ap.add_argument("--bias-ema", type=int, default=0,
+                    help="EMA-N market bias at the entry bar (close vs EMA-N; "
+                         "0 = off, byte-identical). Tags every trade "
+                         "with/counter and prints the split")
+    ap.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
+                    help="tag = report only; target = counter-trend target "
+                         "x0.5 (lock untouched, EA-literal); target_lock = "
+                         "target x0.5 and lock arm x0.5; size_target = target "
+                         "x0.5 and risk x0.5; skip = refuse counter-trend")
+    ap.add_argument("--bias-tf", choices=BIAS_TFS, default="M5",
+                    help="timeframe of the bias EMA: M5 (default) or M15 "
+                         "(resampled, last completed M15 bar)")
+    ap.add_argument("--window-start", type=int, default=None,
+                    help="first server hour that may OPEN a trade "
+                         "(EA TradingWindowStartHour, default 4)")
+    ap.add_argument("--window-end", type=int, default=None,
+                    help="first server hour that may NOT open a trade "
+                         "(EA TradingWindowEndHour, default 23); exits and "
+                         "the 23:50 flatten are never gated by the window")
+    ap.add_argument("--hour-table", action="store_true",
+                    help="print the entry-hour breakdown (trades / win%% / "
+                         "net / avg P/L per server hour 0-23)")
     args = ap.parse_args()
+    global WINDOW, HOUR_TABLE
+    WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
+              WINDOW[1] if args.window_end is None else args.window_end)
+    HOUR_TABLE = args.hour_table
+    global BIAS_EMA, BIAS_MODE, BIAS_TF
+    BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global STRICT_WINDOW, MIN_STOP_ATR
@@ -805,6 +980,9 @@ def main():
              if CHOP_FLIPS > 0 else "")
           + (" | STRICT WINDOW" if STRICT_WINDOW else "")
           + (f" | min stop {MIN_STOP_ATR:g} ATR" if MIN_STOP_ATR > 0 else "")
+          + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
+             if BIAS_EMA > 0 else "")
+          + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
           + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
@@ -906,6 +1084,44 @@ def main():
                   f"stop {t['entry_stop']:.2f} (was {t['orig_stop']:.2f}, "
                   f"{t['dist_atr']:.2f} ATR) old-stop hit bar "
                   f"{t['orig_hit_bar']} -> {t['why']} {t['pl']:+.2f}")
+    if BIAS_EMA > 0:
+        print(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE} "
+              f"(with = BUY above / SELL below the EMA at entry):")
+        for lab in ("with", "counter"):
+            sub = [t for t in trades if t.get("bias") == lab]
+            w = [t for t in sub if t["pl"] > 0]
+            l = [t for t in sub if t["pl"] <= 0]
+            worst = min((t["pl"] for t in sub), default=0.0)
+            print(f"  {lab:8} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                  f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+                  f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}"
+                  f"  worst {worst:+.2f}")
+        untag = [t for t in trades if t.get("bias") is None]
+        if untag:
+            print(f"  (untagged {len(untag)}: entered before the bias EMA warmed up)")
+        nb = sum(1 for _, _, r in sk if r == "counter-trend")
+        if BIAS_MODE == "skip":
+            print(f"  skip: refused {nb} counter-trend entries")
+        bf = getattr(run, "bias_flips", None) or {}
+        for tf in ("M5", "M15"):
+            if tf in bf:
+                per, tot, nd = bf[tf]
+                print(f"  bias flips/day on {tf}: {per:.2f} ({tot} flips over {nd} days)")
+    if HOUR_TABLE:
+        print("entry-hour breakdown (server time; trade attributed to the "
+              "hour its first leg opened):")
+        print("  hour  trades   win%        net        avg      worst")
+        for hr in range(24):
+            sub = [t for t in trades
+                   if t.get("opened") is not None and t["opened"].hour == hr]
+            if not sub:
+                continue
+            w = [t for t in sub if t["pl"] > 0]
+            net = sum(t["pl"] for t in sub)
+            print(f"  {hr:02d}    {len(sub):6}  {100 * len(w) / len(sub):5.1f}"
+                  f"  {net:+10.2f} {net / len(sub):+10.2f} "
+                  f"{min(t['pl'] for t in sub):+10.2f}")
     if CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
