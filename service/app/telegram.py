@@ -231,12 +231,53 @@ def _ea_connection_line(app) -> str:
     return f"EA: 🔴 disconnected (last seen {int(age // 60)}m ago)"
 
 
+# Mini-app (live chart) liveness for /status. Same source of truth the
+# watchdog uses: the miniapp's auth-free /healthz on 127.0.0.1:9001 --
+# feed_age_s = seconds since the Windows bridge last pushed. Injectable
+# for tests (monkeypatch _miniapp_healthz). Never raises; None = unreachable.
+_MINIAPP_HEALTHZ_URL = "http://127.0.0.1:9001/healthz"
+_MINIAPP_FEED_STALE_S = 90
+
+
+def _miniapp_healthz():
+    """0.5 s hard cap: /status must never wait on the chart service. Plain
+    urllib on purpose: an httpx.get()/Client() first call costs ~700 ms of
+    SSL-context/env setup even for loopback — enough to delay every /status
+    reply — while urllib answers a local HTTP probe in ~1 ms. Never raises;
+    None = unreachable."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_MINIAPP_HEALTHZ_URL, timeout=0.5) as r:
+            if r.status != 200:
+                return None
+            return json.loads(r.read().decode() or "{}")
+    except Exception:
+        return None
+
+
+def _miniapp_line() -> str:
+    """Second line of /status, right under the EA line: chart service +
+    data feed state in one glance. Infra state, never redacted."""
+    hz = _miniapp_healthz()
+    if not hz or not hz.get("ok"):
+        return "Mini app: 🔴 down"
+    age = hz.get("feed_age_s")
+    if age is None:
+        up = hz.get("uptime_s") or 0
+        return ("Mini app: 🟡 up, waiting for data" if up < _MINIAPP_FEED_STALE_S
+                else "Mini app: 🟡 up, no data (bridge?)")
+    if age > _MINIAPP_FEED_STALE_S:
+        return f"Mini app: 🟡 up, no data for {int(age // 60)}m (bridge?)"
+    return f"Mini app: 🟢 connected (feed {age:.0f}s ago)"
+
+
 def _format_status(app, redacted=False) -> str:
     latest = app.state.latest_heartbeat
     connection = _ea_connection_line(app)
     session_line = f"🕒 {market_session()}"
+    miniapp_line = _miniapp_line()
     if latest is None:
-        return f"{session_line}\n{connection}\nno heartbeat yet"
+        return f"{session_line}\n{connection}\n{miniapp_line}\nno heartbeat yet"
     _, hb = latest
     pending = app.state.pending_switch
     strategy = hb.active_strategy
@@ -256,6 +297,7 @@ def _format_status(app, redacted=False) -> str:
     lines = [
         session_line,
         connection,
+        miniapp_line,
     ]
     if getattr(hb, "algo_trading", True) is False:
         lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")

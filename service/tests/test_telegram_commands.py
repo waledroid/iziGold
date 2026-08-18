@@ -261,7 +261,8 @@ def test_status_first_line_is_market_session():
 def test_status_shows_algo_trading_off_warning():
     app = _app(latest_heartbeat=_hb(algo_trading=False))
     reply = handle_command("/status", app)
-    assert "⚠️ ALGO TRADING OFF — MT5 cannot execute trades" in reply.splitlines()[2]
+    # line 0 session, 1 EA, 2 Mini app (added 2026-08-18), 3 the algo warning
+    assert "⚠️ ALGO TRADING OFF — MT5 cannot execute trades" in reply.splitlines()[3]
 
 
 def test_status_no_algo_trading_warning_when_on():
@@ -462,7 +463,10 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     assert recorded["send_message_thread"] is not None
     assert recorded["send_message_thread"] != main_thread_name
     assert len(recorded["sent"]) == 1
-    assert recorded["sent"][0].endswith("EA: 🔴 never connected\nno heartbeat yet")
+    # status body: session / EA / Mini app (2026-08-18) / "no heartbeat yet"
+    sent = recorded["sent"][0]
+    assert "EA: 🔴 never connected" in sent and sent.endswith("no heartbeat yet")
+    assert "Mini app:" in sent
     assert recorded["sent"][0].splitlines()[0].startswith("🕒 ")
 
 
@@ -505,7 +509,10 @@ def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
     asyncio.run(run())
 
     assert len(recorded["sent"]) == 1
-    assert recorded["sent"][0].endswith("EA: 🔴 never connected\nno heartbeat yet")
+    # status body: session / EA / Mini app (2026-08-18) / "no heartbeat yet"
+    sent = recorded["sent"][0]
+    assert "EA: 🔴 never connected" in sent and sent.endswith("no heartbeat yet")
+    assert "Mini app:" in sent
     assert recorded["sent"][0].splitlines()[0].startswith("🕒 ")
 
 
@@ -803,3 +810,45 @@ def test_malformed_prop_callback_does_not_raise(client):
     assert (edit, toast) == (None, "unknown")
     edit, toast = handle_callback("prop::take", client.app)
     assert (edit, toast) == (None, "unknown")
+
+
+# ---------------------------------------------------------------------------
+# /status: "Mini app" line right under the EA line (owner request 2026-08-18)
+# ---------------------------------------------------------------------------
+
+def _status_lines(monkeypatch, healthz):
+    """Run /status with the mini-app probe stubbed to return `healthz`
+    (dict = reachable, None = unreachable)."""
+    from app import telegram as tg
+    monkeypatch.setattr(tg, "_miniapp_healthz", lambda: healthz)
+    app = _app(latest_heartbeat=_hb(), db=FakeDb())
+    app.state.pending_switch = None
+    return handle_command("/status", app).splitlines()
+
+
+def test_status_miniapp_line_follows_ea_line(monkeypatch):
+    lines = _status_lines(monkeypatch, {"ok": True, "feed_age_s": 0.4, "uptime_s": 500})
+    ea_idx = next(i for i, l in enumerate(lines) if l.startswith("EA:"))
+    assert lines[ea_idx + 1].startswith("Mini app:")
+    assert "🟢" in lines[ea_idx + 1] and "connected" in lines[ea_idx + 1]
+
+
+def test_status_miniapp_stale_feed_is_yellow(monkeypatch):
+    lines = _status_lines(monkeypatch, {"ok": True, "feed_age_s": 240.0, "uptime_s": 900})
+    line = next(l for l in lines if l.startswith("Mini app:"))
+    assert "🟡" in line and "no data" in line and "4m" in line
+
+
+def test_status_miniapp_unreachable_is_red(monkeypatch):
+    lines = _status_lines(monkeypatch, None)
+    line = next(l for l in lines if l.startswith("Mini app:"))
+    assert "🔴" in line and "down" in line
+
+
+def test_status_miniapp_line_survives_redaction(monkeypatch):
+    from app import telegram as tg
+    monkeypatch.setattr(tg, "_miniapp_healthz", lambda: {"ok": True, "feed_age_s": 1.0, "uptime_s": 10})
+    app = _app(latest_heartbeat=_hb(), db=FakeDb())
+    app.state.pending_switch = None
+    text = handle_command("/status", app, redacted=True)
+    assert "Mini app: 🟢" in text     # infra state is not an account figure

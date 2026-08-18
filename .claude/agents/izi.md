@@ -344,7 +344,7 @@ Quiet by default: only proposals, executions, failures, command replies.
   + commit; approval TTL 120 s; dispatched-without-result reconciled after
   180 s). EA execution still passes all risk gates; refusals report the real
   reason. **AUTO**: trades immediately; failures notify 🚫 via `/notify`.
-- **Commands**: `/status` (session 🕒, EA connection, algo-trading warning),
+- **Commands**: `/status` (session 🕒, EA connection, **Mini app line** right under it — 🟢 connected (feed Ns ago) / 🟡 up but no data (bridge?) / 🔴 down — read from the miniapp's `/healthz` via a 0.5 s urllib probe (NOT httpx: its first call costs ~700 ms of SSL/env setup, enough to delay the reply); never redacted (infra state, not an account figure), algo-trading warning),
   `/bal`, `/mode` (four buttons in two rows — 🤖 AUTO / 👤 MANUAL execution
   mode via `mode:auto`/`mode:manual`, and 📊 ADR / 🎯 FIXED entry mode via
   `tmode:adr`/`tmode:fixed`, see §3 "Entry mode"), `/strategy` (switch
