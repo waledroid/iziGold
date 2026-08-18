@@ -31,6 +31,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
                    [--chop-mode skip|soft|off] [--strict-window]
                    [--min-stop-atr K] [--bias-ema N]
+                   [--sr-lookback N] [--sr-min-headroom X] [--sr-report]
                    [--bias-mode tag|target|target_lock|size_target|skip]
                    [--bias-tf M5|M15]
                    [--window-start H] [--window-end H] [--hour-table]
@@ -193,6 +194,41 @@ the 23:50 pre-break flatten is unchanged in every window. --hour-table (off
 by default, so the summary stays byte-identical) prints an entry-hour
 breakdown: for each server hour 0-23, trades / win% / net / avg P/L, each
 trade attributed to the hour its FIRST leg opened.
+
+--sr-lookback N / --sr-min-headroom X / --sr-report (support/resistance
+proximity experiment, 2026-08-18): the hypothesis is that an entry whose
+immediate path is blocked by a recent level does worse, because the first
+thing price meets is a wall. N = 0 (default) = off, byte-identical baseline.
+
+Level set visible at the close of entry bar i (N = --sr-lookback):
+  * fractal swing highs/lows over the last N bars: bar j is a swing high when
+    its high is the max of the SR_PIVOT_K (=2) bars each side (mirrored, with
+    min, for lows). Only pivots already CONFIRMED at bar i count, i.e.
+    j + K <= i — no lookahead;
+  * the previous COMPLETED server day's high and low;
+  * the current session's high and low, measured over the bars STRICTLY
+    BEFORE the entry bar. Excluding the entry bar itself matters: the entry
+    bar's own high is >= its close by construction, so including it would put
+    a "level" a few cents overhead on literally every BUY and drown the
+    signal. As defined, a bar that breaks the session high simply has no
+    session-high level above it — which is the correct reading.
+Levels are sorted and de-duplicated within SR_DEDUP_ATR (=0.25) x ATR(14):
+two levels a quarter-ATR apart are the same wall.
+
+headroom := distance from the entry price (the decision bar's close, which is
+what this replay fills at) to the NEAREST OPPOSING level in the trade's
+direction — for a BUY the nearest level at or above the fill, for a SELL the
+nearest at or below — expressed in ATR(14) units. If no level lies ahead at
+all the headroom is None ("clear"), and such an entry is never refused.
+
+--sr-min-headroom X refuses entries whose headroom is below X ATR (tagged
+"headroom<X" in the skipped list). --sr-report tags every trade with its
+headroom and prints the bucket table but NEVER refuses anything, so the
+diagnostic can be read off an otherwise untouched baseline; --sr-report
+therefore overrides --sr-min-headroom. Any N > 0 prints the bucket table
+(<0.5 / 0.5-1 / 1-2 / >2 ATR, plus "clear"): trades, win%, net, avg, and the
+winners'/losers' dollars per bucket — the last two are the opportunity-cost
+columns, the dollars a threshold would skip vs the dollars it would avoid.
 """
 import argparse
 import datetime as dt
@@ -290,6 +326,19 @@ STRICT_WINDOW = False
 # fill; sizing rescales over the widened distance. Entry stop only.
 MIN_STOP_ATR = 0.0
 NOISE_BARS = 3            # "stopped in the first N bars" = noise stop
+
+# --- support/resistance proximity experiment (2026-08-18) ---
+# SR_LOOKBACK 0 = off. N > 0: build the level set (fractal pivots over the
+# last N bars + previous day's H/L + session H/L before the entry bar), then
+# tag each entry with its headroom = distance to the nearest opposing level
+# in ATR(14) units. SR_MIN_HEADROOM > 0 refuses entries below that headroom;
+# SR_REPORT tags without ever refusing (diagnostic, overrides the filter).
+SR_LOOKBACK = 0
+SR_MIN_HEADROOM = 0.0
+SR_REPORT = False
+SR_PIVOT_K = 2            # fractal half-width (bars each side of the pivot)
+SR_DEDUP_ATR = 0.25       # levels within this x ATR(14) collapse into one
+SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 
 # --- EMA-200 market-bias experiment (owner's idea 2026-08-18) ---
 # BIAS_EMA 0 = off. bias := close vs EMA-N at the entry bar; with/counter
@@ -398,6 +447,66 @@ def bias_flips_per_day(candles, series, m15_only=False):
     return flips / max(1, len(days)), flips, len(days)
 
 
+def sr_context(candles):
+    """Per-bar (prev_day_high, prev_day_low, session_high, session_low) in
+    server time. The session values cover the bars STRICTLY BEFORE bar i (so
+    the entry bar's own high can never masquerade as overhead resistance —
+    it is >= the close by construction); they are None on a day's first bar.
+    The prev-day values come from the last COMPLETED server day."""
+    out = [None] * len(candles)
+    cur_day, prev_hl, shi, slo = None, (None, None), None, None
+    for i, x in enumerate(candles):
+        d = hhmm(x["t"])[0].date()
+        if d != cur_day:
+            if cur_day is not None:
+                prev_hl = (shi, slo)
+            out[i] = (prev_hl[0], prev_hl[1], None, None)
+            cur_day, shi, slo = d, x["h"], x["l"]
+        else:
+            out[i] = (prev_hl[0], prev_hl[1], shi, slo)
+            shi, slo = max(shi, x["h"]), min(slo, x["l"])
+    return out
+
+
+def sr_levels_at(candles, i, ctx, n, a, k=None, dedup_atr=None):
+    """Sorted, de-duplicated level list visible at the close of bar i: fractal
+    swing highs/lows over the last n bars (confirmed only, j + k <= i) plus
+    the previous day's and current session's high/low from ctx. Levels closer
+    than dedup_atr x ATR(14) to the previous kept level are dropped."""
+    k = SR_PIVOT_K if k is None else k
+    lv = []
+    for j in range(max(k, i - n + 1), i - k + 1):
+        hj, lj = candles[j]["h"], candles[j]["l"]
+        if all(hj >= candles[j + d]["h"] for d in range(-k, k + 1) if d):
+            lv.append(hj)
+        if all(lj <= candles[j + d]["l"] for d in range(-k, k + 1) if d):
+            lv.append(lj)
+    lv.extend(v for v in ctx[i] if v is not None)
+    if not lv:
+        return []
+    lv.sort()
+    tol = (SR_DEDUP_ATR if dedup_atr is None else dedup_atr) * (a or 0.0)
+    out = [lv[0]]
+    for v in lv[1:]:
+        if v - out[-1] > tol:
+            out.append(v)
+    return out
+
+
+def headroom_atr(levels, px, direction, a):
+    """Distance from px to the nearest opposing level, in ATR(14) units.
+    BUY: nearest level at or above px; SELL: nearest at or below. None when
+    nothing lies ahead (a clear path) or ATR is unavailable."""
+    if not a:
+        return None
+    ahead = [v for v in levels if v >= px] if direction == "BUY" \
+        else [v for v in levels if v <= px]
+    if not ahead:
+        return None
+    d = (min(ahead) - px) if direction == "BUY" else (px - max(ahead))
+    return d / a
+
+
 def floor_price(legs, s, amount):
     """Price P where the basket's P/L equals `amount`, using the same
     convention as basket_pl(): sum(oz_i*(P-e_i)*s) - SPREAD_USD*T = amount
@@ -452,6 +561,7 @@ def run(candles, start_balance, verbose):
     ht = halftrend(
         [type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
     atr, adx = atr_adx(candles)
+    sr_ctx = sr_context(candles) if SR_LOOKBACK > 0 else None
     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
         else None
 
@@ -502,6 +612,7 @@ def run(candles, start_balance, verbose):
                        "bars_open": basket.get("bars_open", 0),
                        "bias": basket.get("bias"),
                        "bias_ema": basket.get("bias_ema"),
+                       "headroom": basket.get("headroom"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -698,6 +809,14 @@ def run(candles, start_balance, verbose):
                             else "counter"
                     if bias == "counter" and BIAS_MODE == "skip" and not blocked:
                         blocked = "counter-trend"
+                hr = None
+                if sr_ctx is not None:
+                    hr = headroom_atr(
+                        sr_levels_at(candles, i, sr_ctx, SR_LOOKBACK, a),
+                        px, signal, a)
+                    if (SR_MIN_HEADROOM > 0 and not SR_REPORT and not blocked
+                            and hr is not None and hr < SR_MIN_HEADROOM):
+                        blocked = f"headroom<{SR_MIN_HEADROOM:g}"
                 if blocked:
                     skipped.append((when, signal, blocked))
                     if verbose:
@@ -738,6 +857,7 @@ def run(candles, start_balance, verbose):
                               "atr_ratio": aratio, "chop": chop,
                               "chop_flips": nfl, "chop_box": boxr,
                               "soft": soft,
+                              "headroom": hr,
                               "flip_t": candles[last_flip]["t"],
                               "entry_offset": i - last_flip,
                               "bias": bias, "bias_ema": bval}
@@ -912,6 +1032,15 @@ def main():
     ap.add_argument("--hour-table", action="store_true",
                     help="print the entry-hour breakdown (trades / win%% / "
                          "net / avg P/L per server hour 0-23)")
+    ap.add_argument("--sr-lookback", type=int, default=0,
+                    help="support/resistance: swing-pivot lookback in bars "
+                         "(0 = off). Tags every entry with its headroom.")
+    ap.add_argument("--sr-min-headroom", type=float, default=0.0,
+                    help="skip entries whose headroom to the nearest opposing "
+                         "level is below this many ATR(14) (0 = tag only)")
+    ap.add_argument("--sr-report", action="store_true",
+                    help="S/R diagnostic: tag and report headroom but never "
+                         "refuse an entry (overrides --sr-min-headroom)")
     args = ap.parse_args()
     global WINDOW, HOUR_TABLE
     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
@@ -924,6 +1053,10 @@ def main():
     global STRICT_WINDOW, MIN_STOP_ATR
     STRICT_WINDOW = args.strict_window
     MIN_STOP_ATR = args.min_stop_atr
+    global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
+    SR_LOOKBACK = args.sr_lookback
+    SR_MIN_HEADROOM = args.sr_min_headroom
+    SR_REPORT = args.sr_report
     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
     CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
     CONFIRM_MODE = args.confirm_mode
@@ -980,6 +1113,11 @@ def main():
              if CHOP_FLIPS > 0 else "")
           + (" | STRICT WINDOW" if STRICT_WINDOW else "")
           + (f" | min stop {MIN_STOP_ATR:g} ATR" if MIN_STOP_ATR > 0 else "")
+          + (f" | sr lookback {SR_LOOKBACK}"
+             + (" report-only" if SR_REPORT else
+                (f" min-headroom {SR_MIN_HEADROOM:g} ATR"
+                 if SR_MIN_HEADROOM > 0 else " tag-only"))
+             if SR_LOOKBACK > 0 else "")
           + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
              if BIAS_EMA > 0 else "")
           + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
@@ -1122,6 +1260,47 @@ def main():
             print(f"  {hr:02d}    {len(sub):6}  {100 * len(w) / len(sub):5.1f}"
                   f"  {net:+10.2f} {net / len(sub):+10.2f} "
                   f"{min(t['pl'] for t in sub):+10.2f}")
+    if SR_LOOKBACK > 0:
+        b1, b2, b3 = SR_BUCKETS
+        print(f"headroom to the nearest opposing level (pivots k={SR_PIVOT_K} "
+              f"over {SR_LOOKBACK} bars + prev-day H/L + session H/L, "
+              f"deduped {SR_DEDUP_ATR:g} ATR):")
+        print("  bucket        trades   win%        net        avg"
+              "   winners $   losers $")
+        rows = [(f"<{b1:g} ATR", lambda v: v is not None and v < b1),
+                (f"{b1:g}-{b2:g} ATR", lambda v: v is not None and b1 <= v < b2),
+                (f"{b2:g}-{b3:g} ATR", lambda v: v is not None and b2 <= v < b3),
+                (f">{b3:g} ATR", lambda v: v is not None and v >= b3),
+                ("clear", lambda v: v is None)]
+        for lab, pred in rows:
+            sub = [t for t in trades if pred(t.get("headroom"))]
+            if not sub:
+                continue
+            w = [t for t in sub if t["pl"] > 0]
+            l = [t for t in sub if t["pl"] <= 0]
+            net = sum(t["pl"] for t in sub)
+            print(f"  {lab:12} {len(sub):7}  {100 * len(w) / len(sub):5.1f}"
+                  f"  {net:+10.2f} {net / len(sub):+10.2f}"
+                  f"  {sum(t['pl'] for t in w):+10.2f}"
+                  f" {sum(t['pl'] for t in l):+10.2f}")
+        print("  opportunity cost of a headroom floor (from THESE trades; "
+              "path effects not modelled):")
+        for x in (b1, b2, 1.5):
+            sub = [t for t in trades
+                   if t.get("headroom") is not None and t["headroom"] < x]
+            w = sum(t["pl"] for t in sub if t["pl"] > 0)
+            l = sum(t["pl"] for t in sub if t["pl"] <= 0)
+            print(f"    floor {x:g} ATR would skip {len(sub):4} trades: "
+                  f"winners {w:+10.2f} forgone, losers {l:+10.2f} avoided, "
+                  f"net effect {-(w + l):+10.2f}")
+        nsr = sum(1 for _, _, r in sk if str(r).startswith("headroom<"))
+        if SR_MIN_HEADROOM > 0 and not SR_REPORT:
+            print(f"  filter: refused {nsr} entries below "
+                  f"{SR_MIN_HEADROOM:g} ATR of headroom")
+        untag = [t for t in trades if t.get("headroom") is None]
+        if untag:
+            print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
+                  f"trades; these are never refused)")
     if CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
