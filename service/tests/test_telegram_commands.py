@@ -852,3 +852,30 @@ def test_status_miniapp_line_survives_redaction(monkeypatch):
     app.state.pending_switch = None
     text = handle_command("/status", app, redacted=True)
     assert "Mini app: 🟢" in text     # infra state is not an account figure
+
+
+# ------------------------------------------- brake awareness /status (2026-08-18)
+def test_status_protection_line_shows_daily_loss_pct():
+    ts, hb = _hb()
+    hb.daily_loss_pct = 53.0
+    hb.brake_reset = False
+    reply = handle_command("/status", _app(latest_heartbeat=(ts, hb)))
+    line = [l for l in reply.splitlines() if l.startswith("🛡 Protection armed")][0]
+    assert line.endswith(" · daily loss 53%")
+    assert "brake reset today" not in line
+
+
+def test_status_protection_line_shows_brake_reset_and_survives_redaction():
+    ts, hb = _hb()
+    hb.daily_loss_pct = 12.4
+    hb.brake_reset = True
+    reply = handle_command("/status", _app(latest_heartbeat=(ts, hb)), redacted=True)
+    line = [l for l in reply.splitlines() if l.startswith("🛡 Protection armed")][0]
+    assert "drawdown" not in line                       # account figure: redacted
+    assert line.endswith(" · daily loss 12% since reset")   # infra state: kept
+
+
+def test_status_protection_line_unchanged_for_old_heartbeat():
+    reply = handle_command("/status", _app(latest_heartbeat=_hb()))
+    line = [l for l in reply.splitlines() if l.startswith("🛡 Protection armed")][0]
+    assert "daily loss" not in line

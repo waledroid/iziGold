@@ -13,6 +13,8 @@
 //|   XAU_<name>_<login>_<symbol>            (KILL, HWM, CYCLE_BAL,  |
 //|                                           PEAK)                  |
 //|   XAU_EXPO_<login>_<symbol>_<YYYYMMDD>   (dated, server day)     |
+//|   XAU_BRAKE_RESET/BRAKE_BASE/BRAKE_WARN70/BRAKE_TRIPPED/DD80/    |
+//|   KILLWARN_<login>_<symbol>  (brake awareness, interpret only)   |
 //+------------------------------------------------------------------+
 #property script_show_inputs
 #property description "Inspect and optionally reset the XAU Assistant's terminal global variables for this chart's login+symbol."
@@ -38,6 +40,16 @@ void OnStart()
    string peakKey  = "XAU_PEAK"      + suffix;
    string expoBase = "XAU_EXPO"      + suffix + "_";   // + YYYYMMDD
    string expoKey  = expoBase + today;
+   // Brake-awareness keys (2026-08-18, RiskManager): interpret-only here —
+   // the brake reset is an owner action from Telegram (self-clears at the
+   // server-day rollover), the latches self-manage; no reset inputs.
+   string brakeResetKey = "XAU_BRAKE_RESET"   + suffix;   // server date YYYYMMDD of an owner reset
+   string brakeBaseKey  = "XAU_BRAKE_BASE"    + suffix;   // realized P/L at reset time
+   string brakeWarnKey  = "XAU_BRAKE_WARN70"  + suffix;   // dated latch: 70% notice sent
+   string brakeTripKey  = "XAU_BRAKE_TRIPPED" + suffix;   // dated latch: TRIPPED notice sent
+   string dd80Key       = "XAU_DD80"          + suffix;   // flag: 80%-of-kill drawdown notice sent
+   string killWarnKey   = "XAU_KILLWARN"      + suffix;   // flag: kill-switch notice sent
+   double todayNum = (double)(dt.year * 10000 + dt.mon * 100 + dt.day);
 
    PrintFormat("XauMaintenance: inspecting globals for login %I64d, symbol %s, server day %s",
                login, _Symbol, today);
@@ -65,6 +77,23 @@ void OnStart()
          what = "TODAY's exposure minutes used";
       else if(StringFind(name, expoBase) == 0)
          what = "dated exposure key for another day (inert; expires via 4-week global TTL)";
+      else if(name == brakeResetKey)
+         what = (value == todayNum) ? "daily loss brake RESET TODAY by the owner (brake measures from XAU_BRAKE_BASE)"
+                                    : "stale brake reset from another day (inert — ignored by RiskManager)";
+      else if(name == brakeBaseKey)
+         what = "realized P/L at the owner's brake reset (only meaningful while XAU_BRAKE_RESET == today)";
+      else if(name == brakeWarnKey)
+         what = (value == todayNum) ? "70% daily-loss warning already sent today (latch)"
+                                    : "70% daily-loss warning latch (re-armed / another day)";
+      else if(name == brakeTripKey)
+         what = (value == todayNum) ? "daily loss brake TRIPPED notice already sent today (latch)"
+                                    : "brake-tripped notice latch (re-armed / another day)";
+      else if(name == dd80Key)
+         what = (value > 0) ? "80%-of-kill drawdown warning sent (re-arms when DD falls back)"
+                            : "80%-of-kill drawdown warning latch (armed)";
+      else if(name == killWarnKey)
+         what = (value > 0) ? "kill-switch TRIPPED notice sent (re-arms when KILL is reset)"
+                            : "kill-switch notice latch (armed)";
       else
          what = "unknown/legacy (different login/symbol or old key shape)";
       PrintFormat("XauMaintenance: %s = %.2f — %s", name, value, what);

@@ -163,3 +163,45 @@ def test_notify_default_has_no_button(tmp_path, monkeypatch):
              and c[1].get("text") == "plain notice"]
     assert len(owner) == 1
     assert "reply_markup" not in owner[0][1]
+
+
+# ------------------------------------------- button selector (2026-08-18)
+def test_notify_button_reset_brake_attaches_reset_keyboard(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, [])   # flat is fine
+    client.post("/notify", json={"text": "⚠️ Daily loss brake at 70%",
+                                 "button": "reset_brake"})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "⚠️ Daily loss brake at 70%"]
+    assert len(owner) == 1
+    markup = owner[0][1]["reply_markup"]
+    assert markup == {"inline_keyboard": [[{"text": "🔓 Reset brake for today",
+                                            "callback_data": "brakereset:1"}]]}
+
+
+def test_notify_button_exit_selector_attaches_exit_keyboard(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, _POS)
+    client.post("/notify", json={"text": "🎯 target hit", "button": "exit"})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "🎯 target hit"]
+    flat = [b["callback_data"] for row in owner[0][1]["reply_markup"]["inline_keyboard"]
+            for b in row]
+    assert any(cb.startswith("exitnow:") for cb in flat)
+
+
+def test_notify_button_exit_selector_skipped_when_flat(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, [])
+    client.post("/notify", json={"text": "🎯 target hit", "button": "exit"})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555"
+             and c[1].get("text") == "🎯 target hit"]
+    assert len(owner) == 1 and "reply_markup" not in owner[0][1]
+
+
+def test_notify_button_empty_has_no_button(tmp_path, monkeypatch):
+    client, ft, _ = _notify_client(tmp_path, monkeypatch, _POS)
+    client.post("/notify", json={"text": "plain", "button": ""})
+    owner = [c for c in ft.calls if c[0] == "sendMessage"
+             and c[1].get("chat_id") == "555" and c[1].get("text") == "plain"]
+    assert len(owner) == 1 and "reply_markup" not in owner[0][1]

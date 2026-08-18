@@ -135,7 +135,7 @@ public:
      {
       g_ui.PostNotify(StringFormat(
          "🎯 FIXED ride hit the ADR target: +$%.2f. Exit now, or ignore to let it ride until the trend turns.",
-         basketProfit), true);
+         basketProfit), "exit");
      }
 
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
@@ -523,8 +523,8 @@ void OnTick()
 
 // Fires every HeartbeatSec seconds regardless of bar boundaries: posts
 // state, stashes a pending switch id, and — when the service hands back a
-// MANUAL-mode command approved over Telegram ("execute"/"close_all") —
-// executes it (guarded by the same live-account check OnInit enforces for
+// MANUAL-mode command approved over Telegram ("execute"/"close_all"/
+// "reset_brake") — executes it (guarded by the same live-account check OnInit enforces for
 // AUTO) and reports the outcome back via PostProposalResult.
 // Server-day of the last pre-break flatten, so it fires at most once per day.
 datetime g_lastFlattenDay = 0;
@@ -578,8 +578,18 @@ void OnTimer()
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
-                                  mode, entryModeResp, cmd, cmdId, cmdDir);
+                                  mode, entryModeResp, cmd, cmdId, cmdDir,
+                                  g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday());
    if(sw != "") g_pendingSwitch = sw;
+
+   // Brake & kill-switch awareness (2026-08-18): once-per-crossing Telegram
+   // notices (70% of the daily brake / brake tripped — with [Reset brake for
+   // today]; 80% of the kill drawdown / kill tripped — no button). Latches
+   // live in per-symbol globals (see RiskManager.PollAwareness); pure
+   // notify path, fail-open, never touches a trading decision.
+   string awText = "", awButton = "";
+   for(int aw = 0; aw < 4 && g_risk.PollAwareness(awText, awButton); aw++)
+      g_ui.PostNotify(awText, awButton);
 
    if(mode == "auto" || mode == "manual")
      {
@@ -644,6 +654,31 @@ void OnTimer()
             g_ui.PostProposalResult(cmdId, ok,
                                     ok ? "opened" : "blocked by risk checks");
            }
+        }
+     }
+   else if(cmd == "reset_brake")
+     {
+      // Owner tapped [Reset brake for today] (Telegram brakereset: →
+      // pre-approved proposal → this command). Re-bases the daily loss
+      // brake at the realized P/L of this instant (it re-arms after ANOTHER
+      // MaxDailyLossPct% loss); never touches the kill switch. Same guard
+      // level as close_all: no live-account check — a reset opens no order
+      // by itself, and every entry path still runs the AllowLiveTrading and
+      // CanEnter gates.
+      // Authoritative guard: the [Reset] button on an old notice (yesterday's,
+      // or the 70% notice after a reset already happened) stays tappable
+      // forever — refuse unless the brake is actually ≥70% spent right now,
+      // so a stale tap can't silently re-base today's measure.
+      double brakePct = g_risk.DailyLossUsedPct();
+      if(brakePct < 70.0)
+         g_ui.PostProposalResult(cmdId, false,
+            StringFormat("brake at %.0f%% — nothing to reset", brakePct));
+      else
+        {
+         g_risk.ResetDailyBrake();
+         g_ui.PostProposalResult(cmdId, true,
+            StringFormat("Brake reset for today — re-arms after another %.1f%%",
+                         g_risk.MaxDailyLossPct()));
         }
      }
    else if(cmd == "close_all")

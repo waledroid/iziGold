@@ -70,6 +70,12 @@ class HeartbeatRequest(BaseModel):
     bar_l: float = 0.0
     bar_c: float = 0.0
     entry_mode: str = "adr"
+    # Brake awareness (2026-08-18): today's realized loss as % of the daily
+    # loss brake threshold (0-100+, measured from the reset base when the
+    # owner reset the brake today) and whether such a reset is in effect.
+    # Defaults keep old EA payloads valid (fail-open).
+    daily_loss_pct: float = 0.0
+    brake_reset: bool = False
 
 
 class HeartbeatResponse(BaseModel):
@@ -106,3 +112,7 @@ class NotifyRequest(BaseModel):
     # honored while a position is actually open; the button reuses the
     # existing exitnow close machinery).
     exit_button: bool = False
+    # Generalized button selector (2026-08-18): "" (none), "exit" (same as
+    # exit_button=True) or "reset_brake" (owner-only [Reset brake for today]
+    # → brakereset: callback). exit_button stays for old EA builds.
+    button: str = ""
