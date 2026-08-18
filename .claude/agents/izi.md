@@ -754,6 +754,55 @@ just a nicety). Defensively parsed throughout — an absent endpoint, empty
 `trades`/`baskets`, or a basket missing a recognized `direction` all just
 mean fewer/no markers, never a broken chart.
 
+**Trades report tab** (2026-08-18, owner request): the mini-app page now
+has a tab bar under the header — 📈 Chart (the existing page, unchanged) |
+📋 Trades. Trades opens on the **current broker-calendar month** and flows
+Month → tap a day row → Day view → "← Back"; ‹ › move month to month. Data:
+`GET /api/report?view=month&month=YYYY-MM` (one row per trading day: label
+"Aug 14", trades, wins/losses, P/L $, balance at day end, regime mix
+"trend 3 · range 1"; footer month net / trades / win % / best day / worst
+day / **regime win-rate** per trend/range/high_volatility; `equity` = the
+per-day end balances, drawn as a tiny inline-SVG sparkline in the header)
+and `GET /api/report?view=day&date=YYYY-MM-DD` (one row per CLOSED basket:
+server time HH:MM, BUY/SELL, Mode ADR/FIXED, lot-weighted Entry (with an
+"(n)" adds count) → Exit, close reason, P/L $, balance after, and an AI
+column ✅ agree / ⚠️ disagree / – for the entry signal's AI direction vs
+the trade direction; footer day net / trades / wins; NO regime column in
+day view — owner's call — though the JSON still carries `regime`). Both
+are `require_viewer`-gated like `/api/history` (header
+`X-Telegram-Init-Data`), read `settings.db_path` **read-only** via the same
+`_open_trades_db_ro` URI as `/api/trades`, and fail open (any db error →
+200 with empty rows; malformed `month`/`date`/`view` → 400). Baskets come
+from the same `_group_baskets` as the chart markers, now with `cap=None`
+and extra keys (`pl`, `entry_mode`, `reason`, `strategy_id`) — a basket's
+**P/L is the SUM of every close row's profit inside it** (the EA posts one
+close row per deal; a multi-leg exit is several rows with only the last
+`final=1`, so "the final close row's profit" alone would understate
+multi-leg baskets). Balance-after = the first `heartbeats.balance` within
+10 min AFTER the close (the account already reflects the deal), else the
+last heartbeat before it plus the basket P/L, else null ("–");
+`balance_src` says which. Regime/AI come from the nearest **active**
+`signals` row (`signal` = BUY/SELL matching the basket direction, bar open
+≤ first entry + 60 s, within 4 h) — `bar_time` is broker time so it is
+shifted by the offset before comparing with `trades.ts` (UTC); AI
+agree/disagree only when `ai_available` and direction is
+bullish/bearish (neutral → –). Mode comes from `trades.entry_mode`
+(blank = legacy → "adr"). **Day boundaries are broker server days:
+`SERVER_UTC_OFFSET_H = 3` in `app/miniapp.py` — a hard-coded UTC+3 that
+MUST be changed when the broker flips to winter time (UTC+2), or day/month
+buckets and the signal join drift by an hour.** CSV export on both views is
+client-side from the loaded rows: "⬇ CSV" builds a Blob URL + `<a
+download>` (Telegram's Android/iOS webview may silently drop it), and
+"Copy CSV" copies the same text to the clipboard (`navigator.clipboard`,
+`execCommand('copy')` fallback) — keep both. The report is re-fetched
+every time the Trades tab is opened; the chart's WS/loadHistory keeps
+running underneath and `resizeChart()` fires on returning to Chart (the
+panel was `display:none`). Tests: `test_report_*` +
+`test_page_contains_trades_tab` in `tests/test_miniapp.py` (seeded temp db
+with trades + heartbeats + signals, server-day bucketing across a UTC
+midnight, heartbeat pick, regime join, AI agree/disagree, empty month,
+missing db, auth 403).
+
 **WS client contract** (binding — any future edit to the handler must keep
 these): a `snapshot` message is a full **reset**, not a merge — deltas can
 race an in-flight reconnect and arrive first, so `snapshot` always clobbers

@@ -68,6 +68,145 @@ body {
 #priceRow .val { color: var(--text-main); font-weight: 600; }
 #priceRow .lbl { color: var(--text-muted); margin-right: 2px; }
 
+/* Tab bar (Chart | Trades) */
+#tabBar {
+  display: flex;
+  gap: 0;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.tab-btn {
+  flex: 1 1 0;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  padding: 8px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.panel {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+.panel.active { display: flex; }
+
+/* Trades report */
+#tradesPanel { background: var(--bg); }
+#repHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+#repHead .rep-title {
+  font-weight: 700;
+  font-size: 14px;
+  flex: 1 1 auto;
+  text-align: center;
+  white-space: nowrap;
+}
+.rep-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.rep-btn:disabled { opacity: 0.35; cursor: default; }
+#repActions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px 0;
+  flex: 0 0 auto;
+  align-items: center;
+}
+#repActions .spacer { flex: 1 1 auto; }
+#repSpark { height: 34px; width: 120px; flex: 0 0 auto; }
+#repSpark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+#repBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 10px 12px;
+  -webkit-overflow-scrolling: touch;
+}
+table.rep {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+table.rep th, table.rep td {
+  padding: 6px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+}
+table.rep th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+table.rep th:first-child, table.rep td:first-child { text-align: left; }
+table.rep td.l { text-align: left; }
+table.rep tr.day-row { cursor: pointer; }
+table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
+.pos { color: var(--up); }
+.neg { color: var(--down); }
+.dir-buy { color: var(--up); font-weight: 700; }
+.dir-sell { color: var(--down); font-weight: 700; }
+.muted { color: var(--text-muted); }
+#repFoot {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+#repFoot .k { color: var(--text-muted); margin-right: 4px; }
+#repStatus {
+  padding: 18px 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: rgba(16, 21, 31, 0.95);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  display: none;
+  z-index: 20;
+}
+#toast.visible { display: block; }
+
 /* TF buttons */
 #tfRow {
   display: flex;
@@ -195,6 +334,12 @@ body {
   </div>
 </div>
 
+<div id="tabBar">
+  <button class="tab-btn active" data-tab="chart" id="tabChart">📈 Chart</button>
+  <button class="tab-btn" data-tab="trades" id="tabTrades">📋 Trades</button>
+</div>
+
+<div id="chartPanel" class="panel active">
 <div id="tfRow"></div>
 
 <div id="chartWrap">
@@ -209,6 +354,28 @@ body {
   </div>
   <div id="posCard"></div>
 </div>
+</div>
+
+<div id="tradesPanel" class="panel">
+  <div id="repHead">
+    <button class="rep-btn" id="repBack" style="display:none">← Back</button>
+    <button class="rep-btn" id="repPrev">‹</button>
+    <span class="rep-title" id="repTitle">—</span>
+    <button class="rep-btn" id="repNext">›</button>
+  </div>
+  <div id="repActions">
+    <button class="rep-btn" id="repCsv">⬇ CSV</button>
+    <button class="rep-btn" id="repCopy">Copy CSV</button>
+    <span class="spacer"></span>
+    <svg id="repSpark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+  </div>
+  <div id="repBody">
+    <div id="repStatus">Loading…</div>
+    <table class="rep" id="repTable" style="display:none"><thead></thead><tbody></tbody></table>
+    <div id="repFoot" style="display:none"></div>
+  </div>
+</div>
+<div id="toast"></div>
 
 <script>
 (function () {
@@ -825,6 +992,372 @@ body {
     };
   }
 
+  // ---- Tabs + Trades report ------------------------------------------------
+  // Chart | Trades. The Trades tab is a read-only report over the trades
+  // log (GET /api/report, viewer-auth'd exactly like /api/history via the
+  // X-Telegram-Init-Data header). Flow: Month (default, current broker
+  // month) -> tap a day -> Day view -> "Back". CSV export is client-side
+  // from the loaded rows (Blob download + a clipboard "Copy CSV" fallback,
+  // because Telegram's webview may swallow <a download>). No trading
+  // controls exist here by construction.
+  var repState = { view: "month", month: null, date: null, data: null, loading: false };
+  var repEls = {};
+
+  function initHeaders() {
+    var t = tg();
+    return { "X-Telegram-Init-Data": t ? (t.initData || "") : "" };
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  function currentMonthKey() {
+    // Client clock is a fine default; the server clamps to broker days
+    // and ‹ › moves from whatever it returns.
+    var d = new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1);
+  }
+
+  function shiftMonth(key, delta) {
+    var parts = (key || currentMonthKey()).split("-");
+    var y = parseInt(parts[0], 10), m = parseInt(parts[1], 10);
+    if (!isFinite(y) || !isFinite(m)) return currentMonthKey();
+    m += delta;
+    while (m < 1) { m += 12; y -= 1; }
+    while (m > 12) { m -= 12; y += 1; }
+    return y + "-" + pad2(m);
+  }
+
+  function monthTitle(key) {
+    var names = ["January", "February", "March", "April", "May", "June", "July",
+                 "August", "September", "October", "November", "December"];
+    var parts = (key || "").split("-");
+    var y = parseInt(parts[0], 10), m = parseInt(parts[1], 10);
+    if (!isFinite(y) || !isFinite(m) || m < 1 || m > 12) return key || "—";
+    return names[m - 1] + " " + y;
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+
+  function fmtMoney(v) {
+    if (!isNumeric(v)) return "–";
+    return (v > 0 ? "+" : "") + v.toFixed(2);
+  }
+  function fmtBal(v) { return isNumeric(v) ? v.toFixed(2) : "–"; }
+  function fmtPx(v) { return isNumeric(v) ? v.toFixed(2) : "–"; }
+  function plClass(v) { return !isNumeric(v) || v === 0 ? "" : (v > 0 ? "pos" : "neg"); }
+
+  function regimeMix(regimes) {
+    if (!regimes || typeof regimes !== "object") return "–";
+    var order = ["trend", "range", "high_volatility", "unknown"];
+    var short = { trend: "trend", range: "range", high_volatility: "highvol", unknown: "?" };
+    var out = [];
+    order.forEach(function (k) {
+      if (isNumeric(regimes[k]) && regimes[k] > 0) out.push(short[k] + " " + regimes[k]);
+    });
+    Object.keys(regimes).forEach(function (k) {
+      if (order.indexOf(k) === -1 && isNumeric(regimes[k]) && regimes[k] > 0) out.push(k + " " + regimes[k]);
+    });
+    return out.length ? out.join(" · ") : "–";
+  }
+
+  function aiMark(ai) {
+    if (ai === "agree") return "✅";
+    if (ai === "disagree") return "⚠️";
+    return "–";
+  }
+
+  function setRepStatus(text) {
+    repEls.status.textContent = text;
+    repEls.status.style.display = text ? "block" : "none";
+  }
+
+  function showToast(text) {
+    repEls.toast.textContent = text;
+    repEls.toast.classList.add("visible");
+    clearTimeout(repEls.toastTimer);
+    repEls.toastTimer = setTimeout(function () { repEls.toast.classList.remove("visible"); }, 1800);
+  }
+
+  function renderSpark(values) {
+    var svg = repEls.spark;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var vals = (Array.isArray(values) ? values : []).filter(isNumeric);
+    if (vals.length < 2) return;
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var span = (max - min) || 1;
+    var W = 120, H = 34, pad = 2;
+    var pts = vals.map(function (v, i) {
+      var x = pad + (W - 2 * pad) * i / (vals.length - 1);
+      var y = H - pad - (H - 2 * pad) * (v - min) / span;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    });
+    var pl = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    pl.setAttribute("points", pts.join(" "));
+    svg.appendChild(pl);
+  }
+
+  function renderMonth(data) {
+    var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
+    thead.innerHTML = ""; tbody.innerHTML = "";
+    var hr = el("tr");
+    ["Day", "Trades", "W/L", "P/L $", "Balance", "Regime mix"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    thead.appendChild(hr);
+    var days = Array.isArray(data.days) ? data.days : [];
+    days.forEach(function (d) {
+      if (!d || typeof d !== "object") return;
+      var tr = el("tr", "day-row");
+      tr.appendChild(el("td", null, d.label || d.date || "–"));
+      tr.appendChild(el("td", null, isNumeric(d.trades) ? d.trades : "–"));
+      tr.appendChild(el("td", null, (isNumeric(d.wins) ? d.wins : 0) + "/" + (isNumeric(d.losses) ? d.losses : 0)));
+      tr.appendChild(el("td", plClass(d.pl), fmtMoney(d.pl)));
+      tr.appendChild(el("td", null, fmtBal(d.balance_end)));
+      tr.appendChild(el("td", "muted", regimeMix(d.regimes)));
+      if (d.date) tr.addEventListener("click", function () { openDay(d.date); });
+      tbody.appendChild(tr);
+    });
+    var f = data.footer || {};
+    var foot = repEls.foot;
+    foot.innerHTML = "";
+    function line(k, v, cls) {
+      var row = el("div");
+      row.appendChild(el("span", "k", k));
+      row.appendChild(el("span", cls || null, v));
+      foot.appendChild(row);
+    }
+    line("Month net", fmtMoney(f.pl), plClass(f.pl));
+    line("Trades", (isNumeric(f.trades) ? f.trades : 0) + "  ·  win " + (isNumeric(f.win_pct) ? f.win_pct.toFixed(1) + "%" : "–"));
+    line("Best day", f.best_day ? (f.best_day.label + " " + fmtMoney(f.best_day.pl)) : "–", f.best_day ? plClass(f.best_day.pl) : "");
+    line("Worst day", f.worst_day ? (f.worst_day.label + " " + fmtMoney(f.worst_day.pl)) : "–", f.worst_day ? plClass(f.worst_day.pl) : "");
+    var rw = data.regime_winrates || {};
+    var parts = [];
+    ["trend", "range", "high_volatility"].forEach(function (k) {
+      var r = rw[k];
+      if (r && isNumeric(r.trades) && r.trades > 0) {
+        parts.push(k.replace("high_volatility", "highvol") + " " + (isNumeric(r.win_pct) ? r.win_pct.toFixed(0) : "–") + "% (" + r.wins + "/" + r.trades + ")");
+      }
+    });
+    line("Regime win-rate", parts.length ? parts.join("  ·  ") : "–");
+    renderSpark(data.equity);
+    setRepStatus(days.length ? "" : "No closed trades this month.");
+    repEls.table.style.display = days.length ? "table" : "none";
+    repEls.foot.style.display = "block";
+  }
+
+  function renderDay(data) {
+    var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
+    thead.innerHTML = ""; tbody.innerHTML = "";
+    var hr = el("tr");
+    ["Time", "Dir", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    thead.appendChild(hr);
+    var rows = Array.isArray(data.rows) ? data.rows : [];
+    rows.forEach(function (r) {
+      if (!r || typeof r !== "object") return;
+      var tr = el("tr");
+      tr.appendChild(el("td", null, r.time || "–"));
+      var dir = (r.direction || "").toString().toUpperCase();
+      tr.appendChild(el("td", dir === "BUY" ? "dir-buy" : (dir === "SELL" ? "dir-sell" : ""), dir === "BUY" || dir === "SELL" ? dir : "–"));
+      tr.appendChild(el("td", "muted", (r.mode || "adr").toString().toUpperCase()));
+      var ent = fmtPx(r.entry) + (isNumeric(r.entries) && r.entries > 1 ? " (" + r.entries + ")" : "");
+      tr.appendChild(el("td", null, ent + " → " + fmtPx(r.exit)));
+      tr.appendChild(el("td", "l muted", r.reason || "–"));
+      tr.appendChild(el("td", plClass(r.pl), fmtMoney(r.pl)));
+      tr.appendChild(el("td", null, fmtBal(r.balance_after)));
+      var aiCell = el("td", null, aiMark(r.ai));
+      if (r.ai_direction) aiCell.title = "AI " + r.ai_direction + (isNumeric(r.ai_confidence) ? " " + (r.ai_confidence * 100).toFixed(0) + "%" : "");
+      tr.appendChild(aiCell);
+      tbody.appendChild(tr);
+    });
+    var f = data.footer || {};
+    var foot = repEls.foot;
+    foot.innerHTML = "";
+    var l1 = el("div"); l1.appendChild(el("span", "k", "Day net")); l1.appendChild(el("span", plClass(f.pl), fmtMoney(f.pl))); foot.appendChild(l1);
+    var l2 = el("div"); l2.appendChild(el("span", "k", "Trades")); l2.appendChild(el("span", null, (isNumeric(f.trades) ? f.trades : 0) + "  ·  wins " + (isNumeric(f.wins) ? f.wins : 0))); foot.appendChild(l2);
+    renderSpark([]);
+    setRepStatus(rows.length ? "" : "No closed trades this day.");
+    repEls.table.style.display = rows.length ? "table" : "none";
+    repEls.foot.style.display = "block";
+  }
+
+  function renderReport() {
+    var d = repState.data;
+    repEls.back.style.display = repState.view === "day" ? "" : "none";
+    repEls.prev.style.display = repState.view === "month" ? "" : "none";
+    repEls.next.style.display = repState.view === "month" ? "" : "none";
+    if (repState.view === "month") {
+      repEls.title.textContent = monthTitle(repState.month);
+    } else {
+      repEls.title.textContent = (d && d.label) ? d.label : (repState.date || "—");
+    }
+    if (!d) { repEls.table.style.display = "none"; repEls.foot.style.display = "none"; return; }
+    if (repState.view === "month") renderMonth(d); else renderDay(d);
+  }
+
+  function loadReport() {
+    var url = repState.view === "month"
+      ? "/api/report?view=month&month=" + encodeURIComponent(repState.month)
+      : "/api/report?view=day&date=" + encodeURIComponent(repState.date);
+    var token = {};
+    repState.token = token;
+    repState.data = null;
+    setRepStatus("Loading…");
+    repEls.table.style.display = "none";
+    repEls.foot.style.display = "none";
+    renderReport();
+    fetch(url, { headers: initHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("report http " + r.status);
+        return r.json();
+      })
+      .then(function (body) {
+        if (repState.token !== token) return;   // stale: view moved on
+        repState.data = (body && typeof body === "object") ? body : {};
+        renderReport();
+      })
+      .catch(function () {
+        if (repState.token !== token) return;
+        setRepStatus("Report unavailable — try again.");
+      });
+  }
+
+  function openMonth(key) {
+    repState.view = "month";
+    repState.month = key || repState.month || currentMonthKey();
+    loadReport();
+  }
+
+  function openDay(date) {
+    repState.view = "day";
+    repState.date = date;
+    loadReport();
+  }
+
+  // ---- CSV (client-side, from the loaded rows) ----
+  function csvCell(v) {
+    if (v === null || v === undefined) return "";
+    var s = String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function buildCsv() {
+    var d = repState.data;
+    if (!d) return "";
+    var lines = [];
+    if (repState.view === "month") {
+      lines.push(["date", "trades", "wins", "losses", "pl", "balance_end", "regimes"].join(","));
+      (Array.isArray(d.days) ? d.days : []).forEach(function (r) {
+        if (!r) return;
+        lines.push([r.date, r.trades, r.wins, r.losses, r.pl, r.balance_end, regimeMix(r.regimes)].map(csvCell).join(","));
+      });
+    } else {
+      lines.push(["date", "time", "direction", "mode", "entries", "lots", "entry", "exit", "reason", "pl", "balance_after", "regime", "ai", "ai_direction", "ai_confidence"].join(","));
+      (Array.isArray(d.rows) ? d.rows : []).forEach(function (r) {
+        if (!r) return;
+        lines.push([r.day || d.date, r.time, r.direction, r.mode, r.entries, r.lots, r.entry, r.exit, r.reason, r.pl, r.balance_after, r.regime, r.ai, r.ai_direction, r.ai_confidence].map(csvCell).join(","));
+      });
+    }
+    return lines.join("\r\n") + "\r\n";
+  }
+
+  function csvName() {
+    return "xau-trades-" + (repState.view === "month" ? repState.month : repState.date) + ".csv";
+  }
+
+  function downloadCsv() {
+    var csv = buildCsv();
+    if (!csv) { showToast("Nothing to export"); return; }
+    try {
+      var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = csvName();
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 1000);
+      showToast("CSV download started (use Copy CSV if nothing appears)");
+    } catch (e) {
+      copyCsv();
+    }
+  }
+
+  function copyCsv() {
+    var csv = buildCsv();
+    if (!csv) { showToast("Nothing to copy"); return; }
+    function legacy() {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = csv;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        showToast(ok ? "CSV copied" : "Copy failed");
+      } catch (e) {
+        showToast("Copy failed");
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(csv).then(function () { showToast("CSV copied"); }, legacy);
+    } else {
+      legacy();
+    }
+  }
+
+  // ---- Tab switching ----
+  var currentTab = "chart";
+  function selectTab(tab) {
+    if (tab !== "chart" && tab !== "trades") return;
+    currentTab = tab;
+    document.getElementById("chartPanel").classList.toggle("active", tab === "chart");
+    document.getElementById("tradesPanel").classList.toggle("active", tab === "trades");
+    document.getElementById("tabChart").classList.toggle("active", tab === "chart");
+    document.getElementById("tabTrades").classList.toggle("active", tab === "trades");
+    if (tab === "chart") {
+      // the chart was display:none while hidden -- force a re-measure
+      setTimeout(resizeChart, 0);
+    } else {
+      // (re)load on every open so the report reflects the latest closes
+      if (repState.view === "day" && repState.date) openDay(repState.date);
+      else openMonth(repState.month || currentMonthKey());
+    }
+  }
+
+  function bootTrades() {
+    repEls.back = document.getElementById("repBack");
+    repEls.prev = document.getElementById("repPrev");
+    repEls.next = document.getElementById("repNext");
+    repEls.title = document.getElementById("repTitle");
+    repEls.csv = document.getElementById("repCsv");
+    repEls.copy = document.getElementById("repCopy");
+    repEls.spark = document.getElementById("repSpark");
+    repEls.status = document.getElementById("repStatus");
+    repEls.table = document.getElementById("repTable");
+    repEls.foot = document.getElementById("repFoot");
+    repEls.toast = document.getElementById("toast");
+    repState.month = currentMonthKey();
+
+    document.getElementById("tabChart").addEventListener("click", function () { selectTab("chart"); });
+    document.getElementById("tabTrades").addEventListener("click", function () { selectTab("trades"); });
+    repEls.back.addEventListener("click", function () { openMonth(repState.month); });
+    repEls.prev.addEventListener("click", function () { openMonth(shiftMonth(repState.month, -1)); });
+    repEls.next.addEventListener("click", function () { openMonth(shiftMonth(repState.month, +1)); });
+    repEls.csv.addEventListener("click", downloadCsv);
+    repEls.copy.addEventListener("click", copyCsv);
+    renderReport();
+  }
+
   // ---- Boot -----------------------------------------------------------------
   // Runs once the document (including deferred scripts, guaranteed by
   // spec to run before DOMContentLoaded) has parsed, so tg() reliably
@@ -924,6 +1457,7 @@ body {
     renderTfButtons(DEFAULT_TFS);
     loadHistory(currentTf);
     connect();
+    bootTrades();
   }
 
   if (document.readyState === "loading") {
