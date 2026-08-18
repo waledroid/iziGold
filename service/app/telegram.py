@@ -71,6 +71,16 @@ def EXIT_NOW_KB(trade_id):
     """Keyboard on trade-open notifications: close the basket immediately."""
     return kb([[("🔴 EXIT — close trade", f"exitnow:{trade_id}")]])
 
+
+def BRAKE_RESET_KB():
+    """Keyboard on the daily-loss-brake 70% / TRIPPED notices: reset the
+    brake for today (owner-only callback -> pre-approved reset_brake
+    proposal -> EA command on the next heartbeat)."""
+    return kb([[("🔓 Reset brake for today", "brakereset:1")]])
+
+
+BRAKE_RESET_DONE_TEXT = "🔓 Brake reset for today — re-arms after another 3%"
+
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
 # send_alert (still unit-tested directly, but no longer called from the
@@ -292,6 +302,15 @@ def _format_status(app, redacted=False) -> str:
         if hb.hwm and not redacted:
             dd = max(0.0, (1 - hb.equity / hb.hwm) * 100)
             protection += f" · drawdown {dd:.1f}%"
+    # Daily-loss brake usage (2026-08-18): % of the brake threshold spent
+    # today (from the reset base when reset). Infra/risk state, not an
+    # account figure -> NOT redacted. getattr: old heartbeats lack it.
+    daily_loss_pct = getattr(hb, "daily_loss_pct", 0.0) or 0.0
+    brake_reset = getattr(hb, "brake_reset", False)
+    if daily_loss_pct > 0 or brake_reset:
+        protection += f" · daily loss {daily_loss_pct:.0f}%"
+    if brake_reset:
+        protection += " (brake reset today)"
     db = getattr(app.state, "db", None)
     mode = db.exec_mode().upper() if db is not None and hasattr(db, "exec_mode") else "?"
     lines = [
@@ -539,10 +558,13 @@ def handle_channel_post(post: dict, app):
     return (text, keyboard)
 
 
-def handle_callback(data: str, app) -> tuple:
+def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
     """Pure function mapping a callback_query's data to (edit_text_or_None,
     toast). The poller edits the tapped message when edit_text is not None
-    and always answers the callback with toast (fail-open UX)."""
+    and always answers the callback with toast (fail-open UX).
+    `message_id` (the tapped message, when the poller knows it) lets a
+    callback that queues a deferred command remember which message to edit
+    once the EA reports the outcome (brakereset:)."""
     db = app.state.db
     parts = data.split(":")
     if parts[0] == "mode" and len(parts) > 1 and parts[1] in ("auto", "manual"):
@@ -588,6 +610,21 @@ def handle_callback(data: str, app) -> tuple:
                                  latest[1].active_strategy, 0.0, None)
         db.set_proposal_status(pid, "approved", expected="pending")
         return (None, "closing on next heartbeat…")
+    if parts[0] == "brakereset":
+        # [Reset brake for today] on a daily-loss-brake notice: queue an
+        # owner-approved reset_brake command (same rails as close_all:
+        # pre-approved proposal -> next heartbeat -> EA -> /proposal-result
+        # edits the tapped message). Guarded like exitnow: one in flight.
+        for st in ("pending", "approved", "dispatched"):
+            if db.pending_proposal(kind="reset_brake", status=st) is not None:
+                return (None, f"reset already {st}")
+        latest = app.state.latest_heartbeat
+        strategy = latest[1].active_strategy if latest is not None else "unknown"
+        pid = db.create_proposal("reset_brake", "-", strategy, 0.0, None)
+        if message_id:
+            db.set_proposal_message(pid, message_id)
+        db.set_proposal_status(pid, "approved", expected="pending")
+        return (None, "resetting brake on next heartbeat…")
     if parts[0] == "chan" and len(parts) == 3:
         # parts[2] is the channel id; ids are negative ("-100..."), but the
         # split on ":" is safe — callback data is built as chan:<action>:<id>

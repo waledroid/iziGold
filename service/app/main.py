@@ -18,7 +18,8 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_snapshot_chart, render_trade_chart
-from app.telegram import (EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
+from app.telegram import (BRAKE_RESET_DONE_TEXT, BRAKE_RESET_KB, EXIT_KB,
+                          EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
 from app.ticker import TickerState, load_ticker_state, ticker_tick
@@ -85,10 +86,12 @@ async def telegram_poller(app: FastAPI):
                 if cq is not None:
                     from_id = str((cq.get("from") or {}).get("id"))
                     if from_id == chat_id:
-                        edit_text, toast = handle_callback(cq.get("data", ""), app)
+                        msg = cq.get("message") or {}
+                        edit_text, toast = handle_callback(
+                            cq.get("data", ""), app,
+                            message_id=msg.get("message_id"))
                         await asyncio.to_thread(app.state.telegram.answer_callback,
                                                 cq.get("id", ""), toast)
-                        msg = cq.get("message") or {}
                         if edit_text and msg.get("message_id"):
                             await asyncio.to_thread(app.state.telegram.edit_message,
                                                     msg["message_id"], edit_text)
@@ -497,6 +500,9 @@ def _sweep_stale_proposals(app: FastAPI) -> None:
     def edit(row, suffix):
         if tg is None or row["tg_message_id"] is None:
             return
+        if row["kind"] == "reset_brake":
+            tg.edit_message(row["tg_message_id"], f"🔓 brake reset — {suffix}")
+            return
         tg.edit_message(row["tg_message_id"],
                         f"{'📥' if row['kind']=='entry' else '📤'} "
                         f"{row['direction']} @ {row['price']} — {suffix}")
@@ -559,6 +565,8 @@ async def heartbeat(hb: HeartbeatRequest):
         if cmd_row["kind"] == "entry":
             command = {"cmd": "execute", "proposal_id": cmd_row["id"],
                        "direction": cmd_row["direction"]}
+        elif cmd_row["kind"] == "reset_brake":
+            command = {"cmd": "reset_brake", "proposal_id": cmd_row["id"]}
         else:
             command = {"cmd": "close_all", "proposal_id": cmd_row["id"]}
     return HeartbeatResponse(
@@ -582,6 +590,20 @@ async def proposal_result(res: ProposalResultRequest):
     if not db.set_proposal_status(res.proposal_id, status, expected="dispatched"):
         return {"ok": False}
     tg = getattr(app.state, "telegram", None)
+    if row["kind"] == "reset_brake":
+        # Brake reset (2026-08-18): edit the tapped notice into the
+        # confirmation (or a failure), messageless -> fresh message.
+        text = BRAKE_RESET_DONE_TEXT if res.ok else f"🚫 brake reset failed: {res.detail}"
+        if tg is not None:
+            try:
+                if row["tg_message_id"] is not None:
+                    await asyncio.to_thread(tg.edit_message, row["tg_message_id"], text)
+                else:
+                    await asyncio.to_thread(tg.send_message, text)
+            except Exception:
+                pass
+            await _mirror(app, text=text)
+        return {"ok": True}
     if tg is not None and row["tg_message_id"] is not None:
         mark = "✅ executed" if res.ok else "🚫 blocked"
         try:
@@ -621,10 +643,15 @@ async def notify(req: NotifyRequest):
         # account degrades to a plain notice. The channel mirror stays
         # text-only (no controls in the channel, ever).
         markup = None
-        if req.exit_button:
+        button = req.button or ("exit" if req.exit_button else "")
+        if button == "exit":
             latest = app.state.latest_heartbeat
             if latest is not None and latest[1].positions:
                 markup = EXIT_NOW_KB(0)
+        elif button == "reset_brake":
+            # Daily-loss-brake 70% / TRIPPED notice: owner-only [Reset
+            # brake for today] (callback brakereset:) — channel stays text-only.
+            markup = BRAKE_RESET_KB()
         try:
             await asyncio.to_thread(tg.send_message, text, markup)
         except Exception:

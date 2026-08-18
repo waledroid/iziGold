@@ -29,6 +29,25 @@ private:
      }
 
    string Key(string tag) { return "XAU_" + tag + "_" + (string)m_login + "_" + _Symbol; }
+
+   // Server day as a YYYYMMDD number (same construction as ExpoKey's suffix).
+   double TodayNumber()
+     {
+      MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+      return (double)(dt.year * 10000 + dt.mon * 100 + dt.day);
+     }
+
+   // Brake reset base (2026-08-18): when the owner tapped [Reset brake for
+   // today] the brake measures today's loss from the realized P/L AT RESET
+   // TIME instead of from midnight. Both globals are ignored (treated
+   // absent) unless XAU_BRAKE_RESET_<login>_<symbol> == today's server date,
+   // so a rollover clears the reset implicitly and a stale/missing global
+   // fails open to the plain since-midnight measure.
+   double BrakeBase()
+     {
+      if(!BrakeResetToday()) return 0.0;
+      return GlobalVariableGet(Key("BRAKE_BASE"));
+     }
    string ExpoKey()
      {
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
@@ -125,14 +144,146 @@ public:
    // MaxDailyLossPct% of the day's starting balance (approximated as
    // current balance minus today's realized P/L). Blocks NEW exposure only —
    // entries and pyramid adds — never exits. 0 = disabled.
+   // When the brake was reset today, `realized` is measured from the reset
+   // base (realized − base): the brake re-arms after ANOTHER MaxDailyLossPct%
+   // loss — a reset can never become unlimited bleeding.
    bool DailyLossBreached()
      {
       if(m_maxDailyLossPct <= 0) return false;
-      double realized = TodayRealized();
+      double realized = TodayRealized() - BrakeBase();
       if(realized >= 0) return false;
       double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
       if(dayStartBal <= 0) return false;                         // fail-open on nonsense state
       return realized <= -dayStartBal * m_maxDailyLossPct / 100.0;
+     }
+
+   // Brake awareness (2026-08-18): today's realized loss (since the reset
+   // base when reset today) as a % of the brake threshold. 0 when disabled,
+   // in profit, or on nonsense state; 100+ once the brake is (or would be)
+   // tripped. Read-only — shares DailyLossBreached's arithmetic exactly.
+   double DailyLossUsedPct()
+     {
+      if(m_maxDailyLossPct <= 0) return 0.0;
+      double realized = TodayRealized() - BrakeBase();
+      if(realized >= 0) return 0.0;
+      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
+      if(dayStartBal <= 0) return 0.0;
+      double threshold = dayStartBal * m_maxDailyLossPct / 100.0;
+      if(threshold <= 0) return 0.0;
+      return -realized / threshold * 100.0;
+     }
+   // Dollar figures for the awareness messages (same base as above).
+   double DailyLossUsedUsd()
+     {
+      double realized = TodayRealized() - BrakeBase();
+      return (realized < 0) ? -realized : 0.0;
+     }
+   double DailyLossThresholdUsd()
+     {
+      if(m_maxDailyLossPct <= 0) return 0.0;
+      double realized = TodayRealized() - BrakeBase();
+      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - MathMin(realized, 0.0);
+      return (dayStartBal > 0) ? dayStartBal * m_maxDailyLossPct / 100.0 : 0.0;
+     }
+   double MaxDailyLossPct() { return m_maxDailyLossPct; }
+   double MaxDdPct()        { return m_maxDdPct; }
+   // Current drawdown from the equity high-water mark, in % (0 when no HWM).
+   double DrawdownPct()
+     {
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      double hwm = GlobalVariableGet(Key("HWM"));
+      return (hwm > 0) ? MathMax(0.0, (1.0 - eq / hwm) * 100.0) : 0.0;
+     }
+
+   bool BrakeResetToday()
+     {
+      if(!GlobalVariableCheck(Key("BRAKE_RESET"))) return false;
+      return GlobalVariableGet(Key("BRAKE_RESET")) == TodayNumber();
+     }
+   // Owner-approved [Reset brake for today] (Telegram brakereset: →
+   // heartbeat cmd "reset_brake"): stamp today's server date and the
+   // realized P/L now as the new measuring base. Drops the read cache so
+   // the base reflects every deal up to this instant. Never touches the
+   // kill switch / HWM — that stays a deliberate XauMaintenance action.
+   void ResetDailyBrake()
+     {
+      InvalidateDailyCache();
+      GlobalVariableSet(Key("BRAKE_BASE"), TodayRealized());
+      GlobalVariableSet(Key("BRAKE_RESET"), TodayNumber());
+     }
+
+   // ---- Brake & kill-switch awareness latches (2026-08-18) ----------------
+   // Each latch is a per-symbol MT5 global so an EA restart/recompile does
+   // not re-warn. Brake latches store the server date (YYYYMMDD) they fired
+   // on and are considered UNSET on any other date (rollover re-arms them);
+   // the drawdown/kill latches store 1/0. A latch re-arms when its metric
+   // drops back below the threshold (DD with a 1-pt hysteresis so equity
+   // ticking around the line can't spam), then fires again on the next
+   // crossing. Pure read/notify state — never touches a trading decision.
+   bool LatchDated(string tag)   { return GlobalVariableCheck(Key(tag)) && GlobalVariableGet(Key(tag)) == TodayNumber(); }
+   bool LatchFlag(string tag)    { return GlobalVariableGet(Key(tag)) > 0; }
+   void SetLatchDated(string tag, bool on) { GlobalVariableSet(Key(tag), on ? TodayNumber() : 0.0); }
+   void SetLatchFlag(string tag, bool on)  { GlobalVariableSet(Key(tag), on ? 1.0 : 0.0); }
+
+   // Returns true and fills text/button when ONE awareness message should
+   // be sent now (call in a loop until false — at most four per tick).
+   // button ∈ {"", "reset_brake"}; the kill switch is deliberately NOT
+   // resettable from Telegram (XauMaintenance only).
+   bool PollAwareness(string &text, string &button)
+     {
+      text = ""; button = "";
+      // 1. daily loss brake 70% warning
+      if(m_maxDailyLossPct > 0)
+        {
+         double used = DailyLossUsedPct();
+         bool warnOn = LatchDated("BRAKE_WARN70");
+         if(used >= 70.0 && used < 100.0 && !warnOn)
+           {
+            SetLatchDated("BRAKE_WARN70", true);
+            text = StringFormat("⚠️ Daily loss brake at %.0f%% (−$%.0f of −$%.0f) — one more loss ends the day",
+                                used, DailyLossUsedUsd(), DailyLossThresholdUsd());
+            button = "reset_brake";
+            return true;
+           }
+         if(used < 70.0 && warnOn) SetLatchDated("BRAKE_WARN70", false);
+         // 2. brake tripped
+         bool tripOn = LatchDated("BRAKE_TRIPPED");
+         bool tripped = DailyLossBreached();
+         if(tripped && !tripOn)
+           {
+            SetLatchDated("BRAKE_TRIPPED", true);
+            SetLatchDated("BRAKE_WARN70", true);   // 70% is moot once tripped
+            text = "🛑 Daily loss brake TRIPPED — no new entries until midnight (server)";
+            button = "reset_brake";
+            return true;
+           }
+         if(!tripped && tripOn) SetLatchDated("BRAKE_TRIPPED", false);
+        }
+      // 3. drawdown at 80% of the kill distance
+      if(m_maxDdPct > 0)
+        {
+         double dd = DrawdownPct();
+         double warnAt = m_maxDdPct * 0.8;
+         bool ddOn = LatchFlag("DD80");
+         if(dd >= warnAt && !ddOn && !KillSwitchTripped())
+           {
+            SetLatchFlag("DD80", true);
+            text = StringFormat("⚠️ Drawdown %.1f%% from peak — kill switch arms at %.0f%%", dd, m_maxDdPct);
+            return true;
+           }
+         if(dd < warnAt - 1.0 && ddOn) SetLatchFlag("DD80", false);
+        }
+      // 4. kill switch tripped
+      bool killOn = LatchFlag("KILLWARN");
+      bool killed = KillSwitchTripped();
+      if(killed && !killOn)
+        {
+         SetLatchFlag("KILLWARN", true);
+         text = "⛔ KILL SWITCH TRIPPED — trading halted; reset via XauMaintenance";
+         return true;
+        }
+      if(!killed && killOn) SetLatchFlag("KILLWARN", false);
+      return false;
      }
 
    // News blackout: high-importance USD calendar event within ±blackout of

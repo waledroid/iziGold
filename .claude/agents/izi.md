@@ -154,6 +154,41 @@ Data collection only; no UI yet.
   reason string): kill switch (10% DD from peak, manual reset via the
   XauMaintenance script — see runbook), trading window `4–23` server hours, daily exposure
   `360` min (raised 180→360 on 2026-08-07 after a 3h winning trend ride alone overspent the old budget and blocked follow-up entries; exposure-modeled backtest sweep: 180→+382, 360→+421, unlimited→+465 per week at similar drawdowns — the cap costs little and 360 fits one long ride + normal trades), spread cap, ADX ≥ 10 (lowered 25→20→10 across 2026-08-05/06: MT5's ADX reads low vs textbook, and the gate twice refused strong rally re-entries after high-vol pauses; the full-week sweep showed 10 beats 20/25 on BOTH profit and drawdown — 10 blocks only dead-flat tape. Re-review with more calibration data), **daily loss brake** (`MaxDailyLossPct=3.0`, 0=off; refusal `"daily loss limit"`): TODAY's realized P/L = sum of own closed deals (symbol+magic since server midnight, profit+swap+commission) via `HistorySelect` — no global-var state, reload-safe, resets at server midnight; day-start balance approximated as current balance − today's realized; scan cached per bar, cache dropped by `OnTradeTransaction` on EVERY own closing deal (`InvalidateDailyCache()`) so a mid-bar broker-side stop-out is seen by a Telegram-approved execute arriving seconds later in the same bar. Gates pyramid adds too: `Manage()`'s add path bypasses `CanEnter` by design (window/exposure/spread must not strand a live basket), so it calls `DailyLossBreached()` explicitly just before sending an add; exits/CloseAll/flatten are never blocked by it. **News blackout** (`NewsGuardEnabled=true`, `NewsBlackoutMin=30`; refusal `"news blackout"`): `CNewsGuard` (`NewsGuard.mqh`, pointer-injected into `RiskManager.Init`) blocks new exposure when a `CALENDAR_IMPORTANCE_HIGH` USD calendar event sits within ±30 min of now. Calendar (`CalendarValueHistory` + `CalendarEventById`/`CalendarCountryById`) queried at most once per 60 s — matching event times cached, `InBlackout()` answers from cache between refreshes (events can enter/leave the window up to a minute late; irrelevant at 30-min radius). Fail-open: `CalendarValueHistory` returns an INT (count, −1 on failure — NOT bool); −1 (e.g. demo servers without calendar data) → not in blackout, one throttled Print per hour with `GetLastError`; an empty window (0 values) → silent pass (definitive "no events", normal quiet tape). Gates pyramid adds too via an explicit `m_risk.NewsBlackout()` check in `Manage()` (same pattern as the daily loss brake); exits/CloseAll/flatten are never blocked.
+- **Brake & kill-switch awareness (2026-08-18)** — proactive Telegram
+  notices, EA-side (`RiskManager.PollAwareness`, looped from `OnTimer` every
+  5 s, sent through the fail-open `/notify` path — pure notify state, never
+  a trading decision): (1) `⚠️ Daily loss brake at 70% (−$used of −$threshold)
+  — one more loss ends the day` at ≥70% of `MaxDailyLossPct` spent
+  (`DailyLossUsedPct()`, 0–100+; dollars from balance), with owner-only
+  **[🔓 Reset brake for today]**; (2) `🛑 Daily loss brake TRIPPED — no new
+  entries until midnight (server)` with the same button; (3) `⚠️ Drawdown
+  8.0% from peak — kill switch arms at 10%` at ≥80% of `MaxDrawdownPct` (no
+  button); (4) `⛔ KILL SWITCH TRIPPED — trading halted; reset via
+  XauMaintenance` (no button — the kill switch is deliberately NOT
+  resettable from Telegram). Each fires ONCE per crossing via per-symbol
+  latch globals (`XAU_BRAKE_WARN70_…`/`XAU_BRAKE_TRIPPED_…` store the
+  server date YYYYMMDD they fired on and count as unset on any other date
+  → rollover re-arms; `XAU_DD80_…`/`XAU_KILLWARN_…` are 1/0 flags) so a
+  restart/recompile never re-warns; a latch re-arms when its metric drops
+  back below the line (DD with a 1-pt hysteresis so equity ticking around
+  8% can't spam; kill re-arms when XauMaintenance clears KILL).
+  **Reset semantics** (`ResetDailyBrake()`, reached ONLY through the
+  owner-approved heartbeat command `reset_brake` — see §4): writes
+  `XAU_BRAKE_RESET_<login>_<symbol>` = today's server date (YYYYMMDD number)
+  and `XAU_BRAKE_BASE_<login>_<symbol>` = realized P/L at that instant;
+  `DailyLossBreached()`/`DailyLossUsedPct()` then measure `TodayRealized() −
+  base` (threshold = `MaxDailyLossPct`% of the balance at reset), so the
+  brake re-arms after ANOTHER 3% — a reset can never become unlimited
+  bleeding; both globals are ignored (treated absent) unless BRAKE_RESET ==
+  today, so the server-day rollover clears the reset implicitly and a
+  missing/stale global fails open to the plain since-midnight measure. The
+  70%/TRIPPED latches re-arm after a reset (metric drops to 0) so the
+  warnings fire again on the way to the next trip. Reset never touches
+  KILL/HWM. Heartbeat carries `daily_loss_pct` + `brake_reset` for `/status`
+  (`🛡 Protection armed · drawdown 1.2% · daily loss 53% (brake reset today)`
+  — the daily-loss part is infra/risk state, NOT redacted in the channel).
+  XauMaintenance lists all six new keys interpret-only (no reset checkboxes:
+  the reset is an owner action from Telegram; latches self-manage).
 - **Sizing**: 1.0% equity risk over the ACTUAL stop distance (raised from 0.5% on 2026-08-09: week sweep showed +$610 vs +$421 at 7.2% vs 3.8% DD; 1.5%+ trips the kill switch — do not raise further without a month of positive calibration data); adds shrink 70%.
 - **Stops**: entry stop = HalfTrend wick extreme ± `0.75×ATR(14)` pad
   (`StopBufferATR`). Pyramid ladder (`RatchetBasketStop`, ONE shared stop on
@@ -372,6 +407,21 @@ Quiet by default: only proposals, executions, failures, command replies.
   (`tg.send_photo`), then the channel mirror (if linked) via `_mirror(app,
   photo_bytes=..., caption="👤 /chart\n" + caption)` — same owner-first,
   fail-open, no-`reply_markup` mirroring as everything else.
+- **[🔓 Reset brake for today]** (2026-08-18, `brakereset:` callback on the
+  70%/TRIPPED daily-loss-brake notices, owner chat only — `/notify` maps the
+  EA's `button:"reset_brake"` selector to `BRAKE_RESET_KB()`; the channel
+  mirror is text-only): rides the SAME rails as `close_all` — the tap
+  creates a pre-approved proposal kind `reset_brake` (guarded like `exitnow:`
+  — "reset already pending/approved/dispatched" while one is in flight; the
+  tapped message id is stored via `handle_callback(..., message_id=)`), the
+  next heartbeat delivers `{"cmd":"reset_brake","proposal_id":id}`, the EA
+  calls `ResetDailyBrake()` and posts `/proposal-result` ok=true "brake reset
+  for today", which edits the tapped notice to `🔓 Brake reset for today —
+  re-arms after another 3%` (failure → `🚫 brake reset failed: <detail>`;
+  messageless → fresh message). Approval/dispatch TTL sweeps apply as to any
+  proposal (`🔓 brake reset — ⌛ expired…`). `NotifyRequest.button` ("" |
+  "exit" | "reset_brake") generalizes the older `exit_button` bool, which is
+  kept for compatibility (the EA sends both for "exit").
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
   (`exitnow:` callback); dashboard `/ui/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
@@ -437,7 +487,9 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   offers `ResetKillSwitch`/`ResetPeak`/`ResetCycle`/`ResetExposure` (all
   default false = pure inspection). Lists every `XAU_*` global with value +
   interpretation for the chart's login+symbol (kill, HWM, cycle balance,
-  peak, today's/dated exposure, unknown/legacy), applies resets for the
+  peak, today's/dated exposure, the six brake-awareness keys
+  `BRAKE_RESET`/`BRAKE_BASE`/`BRAKE_WARN70`/`BRAKE_TRIPPED`/`DD80`/`KILLWARN`
+  interpret-only — see §3, unknown/legacy), applies resets for the
   CURRENT login+symbol only (kill → delete KILL key AND reseed HWM to
   current equity — trading re-arms and drawdown protection restarts from
   here; deleting KILL alone would let OnBarUpdate re-trip it next bar off
@@ -561,6 +613,14 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   regardless of P/L, ADR+FIXED — usually the SMALLER loss because it fires
   the moment the thesis dies); (2) money-says-over = broker stop / +2%
   target / 50%-of-peak lock (ADR only) + the 23:54 flatten and remote EXIT.
+
+- **2026-08-18 brake & kill-switch awareness** — born from the owner's
+  "warn me before it trips, with a reset for the day": the brake and kill
+  switch used to be silent until `/status` or a `🚫 … daily loss limit`
+  refusal revealed them after the fact. Now 70%/TRIPPED/80%-DD/KILL push
+  once-per-crossing notices, and the brake (only the brake) has an
+  owner-approved [Reset brake for today] that re-bases — not disables — it
+  (spec `docs/superpowers/specs/2026-08-18-brake-awareness-design.md`).
 
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 

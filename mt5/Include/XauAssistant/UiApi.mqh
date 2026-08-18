@@ -148,7 +148,8 @@ public:
                         bool window_open, double spread_points, string active_strategy,
                         bool algo_trading, string entryMode,
                         string &mode, string &entryMode_out, string &cmd,
-                        long &cmdId, string &cmdDir)
+                        long &cmdId, string &cmdDir,
+                        double daily_loss_pct = 0.0, bool brake_reset = false)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
       // Zeros on CopyRates failure -- the service treats 0 as "no forming
@@ -183,7 +184,9 @@ public:
                     ",\"bar_h\":" + DoubleToString(bar_h, 2) +
                     ",\"bar_l\":" + DoubleToString(bar_l, 2) +
                     ",\"bar_c\":" + DoubleToString(bar_c, 2) +
-                    ",\"entry_mode\":\"" + entryMode + "\"}";
+                    ",\"entry_mode\":\"" + entryMode + "\"" +
+                    ",\"daily_loss_pct\":" + DoubleToString(daily_loss_pct, 1) +
+                    ",\"brake_reset\":" + (brake_reset ? "true" : "false") + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
@@ -234,10 +237,15 @@ public:
    // Field names match service/app/models.py NotifyRequest exactly.
    // Best-effort, fire-and-forget — callers pass fixed-literal-plus-reason
    // strings (no embedded quotes), so no JSON escaping is needed here.
-   void PostNotify(string text, bool exitButton = false)
+   // `button` selects the inline keyboard the service attaches (owner chat
+   // only): "" none, "exit" (FIXED-mode target alert; also sent as the
+   // legacy exit_button flag so an older service still shows it),
+   // "reset_brake" (daily-loss-brake awareness → [Reset brake for today]).
+   void PostNotify(string text, string button = "")
      {
       string body = "{\"text\":\"" + text + "\"" +
-                    (exitButton ? ",\"exit_button\":true" : "") + "}";
+                    (button == "exit" ? ",\"exit_button\":true" : "") +
+                    (button != "" ? ",\"button\":\"" + button + "\"" : "") + "}";
       Post("/notify", body);
      }
 
