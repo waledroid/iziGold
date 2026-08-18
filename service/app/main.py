@@ -18,8 +18,8 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_snapshot_chart, render_trade_chart
-from app.telegram import (BRAKE_RESET_DONE_TEXT, BRAKE_RESET_KB, EXIT_KB,
-                          EXIT_NOW_KB, PROPOSAL_KB, TelegramClient,
+from app.telegram import (BRAKE_RESET_KB, EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB,
+                          TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
 from app.ticker import TickerState, load_ticker_state, ticker_tick
@@ -593,7 +593,9 @@ async def proposal_result(res: ProposalResultRequest):
     if row["kind"] == "reset_brake":
         # Brake reset (2026-08-18): edit the tapped notice into the
         # confirmation (or a failure), messageless -> fresh message.
-        text = BRAKE_RESET_DONE_TEXT if res.ok else f"🚫 brake reset failed: {res.detail}"
+        # The EA's detail carries the re-arm % ("Brake reset for today —
+        # re-arms after another 3.0%") — render it, don't hard-code it.
+        text = f"🔓 {res.detail}" if res.ok else f"🚫 brake reset failed: {res.detail}"
         if tg is not None:
             try:
                 if row["tg_message_id"] is not None:

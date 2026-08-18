@@ -46,7 +46,13 @@ private:
    double BrakeBase()
      {
       if(!BrakeResetToday()) return 0.0;
-      return GlobalVariableGet(Key("BRAKE_BASE"));
+      // Hardening: the base is a realized LOSS at reset time (≤ 0). A
+      // positive value can't loosen anything but is nonsense → clamp to 0;
+      // a loss deeper than the whole balance is corrupt → treat as no reset
+      // (fail-open to the plain since-midnight measure).
+      double base = MathMin(GlobalVariableGet(Key("BRAKE_BASE")), 0.0);
+      if(base < -AccountInfoDouble(ACCOUNT_BALANCE)) return 0.0;
+      return base;
      }
    string ExpoKey()
      {

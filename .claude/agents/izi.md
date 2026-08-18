@@ -181,11 +181,14 @@ Data collection only; no UI yet.
   brake re-arms after ANOTHER 3% — a reset can never become unlimited
   bleeding; both globals are ignored (treated absent) unless BRAKE_RESET ==
   today, so the server-day rollover clears the reset implicitly and a
-  missing/stale global fails open to the plain since-midnight measure. The
+  missing/stale global fails open to the plain since-midnight measure; the
+  base is clamped on read (`MathMin(base, 0)`; a base deeper than the whole
+  balance is corrupt → treated as no reset). The awareness loop in OnTimer
+  is bounded to 4 messages per tick. The
   70%/TRIPPED latches re-arm after a reset (metric drops to 0) so the
   warnings fire again on the way to the next trip. Reset never touches
   KILL/HWM. Heartbeat carries `daily_loss_pct` + `brake_reset` for `/status`
-  (`🛡 Protection armed · drawdown 1.2% · daily loss 53% (brake reset today)`
+  (`🛡 Protection armed · drawdown 1.2% · daily loss 53% since reset` — "since reset" only when reset today
   — the daily-loss part is infra/risk state, NOT redacted in the channel).
   XauMaintenance lists all six new keys interpret-only (no reset checkboxes:
   the reset is an owner action from Telegram; latches self-manage).
@@ -415,10 +418,18 @@ Quiet by default: only proposals, executions, failures, command replies.
   — "reset already pending/approved/dispatched" while one is in flight; the
   tapped message id is stored via `handle_callback(..., message_id=)`), the
   next heartbeat delivers `{"cmd":"reset_brake","proposal_id":id}`, the EA
-  calls `ResetDailyBrake()` and posts `/proposal-result` ok=true "brake reset
-  for today", which edits the tapped notice to `🔓 Brake reset for today —
-  re-arms after another 3%` (failure → `🚫 brake reset failed: <detail>`;
-  messageless → fresh message). Approval/dispatch TTL sweeps apply as to any
+  REFUSES unless `DailyLossUsedPct() >= 70` (authoritative: the [Reset]
+  button on an old notice — yesterday's, or the 70% one after a reset already
+  happened — stays tappable forever; a stale tap must not re-base today →
+  `/proposal-result` ok=false "brake at N% — nothing to reset"), otherwise
+  calls `ResetDailyBrake()` and posts ok=true "Brake reset for today —
+  re-arms after another 3.0%" (the % is `MaxDailyLossPct`, rendered from
+  the detail, not hard-coded), which edits the tapped notice to `🔓 <detail>`
+  (failure → `🚫 brake reset failed: <detail>`; messageless → fresh
+  message). The service pre-checks the same threshold from the latest
+  heartbeat's `daily_loss_pct` in `handle_callback` (toast "brake at N% —
+  nothing to reset", no proposal created — UX + no wasted command; old EA /
+  no heartbeat reads as 0% → refused). Approval/dispatch TTL sweeps apply as to any
   proposal (`🔓 brake reset — ⌛ expired…`). `NotifyRequest.button` ("" |
   "exit" | "reset_brake") generalizes the older `exit_button` bool, which is
   kept for compatibility (the EA sends both for "exit").

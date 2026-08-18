@@ -588,7 +588,7 @@ void OnTimer()
    // live in per-symbol globals (see RiskManager.PollAwareness); pure
    // notify path, fail-open, never touches a trading decision.
    string awText = "", awButton = "";
-   while(g_risk.PollAwareness(awText, awButton))
+   for(int aw = 0; aw < 4 && g_risk.PollAwareness(awText, awButton); aw++)
       g_ui.PostNotify(awText, awButton);
 
    if(mode == "auto" || mode == "manual")
@@ -665,8 +665,21 @@ void OnTimer()
       // level as close_all: no live-account check — a reset opens no order
       // by itself, and every entry path still runs the AllowLiveTrading and
       // CanEnter gates.
-      g_risk.ResetDailyBrake();
-      g_ui.PostProposalResult(cmdId, true, "brake reset for today");
+      // Authoritative guard: the [Reset] button on an old notice (yesterday's,
+      // or the 70% notice after a reset already happened) stays tappable
+      // forever — refuse unless the brake is actually ≥70% spent right now,
+      // so a stale tap can't silently re-base today's measure.
+      double brakePct = g_risk.DailyLossUsedPct();
+      if(brakePct < 70.0)
+         g_ui.PostProposalResult(cmdId, false,
+            StringFormat("brake at %.0f%% — nothing to reset", brakePct));
+      else
+        {
+         g_risk.ResetDailyBrake();
+         g_ui.PostProposalResult(cmdId, true,
+            StringFormat("Brake reset for today — re-arms after another %.1f%%",
+                         g_risk.MaxDailyLossPct()));
+        }
      }
    else if(cmd == "close_all")
      {

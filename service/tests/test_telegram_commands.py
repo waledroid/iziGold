@@ -872,7 +872,7 @@ def test_status_protection_line_shows_brake_reset_and_survives_redaction():
     reply = handle_command("/status", _app(latest_heartbeat=(ts, hb)), redacted=True)
     line = [l for l in reply.splitlines() if l.startswith("🛡 Protection armed")][0]
     assert "drawdown" not in line                       # account figure: redacted
-    assert line.endswith(" · daily loss 12% (brake reset today)")   # infra state: kept
+    assert line.endswith(" · daily loss 12% since reset")   # infra state: kept
 
 
 def test_status_protection_line_unchanged_for_old_heartbeat():

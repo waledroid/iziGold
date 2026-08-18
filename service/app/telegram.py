@@ -79,8 +79,6 @@ def BRAKE_RESET_KB():
     return kb([[("🔓 Reset brake for today", "brakereset:1")]])
 
 
-BRAKE_RESET_DONE_TEXT = "🔓 Brake reset for today — re-arms after another 3%"
-
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
 # send_alert (still unit-tested directly, but no longer called from the
@@ -309,8 +307,8 @@ def _format_status(app, redacted=False) -> str:
     brake_reset = getattr(hb, "brake_reset", False)
     if daily_loss_pct > 0 or brake_reset:
         protection += f" · daily loss {daily_loss_pct:.0f}%"
-    if brake_reset:
-        protection += " (brake reset today)"
+        if brake_reset:
+            protection += " since reset"
     db = getattr(app.state, "db", None)
     mode = db.exec_mode().upper() if db is not None and hasattr(db, "exec_mode") else "?"
     lines = [
@@ -615,11 +613,17 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
         # owner-approved reset_brake command (same rails as close_all:
         # pre-approved proposal -> next heartbeat -> EA -> /proposal-result
         # edits the tapped message). Guarded like exitnow: one in flight.
+        # UX pre-check (the EA re-checks authoritatively): a stale [Reset]
+        # button stays tappable forever — don't queue a command when the
+        # brake isn't actually ≥70% spent per the latest heartbeat.
+        latest = app.state.latest_heartbeat
+        pct = float(getattr(latest[1], "daily_loss_pct", 0.0) or 0.0) if latest else 0.0
+        if pct < 70.0:
+            return (None, f"brake at {pct:.0f}% — nothing to reset")
         for st in ("pending", "approved", "dispatched"):
             if db.pending_proposal(kind="reset_brake", status=st) is not None:
                 return (None, f"reset already {st}")
-        latest = app.state.latest_heartbeat
-        strategy = latest[1].active_strategy if latest is not None else "unknown"
+        strategy = latest[1].active_strategy
         pid = db.create_proposal("reset_brake", "-", strategy, 0.0, None)
         if message_id:
             db.set_proposal_message(pid, message_id)
