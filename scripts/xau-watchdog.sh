@@ -53,8 +53,18 @@ feed_ok()    { # bridge alive = the miniapp saw a /feed/push recently. /healthz 
 # stale-code: newest mtime of the code the process runs vs its start time
 proc_started() { local pid; pid=$(pgrep -f "$1" | head -1); [[ -n "$pid" ]] && stat -c %Y "/proc/$pid" 2>/dev/null; }
 newest_mtime()  { find "$@" -type f \( -name '*.py' -o -name '*.html' \) -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1; }
+# Restart at most ONCE per distinct code mtime: the guard compares process
+# start time to file mtime, but the main service takes ~25 s to boot (torch),
+# and a file touched inside that window (a commit landing, an editor save)
+# would otherwise read as "newer than the process" forever -> restart LOOP
+# (seen live 2026-08-18: three restarts in three cycles). Remembering the
+# mtime we already acted on makes each code change cost exactly one restart.
+declare -A acted_mtime
 stale_code()    { local started; started=$(proc_started "$1") || return 1
-                  local code; code=$(newest_mtime "${@:2}"); [[ -n "$code" && -n "$started" ]] && (( code > started )); }
+                  local code; code=$(newest_mtime "${@:2}"); [[ -n "$code" && -n "$started" ]] || return 1
+                  (( code > started )) || return 1
+                  [[ "${acted_mtime[$1]:-}" == "$code" ]] && return 1   # already restarted for this exact code
+                  acted_mtime[$1]="$code"; return 0; }
 
 # ---- restarts ---------------------------------------------------------
 restart_main()    { pkill -f "uvicorn app.main:app" || true; sleep 2
