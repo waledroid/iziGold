@@ -30,6 +30,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--confirm-mode close|open] [--start T] [--end T]
                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
                    [--chop-mode skip|soft|off] [--strict-window]
+                   [--min-stop-atr K]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -121,6 +122,25 @@ reversal exit, since a reversal is the opposite direction's entry. Every
 trade is tagged with its entry offset in bars after the arrow (0 = arrow
 bar, 1 = strict bar, >=2 = late drift) so a baseline run can be diffed
 against a strict run per flip.
+
+--min-stop-atr K (minimum-stop-distance floor, 2026-08-18 noise-stop autopsy:
+a $2.99 stop on a BUY at 4399.06 with ATR ~ $4-5 put 0.15 lots on and
+ordinary noise took it out in 13 minutes): after the strategy stop is
+computed as usual (HalfTrend wick extreme +/- STOP_BUFFER_ATR x ATR(14) —
+that logic is untouched, this is a FLOOR only), if |entry - stop| <
+K x ATR(14) the ENTRY stop is pushed out to exactly K x ATR(14) from the
+fill, directionally; lots are then sized from the widened distance exactly as
+before (1% risk over the ACTUAL distance -> fewer lots). Pyramid adds are
+untouched: their ladder stop is derived from the current shared stop / entry
+prices, so the first add's "halfway stop -> entry" ladder inherits the
+floored stop implicitly, nothing else changes. Every trade is tagged with
+its raw stop distance in ATRs, whether it was floored, the original stop,
+and the first bar (1 = the bar after entry) whose intrabar extreme would
+have hit the ORIGINAL stop while the basket was still open (None = never
+while open), so the summary can count the "noise stops saved" — floored
+entries the old stop would have killed within the first 3 bars — and the
+"should have died" entries the floor let bleed further. K = 0 (default) =
+off, byte-identical baseline.
 """
 import argparse
 import datetime as dt
@@ -210,6 +230,12 @@ CHOP_SOFT_RISK_DIV = 2.0   # soft mode: risk percent divided by this
 # False: legacy latch (first close beyond the EMA after the flip, any bar).
 # True : one-shot decision at bar (flip + CONFIRM_CLOSES) close; miss = dead.
 STRICT_WINDOW = False
+
+# --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
+# 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
+# fill; sizing rescales over the widened distance. Entry stop only.
+MIN_STOP_ATR = 0.0
+NOISE_BARS = 3            # "stopped in the first N bars" = noise stop
 
 
 class _Bar:
@@ -353,6 +379,14 @@ def run(candles, start_balance, verbose):
                        "soft": basket.get("soft", False),
                        "flip_t": basket.get("flip_t"),
                        "entry_offset": basket.get("entry_offset"),
+                       "dist_atr": basket.get("dist_atr"),
+                       "floored": basket.get("floored", False),
+                       "orig_stop": basket.get("orig_stop"),
+                       "orig_dist": basket.get("orig_dist"),
+                       "orig_oz": basket.get("orig_oz"),
+                       "entry_stop": basket.get("entry_stop"),
+                       "orig_hit_bar": basket.get("orig_hit_bar"),
+                       "bars_open": basket.get("bars_open", 0),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -420,6 +454,15 @@ def run(candles, start_balance, verbose):
         # ---- manage open basket
         if basket:
             s = 1 if basket["dir"] == "BUY" else -1
+            # bar count since entry + would the ORIGINAL (un-floored) stop
+            # have been touched intrabar on this bar? (diagnostic only)
+            basket["bars_open"] = basket.get("bars_open", 0) + 1
+            if basket.get("orig_hit_bar") is None and \
+                    basket.get("orig_stop") is not None:
+                ohit = x["l"] <= basket["orig_stop"] if s == 1 \
+                    else x["h"] >= basket["orig_stop"]
+                if ohit:
+                    basket["orig_hit_bar"] = basket["bars_open"]
             # shared stop hit (intrabar) — checked BEFORE any close-based exit
             # (existing convention: stop beats target/lock/reversal in a bar)
             hit = x["l"] <= basket["stop"] if s == 1 else x["h"] >= basket["stop"]
@@ -539,15 +582,29 @@ def run(candles, start_balance, verbose):
                 pad = STOP_BUFFER_ATR * a
                 stop = extreme - pad if signal == "BUY" else extreme + pad
                 dist = abs(px - stop)
+                orig_stop, orig_dist, floored = stop, dist, False
+                if MIN_STOP_ATR > 0 and dist < MIN_STOP_ATR * a:
+                    # floor: never closer than K x ATR(14) from the fill
+                    dist = MIN_STOP_ATR * a
+                    stop = px - dist if signal == "BUY" else px + dist
+                    floored = True
                 if dist > 0:
                     if ENTRY_MODE == "fixed":
                         oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
+                        orig_oz = oz
                     else:
                         rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
                         risk = bal * rp / 100
                         oz = max(MIN_OZ, int(risk / dist))
+                        orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
+                            if orig_dist > 0 else oz
                     basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
+                              "dist_atr": (orig_dist / a) if a else None,
+                              "floored": floored, "orig_stop": orig_stop,
+                              "orig_dist": orig_dist, "orig_oz": orig_oz,
+                              "entry_stop": stop, "bars_open": 0,
+                              "orig_hit_bar": None,
                               "opened": when, "regime": regime,
                               "atr_ratio": aratio, "chop": chop,
                               "chop_flips": nfl, "chop_box": boxr,
@@ -557,7 +614,10 @@ def run(candles, start_balance, verbose):
                     if verbose:
                         print(f"  open  {when:%m-%d %H:%M} {signal} {oz}oz "
                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})"
-                              f"{' SOFT (half risk, no adds)' if soft else ''}")
+                              f"{' SOFT (half risk, no adds)' if soft else ''}"
+                              + (f" FLOORED from {orig_stop:.2f} "
+                                 f"(dist {orig_dist:.2f}, {orig_oz}oz)"
+                                 if floored else ""))
 
         # open-equity valley (marked at bar close)
         eq = bal + (basket_pl(px) if basket else 0.0)
@@ -678,11 +738,17 @@ def main():
                          "bar(s), enter at the next bar's open only if that "
                          "bar opens on the trend's side of the EMA; else the "
                          "flip is dead (default off = legacy first-close latch)")
+    ap.add_argument("--min-stop-atr", type=float, default=0.0,
+                    help="minimum stop distance floor in ATR(14) multiples: "
+                         "an ENTRY stop closer than K x ATR is pushed out to "
+                         "exactly K x ATR and lots are sized over the wider "
+                         "distance (0 = off, byte-identical)")
     args = ap.parse_args()
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
-    global STRICT_WINDOW
+    global STRICT_WINDOW, MIN_STOP_ATR
     STRICT_WINDOW = args.strict_window
+    MIN_STOP_ATR = args.min_stop_atr
     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
     CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
     CONFIRM_MODE = args.confirm_mode
@@ -737,7 +803,9 @@ def main():
           f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"
           + (f" | chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}/X{CHOP_BOX_ATR:g}"
              if CHOP_FLIPS > 0 else "")
-          + (" | STRICT WINDOW" if STRICT_WINDOW else "") + "\n")
+          + (" | STRICT WINDOW" if STRICT_WINDOW else "")
+          + (f" | min stop {MIN_STOP_ATR:g} ATR" if MIN_STOP_ATR > 0 else "")
+          + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
 
@@ -810,6 +878,34 @@ def main():
         print(f"strict window: {len(dd)} flips died at the decision bar "
               f"(entry bar would open on the wrong side of the EMA); "
               f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
+    if MIN_STOP_ATR > 0:
+        fl = [t for t in trades if t.get("floored")]
+        saved = [t for t in fl if t.get("orig_hit_bar") is not None
+                 and t["orig_hit_bar"] <= NOISE_BARS]
+        surv = [t for t in saved if not (t["why"] == "stop"
+                                         and t["bars_open"] <= NOISE_BARS)]
+        later = [t for t in fl if t.get("orig_hit_bar") is not None
+                 and t["orig_hit_bar"] > NOISE_BARS]
+        never = [t for t in fl if t.get("orig_hit_bar") is None]
+        w = [t for t in fl if t["pl"] > 0]
+        print(f"min-stop floor {MIN_STOP_ATR:g} ATR: floored {len(fl)} of "
+              f"{len(trades)} entries; floored net {sum(t['pl'] for t in fl):+.2f}"
+              f"  win% {100 * len(w) / max(1, len(fl)):.1f}")
+        print(f"  original stop would have hit within {NOISE_BARS} bars: "
+              f"{len(saved)} (of which {len(surv)} survived past bar "
+              f"{NOISE_BARS} under the floor; their eventual net "
+              f"{sum(t['pl'] for t in saved):+.2f}; the old stop would have "
+              f"realized {sum(-(t['orig_dist'] + SPREAD_USD) * t['orig_oz'] for t in saved):+.2f})")
+        print(f"  original stop would have hit later (bar > {NOISE_BARS}): "
+              f"{len(later)}  net {sum(t['pl'] for t in later):+.2f}"
+              f"  |  never touched while open: {len(never)}  "
+              f"net {sum(t['pl'] for t in never):+.2f}")
+        for t in fl:
+            print(f"    {t['opened']:%m-%d %H:%M} {t['dir']:4} "
+                  f"{t['legs'][0]['oz']}oz (was {t['orig_oz']}oz) "
+                  f"stop {t['entry_stop']:.2f} (was {t['orig_stop']:.2f}, "
+                  f"{t['dist_atr']:.2f} ATR) old-stop hit bar "
+                  f"{t['orig_hit_bar']} -> {t['why']} {t['pl']:+.2f}")
     if CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
