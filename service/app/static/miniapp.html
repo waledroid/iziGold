@@ -1240,6 +1240,10 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   function csvCell(v) {
     if (v === null || v === undefined) return "";
     var s = String(v);
+    // Formula-injection guard for STRING cells only (a leading = + - @ tab
+    // or CR would be executed by spreadsheets): prefix a single quote so
+    // it stays text. Numbers (e.g. -27.40) are passed through untouched.
+    if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
 

@@ -780,8 +780,11 @@ close row per deal; a multi-leg exit is several rows with only the last
 `final=1`, so "the final close row's profit" alone would understate
 multi-leg baskets). Balance-after = the first `heartbeats.balance` within
 10 min AFTER the close (the account already reflects the deal), else the
-last heartbeat before it plus the basket P/L, else null ("–");
-`balance_src` says which. Regime/AI come from the nearest **active**
+last heartbeat before it plus the **cumulative** P/L of every basket closed
+since that heartbeat (baskets walked in close order with a running carry —
+several closes inside one heartbeat gap, e.g. bridge offline, must not each
+add only their own P/L to the same stale balance; the carry resets on the
+next real post-close heartbeat), else null ("–"); `balance_src` says which. Regime/AI come from the nearest **active**
 `signals` row (`signal` = BUY/SELL matching the basket direction, bar open
 ≤ first entry + 60 s, within 4 h) — `bar_time` is broker time so it is
 shifted by the offset before comparing with `trades.ts` (UTC); AI
@@ -793,7 +796,7 @@ MUST be changed when the broker flips to winter time (UTC+2), or day/month
 buckets and the signal join drift by an hour.** CSV export on both views is
 client-side from the loaded rows: "⬇ CSV" builds a Blob URL + `<a
 download>` (Telegram's Android/iOS webview may silently drop it), and
-"Copy CSV" copies the same text to the clipboard (`navigator.clipboard`,
+string cells starting with `= + - @` tab/CR get a leading `'` (formula-injection guard; numeric cells stay numeric); "Copy CSV" copies the same text to the clipboard (`navigator.clipboard`,
 `execCommand('copy')` fallback) — keep both. The report is re-fetched
 every time the Trades tab is opened; the chart's WS/loadHistory keeps
 running underneath and `resizeChart()` fires on returning to Chart (the

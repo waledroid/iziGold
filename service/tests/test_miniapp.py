@@ -711,3 +711,29 @@ def test_page_contains_trades_tab(client):
     assert 'id="tabTrades"' in html and "Trades" in html
     assert 'id="tradesPanel"' in html and "/api/report" in html
     assert 'id="repCsv"' in html and 'id="repCopy"' in html
+
+
+def test_report_balance_fallback_carries_cumulative_pl_across_a_heartbeat_gap(report_client):
+    """Two baskets closing inside ONE heartbeat gap: the second must show
+    hb + pl1 + pl2, not hb + pl2 (per-basket independent fallback bug)."""
+    t0 = _utc(2026, 7, 8, 6, 0)
+    trades = [
+        {"ts": t0, "event": "open", "direction": "BUY", "price": 4000.0},
+        {"ts": t0 + 600, "event": "close", "direction": "BUY", "price": 4010.0,
+         "profit": 40.0, "final": 1, "reason": "profit target"},
+        {"ts": t0 + 1200, "event": "open", "direction": "SELL", "price": 4010.0},
+        {"ts": t0 + 1800, "event": "close", "direction": "SELL", "price": 4015.0,
+         "profit": -15.0, "final": 1, "reason": "stop-loss"},
+        # third basket: a real heartbeat lands after it -> carry resets
+        {"ts": t0 + 2400, "event": "open", "direction": "BUY", "price": 4015.0},
+        {"ts": t0 + 3000, "event": "close", "direction": "BUY", "price": 4020.0,
+         "profit": 10.0, "final": 1, "reason": "profit lock"},
+    ]
+    heartbeats = [{"ts": t0 - 60, "balance": 1000.0},          # stale anchor
+                  {"ts": t0 + 3005, "balance": 1035.0}]        # after basket 3
+    c = report_client(trades, heartbeats, [])
+    rows = c.get("/api/report", params={"view": "day", "date": "2026-07-08"}).json()["rows"]
+    assert [r["balance_src"] for r in rows] == ["hb_before+pl", "hb_before+pl", "hb_after"]
+    assert rows[0]["balance_after"] == pytest.approx(1040.0)   # 1000 + 40
+    assert rows[1]["balance_after"] == pytest.approx(1025.0)   # 1000 + 40 - 15
+    assert rows[2]["balance_after"] == pytest.approx(1035.0)   # real heartbeat

@@ -421,7 +421,15 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     hb_ts = [h[0] for h in hbs]
 
     out = []
-    for b in baskets:
+    # Running carry for the balance-after fallback: when several baskets
+    # close inside ONE heartbeat gap (bridge/PC offline through consecutive
+    # trades) each of them must add the CUMULATIVE pl since that heartbeat,
+    # not just its own -- otherwise every basket after the first shows a
+    # confidently wrong balance. Reset whenever a real post-close heartbeat
+    # anchors again. Baskets are walked in close_ts order for this reason.
+    carry_hb_idx = None      # index into hbs of the stale heartbeat in use
+    carry_pl = 0.0           # cumulative pl of baskets closed since it
+    for b in sorted(baskets, key=lambda x: x["exit"]["ts"]):
         entries = [e for e in b["entries"] if isinstance(e.get("ts"), (int, float))]
         open_ts = min((e["ts"] for e in entries), default=b["exit"]["ts"])
         close_ts = b["exit"]["ts"]
@@ -461,8 +469,12 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             i = bisect.bisect_left(hb_ts, close_ts)
             if i < len(hb_ts) and hb_ts[i] <= close_ts + HB_AFTER_WINDOW_S:
                 bal, bal_src = hbs[i][1], "hb_after"
+                carry_hb_idx, carry_pl = None, 0.0
             elif i > 0:
-                bal, bal_src = hbs[i - 1][1] + (b.get("pl") or 0.0), "hb_before+pl"
+                if carry_hb_idx != i - 1:
+                    carry_hb_idx, carry_pl = i - 1, 0.0
+                carry_pl += (b.get("pl") or 0.0)
+                bal, bal_src = hbs[i - 1][1] + carry_pl, "hb_before+pl"
         out.append({
             "open_ts": open_ts, "close_ts": close_ts,
             "day": _server_date(close_ts).isoformat(),
