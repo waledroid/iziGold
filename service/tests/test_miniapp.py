@@ -486,3 +486,254 @@ def test_push_response_reports_shallowest_buffer_depth(client):
     body = {"candles": {tf: [_candle(1000 + 60 * i) for i in range(20)] for tf in TFS}}
     r = _push(client, body)
     assert r.json()["depth"] == 20                    # every TF has 20 -> min 20
+
+
+# ---- Trades report (/api/report) ------------------------------------------
+
+_REPORT_SCHEMAS = [
+    _TRADES_SCHEMA.replace("final INTEGER DEFAULT 1", "final INTEGER DEFAULT 1,\n  entry_mode TEXT DEFAULT ''"),
+    """CREATE TABLE IF NOT EXISTS heartbeats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+  equity REAL, balance REAL, floating_pl REAL, open_count INTEGER,
+  kill_switch INTEGER, exposure_min INTEGER, active_strategy TEXT)""",
+    """CREATE TABLE IF NOT EXISTS signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, created_ts INTEGER NOT NULL,
+  bar_time INTEGER NOT NULL, symbol TEXT NOT NULL, signal TEXT NOT NULL,
+  price REAL NOT NULL, direction TEXT, confidence REAL, regime TEXT, verdict TEXT,
+  mode TEXT, ai_available INTEGER, outcome_price REAL, outcome_move REAL,
+  ai_correct INTEGER, strategy_id TEXT, is_active INTEGER DEFAULT 1, timeframe TEXT)""",
+]
+
+OFF = 3 * 3600   # SERVER_UTC_OFFSET_H
+
+
+def _utc(y, m, d, hh=0, mm=0):
+    import calendar
+    return calendar.timegm((y, m, d, hh, mm, 0))
+
+
+def _make_report_db(path, trades=(), heartbeats=(), signals=()):
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    for ddl in _REPORT_SCHEMAS:
+        conn.execute(ddl)
+    for r in trades:
+        conn.execute(
+            "INSERT INTO trades (ts, event, direction, lots, price, profit, final, reason, entry_mode)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (r["ts"], r["event"], r.get("direction"), r.get("lots", 0.01), r.get("price", 0.0),
+             r.get("profit", 0), r.get("final", 1), r.get("reason", ""), r.get("entry_mode", "")))
+    for h in heartbeats:
+        conn.execute("INSERT INTO heartbeats (ts, balance, equity) VALUES (?,?,?)",
+                     (h["ts"], h["balance"], h["balance"]))
+    for s in signals:
+        conn.execute(
+            "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
+            " confidence, regime, verdict, mode, ai_available, is_active)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (s["bar_time"] - OFF, s["bar_time"], "XAUUSD", s["signal"], 4000.0,
+             s.get("direction"), s.get("confidence", 0.7), s.get("regime"), s.get("verdict", "neutral"),
+             "grading", s.get("ai_available", 1), s.get("is_active", 1)))
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def report_client(tmp_path, monkeypatch):
+    def _build(trades=(), heartbeats=(), signals=(), dev_bypass=True):
+        db_path = tmp_path / "report.db"
+        _make_report_db(db_path, trades, heartbeats, signals)
+        monkeypatch.setenv("FEED_KEY", "sekret")
+        monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true" if dev_bypass else "false")
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        from app import config, miniapp, miniapp_auth
+        importlib.reload(config)
+        importlib.reload(miniapp_auth)
+        importlib.reload(miniapp)
+        return TestClient(miniapp.app)
+    return _build
+
+
+def _seed():
+    """Two broker days in July 2026 (server = UTC+3):
+    - Jul 6: BUY basket (open+add, 2 close legs: -5 non-final, +50 final) at
+      07:00 server; SELL basket 12:00 server, -20.
+    - Jul 7: SELL basket that opened late Jul 6 UTC (23:30 UTC = 02:30 Jul 7
+      server) and closed 03:00 server -> lands on Jul 7 by SERVER day.
+    Heartbeats bracket each close; signals give regime + AI direction."""
+    t_open1 = _utc(2026, 7, 6, 4, 0)      # 07:00 server
+    t_close1 = _utc(2026, 7, 6, 4, 30)
+    t_open2 = _utc(2026, 7, 6, 9, 0)      # 12:00 server
+    t_close2 = _utc(2026, 7, 6, 9, 20)
+    t_open3 = _utc(2026, 7, 6, 23, 30)    # 02:30 server Jul 7
+    t_close3 = _utc(2026, 7, 7, 0, 0)     # 03:00 server Jul 7
+    trades = [
+        {"ts": t_open1, "event": "open", "direction": "BUY", "lots": 0.05, "price": 4000.0,
+         "reason": "signal BUY", "entry_mode": "fixed"},
+        {"ts": t_open1 + 300, "event": "add", "direction": "BUY", "lots": 0.05, "price": 4004.0,
+         "reason": "pyramid add"},
+        {"ts": t_close1, "event": "close", "direction": "BUY", "lots": 0.05, "price": 4010.0,
+         "profit": -5.0, "final": 0, "reason": "stop-loss"},
+        {"ts": t_close1, "event": "close", "direction": "BUY", "lots": 0.05, "price": 4010.0,
+         "profit": 50.0, "final": 1, "reason": "profit target"},
+        {"ts": t_open2, "event": "open", "direction": "SELL", "lots": 0.05, "price": 4020.0,
+         "reason": "signal SELL"},
+        {"ts": t_close2, "event": "close", "direction": "SELL", "lots": 0.05, "price": 4025.0,
+         "profit": -20.0, "final": 1, "reason": "stop-loss"},
+        {"ts": t_open3, "event": "open", "direction": "SELL", "lots": 0.05, "price": 4030.0,
+         "reason": "signal SELL"},
+        {"ts": t_close3, "event": "close", "direction": "SELL", "lots": 0.05, "price": 4020.0,
+         "profit": 30.0, "final": 1, "reason": "profit lock"},
+    ]
+    heartbeats = [
+        {"ts": t_open1 - 60, "balance": 1000.0},
+        {"ts": t_close1 + 30, "balance": 1045.0},   # first hb after close 1 (1000-5+50)
+        {"ts": t_close1 + 90, "balance": 1045.0},
+        {"ts": t_close2 - 60, "balance": 1045.0},   # before close 2, no hb after within 10 min
+        {"ts": t_close3 + 5, "balance": 1055.0},
+    ]
+    # bar_time is SERVER time; bar open 5 min before the trade (M5 close)
+    signals = [
+        {"bar_time": t_open1 + OFF - 300, "signal": "BUY", "direction": "bullish",
+         "regime": "trend"},
+        {"bar_time": t_open2 + OFF - 300, "signal": "SELL", "direction": "bullish",
+         "regime": "range"},                                        # AI disagrees
+        {"bar_time": t_open3 + OFF - 300, "signal": "SELL", "direction": "neutral",
+         "regime": "high_volatility"},                              # AI neutral -> null
+        {"bar_time": t_open3 + OFF - 300, "signal": "SELL", "direction": "bearish",
+         "regime": "trend", "is_active": 0},                        # shadow row: ignored
+    ]
+    return trades, heartbeats, signals
+
+
+def test_report_requires_viewer_auth(report_client):
+    c = report_client(dev_bypass=False)
+    assert c.get("/api/report", params={"view": "month", "month": "2026-07"}).status_code == 403
+    assert c.get("/api/report", params={"view": "day", "date": "2026-07-06"}).status_code == 403
+
+
+def test_report_bad_params_400(report_client):
+    c = report_client()
+    assert c.get("/api/report", params={"view": "week"}).status_code == 400
+    assert c.get("/api/report", params={"view": "month", "month": "07-2026"}).status_code == 400
+    assert c.get("/api/report", params={"view": "day", "date": "yesterday"}).status_code == 400
+
+
+def test_report_month_aggregates_by_server_day(report_client):
+    trades, hbs, sigs = _seed()
+    c = report_client(trades, hbs, sigs)
+    r = c.get("/api/report", params={"view": "month", "month": "2026-07"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["view"] == "month" and body["month"] == "2026-07"
+    assert body["server_utc_offset_h"] == 3
+    days = body["days"]
+    assert [d["date"] for d in days] == ["2026-07-06", "2026-07-07"]
+    d6, d7 = days
+    assert d6["label"] == "Jul 6"
+    assert d6["trades"] == 2 and d6["wins"] == 1 and d6["losses"] == 1
+    assert d6["pl"] == pytest.approx(25.0)          # (50 - 5) + (-20)
+    assert d6["regimes"] == {"trend": 1, "range": 1}
+    assert d6["balance_end"] == pytest.approx(1025.0)   # hb_before(1045) + pl(-20)
+    assert d7["trades"] == 1 and d7["pl"] == pytest.approx(30.0)
+    assert d7["regimes"] == {"high_volatility": 1}
+    assert d7["balance_end"] == pytest.approx(1055.0)
+    f = body["footer"]
+    assert f["pl"] == pytest.approx(55.0)
+    assert f["trades"] == 3 and f["wins"] == 2
+    assert f["win_pct"] == pytest.approx(66.7)
+    assert f["best_day"]["date"] == "2026-07-07"
+    assert f["worst_day"]["date"] == "2026-07-06"
+    rw = body["regime_winrates"]
+    assert rw["trend"] == {"trades": 1, "wins": 1, "win_pct": 100.0}
+    assert rw["range"] == {"trades": 1, "wins": 0, "win_pct": 0.0}
+    assert rw["high_volatility"]["win_pct"] == 100.0
+    assert body["equity"] == [pytest.approx(1025.0), pytest.approx(1055.0)]
+
+
+def test_report_day_rows_balance_regime_ai(report_client):
+    trades, hbs, sigs = _seed()
+    c = report_client(trades, hbs, sigs)
+    body = c.get("/api/report", params={"view": "day", "date": "2026-07-06"}).json()
+    assert body["view"] == "day" and body["date"] == "2026-07-06"
+    rows = body["rows"]
+    assert len(rows) == 2
+    a, b = rows
+    assert a["time"] == "07:30" and a["direction"] == "BUY" and a["mode"] == "fixed"
+    assert a["entries"] == 2 and a["entry"] == pytest.approx(4002.0)   # lot-weighted
+    assert a["exit"] == 4010.0 and a["reason"] == "profit target"
+    assert a["pl"] == pytest.approx(45.0)                # both close legs summed
+    assert a["balance_after"] == pytest.approx(1045.0) and a["balance_src"] == "hb_after"
+    assert a["regime"] == "trend" and a["ai"] == "agree" and a["ai_direction"] == "bullish"
+    assert b["time"] == "12:20" and b["direction"] == "SELL" and b["mode"] == "adr"
+    assert b["pl"] == pytest.approx(-20.0)
+    assert b["balance_after"] == pytest.approx(1025.0) and b["balance_src"] == "hb_before+pl"
+    assert b["regime"] == "range" and b["ai"] == "disagree"
+    assert body["footer"] == {"pl": 25.0, "trades": 2, "wins": 1, "losses": 1}
+
+    body7 = c.get("/api/report", params={"view": "day", "date": "2026-07-07"}).json()
+    assert len(body7["rows"]) == 1
+    r7 = body7["rows"][0]
+    assert r7["time"] == "03:00" and r7["regime"] == "high_volatility"
+    assert r7["ai"] is None            # neutral AI -> no agree/disagree
+    assert r7["balance_after"] == pytest.approx(1055.0)
+
+
+def test_report_empty_month_and_day_200(report_client):
+    trades, hbs, sigs = _seed()
+    c = report_client(trades, hbs, sigs)
+    body = c.get("/api/report", params={"view": "month", "month": "2025-01"}).json()
+    assert body["days"] == [] and body["footer"]["trades"] == 0
+    assert body["footer"]["best_day"] is None and body["regime_winrates"] == {}
+    body = c.get("/api/report", params={"view": "day", "date": "2026-07-08"}).json()
+    assert body["rows"] == [] and body["footer"]["trades"] == 0
+
+
+def test_report_missing_db_fail_open(monkeypatch, tmp_path):
+    monkeypatch.setenv("FEED_KEY", "sekret")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "true")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "nope.db"))
+    from app import config, miniapp, miniapp_auth
+    importlib.reload(config)
+    importlib.reload(miniapp_auth)
+    importlib.reload(miniapp)
+    with TestClient(miniapp.app) as c:
+        r = c.get("/api/report", params={"view": "month", "month": "2026-07"})
+        assert r.status_code == 200 and r.json()["days"] == []
+        r = c.get("/api/report")            # defaults: current month
+        assert r.status_code == 200 and r.json()["view"] == "month"
+
+
+def test_page_contains_trades_tab(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    html = r.text
+    assert 'id="tabTrades"' in html and "Trades" in html
+    assert 'id="tradesPanel"' in html and "/api/report" in html
+    assert 'id="repCsv"' in html and 'id="repCopy"' in html
+
+
+def test_report_balance_fallback_carries_cumulative_pl_across_a_heartbeat_gap(report_client):
+    """Two baskets closing inside ONE heartbeat gap: the second must show
+    hb + pl1 + pl2, not hb + pl2 (per-basket independent fallback bug)."""
+    t0 = _utc(2026, 7, 8, 6, 0)
+    trades = [
+        {"ts": t0, "event": "open", "direction": "BUY", "price": 4000.0},
+        {"ts": t0 + 600, "event": "close", "direction": "BUY", "price": 4010.0,
+         "profit": 40.0, "final": 1, "reason": "profit target"},
+        {"ts": t0 + 1200, "event": "open", "direction": "SELL", "price": 4010.0},
+        {"ts": t0 + 1800, "event": "close", "direction": "SELL", "price": 4015.0,
+         "profit": -15.0, "final": 1, "reason": "stop-loss"},
+        # third basket: a real heartbeat lands after it -> carry resets
+        {"ts": t0 + 2400, "event": "open", "direction": "BUY", "price": 4015.0},
+        {"ts": t0 + 3000, "event": "close", "direction": "BUY", "price": 4020.0,
+         "profit": 10.0, "final": 1, "reason": "profit lock"},
+    ]
+    heartbeats = [{"ts": t0 - 60, "balance": 1000.0},          # stale anchor
+                  {"ts": t0 + 3005, "balance": 1035.0}]        # after basket 3
+    c = report_client(trades, heartbeats, [])
+    rows = c.get("/api/report", params={"view": "day", "date": "2026-07-08"}).json()["rows"]
+    assert [r["balance_src"] for r in rows] == ["hb_before+pl", "hb_before+pl", "hb_after"]
+    assert rows[0]["balance_after"] == pytest.approx(1040.0)   # 1000 + 40
+    assert rows[1]["balance_after"] == pytest.approx(1025.0)   # 1000 + 40 - 15
+    assert rows[2]["balance_after"] == pytest.approx(1035.0)   # real heartbeat
