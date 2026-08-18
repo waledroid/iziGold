@@ -4,8 +4,10 @@
 # one. Born 2026-08-17 after the mini-app served two-day-old code (a deploy
 # forgot the restart) and a restart window produced tunnel 502s.
 #
-# Supervises PROCESSES only — never trading decisions. Every restart is
-# reported to Telegram via the main service's /notify (fail-open).
+# Supervises PROCESSES only — never trading decisions. Routine self-heals
+# and redeploys are SILENT (owner request 2026-08-18: log-only); the ONLY
+# Telegram message is the alarm — a link still DOWN after MAX_FAILS
+# restarts, i.e. something the watchdog cannot fix by itself.
 #
 # Links:  main service :9000 /health   | miniapp :9001 /healthz
 #         ngrok tunnel  (agent API domain match + public /healthz)
@@ -87,7 +89,7 @@ supervise() {   # $1 name  $2 check-fn  $3 restart-fn
   fails[$name]=$(( ${fails[$name]:-0} + 1 ))
   log "$name DOWN (fail ${fails[$name]}/$MAX_FAILS) — restarting"
   "$3"; sleep 8
-  if "$2"; then log "$name recovered"; notify "$name restarted (recovered)"; fails[$name]=0
+  if "$2"; then log "$name recovered"; fails[$name]=0   # silent: routine self-heal (owner: no Telegram for these, 2026-08-18)
   elif (( fails[$name] >= MAX_FAILS )); then
     log "$name still down after $MAX_FAILS restarts — cooling down ${COOLDOWN_S}s"
     notify "$name still DOWN after $MAX_FAILS restarts — pausing $((COOLDOWN_S/60)) min (check /tmp/xau-watchdog.log)"
@@ -99,9 +101,9 @@ log "watchdog start (interval ${INTERVAL}s, tunnel=${TUNNEL_DOMAIN:-none})"
 while true; do
   # stale-code guard first (a restart here also clears any transient DOWN)
   if stale_code "uvicorn app.miniapp:app" "$SVC/app/miniapp.py" "$SVC/app/miniapp_auth.py" "$SVC/app/static/miniapp.html"; then
-     log "miniapp running code older than disk — restarting"; restart_miniapp; sleep 6; notify "miniapp restarted (stale code)"; fi
+     log "miniapp running code older than disk — restarting"; restart_miniapp; sleep 6; fi   # silent redeploy
   if stale_code "uvicorn app.main:app" "$SVC/app"; then
-     log "main service running code older than disk — restarting"; restart_main; sleep 25; notify "main service restarted (stale code)"; fi
+     log "main service running code older than disk — restarting"; restart_main; sleep 25; fi   # silent redeploy
   supervise main    main_ok    restart_main
   supervise miniapp miniapp_ok restart_miniapp
   supervise tunnel  tunnel_ok  restart_tunnel
