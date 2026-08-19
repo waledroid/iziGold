@@ -24,17 +24,104 @@ done
 
 C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
 CURRENT_PHASE="startup"
-phase() { CURRENT_PHASE="$2"; printf '\n[%d/%d] %s\n' "$1" "$TOTAL" "$2"; }
-ok()    { printf '  %sOK%s %s\n' "$C_GREEN" "$C_RESET" "${1:-}"; }
-skip()  { printf '  %sSKIP%s %s\n' "$C_YELLOW" "$C_RESET" "${1:-}"; }
+
+# ---- phase bookkeeping (for the end-of-run summary) ------------------------
+# Every phase gets a status: OK (something was done / verified), SKIP
+# (already in place — the idempotent re-run case) or FAILED (soft_fail).
+# `ok` wins over `skip` inside one phase; FAILED is sticky.
+PHASE_IDX=-1
+_phase_ok_seen=0
+declare -a PHASE_NAMES=() PHASE_STATUS=() DOWN_NOTES=()
+
+phase() {
+  CURRENT_PHASE="$2"
+  PHASE_IDX=$((PHASE_IDX + 1))
+  PHASE_NAMES[$PHASE_IDX]="$2"
+  PHASE_STATUS[$PHASE_IDX]="OK"
+  _phase_ok_seen=0
+  printf '\n[%d/%d] %s\n' "$1" "$TOTAL" "$2"
+}
+_set_status() {   # never downgrade a FAILED phase
+  (( PHASE_IDX >= 0 )) || return 0
+  [[ "${PHASE_STATUS[$PHASE_IDX]}" == FAILED ]] && return 0
+  PHASE_STATUS[$PHASE_IDX]="$1"
+  return 0
+}
+ok()    { _phase_ok_seen=1; _set_status OK
+          printf '  %sOK%s %s\n' "$C_GREEN" "$C_RESET" "${1:-}"; }
+skip()  { (( _phase_ok_seen == 1 )) || _set_status SKIP
+          printf '  %sSKIP%s %s\n' "$C_YELLOW" "$C_RESET" "${1:-}"; }
+# fail = CRITICAL phase failed (preflight, venv, test gate, main service):
+# there is no useful run left, abort.
 fail()  { printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
+# soft_fail = a NON-CRITICAL phase failed (mini-app, live-chart config,
+# tunnel, watchdog, Telegram, MT5 compile, handoff). Records the phase as
+# FAILED, notes what is still down + where to look, and RETURNS so the run
+# continues. Rationale (incident 2026-08-19): one occupied port made phase 5
+# abort the whole script, so the owner lost the chart, the tunnel AND the
+# watchdog — one optional component must never cost the trader everything
+# that comes after it. Callers must follow it with an explicit `return 0`
+# when the rest of the phase body no longer makes sense.
+soft_fail() {
+  printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2
+  (( PHASE_IDX >= 0 )) && PHASE_STATUS[$PHASE_IDX]="FAILED"
+  [[ -n "${2:-}" ]] && DOWN_NOTES+=("$2")
+  return 0
+}
+print_summary() {
+  printf '\n%s\n' "──────────────── Setup summary ────────────────"
+  local i st colour
+  for i in "${!PHASE_NAMES[@]}"; do
+    st="${PHASE_STATUS[$i]}"
+    case "$st" in
+      OK)     colour="$C_GREEN" ;;
+      SKIP)   colour="$C_YELLOW" ;;
+      *)      colour="$C_RED" ;;
+    esac
+    printf '  %s%-6s%s %s\n' "$colour" "$st" "$C_RESET" "${PHASE_NAMES[$i]}"
+  done
+  if (( ${#DOWN_NOTES[@]} > 0 )); then
+    printf '\n  %sStill down / needs you:%s\n' "$C_RED" "$C_RESET"
+    local n
+    for n in "${DOWN_NOTES[@]}"; do printf '   - %s\n' "$n"; done
+    printf '   (the watchdog retries the process links every 30 s: /tmp/xau-watchdog.log)\n'
+  fi
+}
 on_exit() {
   local st=$?
+  # A hard abort (or an unexpected error) leaves the current phase
+  # unfinished — never let the summary call it OK.
+  if [[ $st -ne 0 ]] && (( PHASE_IDX >= 0 )); then
+    PHASE_STATUS[$PHASE_IDX]="FAILED"
+  fi
+  print_summary
   if [[ $st -ne 0 ]]; then
     printf '%sABORTED%s during: %s\n' "$C_RED" "$C_RESET" "$CURRENT_PHASE" >&2
   fi
 }
 trap on_exit EXIT
+
+# ---- mini-app port helpers -------------------------------------------------
+# MINIAPP_PORT lives in service/.env and is the single source of truth for the
+# mini-app process, the ngrok forward target, the watchdog and the Windows
+# bridge. Phase 5 fills it in and re-reads it; the default is only the
+# fallback for a .env written before this setting existed.
+MINIAPP_PORT_DEFAULT=9101
+MINIAPP_PORT="$MINIAPP_PORT_DEFAULT"
+MINIAPP_URL="http://127.0.0.1:$MINIAPP_PORT"
+
+port_listening() {   # any listener at all on $1 (0.0.0.0 counts: it shadows 127.0.0.1)
+  ss -ltn 2>/dev/null | awk -v p="$1" '$4 ~ ("[:.]" p "$") {found=1} END {exit !found}'
+}
+port_owner_hint() {  # best effort: name the squatter so the message is actionable
+  local port="$1" proc dk
+  dk="$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -m1 ":${port}->" | awk '{print $1}' || true)"
+  if [[ -n "$dk" ]]; then echo "the Docker container '$dk'"; return 0; fi
+  proc="$(ss -ltnp 2>/dev/null | awk -v p="$port" '$4 ~ ("[:.]" p "$") {print $NF}' \
+          | grep -oP 'users:\(\("\K[^"]+' | head -1 || true)"
+  if [[ -n "$proc" ]]; then echo "the process '$proc'"; return 0; fi
+  echo "another process (identify it with: sudo ss -ltnp | grep :$port)"
+}
 
 # ---------------------------------------------------------------- 1. Preflight
 phase 1 "Preflight"
@@ -145,7 +232,29 @@ ok "service healthy + /analyze smoke passed"
 
 # ---------------------------------------------------- 5. Mini-app feed service
 phase 5 "Mini-app feed service"
-MINIAPP_URL="http://127.0.0.1:9001"
+# Wrapped in a function purely so a soft failure can `return` out of the
+# phase without re-indenting (and without aborting the whole run).
+phase5_miniapp() {
+
+# MINIAPP_PORT: the single source of truth for the mini-app port, read here
+# and reused by the tunnel + watchdog phases below. Same in-place-fill /
+# append discipline as FEED_KEY: .env.example ships a MINIAPP_PORT= line, but
+# a .env created before this setting existed has none at all.
+if grep -q '^MINIAPP_PORT=.\+' "$SERVICE_DIR/.env"; then
+  skip "MINIAPP_PORT already set"
+elif grep -q '^MINIAPP_PORT=$' "$SERVICE_DIR/.env"; then
+  sed -i "s/^MINIAPP_PORT=\$/MINIAPP_PORT=$MINIAPP_PORT_DEFAULT/" "$SERVICE_DIR/.env"
+  ok "filled blank MINIAPP_PORT in .env ($MINIAPP_PORT_DEFAULT)"
+else
+  if [[ -s "$SERVICE_DIR/.env" ]] && [[ "$(tail -c1 "$SERVICE_DIR/.env" | wc -l)" -eq 0 ]]; then
+    printf '\n' >> "$SERVICE_DIR/.env"
+  fi
+  printf 'MINIAPP_PORT=%s\n' "$MINIAPP_PORT_DEFAULT" >> "$SERVICE_DIR/.env"
+  ok "added MINIAPP_PORT=$MINIAPP_PORT_DEFAULT to .env"
+fi
+MINIAPP_PORT="$(grep -oP '^MINIAPP_PORT=\K.+' "$SERVICE_DIR/.env" | tail -1 | tr -d '"'"'" || true)"
+[[ "$MINIAPP_PORT" =~ ^[0-9]+$ ]] || MINIAPP_PORT="$MINIAPP_PORT_DEFAULT"
+MINIAPP_URL="http://127.0.0.1:$MINIAPP_PORT"
 miniapp_alive() { curl -sf -m 3 "$MINIAPP_URL/healthz" >/dev/null 2>&1; }
 
 feed_key_changed=0
@@ -154,7 +263,11 @@ if grep -q '^FEED_KEY=.\+' "$SERVICE_DIR/.env"; then
 else
   feed_key="$(openssl rand -hex 24 2>/dev/null || true)"
   [[ -n "$feed_key" ]] || feed_key="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_hex(24))')"
-  [[ -n "$feed_key" ]] || fail "could not generate FEED_KEY"
+  if [[ -z "$feed_key" ]]; then
+    soft_fail "could not generate FEED_KEY" \
+              "mini-app (live chart) — no FEED_KEY could be generated; set one by hand in service/.env"
+    return 0
+  fi
   if grep -q '^FEED_KEY=$' "$SERVICE_DIR/.env"; then
     # .env.example ships a blank FEED_KEY= line (so it's documented and
     # diff-visible); fill that line in place rather than appending, or a
@@ -183,14 +296,32 @@ if [[ "$feed_key_changed" == 1 ]] && miniapp_alive; then
     miniapp_alive || break
     sleep 1
   done
-  miniapp_alive && fail "could not stop the stale mini-app process (still holding the old FEED_KEY)"
+  if miniapp_alive; then
+    soft_fail "could not stop the stale mini-app process (still holding the old FEED_KEY)" \
+              "mini-app (live chart) — stale process on $MINIAPP_URL still holds the old FEED_KEY; pkill -f 'uvicorn app.miniapp:app' and re-run"
+    return 0
+  fi
   ok "stopped stale mini-app process"
+fi
+
+# Port-conflict guard (incident 2026-08-19): 9001 — the old default — is
+# bound by a Docker mosquitto WebSocket listener on this machine, so uvicorn
+# died with "address already in use" and the run aborted before the tunnel
+# and the watchdog ever started. Detect the squatter BEFORE starting, name
+# it, and soft-fail this phase only. A listener that answers our own
+# /healthz is our mini-app, not a conflict.
+if ! miniapp_alive && port_listening "$MINIAPP_PORT"; then
+  soft_fail "port $MINIAPP_PORT is already in use by $(port_owner_hint "$MINIAPP_PORT") — mini-app NOT started" \
+            "mini-app (live chart) — port $MINIAPP_PORT taken; set MINIAPP_PORT=<free port> in service/.env and re-run scripts/setup.sh (log: service/miniapp.log)"
+  echo "  Remedy: set MINIAPP_PORT=<a free port> in service/.env, then re-run scripts/setup.sh."
+  echo "  (Do NOT stop the other process unless you know it is yours to stop.)"
+  return 0
 fi
 
 if miniapp_alive; then
   skip "already running at $MINIAPP_URL"
 else
-  (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.miniapp:app --host 127.0.0.1 --port 9001 \
+  (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.miniapp:app --host 127.0.0.1 --port "$MINIAPP_PORT" \
       >>"$SERVICE_DIR/miniapp.log" 2>&1 &)
   up=""
   for _ in $(seq 1 30); do
@@ -199,10 +330,14 @@ else
   done
   if [[ -z "$up" ]]; then
     tail -25 "$SERVICE_DIR/miniapp.log" >&2
-    fail "mini-app did not come up in 30s — see service/miniapp.log"
+    soft_fail "mini-app did not come up in 30s — see service/miniapp.log" \
+              "mini-app (live chart) — did not start on $MINIAPP_URL (log: service/miniapp.log)"
+    return 0
   fi
-  ok "started in background (logs: service/miniapp.log)"
+  ok "started in background on port $MINIAPP_PORT (logs: service/miniapp.log)"
 fi
+}
+phase5_miniapp
 
 # -------------------------------------- 6. Live chart config (profile -> .env)
 phase 6 "Live chart config (profile -> .env)"
@@ -343,6 +478,9 @@ fi
 
 # ------------------------------------------------------- 7. ngrok tunnel
 phase 7 "ngrok static-domain tunnel"
+# Wrapped for soft_fail early-return (see phase 5): a tunnel that will not
+# come up must not cost the owner the watchdog phase below.
+phase7_tunnel() {
 env_ngrok_token="$(grep -oP '^NGROK_AUTHTOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
 env_miniapp_url="$(grep -oP '^MINIAPP_PUBLIC_URL=\K.+' "$SERVICE_DIR/.env" || true)"
 
@@ -364,7 +502,8 @@ else
     # install into the user's own ~/.local/bin.
     if ! curl -sfL -o "$ngrok_tmpdir/ngrok.tgz" "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"; then
       rm -rf "$ngrok_tmpdir"
-      fail "ngrok download failed"
+      soft_fail "ngrok download failed" "ngrok tunnel — download failed; re-run when the network is back"
+      return 0
     fi
     # Extract into the temp dir and check tar's own exit status — extracting
     # straight into ~/.local/bin with only a presence check afterward would
@@ -374,26 +513,36 @@ else
     # binary that extracted cleanly.
     if ! tar xzf "$ngrok_tmpdir/ngrok.tgz" -C "$ngrok_tmpdir" ngrok; then
       rm -rf "$ngrok_tmpdir"
-      fail "ngrok extract failed"
+      soft_fail "ngrok extract failed" "ngrok tunnel — the downloaded archive did not extract; re-run"
+      return 0
     fi
-    [[ -x "$ngrok_tmpdir/ngrok" ]] || { rm -rf "$ngrok_tmpdir"; fail "ngrok binary missing after extract"; }
+    if [[ ! -x "$ngrok_tmpdir/ngrok" ]]; then
+      rm -rf "$ngrok_tmpdir"
+      soft_fail "ngrok binary missing after extract" "ngrok tunnel — extracted archive had no ngrok binary; re-run"
+      return 0
+    fi
     mv -f "$ngrok_tmpdir/ngrok" "$ngrok_bin"
     rm -rf "$ngrok_tmpdir"
-    [[ -x "$ngrok_bin" ]] || fail "ngrok binary missing after install"
+    if [[ ! -x "$ngrok_bin" ]]; then
+      soft_fail "ngrok binary missing after install" "ngrok tunnel — install to $ngrok_bin failed; re-run"
+      return 0
+    fi
     ok "installed ngrok to $ngrok_bin"
   fi
 
   if grep -q '^ *authtoken:' "$HOME/.config/ngrok/ngrok.yml" 2>/dev/null; then
     skip "ngrok authtoken already configured"
   else
-    "$ngrok_bin" config add-authtoken "$env_ngrok_token" >/dev/null \
-      || fail "ngrok config add-authtoken failed"
+    if ! "$ngrok_bin" config add-authtoken "$env_ngrok_token" >/dev/null; then
+      soft_fail "ngrok config add-authtoken failed" "ngrok tunnel — authtoken rejected; check NGROK_AUTHTOKEN in service/.env"
+      return 0
+    fi
     ok "ngrok authtoken configured"
   fi
 
   # Verify by DOMAIN, not by "some ngrok http process exists" — pgrep -f
   # "ngrok http" would be satisfied by any unrelated tunnel on the box and
-  # SKIP without ever exposing 9001. Query the local agent API for the
+  # SKIP without ever exposing the mini-app. Query the local agent API for the
   # configured domain; if 4040 isn't answering at all, treat that as
   # not-running too (never mistake "can't tell" for "already up"). This
   # keeps working with --inspect=false below — confirmed empirically
@@ -414,10 +563,10 @@ else
     # URIs and headers, which for this app means a viewer's initData
     # (sent as ?initData= on the WS path, or replayed via the REST
     # header) sits there fully replayable to anything with access to
-    # 127.0.0.1:4040. Only the mini-app (9001) is ever meant to be
+    # 127.0.0.1:4040. Only the mini-app (MINIAPP_PORT) is ever meant to be
     # reachable from outside this box; the inspection buffer must not
     # become a second, higher-privilege leak of the same secret.
-    nohup "$ngrok_bin" http --url="$tunnel_domain" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 &
+    nohup "$ngrok_bin" http --url="$tunnel_domain" --inspect=false "$MINIAPP_PORT" --log /tmp/ngrok.log >/dev/null 2>&1 &
     up=""
     for _ in $(seq 1 20); do
       if tunnel_running; then up=yes; break; fi
@@ -425,13 +574,21 @@ else
     done
     if [[ -z "$up" ]]; then
       tail -25 /tmp/ngrok.log >&2
-      fail "tunnel did not come up in 20s — see /tmp/ngrok.log"
+      soft_fail "tunnel did not come up in 20s — see /tmp/ngrok.log" \
+                "ngrok tunnel — https://$tunnel_domain not live (log: /tmp/ngrok.log)"
+      return 0
     fi
     ok "tunnel live at https://$tunnel_domain (logs: /tmp/ngrok.log)"
   fi
 fi
+}
+phase7_tunnel
 
 # ------------------------------------------------------- 7b. Watchdog (supervisor)
+# ALWAYS reached: every phase above either succeeds or soft-fails, so the
+# self-healing net starts even when the mini-app or the tunnel did not. It
+# re-checks each link every 30 s, which is what brings up whatever failed
+# above once the cause is gone (e.g. a port freed, the network back).
 phase 8 "Watchdog (keeps main/miniapp/tunnel/bridge up)"
 if pgrep -f "scripts/xau-watchdog.sh" >/dev/null 2>&1; then
   skip "watchdog already running (log: /tmp/xau-watchdog.log)"
@@ -441,24 +598,55 @@ else
   if pgrep -f "scripts/xau-watchdog.sh" >/dev/null 2>&1; then
     ok "watchdog started — restarts any dead link every 30 s, reports to Telegram (log: /tmp/xau-watchdog.log)"
   else
-    fail "watchdog failed to start"
+    soft_fail "watchdog failed to start" \
+              "watchdog — not running; start it by hand: nohup bash scripts/xau-watchdog.sh >/dev/null 2>&1 &"
   fi
 fi
 
 # ----------------------------------------------------------------- 9. Telegram
 phase 9 "Telegram"
-profile_has_tg="$(curl -sf "$BASE_URL/ui/profile" | "$VENV/bin/python" -c '
+# Wrapped for soft_fail early-return (see phase 5): Telegram credentials are
+# not worth aborting the MT5 install over.
+phase9_telegram() {
+# Wait for the main service before reading the profile. The watchdog started
+# in phase 8 deploys any newer code by restarting app.main — a ~25 s window
+# (torch cold start) in which /ui/profile answers nothing. Reading an empty
+# body used to kill the whole run right here (live, 2026-08-19), taking the
+# MT5 compile and the handoff with it.
+svc_up=""
+for _ in $(seq 1 60); do
+  if curl -sf -m 3 "$BASE_URL/health" >/dev/null 2>&1; then svc_up=yes; break; fi
+  sleep 1
+done
+if [[ -z "$svc_up" ]]; then
+  soft_fail "main service not answering after 60s — cannot read the Telegram profile" \
+            "Telegram — service unreachable at $BASE_URL (log: service/service.log)"
+  return 0
+fi
+profile_json="$(curl -sf -m 10 "$BASE_URL/ui/profile" || true)"
+if [[ -z "$profile_json" ]]; then
+  soft_fail "could not read the service profile (empty /ui/profile response)" \
+            "Telegram — profile unreadable; check $BASE_URL/ui/onboarding"
+  return 0
+fi
+profile_has_tg="$(printf '%s' "$profile_json" | "$VENV/bin/python" -c '
 import json, sys
-p = json.load(sys.stdin).get("profile") or {}
-print("yes" if p.get("telegram_bot_token") and p.get("telegram_chat_id") else "no")')"
+try:
+    p = json.load(sys.stdin).get("profile") or {}
+except Exception:
+    p = {}
+print("yes" if p.get("telegram_bot_token") and p.get("telegram_chat_id") else "no")' 2>/dev/null || echo no)"
 env_token="$(grep -oP '^TELEGRAM_BOT_TOKEN=\K.+' "$SERVICE_DIR/.env" || true)"
 env_chat="$(grep -oP '^TELEGRAM_CHAT_ID=\K.+' "$SERVICE_DIR/.env" || true)"
 
 if [[ "$profile_has_tg" == yes ]]; then
   skip "credentials already in service profile"
 elif [[ -n "$env_token" && -n "$env_chat" ]]; then
-  curl -sf -m 10 "https://api.telegram.org/bot$env_token/getMe" >/dev/null \
-    || fail ".env TELEGRAM_BOT_TOKEN was rejected by Telegram (getMe failed)"
+  if ! curl -sf -m 10 "https://api.telegram.org/bot$env_token/getMe" >/dev/null; then
+    soft_fail ".env TELEGRAM_BOT_TOKEN was rejected by Telegram (getMe failed)" \
+              "Telegram — bot token in service/.env is invalid or the network is down"
+    return 0
+  fi
   skip ".env credentials present and token valid"
 else
   echo "  No Telegram credentials found. Create a bot with @BotFather (/newbot) first."
@@ -471,7 +659,10 @@ else
     echo "  Telegram rejected that token."
     token=""
   done
-  [[ -n "$token" ]] || fail "could not validate a bot token"
+  if [[ -z "$token" ]]; then
+    soft_fail "could not validate a bot token" "Telegram — no valid bot token; re-run scripts/setup.sh to retry"
+    return 0
+  fi
   bot_user="$(echo "$me_json" | "$VENV/bin/python" -c 'import json,sys; print(json.load(sys.stdin)["result"]["username"])')"
   echo "  Open https://t.me/$bot_user and send the bot any message. Waiting up to 120s..."
   chat_id=""
@@ -485,18 +676,32 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
     [[ -n "$chat_id" ]] && break
     sleep 3
   done
-  [[ -n "$chat_id" ]] || fail "the bot received no message in 120s — message it, then re-run (earlier phases will SKIP)"
-  curl -sf -X POST "$BASE_URL/ui/profile" -H 'Content-Type: application/json' \
-      -d "{\"telegram_bot_token\":\"$token\",\"telegram_chat_id\":\"$chat_id\"}" >/dev/null \
-    || fail "saving credentials to the service profile failed"
-  curl -sf -m 10 -X POST "https://api.telegram.org/bot$token/sendMessage" \
-      -d "chat_id=$chat_id" --data-urlencode "text=✅ XAU Assistant setup: Telegram connected." >/dev/null \
-    || fail "test message failed to send"
+  if [[ -z "$chat_id" ]]; then
+    soft_fail "the bot received no message in 120s" \
+              "Telegram — message your bot once, then re-run scripts/setup.sh (earlier phases SKIP)"
+    return 0
+  fi
+  if ! curl -sf -X POST "$BASE_URL/ui/profile" -H 'Content-Type: application/json' \
+      -d "{\"telegram_bot_token\":\"$token\",\"telegram_chat_id\":\"$chat_id\"}" >/dev/null; then
+    soft_fail "saving credentials to the service profile failed" \
+              "Telegram — credentials not saved; add them at $BASE_URL/ui/onboarding"
+    return 0
+  fi
+  if ! curl -sf -m 10 -X POST "https://api.telegram.org/bot$token/sendMessage" \
+      -d "chat_id=$chat_id" --data-urlencode "text=✅ XAU Assistant setup: Telegram connected." >/dev/null; then
+    soft_fail "test message failed to send" "Telegram — credentials saved but the test message failed"
+    return 0
+  fi
   ok "linked chat $chat_id (token ••••${token: -4}); test message sent"
 fi
+}
+phase9_telegram
 
 # ------------------------------------------------------ 9. MT5 install + compile
 phase 10 "MT5 install + compile"
+# Wrapped for soft_fail early-return (see phase 5): a compile problem is
+# real, but the service side of the system stays up and reported.
+phase10_mt5() {
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -512,17 +717,34 @@ echo "  compiling via MetaEditor CLI..."
 "$METAEDITOR" /compile:"$win_src" /log:"$win_log" || true   # exit code is unreliable by design
 read_log() { iconv -f UTF-16LE -t UTF-8 "$compile_log" 2>/dev/null || cat "$compile_log"; }
 result_line="$(read_log | grep -iE '[0-9]+ error' | tail -1 || true)"
-[[ -n "$result_line" ]] || { read_log >&2; fail "could not find a result line in the compile log"; }
+if [[ -z "$result_line" ]]; then
+  read_log >&2
+  soft_fail "could not find a result line in the compile log" \
+            "MT5 EA — compile result unknown (log: $compile_log)"
+  return 0
+fi
 errors="$(echo "$result_line" | grep -oiE '[0-9]+ error' | grep -oE '[0-9]+')"
 if [[ "$errors" != 0 ]]; then
   read_log | tail -30 >&2
-  fail "compilation failed: $result_line"
+  soft_fail "compilation failed: $result_line" \
+            "MT5 EA — compilation failed, the terminal still runs the previous .ex5 (log: $compile_log)"
+  return 0
 fi
-[[ -f "$mql5/Experts/XauAssistant.ex5" ]] || fail "compile reported success but XauAssistant.ex5 is missing"
+if [[ ! -f "$mql5/Experts/XauAssistant.ex5" ]]; then
+  soft_fail "compile reported success but XauAssistant.ex5 is missing" \
+            "MT5 EA — no .ex5 produced; compile once by hand in MetaEditor"
+  return 0
+fi
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
+}
+phase10_mt5
 
 # ------------------------------------------ 10. Handoff + end-to-end verification
 phase 11 "Handoff + end-to-end verify"
+# Wrapped for soft_fail early-return (see phase 5): "no EA heartbeat yet" is
+# a checklist item for the owner, not a reason to exit non-zero — the
+# summary below says so plainly.
+phase11_handoff() {
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
@@ -567,5 +789,15 @@ else
     - Remove the EA from the chart and re-attach it (options load at EA init)
   Re-run scripts/setup.sh afterwards — phases 1-7 will SKIP and the wait restarts.
 EOF
-  fail "EA heartbeat not observed"
+  soft_fail "EA heartbeat not observed" \
+            "MT5 EA — no heartbeat: attach the EA to a XAUUSD chart and allow the WebRequest URL (checklist above)"
+  return 0
 fi
+}
+phase11_handoff
+
+# Exit code contract: non-zero ONLY when a CRITICAL phase failed (those call
+# `fail`, which exits immediately). Soft failures are reported by the summary
+# that the EXIT trap prints, and leave the exit status 0 so a launcher does
+# not treat "the chart is down" as "setup did not run".
+exit 0

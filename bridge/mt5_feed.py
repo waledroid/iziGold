@@ -19,7 +19,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 SYMBOL = "XAUUSD"
-PUSH_URL = "http://127.0.0.1:9001/feed/push"
+DEFAULT_MINIAPP_PORT = 9101
 TFS = {"M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
        "M15": mt5.TIMEFRAME_M15, "M30": mt5.TIMEFRAME_M30,
        "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
@@ -29,21 +29,45 @@ TICK_EVERY = 0.5
 BARS_EVERY = 2.0
 
 
-def feed_key() -> str:
-    # Keep the LAST matching line, not the first: this mirrors
-    # pydantic-settings/dotenv "last value wins" semantics, so if .env
-    # ever ends up with more than one FEED_KEY= line (e.g. a blank one
-    # shipped by .env.example plus a real one appended later) the bridge
-    # reads the same value the service does, rather than the stale blank.
+def env_value(key: str, default: str = "") -> str:
+    """Read KEY= from service/.env. Keeps the LAST matching line, not the
+    first: this mirrors pydantic-settings/dotenv "last value wins"
+    semantics, so if .env ever ends up with more than one KEY= line (e.g. a
+    blank one shipped by .env.example plus a real one appended later) the
+    bridge reads the same value the service does, rather than the stale
+    blank. BOM- and quote-tolerant; returns `default` when the file or the
+    key is missing (this process must never die on a config read)."""
     env = Path(__file__).resolve().parent.parent / "service" / ".env"
     val = ""
-    for line in env.read_text(encoding="utf-8-sig").splitlines():
-        if line.startswith("FEED_KEY="):
+    try:
+        text = env.read_text(encoding="utf-8-sig")
+    except OSError:
+        return default
+    for line in text.splitlines():
+        if line.startswith(key + "="):
             v = line.split("=", 1)[1].strip()
             if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                 v = v[1:-1]
             val = v
-    return val
+    return val or default
+
+
+def feed_key() -> str:
+    return env_value("FEED_KEY")
+
+
+def miniapp_port() -> int:
+    """Mini-app port from .env (MINIAPP_PORT). Never a literal here: the
+    port moved off 9001 on 2026-08-19 (a Docker mosquitto owns 9001 on the
+    owner's machine) and the bridge must follow the service."""
+    raw = env_value("MINIAPP_PORT", str(DEFAULT_MINIAPP_PORT))
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_MINIAPP_PORT
+
+
+PUSH_URL = f"http://127.0.0.1:{miniapp_port()}/feed/push"
 
 
 _last_depth = None   # buffer depth the service reported on the last push

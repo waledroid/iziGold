@@ -1,12 +1,17 @@
 # Live Chart Telegram Mini App — MT5 → FastAPI → WebSocket → Lightweight Charts
 
+> **Port note (2026-08-19):** every `9001` below is historical. The
+> mini-app port is now `MINIAPP_PORT` in `service/.env` (default
+> **9101**) — a Docker mosquitto owns 9001 on the owner's machine and
+> the collision cost the chart, the tunnel and the watchdog for hours.
+
 **Date:** 2026-08-14 · **Status:** user-approved design (tunnel: Cloudflare
 named; access: owner + linked-channel members; build: 3 phases)
 
 ## Non-negotiables
 
 - **The main service (port 9000) is never exposed.** Only a new, separate,
-  read-only mini-app service (port 9001) goes through the tunnel. MT5,
+  read-only mini-app service (port MINIAPP_PORT, default 9101) goes through the tunnel. MT5,
   broker credentials, the dashboard, and the db stay local-only.
 - **Read-only by construction**: the bridge's MetaTrader5 call set contains
   no order/modify functions; the mini app has no controls that touch
@@ -38,15 +43,15 @@ environment `scripts/dump_bars.py` already uses). Loop:
   SL, TP, floating P/L (own-magic filter NOT applied — read-only display
   of the symbol's positions; magic shown per position).
 
-Pushes JSON batches to `http://127.0.0.1:9001/feed/push` with header
+Pushes JSON batches to `http://127.0.0.1:<MINIAPP_PORT>/feed/push` with header
 `X-Feed-Key: <FEED_KEY>` (random secret generated into `service/.env` by
 setup; bridge reads it via the same file). Infinite retry with backoff;
 never touches MT5 state. Started by the launcher/setup alongside MT5
 (Windows `pythonw`/`start`), one instance (pid/lock file).
 
-### 2. Mini-app service — `service/app/miniapp.py` (own FastAPI app, port 9001)
+### 2. Mini-app service — `service/app/miniapp.py` (own FastAPI app, port `MINIAPP_PORT`)
 
-Run as a second uvicorn process (`uvicorn app.miniapp:app --port 9001
+Run as a second uvicorn process (`uvicorn app.miniapp:app --port $MINIAPP_PORT
 --host 127.0.0.1`; the tunnel is the only public path). State in memory:
 
 - `candles[tf]`: ring buffer (max 500) of OHLCV; forming bar updated in
@@ -98,7 +103,7 @@ a tick); auto-reconnect WS. No trading controls of any kind.
 
 Owner has no domain; chose ngrok's free tier (one permanent static
 domain per account, e.g. `<name>.ngrok-free.app`). `ngrok http
---url=<static-domain> 9001` started by the launcher; safe to skip when
+--url=<static-domain> $MINIAPP_PORT` started by the launcher; safe to skip when
 unconfigured (setup prints SKIP). Trade-off accepted: ngrok's free tier
 shows a one-tap interstitial ("Visit site") on first browser visit per
 session. Owner prerequisites (one-time, ~5 min): free ngrok account,
@@ -114,7 +119,7 @@ a pure config swap (one URL setting), no rebuild.
    with curl + a WS client locally; service tests with a fake bridge.
 2. **Frontend**: vendored library, the page, TF switching, overlays,
    position card, live WS updates, offline banner. Testable in a normal
-   browser at `127.0.0.1:9001` with dev bypass. **Phase 2.5 (owner
+   browser at `127.0.0.1:<MINIAPP_PORT>` with dev bypass. **Phase 2.5 (owner
    request after seeing the page): indicator overlays** — server
    computes HalfTrend (amplitude 4) + EMA 9/21/55/200 per TF with
    `app/indicators.py` (exact EA math) alongside history; page draws

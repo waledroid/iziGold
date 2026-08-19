@@ -1,5 +1,9 @@
 # Mini App Phase 3 — Auth + ngrok + Telegram Wiring Implementation Plan
 
+> **Historical note (2026-08-19):** every `9001` in this plan is the
+> port as it was when the plan ran. The mini-app port is now
+> `MINIAPP_PORT` in `service/.env` (default **9101**).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The mini app goes live end-to-end: Telegram-signed viewer auth (owner + linked-channel members), the ngrok static-domain tunnel, and the [📈 Live Chart] button + `/chart` repoint — with the existing bot untouched otherwise.

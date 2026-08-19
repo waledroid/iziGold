@@ -423,6 +423,13 @@ def test_poller_dispatches_client_calls_off_event_loop(monkeypatch):
     task.cancel() can't interrupt an in-flight call because the block
     isn't at an await point."""
     monkeypatch.setattr(app_main.settings, "telegram_chat_id", "555")
+    # Stub the mini-app /healthz probe: these poller tests give the cycle
+    # only 100 ms, while a probe against a port nothing answers on burns the
+    # full 0.5 s urllib timeout (they used to pass by accident because an
+    # unrelated local service answered on the old port). Threading is what
+    # is under test here, not the chart probe.
+    from app import telegram as tg
+    monkeypatch.setattr(tg, "_miniapp_healthz", lambda: None)
     main_thread_name = threading.current_thread().name
     recorded = {"get_updates_thread": None, "send_message_thread": None,
                 "sent": []}
@@ -477,6 +484,13 @@ def test_poller_filters_using_active_client_chat_id_not_settings(monkeypatch):
     silently dropped. Regression for that bug: settings carries a stale/
     different chat id, and the active client carries the real one."""
     monkeypatch.setattr(app_main.settings, "telegram_chat_id", "999")  # stale .env value
+    # Stub the mini-app /healthz probe: these poller tests give the cycle
+    # only 100 ms, while a probe against a port nothing answers on burns the
+    # full 0.5 s urllib timeout (they used to pass by accident because an
+    # unrelated local service answered on the old port). Threading is what
+    # is under test here, not the chart probe.
+    from app import telegram as tg
+    monkeypatch.setattr(tg, "_miniapp_healthz", lambda: None)
     recorded = {"sent": []}
 
     class StubClient:
@@ -824,6 +838,16 @@ def _status_lines(monkeypatch, healthz):
     app = _app(latest_heartbeat=_hb(), db=FakeDb())
     app.state.pending_switch = None
     return handle_command("/status", app).splitlines()
+
+
+def test_miniapp_healthz_url_follows_configured_port():
+    """The /status probe must target MINIAPP_PORT, never a hard-coded 9001
+    (incident 2026-08-19: the mini-app moved port and every hard-coded
+    probe silently reported it down)."""
+    from app import telegram as tg
+    from app.config import settings
+    assert tg._MINIAPP_HEALTHZ_URL == f"http://127.0.0.1:{settings.miniapp_port}/healthz"
+    assert tg._miniapp_healthz_url().endswith(f":{settings.miniapp_port}/healthz")
 
 
 def test_status_miniapp_line_follows_ea_line(monkeypatch):

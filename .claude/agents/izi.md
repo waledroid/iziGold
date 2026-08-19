@@ -472,7 +472,19 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
 - **Spawn everything**: Desktop `XAU-Launch.bat` (repo: `scripts/xau-launch.bat`)
   → bootstraps WSL/repo/MT5 checks, starts MT5 with `/config:scripts/mt5-start.ini`
   (forces Algo Trading ON), runs `scripts/setup.sh` (idempotent: venv→tests→
-  service→telegram→MT5 compile→heartbeat-verified handoff).
+  service→mini-app→live-chart config→tunnel→watchdog→telegram→MT5 compile→
+  heartbeat-verified handoff).
+- **setup.sh failure model (2026-08-19)**: phases are CRITICAL (preflight,
+  Python env, test gate, main service — these still call `fail` and abort
+  the run) or NON-CRITICAL (mini-app, live-chart config, tunnel, watchdog,
+  Telegram, MT5 compile, handoff — these call `soft_fail`, which marks the
+  phase FAILED, records what is still down + the remedy, and CONTINUES).
+  Every run ends with a **summary block** — one OK/SKIP/FAILED line per
+  phase, a "Still down / needs you" list with log paths, and exit code 0
+  unless a CRITICAL phase failed. Reason: before this, one non-critical
+  phase (`set -euo pipefail` + `fail`) aborted everything after it — see
+  §7's 2026-08-19 entry. The watchdog phase is deliberately reached in
+  every run, because it is what brings the optional links back later.
 - **Service restart**: `pkill -f "uvicorn app.main:app"` in its OWN command
   (exit 144 = normal; NEVER combine with the restart — pkill kills the chain),
   then from `service/`: `nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1
@@ -633,12 +645,30 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   owner-approved [Reset brake for today] that re-bases — not disables — it
   (spec `docs/superpowers/specs/2026-08-18-brake-awareness-design.md`).
 
+- **2026-08-19 one occupied port cost the owner everything after it** —
+  `XAU-Launch.bat` → `setup.sh` started the main service fine, then phase 5
+  tried to bind the mini-app to 127.0.0.1:9001. A Docker container from the
+  owner's OTHER project (`on-prem-mosquitto-1`, MQTT-over-WebSockets) had
+  owned `0.0.0.0:9001` since boot, so uvicorn died with `[Errno 98] address
+  already in use`, phase 5 called `fail`, and `set -euo pipefail` aborted
+  the whole script — phases 6-11 never ran. Result: no chart, no tunnel
+  (the ngrok edge answered 404 with no agent), and **no watchdog**, i.e. the
+  very thing that would have healed all of it, for hours, with the owner
+  seeing only a dead chart. Two fixes, both in this commit: (1) the port is
+  configurable (`MINIAPP_PORT`, default **9101**) and read from `.env` by
+  every component (§8), with setup.sh naming the squatter before it even
+  tries to bind; (2) setup.sh distinguishes CRITICAL from NON-CRITICAL
+  phases — non-critical ones `soft_fail` and the run CONTINUES, ending in a
+  per-phase OK/SKIP/FAILED summary (§6). Rule of the house: **an optional
+  component must never be able to cost the trader the components after it,
+  and least of all the watchdog.**
+
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
 `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
 idempotent via pgrep; log `/tmp/xau-watchdog.log`). Every 30 s it checks
 each link and restarts ONLY the failed one: main service (`:9000/health`),
-miniapp (`:9001/healthz`), ngrok tunnel (domain in the 4040 agent API AND
+miniapp (`:$MINIAPP_PORT/healthz`, read from `.env`), ngrok tunnel (domain in the 4040 agent API AND
 public `/healthz`), Windows bridge (feed freshness — `/tmp/miniapp.log`
 mtime < 90 s; restart via the launcher's hidden-`pythonw` PowerShell
 pattern). **Stale-code guard**: a process whose start time predates the
@@ -654,6 +684,22 @@ The stale-code guard acts at most ONCE per distinct code mtime (2026-08-18: a fi
 
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
+**Port: `MINIAPP_PORT` in `service/.env`, default 9101 (2026-08-19).** It is
+the SINGLE source of truth and everything reads it — `app/config.py`
+(`settings.miniapp_port`), the `/status` mini-app probe in `app/telegram.py`
+(`_MINIAPP_HEALTHZ_URL`), `bridge/mt5_feed.py`'s `PUSH_URL` (its own tolerant
+last-match `.env` parser, shared with `FEED_KEY`), `scripts/setup.sh`
+(start + liveness + the ngrok forward target) and `scripts/xau-watchdog.sh`
+(`miniapp_ok`, `feed_ok`, `restart_miniapp`, `restart_tunnel`). **Never
+hard-code the port anywhere** — a probe on a stale port reports a healthy
+mini-app as down and a watchdog on a stale port supervises the wrong
+process. WHY it moved off 9001: on this machine the owner's OTHER project
+runs a Docker stack whose `on-prem-mosquitto-1` binds `0.0.0.0:9001`
+(MQTT-over-WebSockets) at boot — that container is NOT ours and must never
+be stopped. Changing ports: edit `MINIAPP_PORT` in `service/.env`, then
+restart the mini-app and the tunnel (or just let the watchdog do it) — the
+bridge picks the new port up on its next restart.
+
 Spec: `docs/superpowers/specs/2026-08-14-live-chart-miniapp-design.md`; plans:
 `docs/superpowers/plans/2026-08-14-miniapp-phase1.md`,
 `docs/superpowers/plans/2026-08-14-miniapp-phase2.md`. Three-phase build —
@@ -662,7 +708,7 @@ generation, dev-bypass auth. **Phase 2** (this section, 2026-08-14, landed):
 the chart page itself — `GET /` serves `app/static/miniapp.html`, vendored
 Lightweight Charts renders TF-switchable candles fed by `/api/history` +
 `/ws`, position overlays, offline banner — testable in a plain browser at
-`127.0.0.1:9001` with dev bypass (see verification procedure below).
+`127.0.0.1:$MINIAPP_PORT` with dev bypass (see verification procedure below).
 **Phase 3, Task 1** (2026-08-15, landed): real auth — Telegram `initData`
 HMAC validation + owner/channel-membership authorization now live,
 replacing `require_viewer`'s dev-bypass-only body. See **Auth** below for
@@ -670,7 +716,7 @@ the full algorithm/wiring.
 
 **Phase 3, Task 2** (2026-08-15, landed): the ngrok static-domain
 tunnel — **the mini-app's first public exposure**, and the only point at
-which port 9001 becomes reachable from outside 127.0.0.1. See **Tunnel**
+which the mini-app port becomes reachable from outside 127.0.0.1. See **Tunnel**
 below for start/stop/verification.
 
 **Phase 3, Task 3** (2026-08-15, landed): Telegram wiring — the `[📈 Live
@@ -702,7 +748,7 @@ link — see **Telegram wiring**) is a separate owner action, relayed but
 not automated here.
 
 **Non-negotiable**: the main service (port 9000 — MT5, broker creds,
-dashboard, db) is NEVER exposed. Only the mini-app (port 9001) goes
+dashboard, db) is NEVER exposed. Only the mini-app (port `MINIAPP_PORT`) goes
 through the tunnel, and it is read-only by construction — no order/modify
 call appears anywhere in its call graph.
 
@@ -911,12 +957,12 @@ inline script executes; all Telegram-dependent setup (`ready()`/
 `DOMContentLoaded`, by which point deferred scripts are guaranteed done.
 
 **Browser/data-level verification procedure** (no headed browser in this
-environment — this is what "verified" means here): `curl -s 127.0.0.1:9001/`
+environment — this is what "verified" means here): `curl -s 127.0.0.1:$MINIAPP_PORT/`
 → 200, body contains the chart div; vendor JS → 200 at
 `/static/vendor/lightweight-charts.standalone.production.js`;
-`curl -s "127.0.0.1:9001/api/history?tf=M5"` non-empty with
+`curl -s "127.0.0.1:$MINIAPP_PORT/api/history?tf=M5"` non-empty with
 `MINIAPP_DEV_BYPASS=true` (403 with it off); a scripted `websockets`
-client connected to `ws://127.0.0.1:9001/ws` for ~15 s against the LIVE
+client connected to `ws://127.0.0.1:$MINIAPP_PORT/ws` for ~15 s against the LIVE
 server, counting message types — confirms real `tick`/`candle`/`positions`
 deltas are flowing, not just that the route exists. JS syntax: extract the
 inline `<script>` body to a temp file and run `node --check` (exit 0 = no
@@ -1003,7 +1049,7 @@ check, `viewer_allowed()` delegates to `app/miniapp_auth.py`'s
   is a credential set up to 60 s stale, never a hang). `miniapp.py`
   deliberately does **not** import `app.main` or reuse `app.main`'s
   `SignalDb` instance — they're two separate uvicorn processes (port 9000
-  vs 9001) with no shared Python object — and does **not** instantiate
+  vs the mini-app port) with no shared Python object — and does **not** instantiate
   `app.db.SignalDb` at all even though it's importable, because
   `SignalDb.__init__` unconditionally runs `CREATE TABLE IF NOT EXISTS`
   for every schema, which needs a writable connection; a raw read-only
@@ -1053,7 +1099,7 @@ MetaTrader5 call set is `initialize`, `symbol_info_tick`,
 `copy_rates_from_pos`, `positions_get`, `shutdown`; no order/modify
 function appears anywhere in the file. Loop: ticks every 0.5 s, bars (2
 most recent per TF, all 7 TFs: M1/M5/M15/M30/H1/H4/D1) + positions every
-2 s, pushed as JSON batches to `http://127.0.0.1:9001/feed/push` with
+2 s, pushed as JSON batches to `http://127.0.0.1:<MINIAPP_PORT>/feed/push` with
 `X-Feed-Key`. Fail-open hardening (2026-08-14, commit `ff58e25`):
 `positions_get` returning `None` is treated as a read failure and the
 `positions` key is simply omitted from the batch rather than pushing an
@@ -1080,7 +1126,7 @@ tunnel is live** (§8 Tunnel, below):
   fresh process is done): `pkill -f "uvicorn app.miniapp:app"` in its OWN
   command (exit 144 = normal), then from `service/`:
   `MINIAPP_DEV_BYPASS=true nohup .venv/bin/uvicorn app.miniapp:app --host
-  127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1 &`. Note the two things
+  127.0.0.1 --port $MINIAPP_PORT >> /tmp/miniapp.log 2>&1 &`. Note the two things
   easy to get wrong here: `MINIAPP_DEV_BYPASS=true` is set **inline on the
   start command, not in `.env`** — `.env` has no `MINIAPP_DEV_BYPASS` line
   at all, deliberately, so the bypass dies with the process and can never
@@ -1092,7 +1138,7 @@ tunnel is live** (§8 Tunnel, below):
 - **Deployed state (the tunnel is live and public)**: the SAME command
   with `MINIAPP_DEV_BYPASS` simply omitted: `pkill -f "uvicorn
   app.miniapp:app"`, then from `service/`: `nohup .venv/bin/uvicorn
-  app.miniapp:app --host 127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1
+  app.miniapp:app --host 127.0.0.1 --port $MINIAPP_PORT >> /tmp/miniapp.log 2>&1
   &`. This is the only form that may run while the ngrok tunnel is up —
   verified 2026-08-15 (see **Tunnel**): with the bypass restarted away,
   `.../api/history?tf=M5` through the public domain returns 403, not the
@@ -1104,7 +1150,11 @@ automatically on the first successful push after any gap).
 
 **Setup**: `scripts/setup.sh`'s "Mini-app feed service" phase (between
 "Service" and the ngrok tunnel phase) ensures `FEED_KEY` exists in `.env`
-(SKIP if already set) and starts the port-9001 uvicorn process if not
+(SKIP if already set), ensures `MINIAPP_PORT` exists in `.env` (same
+in-place-fill/append discipline), refuses to start when that port is held
+by something that is not our mini-app (it names the squatter — `docker ps`
+/ `ss -ltnp` — and soft-fails with "set MINIAPP_PORT=<free port> in
+service/.env"), and starts the `--port $MINIAPP_PORT` uvicorn process if not
 already answering (liveness probed via `GET /healthz` — auth-free, unlike
 `/api/history` which 403s with dev bypass off; `/openapi.json` is 404 now
 that docs routes are disabled, see **Docs routes / liveness probe**
@@ -1216,7 +1266,7 @@ interactive/hardware-dependent.
   with only a presence check would); runs `ngrok config add-authtoken
   <NGROK_AUTHTOKEN from .env>` only if `~/.config/ngrok/ngrok.yml` has no
   `authtoken:` line yet; then `nohup ngrok http --url=<domain>
-  --inspect=false 9001 --log /tmp/ngrok.log &`, where `<domain>` is
+  --inspect=false $MINIAPP_PORT --log /tmp/ngrok.log &`, where `<domain>` is
   `MINIAPP_PUBLIC_URL` with the `https://` scheme stripped inside the
   script (single source of truth — the phase never hardcodes the domain
   string). **`--inspect=false`** (security-review fix, 2026-08-15): with
@@ -1257,9 +1307,9 @@ interactive/hardware-dependent.
   webview is expected to pass through without seeing it (not ngrok's
   definition of a "browser visit") — to be confirmed by Task 3's headed
   check, not yet verified either way.
-- **Only 9001 is ever exposed** (invariant, same as the **Non-negotiable**
-  paragraph above, now backed by a live process): the tunnel forwards to
-  `127.0.0.1:9001` exclusively. The main service (port 9000 — MT5 wiring,
+- **Only the mini-app port is ever exposed** (invariant, same as the
+  **Non-negotiable** paragraph above, now backed by a live process): the
+  tunnel forwards to `127.0.0.1:$MINIAPP_PORT` exclusively. The main service (port 9000 — MT5 wiring,
   broker credentials, the trading dashboard, direct db access) has no
   tunnel pointed at it and stays reachable only from 127.0.0.1, tunnel or
   no tunnel.

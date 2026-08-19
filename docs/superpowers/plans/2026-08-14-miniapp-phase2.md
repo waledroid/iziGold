@@ -1,5 +1,9 @@
 # Mini App Phase 2 — Chart Frontend Implementation Plan
 
+> **Historical note (2026-08-19):** every `9001` in this plan is the
+> port as it was when the plan ran. The mini-app port is now
+> `MINIAPP_PORT` in `service/.env` (default **9101**).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The interactive Lightweight-Charts page served by the mini-app service: live XAUUSD candles across 7 timeframes with zoom/pan/crosshair, live bid/ask/spread header, entry/SL/TP overlays and a position card, updating over the Phase 1 WebSocket — verifiable in a normal browser at 127.0.0.1:9001 with dev bypass.
