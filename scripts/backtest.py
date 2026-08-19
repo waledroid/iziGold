@@ -35,6 +35,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--bias-mode tag|target|target_lock|size_target|skip]
                    [--bias-tf M5|M15]
                    [--window-start H] [--window-end H] [--hour-table]
+                   [--tf M5|M15] [--profit-target PCT]
 
 --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
 HalfTrend flip before the entry fires — EA fake-out filter semantics: the
@@ -229,6 +230,46 @@ therefore overrides --sr-min-headroom. Any N > 0 prints the bucket table
 (<0.5 / 0.5-1 / 1-2 / >2 ATR, plus "clear"): trades, win%, net, avg, and the
 winners'/losers' dollars per bucket — the last two are the opportunity-cost
 columns, the dollars a threshold would skip vs the dollars it would avoid.
+
+--tf M5|M15 (trading-timeframe study, owner's claim 2026-08-19: "this signal
+looks better on the 15-minute chart"). The EA has a TradeTimeframe input that
+pins EVERY trading decision to one timeframe, so this is a real, supported
+switch, and the replay mirrors it: M5 (default) is byte-identical to every
+result recorded so far; M15 aggregates the M5 source into 15-minute bars
+(bucket = t // 900, i.e. server :00/:15/:30/:45; open = first open, high =
+max, low = min, close = last close, volume = sum) and then runs the SAME
+rulebook on those bars. Verified against 3,915 real broker M15 bars pulled
+with MetaTrader5.copy_rates_from_pos(TIMEFRAME_M15): OHLC and volume matched
+exactly on every one. Only a TRAILING incomplete bucket is dropped (the M15
+bar still forming at the end of the data); the handful of mid-history buckets
+that are short an M5 bar are kept, because a missing M5 bar means no ticks,
+not a missing M15 bar.
+
+What scales and what does not, when --tf M15 is on:
+  * BAR-BASED, scales automatically (same NUMBER of bars, 3x the wall clock):
+    ATR(14)/ADX(14), the trading EMA (--ema-len, default 55), the bias EMA
+    (--bias-ema), HalfTrend amplitude 4, --confirm / the strict-window
+    waiting bars, the pyramid trigger (1 x ATR — the ATR itself grows),
+    --chop-bars, --sr-lookback, the ATR-spike lookback (100 bars), the
+    300-bar regime window the service classifier reads, and the EA's
+    CatchupMaxAgeBars (documented as "trade-TF bars").
+  * TIME-BASED, NOT scaled (identical wall-clock meaning on both timeframes,
+    exactly like the EA inputs they mirror): --expo / MaxDailyExposureMin
+    (minutes of open-position time per server day — the replay charges
+    BAR_MIN minutes per held bar, 5 on M5 and 15 on M15, so the budget buys
+    a third as many bars), the --window-start/--window-end trading hours,
+    and the pre-break flatten.
+The flatten bar is the last bar of the server day on each timeframe: 23:50
+(and 23:55) on M5, 23:45 on M15 — the M5 rule "hour 23, minute >= 50" would
+never match an M15 bar, which stamps :00/:15/:30/:45.
+
+--profit-target PCT overrides ProfitTargetPct (the basket's bank-at +PCT% of
+cycle balance). Default 2.0 = byte-identical. PCT <= 0 turns the target OFF
+exactly like the EA input documents it ("0 = off"): the basket then rides to
+the profit lock (50% of peak once peak >= 1R), the shared stop, the confirmed
+reversal or the pre-break flatten — sizing, adds and lock are untouched. This
+is NOT the same as --entry-mode fixed, which additionally drops the risk
+sizing, the adds and the lock.
 """
 import argparse
 import datetime as dt
@@ -258,6 +299,18 @@ WINDOW = (4, 23)          # server hours (EA TradingWindowStart/EndHour);
 HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
 EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
+
+# --- trading timeframe (EA input TradeTimeframe; M15 study 2026-08-19) ---
+# The source JSON is always M5; --tf M15 aggregates it before anything else
+# runs, so every BAR-based parameter above is read in M15 bars while every
+# TIME-based one (EXPO_MIN, WINDOW, the flatten) keeps its wall-clock meaning.
+TFS = ("M5", "M15")
+TF = "M5"
+TF_SEC = {"M5": 300, "M15": 900}
+SRC_SEC = 300             # the source feed's bar length
+BAR_MIN = 5               # minutes of open-position time charged per held bar
+FLATTEN_BY_TF = {"M5": (23, 50), "M15": (23, 45)}   # last bar of the server day
+
 ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
@@ -358,6 +411,36 @@ class _Bar:
 
     def __init__(self, x):
         self.h, self.l, self.c = x["h"], x["l"], x["c"]
+
+
+def resample(candles, sec):
+    """Aggregate the M5 source feed into `sec`-second bars (sec = SRC_SEC is a
+    no-op returning the input unchanged). Buckets are t // sec, so on M15 they
+    land on server :00/:15/:30/:45; open = the bucket's first open, high/low =
+    the extremes, close = the last close, volume = the sum. Only a TRAILING
+    incomplete bucket is dropped (its last source bar does not sit in the
+    bucket's final SRC_SEC slot, i.e. the bar is still forming); mid-history
+    buckets that are short a source bar are kept, because a missing M5 bar in
+    the feed means no ticks in those five minutes, not a missing M15 bar."""
+    if sec == SRC_SEC:
+        return candles
+    out, cur_b, off = [], None, None
+    for x in candles:
+        b = x["t"] // sec
+        off = x["t"] % sec
+        if b != cur_b:
+            cur_b = b
+            out.append({"t": b * sec, "o": x["o"], "h": x["h"], "l": x["l"],
+                        "c": x["c"], "v": x["v"]})
+        else:
+            cur = out[-1]
+            cur["h"] = max(cur["h"], x["h"])
+            cur["l"] = min(cur["l"], x["l"])
+            cur["c"] = x["c"]
+            cur["v"] += x["v"]
+    if out and off != sec - SRC_SEC:
+        out.pop()
+    return out
 
 
 def regime_at(candles, i):
@@ -646,7 +729,7 @@ def run(candles, start_balance, verbose):
 
         day = when.date()
         if basket:
-            expo[day] = expo.get(day, 0) + 5   # one M5 bar of held time
+            expo[day] = expo.get(day, 0) + BAR_MIN   # one bar of held time
 
         # ---- flatten before the break
         if h == FLATTEN_HM[0] and m >= FLATTEN_HM[1]:
@@ -706,8 +789,8 @@ def run(candles, start_balance, verbose):
                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
                     * basket.get("target_mult", 1.0)
                 closed = False
-                if ENTRY_MODE == "fixed":
-                    pass   # pure ride: no profit target / floor in fixed mode
+                if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
+                    pass   # pure ride: no profit target / floor (EA: 0 = off)
                 elif EXIT_SCHEME == "target-exit":
                     if pl >= target:
                         close_basket(px, when, "profit target")
@@ -889,6 +972,7 @@ def run(candles, start_balance, verbose):
     if basket:
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
     run.skipped = skipped
+    run.expo = expo          # server-day -> minutes of open-position time
     run.open_diff_bars = open_diff_bars
     run.dead_signals = dead_signals
     run.bias_flips = None
@@ -1041,7 +1125,26 @@ def main():
     ap.add_argument("--sr-report", action="store_true",
                     help="S/R diagnostic: tag and report headroom but never "
                          "refuse an entry (overrides --sr-min-headroom)")
+    ap.add_argument("--tf", choices=TFS, default="M5",
+                    help="trading timeframe (EA TradeTimeframe): M5 (default, "
+                         "byte-identical) or M15 (the M5 source aggregated to "
+                         "15-minute bars before anything else runs). Bar-based "
+                         "parameters are then read in M15 bars; the exposure "
+                         "budget and the trading-window hours keep their "
+                         "wall-clock meaning")
+    ap.add_argument("--profit-target", type=float, default=None,
+                    help="override ProfitTargetPct, the basket's bank-at "
+                         "percent of cycle balance (default 2.0; <= 0 turns "
+                         "the target off exactly like the EA input, leaving "
+                         "the lock / stop / reversal to close the basket)")
     args = ap.parse_args()
+    global TF, BAR_MIN, FLATTEN_HM
+    TF = args.tf
+    BAR_MIN = TF_SEC[TF] // 60
+    FLATTEN_HM = FLATTEN_BY_TF[TF]
+    if args.profit_target is not None:
+        global PROFIT_TARGET_PCT
+        PROFIT_TARGET_PCT = args.profit_target
     global WINDOW, HOUR_TABLE
     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
               WINDOW[1] if args.window_end is None else args.window_end)
@@ -1088,7 +1191,7 @@ def main():
         data = json.load(urllib.request.urlopen(args.source))
     else:
         data = json.load(open(args.source))
-    candles = data["candles"]
+    candles = resample(data["candles"], TF_SEC[TF])
     if args.days:
         cutoff = candles[-1]["t"] - int(args.days * 86400)
         candles = [c for c in candles if c["t"] >= cutoff]
@@ -1121,6 +1224,9 @@ def main():
           + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
              if BIAS_EMA > 0 else "")
           + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
+          + (f" | TF {TF}" if TF != "M5" else "")
+          + (f" | profit target {PROFIT_TARGET_PCT:g}%"
+             if PROFIT_TARGET_PCT != 2.0 else "")
           + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
