@@ -25,6 +25,16 @@ FEED_STALE_S="${WATCHDOG_FEED_STALE_S:-90}"
 MAX_FAILS=3
 COOLDOWN_S=600
 LOG="/tmp/xau-watchdog.log"
+# Singleton. setup.sh guards with pgrep, which loses a race: on 2026-08-19 two
+# runs seconds apart left TWO supervisors alive, each restarting the same link
+# and each alarming. flock is race-free -- a second instance exits quietly, so
+# "run the launcher twice" can never fan out into duplicate supervisors.
+LOCK="/tmp/xau-watchdog.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "$(date '+%F %T') another watchdog holds $LOCK -- exiting" >> "$LOG"
+  exit 0
+fi
 declare -A fails cooldown_until
 env_get() { grep -oP "^$1=\K.+" "$SVC/.env" 2>/dev/null | tail -1 | tr -d '"'"'" ; }
 PUBLIC_URL="$(env_get MINIAPP_PUBLIC_URL)"; TUNNEL_DOMAIN="${PUBLIC_URL#https://}"

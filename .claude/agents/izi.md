@@ -666,7 +666,13 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
 `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
-idempotent via pgrep; log `/tmp/xau-watchdog.log`). Every 30 s it checks
+idempotent via pgrep; log `/tmp/xau-watchdog.log`). **Singleton via
+`flock -n` on `/tmp/xau-watchdog.lock`** (2026-08-19): setup.sh's pgrep
+guard loses a race — two runs seconds apart left TWO supervisors alive,
+each restarting the same link and each able to alarm. A second instance
+now logs `another watchdog holds ...` and exits 0, so launching the
+launcher twice can never fan out into duplicate supervisors. Verify with
+`ps -eo pid,args | grep xau-watch` (expect exactly one). Every 30 s it checks
 each link and restarts ONLY the failed one: main service (`:9000/health`),
 miniapp (`:$MINIAPP_PORT/healthz`, read from `.env`), ngrok tunnel (domain in the 4040 agent API AND
 public `/healthz`), Windows bridge (feed freshness — `/tmp/miniapp.log`
