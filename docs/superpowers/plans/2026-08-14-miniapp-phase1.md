@@ -1,5 +1,9 @@
 # Mini App Phase 1 — MT5 Bridge + Feed Backend Implementation Plan
 
+> **Historical note (2026-08-19):** every `9001` in this plan is the
+> port as it was when the plan ran. The mini-app port is now
+> `MINIAPP_PORT` in `service/.env` (default **9101**).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A Windows-side MT5 feed bridge and a separate read-only mini-app FastAPI service (port 9001) with in-memory candle/tick/position state, a keyed push endpoint, a history API, and a WebSocket that pushes deltas — the data spine the Phase 2 chart page will sit on.

@@ -23,3 +23,13 @@ def test_defaults(monkeypatch):
 def test_env_override(monkeypatch):
     monkeypatch.setenv("FORECASTER", "fake")
     assert Settings(_env_file=None).forecaster == "fake"
+
+
+def test_miniapp_port_default_and_override(monkeypatch):
+    # 9101, not 9001: the old default collides with common local services
+    # (a Docker mosquitto WebSocket listener owns 9001 on the owner's box),
+    # which on 2026-08-19 cost the chart, the tunnel and the watchdog.
+    monkeypatch.delenv("MINIAPP_PORT", raising=False)
+    assert Settings(_env_file=None).miniapp_port == 9101
+    monkeypatch.setenv("MINIAPP_PORT", "9202")
+    assert Settings(_env_file=None).miniapp_port == 9202

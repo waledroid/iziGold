@@ -9,7 +9,7 @@
 # Telegram message is the alarm — a link still DOWN after MAX_FAILS
 # restarts, i.e. something the watchdog cannot fix by itself.
 #
-# Links:  main service :9000 /health   | miniapp :9001 /healthz
+# Links:  main service :9000 /health   | miniapp :<MINIAPP_PORT> /healthz
 #         ngrok tunnel  (agent API domain match + public /healthz)
 #         Windows bridge (feed freshness: /feed/push seen in the miniapp log
 #                        within FEED_STALE_S)
@@ -25,10 +25,24 @@ FEED_STALE_S="${WATCHDOG_FEED_STALE_S:-90}"
 MAX_FAILS=3
 COOLDOWN_S=600
 LOG="/tmp/xau-watchdog.log"
+# Singleton. setup.sh guards with pgrep, which loses a race: on 2026-08-19 two
+# runs seconds apart left TWO supervisors alive, each restarting the same link
+# and each alarming. flock is race-free -- a second instance exits quietly, so
+# "run the launcher twice" can never fan out into duplicate supervisors.
+LOCK="/tmp/xau-watchdog.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "$(date '+%F %T') another watchdog holds $LOCK -- exiting" >> "$LOG"
+  exit 0
+fi
 declare -A fails cooldown_until
 env_get() { grep -oP "^$1=\K.+" "$SVC/.env" 2>/dev/null | tail -1 | tr -d '"'"'" ; }
 PUBLIC_URL="$(env_get MINIAPP_PUBLIC_URL)"; TUNNEL_DOMAIN="${PUBLIC_URL#https://}"
 NGROK_TOKEN="$(env_get NGROK_AUTHTOKEN)"
+# Mini-app port: .env is the single source of truth (moved 9001 -> 9101 on
+# 2026-08-19 — a Docker mosquitto owns 9001 on this machine). Probing or
+# restarting on a hard-coded port would supervise the WRONG process.
+MINIAPP_PORT="$(env_get MINIAPP_PORT)"; MINIAPP_PORT="${MINIAPP_PORT:-9101}"
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 notify() { curl -s -m 5 -X POST http://127.0.0.1:9000/notify \
               -H 'Content-Type: application/json' \
@@ -36,7 +50,7 @@ notify() { curl -s -m 5 -X POST http://127.0.0.1:9000/notify \
 
 # ---- checks -----------------------------------------------------------
 main_ok()    { curl -sf -m 4 http://127.0.0.1:9000/health >/dev/null; }
-miniapp_ok() { curl -sf -m 4 http://127.0.0.1:9001/healthz >/dev/null; }
+miniapp_ok() { curl -sf -m 4 "http://127.0.0.1:$MINIAPP_PORT/healthz" >/dev/null; }
 tunnel_ok()  { [[ -n "$TUNNEL_DOMAIN" ]] || return 0   # unconfigured = not our job
                curl -sf -m 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null | grep -q "$TUNNEL_DOMAIN" \
                && curl -sf -m 8 -H "ngrok-skip-browser-warning: 1" "https://$TUNNEL_DOMAIN/healthz" >/dev/null; }
@@ -44,7 +58,7 @@ feed_ok()    { # bridge alive = the miniapp saw a /feed/push recently. /healthz 
                # feed_age_s (null = never since this process started) + uptime_s.
                # null is only excusable while the miniapp is YOUNG; a null older
                # than FEED_STALE_S means no bridge push has arrived at all -> dead.
-               local hz; hz=$(curl -sf -m 4 http://127.0.0.1:9001/healthz 2>/dev/null) || return 0  # miniapp down: not the bridge's fault
+               local hz; hz=$(curl -sf -m 4 "http://127.0.0.1:$MINIAPP_PORT/healthz" 2>/dev/null) || return 0  # miniapp down: not the bridge's fault
                local age up
                age=$(grep -oP '"feed_age_s":\s*\K[0-9.]+' <<<"$hz")
                up=$(grep -oP '"uptime_s":\s*\K[0-9.]+' <<<"$hz")
@@ -70,10 +84,10 @@ stale_code()    { local started; started=$(proc_started "$1") || return 1
 restart_main()    { pkill -f "uvicorn app.main:app" || true; sleep 2
                     (cd "$SVC" && nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 >> /tmp/xau-service.log 2>&1 &) ; }
 restart_miniapp() { pkill -f "uvicorn app.miniapp:app" || true; sleep 2
-                    (cd "$SVC" && nohup .venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port 9001 >> /tmp/miniapp.log 2>&1 &) ; }
+                    (cd "$SVC" && nohup .venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port "$MINIAPP_PORT" >> /tmp/miniapp.log 2>&1 &) ; }
 restart_tunnel()  { pkill -f "ngrok http" || true; sleep 2
                     [[ -n "$NGROK_TOKEN" && -n "$TUNNEL_DOMAIN" ]] || return 0
-                    nohup "$HOME/.local/bin/ngrok" http --url="$TUNNEL_DOMAIN" --inspect=false 9001 --log /tmp/ngrok.log >/dev/null 2>&1 & }
+                    nohup "$HOME/.local/bin/ngrok" http --url="$TUNNEL_DOMAIN" --inspect=false "$MINIAPP_PORT" --log /tmp/ngrok.log >/dev/null 2>&1 & }
 restart_bridge()  { # Kill any old bridge, then launch a DETACHED hidden pythonw.
                     # Lessons (2026-08-17): a Start-Process from a WSL-invoked
                     # PowerShell dies with its wrapper; `cmd /c start "" /B` with
@@ -107,7 +121,7 @@ supervise() {   # $1 name  $2 check-fn  $3 restart-fn
   fi
 }
 
-log "watchdog start (interval ${INTERVAL}s, tunnel=${TUNNEL_DOMAIN:-none})"
+log "watchdog start (interval ${INTERVAL}s, miniapp port=${MINIAPP_PORT}, tunnel=${TUNNEL_DOMAIN:-none})"
 while true; do
   # stale-code guard first (a restart here also clears any transient DOWN)
   if stale_code "uvicorn app.miniapp:app" "$SVC/app/miniapp.py" "$SVC/app/miniapp_auth.py" "$SVC/app/static/miniapp.html"; then

@@ -1,7 +1,7 @@
 """Real viewer authentication for the mini-app (Phase 3, Task 1): Telegram
 initData HMAC validation + owner/channel-membership authorization.
 
-The mini-app process (`app.miniapp`, port 9001) is deliberately isolated
+The mini-app process (`app.miniapp`, port MINIAPP_PORT) is deliberately isolated
 from `app.main` (port 9000, the trading service) — it must not import
 `app.main` and must not share `app.main`'s writable `SignalDb` instance
 across processes (they're two separate uvicorn processes; there is no

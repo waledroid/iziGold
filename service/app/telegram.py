@@ -240,10 +240,21 @@ def _ea_connection_line(app) -> str:
 
 
 # Mini-app (live chart) liveness for /status. Same source of truth the
-# watchdog uses: the miniapp's auth-free /healthz on 127.0.0.1:9001 --
-# feed_age_s = seconds since the Windows bridge last pushed. Injectable
+# watchdog uses: the miniapp's auth-free /healthz on 127.0.0.1:<MINIAPP_PORT>
+# -- feed_age_s = seconds since the Windows bridge last pushed. Injectable
 # for tests (monkeypatch _miniapp_healthz). Never raises; None = unreachable.
-_MINIAPP_HEALTHZ_URL = "http://127.0.0.1:9001/healthz"
+# The port comes from settings (MINIAPP_PORT), never a literal: it moved off
+# 9001 on 2026-08-19 and every probe must follow it in lockstep.
+
+
+def _miniapp_healthz_url() -> str:
+    # Local import, matching the rest of this module: telegram.py never
+    # holds a module-level settings reference.
+    from app.config import settings
+    return f"http://127.0.0.1:{settings.miniapp_port}/healthz"
+
+
+_MINIAPP_HEALTHZ_URL = _miniapp_healthz_url()
 _MINIAPP_FEED_STALE_S = 90
 
 

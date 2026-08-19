@@ -1,11 +1,15 @@
-"""Read-only mini-app feed service (port 9001) — the ONLY thing the
+"""Read-only mini-app feed service (port MINIAPP_PORT, default 9101) —
+the ONLY thing the
 Phase 3 tunnel will expose. The Windows bridge POSTs batches to
 /feed/push; browsers get history over REST and live deltas over one
 WebSocket. No trading controls exist here by construction.
 
 Runs as its own process: uvicorn app.miniapp:app --host 127.0.0.1
---port 9001. State is in-memory only — a restart just refills from the
-bridge's next backfill push (fail-open).
+--port "$MINIAPP_PORT" (scripts/setup.sh passes it; .env is the single
+source of truth — the default moved off 9001 on 2026-08-19 because a
+Docker mosquitto owns that port on the owner's machine). State is
+in-memory only — a restart just refills from the bridge's next backfill
+push (fail-open).
 """
 import asyncio
 import bisect
