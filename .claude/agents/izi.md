@@ -915,6 +915,124 @@ at **-189.36 / +1,603.50 / +1,477.65** — the only configuration measured this
 week that is roughly flat in one half and profitable in the other. The owner
 chose to stay on M5. That option is still on the table.
 
+## QuickFlip: a second replay lane, at reduced size (2026-08-20)
+
+`scripts/backtest.py` gained `--strategy ht|qf|both`, default **`both`**.
+`ht` reproduces every study published before 2026-08-20 byte-for-byte (the
+HalfTrend lane alone); `qf` isolates the new lane so it can be judged on its
+own trades; `both` is what the design intends to run live — the two lanes
+trading concurrently on one account.
+
+**What QuickFlip is** (`qf_signals()`, spec
+`docs/superpowers/specs/2026-08-20-quickflip-ny-design.md`): at 13:30 server
+(`QF_HOUR`/`QF_MINUTE`), box the first M15 candle — high wick to low wick.
+Qualify the box only if its range is at least `QF_ATR_PCT` (**5.0**) percent
+of daily ATR(14). If the opening candle closed green, wait for price to
+sweep ABOVE the box, then enter SHORT the moment an M5 bar **closes back
+inside** the box; a red opener mirrors it (sweep below, enter LONG on the
+close back in). Stop = the sweep extreme; target = the far side of the box;
+a 90-minute window (`QF_WINDOW_MIN`) after the box forms; at most one setup
+per server day; sized at `QF_RISK_PCT` = **0.25%** equity risk — a quarter of
+HalfTrend's 1%, because this lane is unproven (see below).
+
+**The entry trigger is "a bar closes back inside the box," not the
+hammer/engulfing candle patterns of the strategy as published.** Those
+reversal-candle patterns are unmeasured here — the expectancy quoted below
+belongs entirely to the close-back-inside trigger. Don't "restore" the
+patterns believing them more authoritative; nobody has measured them on this
+data.
+
+**The published 25%-of-daily-ATR box qualifier does not transfer to gold.**
+That threshold presumes an overnight session gap (a different market's
+opening range); on XAUUSD the 13:30 opening-range-to-daily-ATR ratio is
+median ~6-7%, so a 25% gate fires on only 1-5% of days. `QF_ATR_PCT` was
+ruled to **5%** on measurement, at 13:30 over 17 months
+(`scripts/quickflip_probe.py`):
+
+| gate | trades | total | older-half /oz |
+|---|---|---|---|
+| no gate | 245 | +91.01 | +0.07 |
+| **>=5%** | **165** | **+75.55** | **+0.23** |
+| >=10% | 35 | +57.37 | +0.06 |
+| >=15% | 7 | -24.86 | -1.76 |
+
+**Measured performance** (`--source bars_max.json --days 365 --balance
+10000`, re-run and confirmed this session):
+
+| lane | net P/L | trades | win% |
+|---|---|---|---|
+| `ht` alone | **+3,255.92** | 578 | 38.2 |
+| `qf` alone | **+354.56** | 118 | 50.0 |
+| `both` | **+3,551.61** | 578 ht + 118 qf | ht 37.9 / qf 50.0 |
+
+Both lanes together beat HalfTrend alone. 17 of the 118 QuickFlip trades
+overlapped a live HalfTrend position (report's `lane` breakdown, "quickflip
+trades overlapping a halftrend position: 17") — allowed, see coupling note
+below. QuickFlip is not free to HalfTrend, though: HalfTrend nets
++3,246.37 *inside* the `both` run vs +3,255.92 alone — QuickFlip costs
+HalfTrend **$9.55** through the shared balance (see below).
+
+**This is a paid experiment, not a validated edge — that is why the size is
+0.25%, a quarter of HalfTrend's.** 46 half-hour slots were searched before
+13:30 was chosen; the slots that pass a split test (positive in both the
+older and newer half) pass by hundredths of a dollar per ounce in the older
+half — the same recent-half-only shape seen in every study this week
+(M15 gate, entry-timing, chop filter). Review after ~2 months of live logs
+and remove the lane if the live log does not reproduce a positive
+expectancy.
+
+**Independence and its limits.** Each lane owns its own positions; a
+QuickFlip trade can only be closed for a QuickFlip reason (stop, target,
+window expiry) and vice versa — neither lane's exit logic touches the
+other's basket. But the two DO couple through the **shared balance**:
+HalfTrend's profit target is a dollar amount taken from the account
+balance, so every QuickFlip fill shifts that balance and therefore shifts
+HalfTrend's target and its exit timing. That is expected, not a bug — it's
+where the $9.55 above comes from. `MaxDailyExposureMin` stays deliberately
+**per-lane** so neither lane's exposure budget can block the other's
+entries.
+
+**The server-time trap, again, prominently.** Candle `t` is SERVER
+wall-clock; `hhmm()` (`scripts/backtest.py`) reads it with **no offset**;
+server hour 00 is empty because it's the daily market break — a real probe
+of that emptiness is the guard. A +3h shift invalidated an earlier version
+of this analysis, mislabelled every session by three hours, and came within
+one decision of putting a mislabelled strategy into live trading (correction
+commit `b097057`, "the NY open" was really server 13:30 and the true NY open
+fails the split test). This is now a permanent regression test:
+`service/tests/test_quickflip_probe.py::test_server_hour_zero_is_the_market_break`
+fails loudly if anyone reintroduces an offset.
+
+**The three golden pins, and what each guards**
+(`service/tests/test_backtest_golden.py`, one frozen M5 slice
+`bars_slice.json`):
+- `golden_trades.json` — LOOSE entry window, HalfTrend alone. Captured
+  before strict became the default; never regenerate, its provenance is
+  load-bearing.
+- `golden_trades_strict.json` — the shipped STRICT window, HalfTrend alone.
+- `golden_trades_both.json` — both lanes on the same fixture: **45 trades =
+  43 ht + 2 qf** (confirmed by direct count this session).
+
+Plus `scripts/quickflip_probe.py` as the standalone evidence tool (the
+source of the ATR-gate table above) and its twin relationship with
+`qf_signals()` in `backtest.py` — both compute the same setup geometry
+independently; a divergence between them is a bug in one or the other.
+
+**A future-data leak found and fixed during this work**, worth remembering
+as a class of bug: `qf_daily_atr()`'s inner loop indexes `keys[j - 1]` for
+the previous day's close; at `i == QF_ATR_DAYS` (the first day meant to be
+eligible), `j` hits 0 and `keys[j - 1]` wraps around to `keys[-1]` — the
+**LAST** day in the whole dataset — leaking months of future closes into
+what should be the first computed ATR. Harmless in `quickflip_probe.py`
+(the leaked value was unused metadata there) but load-bearing in
+`qf_signals()`, where the ATR gates trade selection. Both were fixed the
+same way: eligibility now starts one day later than the raw warm-up
+(`i <= QF_ATR_DAYS: continue`, requiring `j >= 1`), regression-pinned by
+`test_atr_boundary_does_not_leak_the_last_days_close()` in
+`service/tests/test_qf_signals.py` (mutates only the last candle's close and
+asserts the first computed ATR is unchanged — a bare `> 0` check would not
+have caught this).
+
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
 `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
