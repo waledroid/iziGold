@@ -319,6 +319,8 @@ HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
 EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 
+STRATEGY = "both"      # ht | qf | both
+
 # --- trading timeframe (EA input TradeTimeframe; M15 study 2026-08-19) ---
 # The source JSON is always M5; --tf M15 aggregates it before anything else
 # runs, so every BAR-based parameter above is read in M15 bars while every
@@ -846,6 +848,16 @@ def run(candles, start_balance, verbose):
     extreme = None
     consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
     trades = []
+
+    # --- QuickFlip lane: independent positions, shared balance -------------
+    # Precomputed because setups are pure geometry; executed here so sizing
+    # sees the balance both lanes have produced so far.
+    qf_by_i = {}
+    if STRATEGY in ("qf", "both"):
+        for s in qf_signals(candles):
+            qf_by_i[s["i"]] = s
+    qf_pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
+
     sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
@@ -865,7 +877,8 @@ def run(candles, start_balance, verbose):
         nonlocal bal, basket, peak_bal, max_dd
         pl = basket_pl(px)
         bal += pl
-        trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
+        trades.append({"lane": "ht",
+                       "dir": basket["dir"], "legs": list(basket["legs"]),
                        "exit": px, "when": when, "why": why, "pl": pl,
                        "opened_t": basket.get("opened_t"),
                        "exit_t": int(when.timestamp()),
@@ -909,6 +922,58 @@ def run(candles, start_balance, verbose):
             hist.append({"t": int(t), "stop": stop})
 
     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
+        # ---- QuickFlip lane (independent of everything below) -------------
+        if qf_pos is not None:
+            qx = candles[i]
+            hit = None
+            if qf_pos["dir"] == "SELL":
+                if qx["h"] >= qf_pos["stop"]:
+                    hit = (qf_pos["stop"], "qf stop")
+                elif qx["l"] <= qf_pos["tp"]:
+                    hit = (qf_pos["tp"], "qf target")
+            else:
+                if qx["l"] <= qf_pos["stop"]:
+                    hit = (qf_pos["stop"], "qf stop")
+                elif qx["h"] >= qf_pos["tp"]:
+                    hit = (qf_pos["tp"], "qf target")
+            if hit is None and qx["t"] >= qf_pos["expire_t"]:
+                hit = (qx["c"], "qf expired")
+            if hit is not None:
+                exit_px, why = hit
+                sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
+                pl = (exit_px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
+                    - SPREAD_USD * qf_pos["oz"]
+                bal += pl
+                peak_bal = max(peak_bal, bal)
+                max_dd = max(max_dd, peak_bal - bal)
+                trades.append({
+                    "lane": "qf", "dir": qf_pos["dir"],
+                    "legs": [{"px": qf_pos["entry"], "oz": qf_pos["oz"],
+                              "t": qf_pos["entry_t"]}],
+                    "exit": exit_px, "when": hhmm(qx["t"])[0],
+                    "exit_t": int(qx["t"]), "why": why, "pl": pl,
+                    "opened_t": qf_pos["entry_t"],
+                    "stop_history": [{"t": qf_pos["entry_t"],
+                                      "stop": qf_pos["stop"]}],
+                    "tp": qf_pos["tp"], "bal_after": bal,
+                    "regime": None, "legs_count": 1})
+                if verbose:
+                    print(f"  qf    {hhmm(qx['t'])[0]:%m-%d %H:%M} "
+                          f"{qf_pos['dir']} {qf_pos['oz']}oz "
+                          f"@ {qf_pos['entry']:.2f} -> {exit_px:.2f} "
+                          f"{why:>12}  P/L {pl:+8.2f}  bal {bal:9.2f}")
+                qf_pos = None
+        if qf_pos is None and i in qf_by_i:
+            s = qf_by_i[i]
+            dist = abs(s["entry"] - s["stop"])
+            if dist > 0:
+                oz = max(MIN_OZ, int(bal * QF_RISK_PCT / 100 / dist))
+                qf_pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
+                          "stop": s["stop"], "tp": s["tp"],
+                          "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
+        if STRATEGY == "qf":
+            continue
+
         x = candles[i]
         when, h, m = hhmm(x["t"])
         px, e, a = x["c"], ema55[i], atr[i]
@@ -1501,6 +1566,10 @@ def build_parser():
                          "percent of cycle balance (default 2.0; <= 0 turns "
                          "the target off exactly like the EA input, leaving "
                          "the lock / stop / reversal to close the basket)")
+    rules.add_argument("--strategy", choices=("ht", "qf", "both"), default="both",
+                       help="which lanes trade: ht = halftrend only (reproduces "
+                            "every study before 2026-08-20), qf = quickflip "
+                            "only, both = what runs live")
     out.add_argument("--web", default=None, metavar="PATH",
                      help="write a self-contained HTML report (chart with "
                           "HalfTrend/EMA overlays and every trade drawn with "
@@ -1536,6 +1605,8 @@ def main():
     global BIAS_BUFFER_ATR
     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
     BIAS_BUFFER_ATR = args.bias_buffer_atr
+    global STRATEGY
+    STRATEGY = args.strategy
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global MIN_STOP_ATR
