@@ -1081,6 +1081,7 @@ def build_run_json(candles, trades, args, res):
     sizing = getattr(run, "sizing", {}) or {}
     n = len(trades)
     wins = sum(1 for t in trades if t["pl"] > 0)
+    losses = sum(1 for t in trades if t["pl"] < 0)   # pl == 0 is flat
     net = res["bal"] - args.balance
     return {
         "meta": {
@@ -1093,7 +1094,8 @@ def build_run_json(candles, trades, args, res):
             "caveats": CAVEATS,
         },
         "stats": {
-            "trades": n, "wins": wins, "losses": n - wins,
+            "trades": n, "wins": wins, "losses": losses,
+            "flat": n - wins - losses,
             "win_rate": round(100.0 * wins / n, 1) if n else 0.0,
             "net": round(net, 2),
             "start_balance": round(args.balance, 2),
@@ -1151,14 +1153,15 @@ def plot(candles, trades, start_balance, out_path):
     eq_x, eq_y = [0], [start_balance]
     for t in trades:
         exit_i = idx.get(int(t["when"].timestamp()), len(candles) - 1)
-        first = t["legs"][0]["px"]
-        # entry bar: search back for the first leg's price era (approx: span
-        # from exit back by number of bars is unknown -- mark exit and legs)
+        # the entry bar is RECORDED (legs[0]["t"]), so the span is the trade's
+        # real span -- it used to be drawn as a fixed 12 bars back from the
+        # exit, which invented a duration for every trade on the chart
+        entry_i = idx.get(int(t["legs"][0]["t"]), exit_i)
         color = "#2ecc71" if t["pl"] > 0 else "#e74c3c"
-        ax.axvspan(max(0, exit_i - 12), exit_i, color=color, alpha=0.10)
+        ax.axvspan(entry_i, exit_i, color=color, alpha=0.10)
         m = "^" if t["dir"] == "BUY" else "v"
         ax.scatter([exit_i], [t["exit"]], marker="x", color=color, s=22, zorder=5)
-        ax.scatter([max(0, exit_i - 12)], [t["legs"][0]["px"]], marker=m,
+        ax.scatter([entry_i], [t["legs"][0]["px"]], marker=m,
                    color=color, s=18, zorder=5, alpha=0.8)
         ax.annotate(f"{t['pl']:+.0f}", xy=(exit_i, t["exit"]),
                     xytext=(3, 6), textcoords="offset points",
@@ -1197,14 +1200,35 @@ def build_parser():
     rules = ap.add_argument_group(
         "Rules", "the EA's real knobs -- defaults are what the live EA does")
     exp = ap.add_argument_group(
-        "Experiments", "study filters; all default to OFF (live EA has none)")
+        "Experiments",
+        "study knobs. All default to the live EA's behaviour: the filters "
+        "(regime/atr-spike/chop/bias/sr/min-stop) default to OFF because the "
+        "live EA has none, but --window-start/--window-end are the EA's REAL "
+        "trading window and default to its live 4-23")
     out = ap.add_argument_group("Output")
 
-    data.add_argument("--balance", type=float, default=4000)
-    data.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
-    out.add_argument("--verbose", action="store_true")
+    data.add_argument("--balance", type=float, default=4000,
+                    help="starting account balance in USD (default 4000). "
+                         "Drives 1%%-risk sizing and the 2%%-of-cycle profit "
+                         "target, so it changes the RESULT, not just the "
+                         "scale: below $10,000 some entries clamp to the 0.01 "
+                         "minimum lot and over-risk (see STARTING BALANCE "
+                         "below). Refused below $500")
+    data.add_argument("--source", default="http://127.0.0.1:9000/ui/candles",
+                    help="candle source: a URL serving the service's "
+                         "/ui/candles JSON (default, capped at 2000 bars) or "
+                         "the path to a saved JSON dump of the same shape "
+                         "(e.g. bars_max.json, ~12 months of M5)")
+    out.add_argument("--verbose", action="store_true",
+                    help="print per-bar decision detail (entries, adds, stop "
+                         "moves, floor arming) as the replay runs")
     rules.add_argument("--adx", type=float, default=None, help="override ADX gate")
-    out.add_argument("--chart", default=None, help="write a PNG chart to this path")
+    out.add_argument("--chart", default=None, metavar="PATH",
+                    help="legacy PNG chart (price bars + equity curve, needs "
+                         "matplotlib). --web is the maintained report: an "
+                         "interactive, self-contained HTML page with the same "
+                         "trades drawn against EMAs, HalfTrend and their "
+                         "actual stop paths")
     out.add_argument("--json", default=None, metavar="PATH",
                      help="write the full run (candles, indicators, trades, "
                           "stats) to this JSON file")
@@ -1226,7 +1250,9 @@ def build_parser():
     rules.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
                     help="adr = live behavior; fixed = fixed lots, no adds/"
                          "target/lock, exit on confirmed reversal or stop")
-    rules.add_argument("--fixed-lots", type=float, default=0.05)
+    rules.add_argument("--fixed-lots", type=float, default=0.05,
+                    help="lots per entry in --entry-mode fixed (default 0.05); "
+                         "ignored in the default adr mode, which risk-sizes")
     exp.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
                     help="refuse new entries by the service's live regime "
                          "classifier: range = skip 'range' bars, "
@@ -1262,8 +1288,11 @@ def build_parser():
                          "beyond the EMA). Use to reproduce studies run before "
                          "2026-08-20, when loose was the default.")
     rules.add_argument("--strict-window", action="store_true",
-                    help=argparse.SUPPRESS)   # now the default; kept so older
-                                              # scripted runs keep working
+                    help="accepted and now a NO-OP: the strict entry window "
+                         "became the default on 2026-08-20, so passing this "
+                         "changes nothing. Kept so scripted runs written "
+                         "before the flip still parse; --loose-window is what "
+                         "restores the old replay")
     exp.add_argument("--min-stop-atr", type=float, default=0.0,
                     help="minimum stop distance floor in ATR(14) multiples: "
                          "an ENTRY stop closer than K x ATR is pushed out to "
@@ -1442,8 +1471,10 @@ def main():
                     f"pl {t['pl']:+.2f} < floor {t['floor']:+.2f}")
 
     wins = [t for t in trades if t["pl"] > 0]
-    losses = [t for t in trades if t["pl"] <= 0]
-    print(f"\ntrades: {len(trades)}  |  wins {len(wins)}  losses {len(losses)}")
+    losses = [t for t in trades if t["pl"] < 0]   # pl == 0 is flat, not a loss
+    flat = len(trades) - len(wins) - len(losses)
+    print(f"\ntrades: {len(trades)}  |  wins {len(wins)}  losses {len(losses)}"
+          + (f"  flat {flat}" if flat else ""))
     if trades:
         print(f"gross win  {sum(t['pl'] for t in wins):+10.2f}")
         print(f"gross loss {sum(t['pl'] for t in losses):+10.2f}")
@@ -1640,6 +1671,10 @@ def main():
         write_report(art, args.web)
         print(f"report     {args.web} "
               f"({Path(args.web).stat().st_size / 1e6:.1f} MB)")
+    # The caveats reached --help, --json and the --web page but never stdout,
+    # where most runs are actually read. One line, built from the same list.
+    print("\nNOT MODELLED: " + " | ".join(c.split(" -- ")[0] for c in CAVEATS) +
+          "  (full text: --help, --json meta.caveats, the --web report)")
 
 
 if __name__ == "__main__":
