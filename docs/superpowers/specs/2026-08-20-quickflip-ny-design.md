@@ -153,10 +153,14 @@ second lane mirroring the EA:
   P/L compounds together exactly as the account experiences it.
 - Each lane owns its own positions and cannot close the other's — the replay
   mirror of the magic-number split.
-- The rails are evaluated **across both lanes**: the daily-loss brake, the
-  drawdown/kill-switch accounting and the exposure budget see combined
-  realized and open P/L. (The brake is still not modelled — see the standing
-  caveats — but exposure and sizing are, and both must be lane-aware.)
+- **Account rails are shared; pacing rules are per-lane.** Drawdown /
+  kill-switch accounting sees the combined balance, because it protects the
+  ACCOUNT. The daily exposure budget (`MaxDailyExposureMin`) is **per-lane**:
+  it is a pacing rule for one strategy's time in market, and sharing it would
+  let QuickFlip consume HalfTrend's budget and block its entries — which is
+  precisely the interference the owner ruled out. (An earlier draft of this
+  spec said "combined" for exposure; that was wrong and is corrected here.)
+  The daily-loss brake remains unmodelled in the replay either way.
 - Reporting gains a per-lane breakdown (trades, win%, net, max DD) **and** a
   combined equity curve, plus a correlation read: how often both lanes were in
   the market at once, and what combined exposure peaked at.
