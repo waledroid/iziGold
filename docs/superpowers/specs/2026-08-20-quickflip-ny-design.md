@@ -48,6 +48,38 @@ Also true, and stated plainly because it bounds what this can claim:
   good, the older half is not.** That is consistent with a market regime rather
   than a durable edge.
 
+### Evidence CORRECTED AGAIN, 2026-08-20 (whole-branch review): quote the ENGINE
+
+Everything in the table above came from `scripts/quickflip_probe.py`, which
+reports only setups that **RESOLVE inside the 90-minute window**. Setups that
+expire unresolved are dropped by the probe — and `backtest.py`'s shipped
+`qf_signals()` lane **trades them**, closing at the window's last bar. The
+probe is therefore systematically kinder to the strategy than the code that
+runs. At the shipped 5% ATR gate over 17 months: probe **+$0.458/oz on 165
+rows** vs engine **+$0.246/oz on 177 trades**; the 12 expired trades net
+**−$52.27**. That is a **1.9x** overstatement.
+
+The engine's numbers, which are the ones that ship
+(`backtest.py --source bars_max.json --strategy qf`, expectancy per ounce):
+
+| gate | n | exp $/oz | older half | newer half |
+|---|---|---|---|---|
+| none | 257 | +0.229 | −0.015 | +0.472 |
+| **5% (shipped)** | **177** | **+0.246** | **+0.189** | **+0.302** |
+| 10% | 43 | +0.979 | −0.583 | +2.470 |
+| 15% | 9 | −2.532 | +2.675 | −6.698 |
+
+**The 10% → 5% threshold decision gets STRONGER on these numbers.** On the
+probe's, 10% merely earned less in total. On the engine's, 10%'s older half
+FLIPS to −0.583/oz and **5% is the only gate positive in both halves**. 10%'s
+headline +0.979/oz is one regime across 43 trades. The shipped default is
+therefore **5%**, not the 10% written in the rules and inputs below, which
+this section supersedes.
+
+The probe now states the exclusion in its own output and docstring, and the
+two implementations' shared defaults are pinned equal by
+`test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`.
+
 **Status: this is a paid experiment, not a validated edge**, entered knowingly
 by the owner after the correction above was presented. Size is reduced
 accordingly (see Risk sizing). Review after ~2 months of live logs; if the
@@ -66,8 +98,10 @@ Rules — deliberately the rules that were MEASURED, not the ones published:
 
 1. At `QuickFlipHour:QuickFlipMinute` (default **13:30 server**), box the first
    M15 candle: high wick to low wick.
-2. Qualify if `range >= QuickFlipAtrPct × daily ATR(14)` (default **10%**, not
-   25% — gold's distribution, measured above).
+2. Qualify if `range >= QuickFlipAtrPct × daily ATR(14)` (default **5%** —
+   NOT the published 25%, and no longer the 10% first written here: see the
+   engine table in "Evidence CORRECTED AGAIN" above, where 5% is the only
+   gate positive in both halves).
 3. Green opening candle → wait for a sweep **above** the box; red → **below**.
 4. Entry when an M5 bar **closes back inside** the box. **Not** a hammer or
    engulfing pattern: those are untested here, and the measured expectancy
@@ -177,7 +211,7 @@ they stay like-for-like change detectors, and a new pin captures `both`.
 | `QuickFlipEnabled` | true |
 | `QuickFlipMagicOffset` | 1 |
 | `QuickFlipHour` / `QuickFlipMinute` | 13 / 30 (server) |
-| `QuickFlipAtrPct` | 10.0 |
+| `QuickFlipAtrPct` | 5.0 (was 10.0 — corrected on engine numbers, see Evidence) |
 | `QuickFlipWindowMin` | 90 |
 | `QuickFlipRiskPct` | 0.25 |
 
@@ -195,7 +229,8 @@ they stay like-for-like change detectors, and a new pin captures `both`.
   CLI compile gated at **0 errors, 0 warnings**, and state that the owner must
   re-attach or re-drag the EA for new inputs to take effect.
 - `scripts/quickflip_probe.py` promoted with its H1/H2 split as a regression
-  check on the numbers in this spec.
+  check on the numbers in this spec — but note it is the LOOSER of the two
+  implementations (see Evidence): decisions quote the engine.
 - Service-side: tests that a second `strategy_id` flows through `/trade-event`
   and `/analyze` and is tagged correctly in SQLite, and that per-strategy stats
   separate the two.
@@ -207,7 +242,17 @@ they stay like-for-like change detectors, and a new pin captures `both`.
 - **Biggest: the rails silently covering one lane.** Mitigated by the explicit
   requirement above plus its own test.
 - Two concurrent positions double concurrent exposure (accepted).
-- 63 trades at the 10% threshold is a modest sample; both halves positive is
-  what earns it a live seat rather than a shadow one.
+- 43 trades at the 10% threshold is a modest sample AND its older half is
+  negative on engine numbers (−0.583/oz); the shipped 5% gate has 177 trades
+  and is positive in both halves, which is what earns a live seat rather than
+  a shadow one.
+- **QuickFlip has no minimum stop distance.** Its stop is the sweep extreme
+  and its size is `0.25% / distance`, so a sweep that barely cleared the box
+  buys a very large position: measured minimum distance $0.57 over 365 days,
+  sizing 44 oz = $182,333 notional, 18.2x a $10,000 balance. HalfTrend is
+  protected by `MIN_STOP_ATR`; QuickFlip is not. The replay now PRINTS the
+  largest position and the tightest stop each run. Whether to add a floor
+  (and at what value) is an open owner decision — adding one would change
+  every measured result above.
 - The edge is ~$60/month at 0.1 lot. If it costs more attention than that, it
   is not worth keeping — revisit after a month of live logs.

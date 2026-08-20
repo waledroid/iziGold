@@ -946,31 +946,55 @@ data.
 That threshold presumes an overnight session gap (a different market's
 opening range); on XAUUSD the 13:30 opening-range-to-daily-ATR ratio is
 median ~6-7%, so a 25% gate fires on only 1-5% of days. `QF_ATR_PCT` was
-ruled to **5%** on measurement, at 13:30 over 17 months
-(`scripts/quickflip_probe.py`):
+ruled to **5%** on measurement, at 13:30 over 17 months. These are the
+**ENGINE's** numbers (`backtest.py --strategy qf`, expectancy per ounce),
+which is what ships:
 
-| gate | trades | total | older-half /oz |
-|---|---|---|---|
-| no gate | 245 | +91.01 | +0.07 |
-| **>=5%** | **165** | **+75.55** | **+0.23** |
-| >=10% | 35 | +57.37 | +0.06 |
-| >=15% | 7 | -24.86 | -1.76 |
+| gate | trades | exp $/oz | older half | newer half |
+|---|---|---|---|---|
+| no gate | 257 | +0.229 | -0.015 | +0.472 |
+| **>=5% (shipped)** | **177** | **+0.246** | **+0.189** | **+0.302** |
+| >=10% | 43 | +0.979 | -0.583 | +2.470 |
+| >=15% | 9 | -2.532 | +2.675 | -6.698 |
+
+**The 10% -> 5% decision gets STRONGER on engine numbers, not weaker.** On
+the probe's numbers 10% merely earned less in total; on the engine's, 10%'s
+older half FLIPS to -0.583/oz, and **5% is the only gate positive in BOTH
+halves**. 10%'s headline +0.979/oz is one regime (+2.470 newer, -0.583
+older) across 43 trades.
+
+**Why the engine's numbers and not the probe's** (corrected 2026-08-20):
+`quickflip_probe.py` emits only setups that RESOLVE inside the 90-minute
+window (`if pl is not None`). Setups that expire unresolved are dropped --
+and the engine TRADES them, closing at the window's last bar. At the
+shipped 5% gate that is probe **+$0.458/oz on 165 rows** vs engine
+**+$0.246/oz on 177 trades**: the 12 expired trades net **-$52.27** and the
+probe never sees them, a **1.9x** overstatement of the lane. The probe now
+says so in its own output and docstring. Quote the engine.
 
 **Measured performance** (`--source bars_max.json --days 365 --balance
 10000`, re-run and confirmed this session):
 
-| lane | net P/L | trades | win% |
-|---|---|---|---|
-| `ht` alone | **+3,255.92** | 578 | 38.2 |
-| `qf` alone | **+354.56** | 118 | 50.0 |
-| `both` | **+3,551.61** | 578 ht + 118 qf | ht 37.9 / qf 50.0 |
+| lane | net P/L | trades | win% | account max dd | open-equity valley |
+|---|---|---|---|---|---|
+| `ht` alone | **+3,255.92** | 579 | 38.2 | 2,674.01 | 2,686.25 |
+| `qf` alone | **+354.56** | 118 | 50.0 | 250.82 | 273.78 |
+| `both` | **+3,551.61** | 578 ht + 118 qf | ht 37.9 / qf 50.0 | 2,892.35 | 2,902.73 |
+
+(`ht` alone is **579** trades. 578 is the HalfTrend count INSIDE the `both`
+run -- the shared balance moves one basket's fate. An earlier version of
+this section quoted 578 for both, which is wrong.)
 
 Both lanes together beat HalfTrend alone. 17 of the 118 QuickFlip trades
 overlapped a live HalfTrend position (report's `lane` breakdown, "quickflip
 trades overlapping a halftrend position: 17") — allowed, see coupling note
-below. QuickFlip is not free to HalfTrend, though: HalfTrend nets
-+3,246.37 *inside* the `both` run vs +3,255.92 alone — QuickFlip costs
-HalfTrend **$9.55** through the shared balance (see below).
+below. **Coexistence costs BOTH lanes, not just HalfTrend**: sum-of-parts
+3,255.92 + 354.56 = **3,610.48** against `both`'s **3,551.61** — the two
+lanes together are **$58.87** worse than running them separately.
+HalfTrend loses $9.55 (3,255.92 -> 3,246.37) and QuickFlip loses **$49.32**
+(354.56 -> 305.24). An earlier version of this section quoted only the
+$9.55 and framed it as one-directional; the real figure is roughly 6x that
+and runs both ways, through the shared balance (see below).
 
 **This is a paid experiment, not a validated edge — that is why the size is
 0.25%, a quarter of HalfTrend's.** 46 half-hour slots were searched before
@@ -988,9 +1012,16 @@ other's basket. But the two DO couple through the **shared balance**:
 HalfTrend's profit target is a dollar amount taken from the account
 balance, so every QuickFlip fill shifts that balance and therefore shifts
 HalfTrend's target and its exit timing. That is expected, not a bug — it's
-where the $9.55 above comes from. `MaxDailyExposureMin` stays deliberately
-**per-lane** so neither lane's exposure budget can block the other's
-entries.
+where the $58.87 above comes from, and it runs in both directions
+(QuickFlip's own sizing reads the same moving balance).
+
+**Exposure accounting, as actually implemented in the replay:** there is
+none for QuickFlip. `EXPO_MIN` (`MaxDailyExposureMin`) charges held-bar
+minutes and refuses entries **only in the HalfTrend block**; the QuickFlip
+lane is neither charged nor gated by it. So the replay does not model
+"per-lane budgets" — it models one budget on one lane. If the EA is meant
+to give QuickFlip a budget of its own, the replay does not yet say what
+that costs.
 
 **The server-time trap, again, prominently.** Candle `t` is SERVER
 wall-clock; `hhmm()` (`scripts/backtest.py`) reads it with **no offset**;
@@ -1013,10 +1044,18 @@ fails loudly if anyone reintroduces an offset.
 - `golden_trades_both.json` — both lanes on the same fixture: **45 trades =
   43 ht + 2 qf** (confirmed by direct count this session).
 
-Plus `scripts/quickflip_probe.py` as the standalone evidence tool (the
-source of the ATR-gate table above) and its twin relationship with
-`qf_signals()` in `backtest.py` — both compute the same setup geometry
-independently; a divergence between them is a bug in one or the other.
+Plus `scripts/quickflip_probe.py` as the standalone evidence tool and its
+twin relationship with `qf_signals()` in `backtest.py` — both compute the
+same setup geometry independently. **One divergence is BY DESIGN**: the
+probe reports only setups that resolve inside the window, the engine also
+trades the ones that expire (worth 1.9x at the shipped gate — see above).
+Do not "fix" that by making the probe trade expiries; quote the engine.
+Everything they DO share is now pinned equal by
+`test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`
+(WINDOW_MIN, ATR_DAYS, SPREAD_USD and the probe's argparse --hour/--minute
+defaults). Before that test existed the probe pinned nothing: WINDOW_MIN =
+45 plus --hour 10 left all 505 tests passing, in the only file the spec's
+numbers came from.
 
 **A future-data leak found and fixed during this work**, worth remembering
 as a class of bug: `qf_daily_atr()`'s inner loop indexes `keys[j - 1]` for
@@ -1032,6 +1071,70 @@ same way: eligibility now starts one day later than the raw warm-up
 `service/tests/test_qf_signals.py` (mutates only the last candle's close and
 asserts the first computed ATR is unchanged — a bare `> 0` check would not
 have caught this).
+
+### The honesty pass on the QuickFlip replay (2026-08-20, whole-branch review)
+
+A review of the whole `feat/quickflip-strategy` branch found the tool
+**lying or unguarded** in several places. All fixed; each is now pinned.
+
+- **The open-equity valley was fabricated.** It was marked inside the
+  HalfTrend section, BELOW the `--strategy qf` short-circuit, and the equity
+  it marked never included QuickFlip's floating P/L. A 365-day `qf` run
+  printed `max open-equity valley 0.00` across 118 trades; `both`
+  understated the account's real peak-to-trough. One `mark_equity()` helper
+  now runs in every mode and counts BOTH lanes' open P/L. Corrected
+  figures are in the table above.
+- **Stop-before-target on the same bar is now pinned.** When one M5 bar
+  covers both the stop and the target, OHLC cannot say which came first and
+  the replay books the LOSS. Nothing tested that: reversing it to
+  target-first left all 28 QF/golden tests green while the 365-day
+  QuickFlip net moved +354.56 -> **+427.66 (+21%)**. It is now a pure
+  function `qf_resolve()` with unit tests for a bar covering both levels,
+  long and short. Class of bug worth remembering: **the frozen fixture had
+  no `qf stop` trade at all**, though 48 of 118 real trades exit that way —
+  a golden pin only guards the paths its fixture happens to take.
+- **QuickFlip has NO minimum stop distance, and now it is visible.** Size is
+  `0.25% of balance / (entry - sweep extreme)` and the stop is the sweep
+  extreme itself. Measured minimum over 365 days: **$0.57**, which sizes a
+  **44 oz** position — **$182,333 notional, 18.2x** a $10,000 balance.
+  HalfTrend is protected by `MIN_STOP_ATR` plus its ATR-buffered stop;
+  QuickFlip has neither. **No floor was added** (it would change measured
+  results and the value is an owner decision) — instead every run now prints
+  the largest QuickFlip position, its notional, and the tightest/median stop
+  distance. **This is an open owner decision.**
+- **QuickFlip's clamps were counted nowhere.** `sizing["clamped"]` was
+  incremented only in the HalfTrend block. QuickFlip is now reported on its
+  own line at its own 0.25% target: over 365 days 3.4% of its 118 entries
+  are overruled upward by the minimum lot, and 16 of 118 (**13.6%**) end at
+  the 0.01 floor. Both numbers print, because they are different readings.
+- **The run header names the strategy.** It printed exit scheme, gates, EMA,
+  confirm, bias, window and profit target but never `--strategy` — so a `qf`
+  run advertised HalfTrend's entire parameter set for a run in which
+  HalfTrend never traded. HalfTrend's parameters are now suppressed when it
+  does not run, QuickFlip's are printed when it does, and HalfTrend-only
+  tables (regime, ATR-spike, bias, strict-window, hour, S/R, chop, min-stop)
+  are silent when HalfTrend took no trades.
+- **`--tf M15 --strategy both` silently dropped the QuickFlip lane** —
+  `qf_signals()` needs THREE M5 bars to box a 15-minute range, so on M15
+  there is one bar at 13:30 and zero setups, always. It now WARNS.
+- **Per-lane max drawdown** is reported (spec asked for it; it shipped
+  without). It walks each lane's OWN realized curve, so the two do not add
+  up to the account's joint drawdown, and are not meant to.
+- **The HTML report distinguishes the lanes**: lane column per trade row,
+  QuickFlip markers in the lane colour labelled `QF#n`, QuickFlip trade
+  boxes outlined in it, a per-lane header breakdown, and the split named in
+  the page title. Before this, `both` being the default meant every shared
+  report blended two strategies unlabelled.
+- **`--strategy`'s CLI default is now pinned** by
+  `test_cli_defaults_match_the_module_defaults` — the test that exists
+  because this exact class of bug (module constant != argparse default)
+  shipped once already.
+
+**Known and NOT fixed** (needs an owner decision):
+`--entry-mode fixed` and `--risk` do not reach QuickFlip. A
+`--entry-mode fixed` study therefore still contains one risk-sized lane, and
+`--risk 2` changes HalfTrend only. Left alone deliberately: whether
+QuickFlip should honour those flags is a rules question, not a bug fix.
 
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
