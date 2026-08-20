@@ -78,13 +78,19 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
     "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
     "  (" + m.bars.toLocaleString() + " bars, " +
     (m.strict_window ? "strict" : "loose") + " entry window)";
+  // null = risk sizing never ran (--entry-mode fixed). "0.00%" would read as
+  // "we risked nothing", which is a different and false claim.
+  function pct(v) { return v == null ? "n/a" : v.toFixed(2) + "%"; }
   var cells = [
     ["Net P/L", money(s.net), s.net >= 0 ? "pos" : "neg"],
     ["Trades", String(s.trades), ""],
     ["Win rate", s.win_rate.toFixed(1) + "%", ""],
-    ["Max drawdown", "$" + s.max_dd.toFixed(2), "neg"],
+    // two different drawdowns: max_dd walks the CLOSED balance curve,
+    // max_valley includes open-basket equity and is therefore never smaller.
+    ["Max drawdown (closed)", "$" + s.max_dd.toFixed(2), "neg"],
+    ["Max valley (open equity)", "$" + (s.max_valley == null ? s.max_dd : s.max_valley).toFixed(2), "neg"],
     ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
-    ["Risk taken", s.risk_median.toFixed(2) + "% / p90 " + s.risk_p90.toFixed(2) + "%", ""]
+    ["Risk taken", pct(s.risk_median) + " / p90 " + pct(s.risk_p90), ""]
   ];
   document.getElementById("stats").innerHTML = cells.map(function (c) {
     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";

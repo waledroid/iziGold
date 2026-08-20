@@ -80,3 +80,30 @@ def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
     assert art["trades"], "expected at least one trade in the fixture slice"
     for t in art["trades"]:
         assert t["tp"] is None, f"fixed-mode trade carries a tp: {t}"
+
+
+def test_fixed_entry_mode_reports_null_risk_stats_not_zero():
+    """Nothing is risk-sized in fixed mode, so clamp_pct / risk_median /
+    risk_p90 must be null. Emitting 0.0 made the page render "Risk taken
+    0.00% / p90 0.00%", which reads as "we risked nothing" instead of "risk
+    sizing did not run"."""
+    bt = _load_bt()
+    candles = json.loads(BARS.read_text())
+    bt.STRICT_WINDOW = False
+    bt.ENTRY_MODE = "fixed"
+    bt.FIXED_LOTS = 0.05
+    args = bt.build_parser().parse_args(
+        ["--balance", "10000", "--entry-mode", "fixed"])
+    trades, bal, dd, valley = bt.run(candles, 10000.0, False)
+    assert bt.run.sizing["entries"] == 0, "fixed mode should risk-size nothing"
+    art = bt.build_run_json(candles, trades, args,
+                            {"bal": bal, "max_dd": dd, "valley": valley})
+    for key in ("clamp_pct", "risk_median", "risk_p90"):
+        assert art["stats"][key] is None, f"{key} should be null in fixed mode"
+
+
+def test_risk_stats_are_real_numbers_when_sizing_did_run():
+    art = _artifact()
+    for key in ("clamp_pct", "risk_median", "risk_p90"):
+        assert isinstance(art["stats"][key], float), \
+            f"{key} must be a number on a risk-sized run"

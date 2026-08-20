@@ -1,7 +1,6 @@
 """The chart cannot draw what the engine does not record: entry times, the
 stop as it actually moved, and the target price."""
 import json
-import pathlib
 
 from tests.test_backtest_golden import BARS, _load_bt
 
@@ -57,3 +56,27 @@ def test_bal_after_chains_to_the_final_balance():
     trades, bal, _dd, _v = bt.run(json.loads(BARS.read_text()), 4000.0, False)
     assert trades
     assert round(trades[-1]["bal_after"], 2) == round(bal, 2)
+
+
+def test_tp_tracks_the_legs_so_a_target_exit_never_lands_short_of_it():
+    """`tp` is the price at which the basket reaches its profit target. Every
+    pyramid add moves that price, so a tp frozen at the first leg drew a
+    reward zone further out than the level actually banked -- 216 of 315
+    target exits over 12 months landed SHORT of their own drawn tp.
+
+    The invariant: a basket that exited "profit target" filled at or beyond
+    its tp, directionally. (Beyond, not exactly at: the replay acts on bar
+    closes, so the fill overshoots the price where the target was crossed.)"""
+    trades = _trades()
+    tg = [t for t in trades if t["why"] == "profit target"]
+    assert tg, "the slice must contain at least one target exit"
+    assert any(len(t["legs"]) > 1 for t in tg), \
+        "the slice must contain at least one MULTI-LEG target exit"
+    for t in tg:
+        assert t["tp"] is not None
+        if t["dir"] == "BUY":
+            assert t["exit"] >= t["tp"] - 1e-9, (
+                f"BUY banked {t['exit']:.2f} short of its drawn tp {t['tp']:.2f}")
+        else:
+            assert t["exit"] <= t["tp"] + 1e-9, (
+                f"SELL banked {t['exit']:.2f} short of its drawn tp {t['tp']:.2f}")

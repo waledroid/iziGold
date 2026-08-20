@@ -41,6 +41,8 @@
  *      the NEWER basket owning the shared timestamp.
  *   6. Bar length is derived from the candle series, so --tf M15 runs put
  *      their stop-line gap points on the M15 grid instead of 300 s off it.
+ *   7. Header honesty: null risk stats render "n/a" rather than "0.00%",
+ *      and both drawdown figures (closed balance, open equity) are shown.
  *
  * Run: node service/tests/backtest_report_smoke.js
  * Exit code 0 = every assertion passed. Non-zero + message on stderr = fail.
@@ -538,6 +540,34 @@ function buildSmallFixture(bar) {
   assert.ok(handler, 'no click handler registered on the trade table');
   handler({ target: { closest: () => ({ dataset: { i: '0' } }) } });
   console.log('ok    bar length derived from the candle series (M15 gap points land on the grid)');
+})();
+
+// ---------------------------------------------------------------------------
+// 7. Header honesty: null risk stats render "n/a", never "0.00%", and both
+//    drawdown figures are shown and labelled.
+// ---------------------------------------------------------------------------
+(function headerHonestyChecks() {
+  const f = buildSmallFixture();
+  // --entry-mode fixed: nothing is risk-sized, so the engine emits nulls
+  f.stats.clamp_pct = null; f.stats.risk_median = null; f.stats.risk_p90 = null;
+  f.meta.entry_mode = 'fixed';
+  const { elements } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
+  const html = elements.stats.innerHTML;
+  assert.ok(/n\/a\s*\/\s*p90\s*n\/a/.test(html),
+    `null risk stats must render "n/a", got: ${html}`);
+  assert.ok(!html.includes('0.00%'),
+    '"0.00%" risk reads as "we risked nothing" -- it must not be rendered for nulls');
+  assert.ok(!elements.warnbox.innerHTML.includes('minimum lot'),
+    'a null clamp rate must not trip the >10% clamp warning');
+
+  // both drawdowns, labelled -- max_valley (open equity) is never smaller
+  const clean = runScenario(buildSmallFixture(), { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
+  const h2 = clean.elements.stats.innerHTML;
+  assert.ok(h2.includes('Max drawdown (closed)') && h2.includes('$50.00'),
+    'closed-balance drawdown missing or unlabelled');
+  assert.ok(h2.includes('Max valley (open equity)') && h2.includes('$60.00'),
+    'open-equity valley (max_valley) is in the artifact but not shown');
+  console.log('ok    header shows n/a for null risk stats and both drawdown figures');
 })();
 
 console.log('\nPASS -- all headless assertions passed');

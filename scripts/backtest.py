@@ -845,7 +845,13 @@ def run(candles, start_balance, verbose):
                     * basket.get("lock_mult", 1.0)
                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
                     * basket.get("target_mult", 1.0)
-                if basket.get("tp") is None and ENTRY_MODE != "fixed":
+                # Recomputed EVERY bar, not frozen at the first leg: each
+                # pyramid add moves the price at which the basket reaches
+                # `target`, so a one-shot tp drew a green zone further out
+                # than the level actually banked (median $2.89, max $34.69
+                # off on multi-leg target exits over 12 months). `tp` feeds
+                # the artifact and the page only -- nothing decides on it.
+                if ENTRY_MODE != "fixed" and PROFIT_TARGET_PCT > 0:
                     basket["tp"] = floor_price(basket["legs"], s, target)
                 closed = False
                 if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
@@ -1052,12 +1058,15 @@ def run(candles, start_balance, verbose):
             "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
     r = sorted(sizing["risk_pct"])
     n = sizing["entries"]
+    # None, not 0.0, when nothing was risk-sized (--entry-mode fixed sizes
+    # every entry at --fixed-lots): "0.00% risk taken" reads as "we risked
+    # nothing", when the truth is that risk sizing never ran.
     run.sizing = {
         "entries": n,
         "clamped": sizing["clamped"],
-        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else 0.0,
-        "risk_median": round(r[len(r) // 2], 2) if r else 0.0,
-        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else 0.0,
+        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
+        "risk_median": round(r[len(r) // 2], 2) if r else None,
+        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
     }
     return trades, bal, max_dd, max_valley
 
@@ -1093,9 +1102,10 @@ def build_run_json(candles, trades, args, res):
             "max_valley": round(res["valley"], 2),
             "best": round(max((t["pl"] for t in trades), default=0.0), 2),
             "worst": round(min((t["pl"] for t in trades), default=0.0), 2),
-            "clamp_pct": sizing.get("clamp_pct", 0.0),
-            "risk_median": sizing.get("risk_median", 0.0),
-            "risk_p90": sizing.get("risk_p90", 0.0),
+            # null when no entry was risk-sized -- the page renders "n/a"
+            "clamp_pct": sizing.get("clamp_pct"),
+            "risk_median": sizing.get("risk_median"),
+            "risk_p90": sizing.get("risk_p90"),
         },
         "candles": {
             "t": [int(x["t"]) for x in candles],
