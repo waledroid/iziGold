@@ -14,33 +14,48 @@ The owner asked to adapt the "Quick Flip Scalper" manipulation-candle concept
 (opening-range sweep, then reversal) as a counterweight. It is **mean
 reversion**, so it should earn where HalfTrend suffers.
 
-## Evidence (spike, 2026-08-20, `bars_max.json`, 17 months of M5)
+## Evidence (spike, 2026-08-20) — CORRECTED, and weaker than first reported
 
-The published rules do NOT transfer as written:
+**A time-convention bug invalidated the first two spikes.** `backtest.py`'s
+`hhmm()` reads candle `t` as SERVER wall-clock directly (proof: server hour 00
+contains zero bars — it is the daily market break). Spikes 1-2 added a further
++3h shift, so every session label was wrong by three hours: what was reported
+as "the NY open" was really server 13:30. The measurements were real; the
+labels were not.
 
-- **The 25%-of-daily-ATR qualifier is inapplicable to gold.** It presumes an
-  overnight session gap. XAUUSD trades ~23h; its opening-range/daily-ATR ratio
-  is **median 7.1%, p90 12.8%**. The 25% rule fires on 1.4–5.1% of days (2–14
-  samples over 17 months) — unmeasurable.
-- **London open (10:00 server) is negative**: −$0.77/oz over 251 trades.
+Corrected, sweeping **every half-hour** rather than guessing sessions
+(`bars_max.json`, 17 months of M5, entry = close back inside the box after a
+sweep, stop = sweep extreme, target = far side, 90-minute window):
 
-What does hold, at the **NY open (16:30 server)**, entry = a bar closing back
-inside the box after a sweep, stop = sweep extreme, target = far side:
+| server | n | win% | expectancy | older half | newer half |
+|---|---|---|---|---|---|
+| 10:00 (true London open) | 224 | 44.6% | +$0.63/oz | **−0.68** | +1.93 |
+| 02:30 | 253 | 49.4% | +$0.49/oz | +0.03 | +0.94 |
+| 18:30 | 189 | 46.0% | +$0.40/oz | +0.13 | +0.67 |
+| 16:30 (true NY open) | 182 | 46.7% | +$0.37/oz | +0.93 | **−0.20** |
+| **13:30** | **246** | **52.4%** | **+$0.36/oz** | +0.06 | +0.67 |
+| 17:00 (worst) | 167 | 34.7% | −$1.74/oz | | |
 
-| set | n | win% | expectancy |
-|---|---|---|---|
-| all days | 248 | 52.8% | +$0.41/oz |
-| range ≥ 10% daily ATR | 63 | 54.0% | +$1.57/oz |
-| H1 (older half), all | 124 | 50.8% | +$0.12/oz |
-| H2 (newer half), all | 124 | 54.8% | +$0.70/oz |
-| H1, range ≥10% | 37 | 51.4% | +$0.70/oz |
-| H2, range ≥10% | 26 | 57.7% | +$2.80/oz |
+Also true, and stated plainly because it bounds what this can claim:
 
-**Positive in both halves and both directions** (green-open→short +$0.66/oz,
-red-open→long +$0.12/oz). Nothing in the HalfTrend family achieved that.
+- **The published 25%-of-daily-ATR qualifier is inapplicable to gold.** It
+  presumes an overnight session gap; XAUUSD's opening-range/daily-ATR ratio is
+  median ~7%, so the rule fires on 1–5% of days. Adapted threshold: **10%**.
+- **46 half-hours were searched.** Some looking good is what noise produces.
+  The slots that pass a split test pass it by +$0.03–$0.13/oz in the older
+  half — statistically indistinguishable from zero.
+- The pattern is the one seen across every study this week: **the newer half is
+  good, the older half is not.** That is consistent with a market regime rather
+  than a durable edge.
 
-Scale honestly: ~1 trade/week at the 10% threshold, ~$60/month at 0.1 lot.
-A real edge, a small one.
+**Status: this is a paid experiment, not a validated edge**, entered knowingly
+by the owner after the correction above was presented. Size is reduced
+accordingly (see Risk sizing). Review after ~2 months of live logs; if the
+live log does not reproduce a positive expectancy, remove it.
+
+Default session: **13:30 server** — the best combination of win rate (52.4%),
+sample size (246) and both-halves-positive. `02:30` and `18:30` also passed;
+`10:00` had the best headline expectancy but LOSES in the older half.
 
 ## What we build
 
@@ -49,7 +64,7 @@ same time as HalfTrend, without either affecting the other**.
 
 Rules — deliberately the rules that were MEASURED, not the ones published:
 
-1. At `QuickFlipHour:QuickFlipMinute` (default **16:30 server**), box the first
+1. At `QuickFlipHour:QuickFlipMinute` (default **13:30 server**), box the first
    M15 candle: high wick to low wick.
 2. Qualify if `range >= QuickFlipAtrPct × daily ATR(14)` (default **10%**, not
    25% — gold's distribution, measured above).
@@ -106,9 +121,11 @@ two strategies lose 3% each for a 6% day. That is a bug, not independence.
 
 ### Risk sizing
 
-Owner decision: **1% per trade for each strategy**, equal. Worst case 2% at risk
-concurrently, and the 3% daily brake is reached roughly twice as fast. Recorded
-as accepted.
+Owner decision, taken AFTER the corrected evidence above: **0.25% per trade**
+for QuickFlip while HalfTrend keeps 1%. Worst case 1.25% at risk concurrently.
+The reduced size is the point — it buys real fills on a weak hypothesis for a
+quarter of the exposure, rather than betting full size on a 246-trade sample
+whose older half is flat.
 
 ### Attribution
 
@@ -155,10 +172,10 @@ they stay like-for-like change detectors, and a new pin captures `both`.
 |---|---|
 | `QuickFlipEnabled` | true |
 | `QuickFlipMagicOffset` | 1 |
-| `QuickFlipHour` / `QuickFlipMinute` | 16 / 30 (server) |
+| `QuickFlipHour` / `QuickFlipMinute` | 13 / 30 (server) |
 | `QuickFlipAtrPct` | 10.0 |
 | `QuickFlipWindowMin` | 90 |
-| `QuickFlipRiskPct` | 1.0 |
+| `QuickFlipRiskPct` | 0.25 |
 
 ## Non-goals
 
