@@ -38,7 +38,10 @@ def test_lane_nets_sum_to_the_total():
 
 
 def test_concurrency_is_reported():
-    """How often both lanes held a position at once -- the thing a combined
-    equity curve hides, and the reason exposure can exceed one lane's."""
+    """How many QuickFlip trades overlapped a HalfTrend position -- the
+    thing a combined equity curve hides, and the reason exposure can exceed
+    one lane's. Pinned against the frozen fixture so a broken overlap check
+    (e.g. an equality test instead of interval intersection, or a constant
+    0) cannot slip through unnoticed."""
     _bt, art = _artifact()
-    assert "both_open_bars" in art["stats"]["lanes"]
+    assert art["stats"]["lanes"]["qf_trades_overlapping_ht"] == 1

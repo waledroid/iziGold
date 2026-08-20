@@ -1286,9 +1286,9 @@ def run(candles, start_balance, verbose):
 
 
 def _lane_stats(trades):
-    """Per-lane breakdown plus how many bars both lanes were open together.
-    A blended net hides which strategy earned it, and a combined equity curve
-    hides that exposure can be doubled."""
+    """Per-lane breakdown plus how many QuickFlip trades overlapped a
+    HalfTrend position. A blended net hides which strategy earned it, and a
+    combined equity curve hides that exposure can be doubled."""
     out = {}
     for lane in ("ht", "qf"):
         rows = [t for t in trades if t.get("lane", "ht") == lane]
@@ -1312,7 +1312,7 @@ def _lane_stats(trades):
             if a0 < b1 and b0 < a1:
                 overlap += 1
                 break
-    out["both_open_bars"] = overlap
+    out["qf_trades_overlapping_ht"] = overlap
     return out
 
 
@@ -1916,7 +1916,7 @@ def main():
             print(f"lane {label:<10} trades {d['trades']:>5}  win% "
                   f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
         print(f"           quickflip trades overlapping a halftrend position: "
-              f"{ls['both_open_bars']}")
+              f"{ls['qf_trades_overlapping_ht']}")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
