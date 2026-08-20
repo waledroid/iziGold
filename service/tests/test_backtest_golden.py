@@ -52,7 +52,8 @@ def _load_bt():
 
 def _digest(trades):
     """Compact, human-diffable summary of a trade list."""
-    return [{"dir": t["dir"],
+    return [{"lane": t.get("lane", "ht"),
+             "dir": t["dir"],
              "entry": round(t["legs"][0]["px"], 2),
              "legs": len(t["legs"]),
              "exit": round(t["exit"], 2),
@@ -122,3 +123,19 @@ def test_the_two_pins_really_pin_different_runs():
     strict = json.loads(GOLDEN_STRICT.read_text())
     assert len(strict["trades"]) < len(loose["trades"]), (
         "strict can only ever refuse entries loose would take")
+
+
+GOLDEN_BOTH = DATA / "golden_trades_both.json"
+
+
+def _replay_both():
+    """Both lanes on one balance -- the configuration that ships."""
+    bt = _load_bt()
+    candles = json.loads(BARS.read_text())
+    assert bt.STRATEGY == "both", "both-lane is supposed to be the default"
+    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+    return _digest(trades), round(bal, 2), round(max_dd, 2)
+
+
+def test_both_lane_replay_matches_golden():
+    _assert_matches(*_replay_both(), GOLDEN_BOTH)

@@ -1285,6 +1285,37 @@ def run(candles, start_balance, verbose):
     return trades, bal, max_dd, max_valley
 
 
+def _lane_stats(trades):
+    """Per-lane breakdown plus how many bars both lanes were open together.
+    A blended net hides which strategy earned it, and a combined equity curve
+    hides that exposure can be doubled."""
+    out = {}
+    for lane in ("ht", "qf"):
+        rows = [t for t in trades if t.get("lane", "ht") == lane]
+        wins = sum(1 for t in rows if t["pl"] > 0)
+        out[lane] = {
+            "trades": len(rows),
+            "wins": wins,
+            "losses": sum(1 for t in rows if t["pl"] < 0),
+            "win_rate": round(100.0 * wins / len(rows), 1) if rows else 0.0,
+            "net": round(sum(t["pl"] for t in rows), 2),
+            "best": round(max((t["pl"] for t in rows), default=0.0), 2),
+            "worst": round(min((t["pl"] for t in rows), default=0.0), 2),
+        }
+    ht = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+          if t.get("lane", "ht") == "ht"]
+    qf = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+          if t.get("lane") == "qf"]
+    overlap = 0
+    for a0, a1 in qf:
+        for b0, b1 in ht:
+            if a0 < b1 and b0 < a1:
+                overlap += 1
+                break
+    out["both_open_bars"] = overlap
+    return out
+
+
 def build_run_json(candles, trades, args, res):
     """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
     per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
@@ -1322,6 +1353,7 @@ def build_run_json(candles, trades, args, res):
             "clamp_pct": sizing.get("clamp_pct"),
             "risk_median": sizing.get("risk_median"),
             "risk_p90": sizing.get("risk_p90"),
+            "lanes": _lane_stats(trades),
         },
         "candles": {
             "t": [int(x["t"]) for x in candles],
@@ -1339,6 +1371,7 @@ def build_run_json(candles, trades, args, res):
                    "trend": [p[1] if p else None for p in ht]},
         },
         "trades": [{
+            "lane": t.get("lane", "ht"),
             "dir": t["dir"],
             "legs": [{"t": leg["t"], "px": r2(leg["px"]), "oz": leg["oz"]}
                      for leg in t["legs"]],
@@ -1686,6 +1719,13 @@ def main():
           + "\n")
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
+    # Several report blocks below read keys only HalfTrend's baskets carry
+    # (orig_dist/orig_oz, regime, chop, bias, floor). A QuickFlip trade
+    # reaching them would raise KeyError or silently pollute a per-regime
+    # table, so those blocks read ht_trades instead of the full list. The
+    # overall net/balance/drawdown lines below still read `trades` -- those
+    # describe the ACCOUNT, which both lanes share.
+    ht_trades = [t for t in trades if t.get("lane", "ht") == "ht"]
 
     # floor guarantee check: once armed, a trade may never realize less than
     # its floor amount — the only allowed leaks are the close-based forced
@@ -1723,13 +1763,13 @@ def main():
           f"avg loser {sum(t['pl'] for t in losses) / max(1, len(losses)):+.2f}")
     print("entry regime breakdown (service classifier on the 300-bar window):")
     for rg in ("trend", "range", "high_volatility"):
-        sub = [t for t in trades if t.get("regime") == rg]
+        sub = [t for t in ht_trades if t.get("regime") == rg]
         w = [t for t in sub if t["pl"] > 0]
         print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
               f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
     print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
     for r in ATR_SPIKE_BUCKETS:
-        sub = [t for t in trades if (t.get("atr_ratio") or 0) > r]
+        sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
         w = [t for t in sub if t["pl"] > 0]
         print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
               f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
@@ -1741,8 +1781,8 @@ def main():
               f"refused {len(sk)} entries "
               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
     if CHOP_FLIPS > 0:
-        ch = [t for t in trades if t.get("chop")]
-        nc = [t for t in trades if not t.get("chop")]
+        ch = [t for t in ht_trades if t.get("chop")]
+        nc = [t for t in ht_trades if not t.get("chop")]
         for lab, sub in (("chop-tagged", ch), ("not chop", nc)):
             w = [t for t in sub if t["pl"] > 0]
             l = [t for t in sub if t["pl"] <= 0]
@@ -1752,14 +1792,14 @@ def main():
                   f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}")
         nchop = sum(1 for _, _, r in sk if r == "chop")
         print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
-              f"soft-sized {sum(1 for t in trades if t.get('soft'))} baskets")
+              f"soft-sized {sum(1 for t in ht_trades if t.get('soft'))} baskets")
     if STRICT_WINDOW:
         dd = getattr(run, "dead_signals", [])
         print(f"strict window: {len(dd)} flips died at the decision bar "
               f"(entry bar would open on the wrong side of the EMA); "
               f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
     if MIN_STOP_ATR > 0:
-        fl = [t for t in trades if t.get("floored")]
+        fl = [t for t in ht_trades if t.get("floored")]
         saved = [t for t in fl if t.get("orig_hit_bar") is not None
                  and t["orig_hit_bar"] <= NOISE_BARS]
         surv = [t for t in saved if not (t["why"] == "stop"
@@ -1769,7 +1809,7 @@ def main():
         never = [t for t in fl if t.get("orig_hit_bar") is None]
         w = [t for t in fl if t["pl"] > 0]
         print(f"min-stop floor {MIN_STOP_ATR:g} ATR: floored {len(fl)} of "
-              f"{len(trades)} entries; floored net {sum(t['pl'] for t in fl):+.2f}"
+              f"{len(ht_trades)} entries; floored net {sum(t['pl'] for t in fl):+.2f}"
               f"  win% {100 * len(w) / max(1, len(fl)):.1f}")
         print(f"  original stop would have hit within {NOISE_BARS} bars: "
               f"{len(saved)} (of which {len(surv)} survived past bar "
@@ -1790,7 +1830,7 @@ def main():
         print(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE} "
               f"(with = BUY above / SELL below the EMA at entry):")
         for lab in ("with", "counter"):
-            sub = [t for t in trades if t.get("bias") == lab]
+            sub = [t for t in ht_trades if t.get("bias") == lab]
             w = [t for t in sub if t["pl"] > 0]
             l = [t for t in sub if t["pl"] <= 0]
             worst = min((t["pl"] for t in sub), default=0.0)
@@ -1799,7 +1839,7 @@ def main():
                   f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
                   f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}"
                   f"  worst {worst:+.2f}")
-        untag = [t for t in trades if t.get("bias") is None]
+        untag = [t for t in ht_trades if t.get("bias") is None]
         if untag:
             print(f"  (untagged {len(untag)}: entered before the bias EMA warmed up)")
         nb = sum(1 for _, _, r in sk if r == "counter-trend")
@@ -1815,7 +1855,7 @@ def main():
               "hour its first leg opened):")
         print("  hour  trades   win%        net        avg      worst")
         for hr in range(24):
-            sub = [t for t in trades
+            sub = [t for t in ht_trades
                    if t.get("opened") is not None and t["opened"].hour == hr]
             if not sub:
                 continue
@@ -1837,7 +1877,7 @@ def main():
                 (f">{b3:g} ATR", lambda v: v is not None and v >= b3),
                 ("clear", lambda v: v is None)]
         for lab, pred in rows:
-            sub = [t for t in trades if pred(t.get("headroom"))]
+            sub = [t for t in ht_trades if pred(t.get("headroom"))]
             if not sub:
                 continue
             w = [t for t in sub if t["pl"] > 0]
@@ -1850,7 +1890,7 @@ def main():
         print("  opportunity cost of a headroom floor (from THESE trades; "
               "path effects not modelled):")
         for x in (b1, b2, 1.5):
-            sub = [t for t in trades
+            sub = [t for t in ht_trades
                    if t.get("headroom") is not None and t["headroom"] < x]
             w = sum(t["pl"] for t in sub if t["pl"] > 0)
             l = sum(t["pl"] for t in sub if t["pl"] <= 0)
@@ -1861,7 +1901,7 @@ def main():
         if SR_MIN_HEADROOM > 0 and not SR_REPORT:
             print(f"  filter: refused {nsr} entries below "
                   f"{SR_MIN_HEADROOM:g} ATR of headroom")
-        untag = [t for t in trades if t.get("headroom") is None]
+        untag = [t for t in ht_trades if t.get("headroom") is None]
         if untag:
             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
                   f"trades; these are never refused)")
@@ -1869,6 +1909,14 @@ def main():
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
               f"open sat on a different side of the EMA than the close")
+    ls = _lane_stats(trades)
+    if ls["ht"]["trades"] and ls["qf"]["trades"]:
+        for lane, label in (("ht", "halftrend"), ("qf", "quickflip")):
+            d = ls[lane]
+            print(f"lane {label:<10} trades {d['trades']:>5}  win% "
+                  f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
+        print(f"           quickflip trades overlapping a halftrend position: "
+              f"{ls['both_open_bars']}")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
@@ -1880,7 +1928,7 @@ def main():
               f"0.01 minimum lot{flag}")
         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
               f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
-    armed = [t for t in trades if t.get("floor") is not None]
+    armed = [t for t in ht_trades if t.get("floor") is not None]
     if EXIT_SCHEME != "target-exit":
         print(f"floor armed on {len(armed)} trades; "
               f"{len(floor_leaks)} realized below their floor "

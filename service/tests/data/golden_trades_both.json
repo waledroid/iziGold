@@ -298,6 +298,15 @@
    "pl": 6.52
   },
   {
+   "lane": "qf",
+   "dir": "BUY",
+   "entry": 3974.38,
+   "legs": 1,
+   "exit": 3980.18,
+   "why": "qf expired",
+   "pl": 5.6
+  },
+  {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4011.13,
@@ -352,6 +361,15 @@
    "pl": -38.68
   },
   {
+   "lane": "qf",
+   "dir": "SELL",
+   "entry": 4014.85,
+   "legs": 1,
+   "exit": 4009.51,
+   "why": "qf target",
+   "pl": 10.28
+  },
+  {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4015.89,
@@ -388,6 +406,6 @@
    "pl": -40.5
   }
  ],
- "final_balance": 3879.97,
+ "final_balance": 3895.85,
  "max_dd": 236.27
 }
