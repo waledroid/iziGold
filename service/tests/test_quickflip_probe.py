@@ -8,6 +8,8 @@ import importlib.util
 import json
 import pathlib
 
+from tests.test_backtest_golden import _load_bt
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BARS = pathlib.Path(__file__).parent / "data" / "bars_slice.json"
 
@@ -94,3 +96,42 @@ def test_at_most_one_setup_per_day():
     got = qfp.setups_at(candles, 13, 30, atr)
     days = [int(s["entry_t"]) // 86400 for s in got]
     assert len(days) == len(set(days)), "more than one setup on some day"
+
+
+def test_probe_and_engine_pin_the_same_defaults():
+    """The twin-drift guard the duplication was justified by.
+
+    `scripts/quickflip_probe.py` and `backtest.py`'s `qf_signals()` implement
+    the same sweep-and-reverse geometry twice on purpose (the probe imports
+    nothing from the engine so it can be pointed at any bars JSON). The stated
+    justification is that "both pin the same defaults in tests, so drift fails
+    a test rather than passing silently" -- and that was only half true:
+    `test_qf_signals.py::test_defaults_match_the_spec` pinned the ENGINE's
+    constants, while the probe pinned NOTHING. Proven 2026-08-20: setting the
+    probe's WINDOW_MIN to 45 AND its --hour default to 10 left all 505 tests
+    passing, in the one file that is the sole evidence behind the spec's
+    numbers.
+
+    The argparse defaults are pinned too, not just the module constants:
+    --hour/--minute ARE the measured session, and a bare probe run is where
+    every published QuickFlip figure came from.
+    """
+    qfp = _probe()
+    bt = _load_bt()
+    assert qfp.WINDOW_MIN == bt.QF_WINDOW_MIN, "probe window drifted from the engine"
+    assert qfp.ATR_DAYS == bt.QF_ATR_DAYS, "probe ATR lookback drifted"
+    assert qfp.SPREAD_USD == bt.SPREAD_USD, "probe spread charge drifted"
+    args = qfp.build_parser().parse_args([])
+    assert (args.hour, args.minute) == (bt.QF_HOUR, bt.QF_MINUTE), (
+        "the probe's default session is not the engine's default session")
+
+
+def test_the_probe_says_out_loud_what_it_leaves_out():
+    """The probe drops setups that expire unresolved; the engine trades them.
+    That divergence is by design, and it is worth ~1.9x at the shipped gate,
+    so it may not be silent -- it must be in the output and in the docstring
+    of the file people copy numbers out of."""
+    qfp = _probe()
+    for text in (qfp.EXCLUSION_NOTE, qfp.__doc__):
+        assert "expire" in text.lower()
+        assert "backtest.py" in text

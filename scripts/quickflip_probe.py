@@ -13,12 +13,25 @@ Adding one shifts every session by that many hours; a +3h shift is what made
 an earlier version of this analysis report the wrong sessions entirely.
 Sanity check: server hour 00 contains zero bars (the daily market break).
 
-NOTE: `scripts/backtest.py` will gain an equivalent `qf_signals()` function
-that runs this same sweep-and-reverse logic inside the full replay engine.
-This probe and that function are deliberately TWINS, not shared code -- this
-file stands alone (imports nothing from the engine) so it can be pointed at
-any bars JSON directly. If you change the trade logic here, change it there
-too, and vice versa.
+NOTE: `scripts/backtest.py`'s `qf_signals()` runs this same sweep-and-reverse
+logic inside the full replay engine. This probe and that function are
+deliberately TWINS, not shared code -- this file stands alone (imports nothing
+from the engine) so it can be pointed at any bars JSON directly. If you change
+the trade logic here, change it there too, and vice versa. Every default they
+share is pinned equal by
+`service/tests/test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`,
+so drift fails a test instead of passing silently.
+
+WHAT THIS PROBE LEAVES OUT -- read before quoting a number from it. It reports
+only setups that RESOLVE inside the window: price reaches the stop or the
+target before the 90 minutes are up. Setups that expire unresolved are
+DROPPED here, and the engine TRADES them, closing at the bar price when the
+window ends. So this probe is systematically kinder to the strategy than what
+ships. Measured 2026-08-20 over 17 months at the shipped 5% ATR gate:
+this probe +$0.458/oz on 165 rows, the engine +$0.246/oz on 177 trades -- the
+12 expired trades net -$52.27 and the probe never sees them. That is a 1.9x
+overstatement. THE ENGINE'S NUMBERS ARE THE ONES THAT SHIP; use
+`scripts/backtest.py --strategy qf` for anything that decides money.
 
 Usage:
     python3 scripts/quickflip_probe.py [--source bars_max.json]
@@ -139,6 +152,17 @@ def setups_at(candles, hour, minute, atr, window_min=WINDOW_MIN,
     return out
 
 
+EXCLUSION_NOTE = (
+    "NOTE: rows above count only setups that RESOLVED inside the "
+    f"{WINDOW_MIN}-minute window. Setups that expire unresolved are EXCLUDED "
+    "here; scripts/backtest.py's qf_signals() lane TRADES them and books the "
+    "P/L, so the engine's expectancy is LOWER. At the shipped 5% ATR gate "
+    "over 17 months: this probe +$0.458/oz on 165 rows vs the engine "
+    "+$0.246/oz on 177 trades (its 12 expired trades net -$52.27). The "
+    "ENGINE's numbers are what ships -- run `scripts/backtest.py "
+    "--strategy qf` for a decision.")
+
+
 def report(rows, label):
     if not rows:
         print(f"{label:>7}  (no completed trades)")
@@ -154,7 +178,10 @@ def report(rows, label):
           f"{h1:>8.2f} {h2:>8.2f}{both}")
 
 
-def main():
+def build_parser():
+    """Extracted so a test can read the shipped defaults without running the
+    probe: --hour/--minute ARE the measured session, and a bare run is what
+    every number in the spec came from."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", default="bars_max.json")
@@ -162,7 +189,11 @@ def main():
     ap.add_argument("--minute", type=int, default=30)
     ap.add_argument("--sweep", action="store_true",
                     help="scan every half-hour instead of one session")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
     candles = load(args.source)
     atr = daily_atr(candles)
     print(f"{'server':>7} {'n':>5} {'win%':>6} {'exp$/oz':>8} {'total':>9} "
@@ -176,6 +207,8 @@ def main():
     else:
         report(setups_at(candles, args.hour, args.minute, atr),
                f"{args.hour:02d}:{args.minute:02d}")
+    print()
+    print(EXCLUSION_NOTE)
 
 
 if __name__ == "__main__":
