@@ -540,7 +540,34 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
   the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
   the news blackout (NewsGuard) — replay results are slightly optimistic vs
-  the live rulebook around losing days and high-impact events.
+  the live rulebook around losing days and high-impact events. `--source
+  PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
+  `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
+  every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
+  Experiments default OFF and are study-only. **`--json PATH`** writes the
+  full run artifact (meta/stats/candles/indicators/every trade, parallel
+  arrays not per-bar objects — 12mo of M5 is ~74k bars). **`--web PATH`**
+  (2026-08-20) writes ONE self-contained HTML report from that same artifact
+  via `scripts/backtest_report.py:write_report()` — inlines the vendored
+  Lightweight Charts lib (`service/app/static/vendor/`), the page template
+  (`service/app/static/backtest_report.html` — same file the Mini App tab is
+  planned to reuse later so the drawing code isn't duplicated), and the JSON,
+  so it opens from disk with no server/network. Shows candles + EMA9/21/55/200
+  + HalfTrend (one series, per-point colour, matching the Mini App's MT5-style
+  render) + a stepped stop-loss line + a canvas overlay drawing each trade's
+  red risk / green reward zone (green zone omitted when `tp` is null, e.g.
+  `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
+  A real 12-month run is ~1,210 trades / 6.4 MB; above 300 trades the page
+  thins pyramid-add chart markers (entry/exit markers always draw; the trade
+  table is never thinned) to keep Lightweight Charts responsive — this is a
+  report-rendering thinning only, it does not touch replay logic or the
+  artifact JSON. `--web` and `--json` share one artifact build when both are
+  passed together. `--json`/`--web` output is unvalidated by eye beyond the
+  automated tests (`service/tests/test_backtest_web.py`,
+  `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
+  hand-rolled DOM/canvas/LightweightCharts stubs since no npm/browser deps
+  were added) — a human should open a generated report at least once after
+  any further change to the template or writer.
 
 # 7. History worth knowing (why rules exist)
 
