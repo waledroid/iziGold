@@ -317,6 +317,35 @@ ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
 
+# Starting-balance floors. The binding constraint is the 0.01 minimum lot,
+# not spread: when 1% of balance cannot cover one ounce at the stop distance,
+# sizing clamps to the minimum and OVER-risks instead of skipping the trade.
+# Measured over 12 months of M5 (2025-08 -> 2026-08): entries clamped 88.7% at
+# $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000.
+MIN_BALANCE = 500.0     # below this the result is fiction (no margin stop-out
+                        # is modelled either -- a $300 account goes negative)
+WARN_BALANCE = 2000.0   # below this, warn loudly and name the clamp rate
+
+
+def validate_balance(value):
+    """None = fine, str = warn and run, SystemExit = refuse."""
+    if value < MIN_BALANCE:
+        raise SystemExit(
+            f"--balance {value:.0f} is below the ${MIN_BALANCE:.0f} floor.\n"
+            "At that size nearly every entry clamps to the 0.01 minimum lot, "
+            "so the replay measures minimum-lot behaviour, not the rulebook -- "
+            "and margin stop-out is not modelled, so the account can go "
+            "negative. Use $4,000+ for meaningful results, $10,000+ for a "
+            "clean test of the risk rules.")
+    if value < WARN_BALANCE:
+        return (f"WARNING: at ${value:.0f}, 1% risk often cannot cover one "
+                f"ounce at the stop distance, so sizing falls back to the "
+                f"0.01 minimum lot and takes MORE than 1% risk. The clamp "
+                f"rate for this run is reported below -- read it before "
+                f"trusting the P/L.")
+    return None
+
+
 # --- profit-floor experiment (docs/superpowers/specs/2026-08-12-profit-floor-design.md) ---
 # target-exit  : baseline — close the basket at +PROFIT_TARGET_PCT (current EA)
 # floor-a      : at target, shared stop -> price where basket P/L =
@@ -660,6 +689,7 @@ def run(candles, start_balance, verbose):
     extreme = None
     consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
     trades = []
+    sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
@@ -947,7 +977,12 @@ def run(candles, start_balance, verbose):
                         if bias == "counter" and BIAS_MODE == "size_target":
                             rp *= BIAS_RISK_MULT
                         risk = bal * rp / 100
-                        oz = max(MIN_OZ, int(risk / dist))
+                        want = int(risk / dist)
+                        oz = max(MIN_OZ, want)
+                        sizing["entries"] += 1
+                        if want < MIN_OZ:
+                            sizing["clamped"] += 1
+                        sizing["risk_pct"].append(100.0 * oz * dist / bal)
                         orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
                             if orig_dist > 0 else oz
                     basket = {"dir": signal,
@@ -1004,6 +1039,15 @@ def run(candles, start_balance, verbose):
         run.bias_flips = {
             "M5": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M5")),
             "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
+    r = sorted(sizing["risk_pct"])
+    n = sizing["entries"]
+    run.sizing = {
+        "entries": n,
+        "clamped": sizing["clamped"],
+        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else 0.0,
+        "risk_median": round(r[len(r) // 2], 2) if r else 0.0,
+        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else 0.0,
+    }
     return trades, bal, max_dd, max_valley
 
 
@@ -1177,6 +1221,9 @@ def apply_window_args(args):
 
 def main():
     args = build_parser().parse_args()
+    warning = validate_balance(args.balance)
+    if warning:
+        print(warning)
     global TF, BAR_MIN, FLATTEN_HM
     TF = args.tf
     BAR_MIN = TF_SEC[TF] // 60
@@ -1454,6 +1501,13 @@ def main():
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
           f"max open-equity valley {max_valley:.2f}")
+    s = getattr(run, "sizing", None)
+    if s and s["entries"]:
+        flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
+        print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
+              f"0.01 minimum lot{flag}")
+        print(f"           risk actually taken: median {s['risk_median']:.2f}% "
+              f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
     armed = [t for t in trades if t.get("floor") is not None]
     if EXIT_SCHEME != "target-exit":
         print(f"floor armed on {len(armed)} trades; "
