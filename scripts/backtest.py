@@ -779,7 +779,21 @@ def qf_daily_atr(candles):
 
 
 def qf_signals(candles):
-    """Every QuickFlip setup, as pure price geometry (no account state)."""
+    """Every QuickFlip setup, as pure price geometry (no account state).
+
+    TWIN WARNING: `scripts/quickflip_probe.py` implements this same
+    sweep-and-reverse geometry independently (it imports nothing from this
+    engine so it can be pointed at any bars JSON). The two are deliberately
+    TWINS, not shared code: if you change the trade logic here, change it
+    there too, and vice versa. The pinned agreement between them lives in
+    `service/tests/test_quickflip_probe.py::test_probe_and_engine_pin_the_
+    same_defaults` -- drift in either direction fails that test.
+
+    One divergence is BY DESIGN and must stay: the probe reports only setups
+    that RESOLVE inside the window, while this engine also trades the ones
+    that expire unresolved (`qf expired`). The engine's numbers are the ones
+    that ship.
+    """
     atr = qf_daily_atr(candles)
     idx_of = {}
     by_day = {}
@@ -829,6 +843,34 @@ def qf_signals(candles):
                             "box_hi": hi, "box_lo": lo})
                 break
     return out
+
+
+def qf_resolve(pos, bar):
+    """Which exit an open QuickFlip position takes on this bar, or None.
+
+    STOP BEFORE TARGET, deliberately. When one bar's range covers both the
+    stop and the target, OHLC cannot say which price came first, so the
+    replay always books the loss -- the same pessimistic convention the
+    HalfTrend lane uses for its shared stop ("stop beats target/lock/reversal
+    in a bar", see the exit block in run()). It is not a detail: reversing
+    the order to target-first moves the 365-day QuickFlip net from +354.56
+    to +427.66 (+21%) on evidence that is pure bookkeeping fiction.
+    Pinned by service/tests/test_qf_signals.py::
+    test_stop_beats_target_when_one_bar_covers_both_{long,short}.
+    """
+    if pos["dir"] == "SELL":
+        if bar["h"] >= pos["stop"]:
+            return (pos["stop"], "qf stop")
+        if bar["l"] <= pos["tp"]:
+            return (pos["tp"], "qf target")
+    else:
+        if bar["l"] <= pos["stop"]:
+            return (pos["stop"], "qf stop")
+        if bar["h"] >= pos["tp"]:
+            return (pos["tp"], "qf target")
+    if bar["t"] >= pos["expire_t"]:
+        return (bar["c"], "qf expired")
+    return None
 
 
 def run(candles, start_balance, verbose):
@@ -915,6 +957,30 @@ def run(candles, start_balance, verbose):
                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
         basket = None
 
+    def qf_pl(px):
+        """Unrealized P/L of the open QuickFlip position at this price."""
+        if qf_pos is None:
+            return 0.0
+        sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
+        return (px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
+            - SPREAD_USD * qf_pos["oz"]
+
+    def mark_equity(px):
+        """Mark the open-equity valley at this bar's close, in EVERY mode.
+
+        BOTH lanes' floating P/L counts, because the valley describes the
+        ACCOUNT: an account $300 under water on a QuickFlip position is $300
+        under water whether or not HalfTrend also holds a basket. This used
+        to live inside the HalfTrend section, BELOW the `--strategy qf`
+        short-circuit, so a qf-only run reported a fabricated valley of 0.00
+        across 118 trades and a `both` run understated the real peak-to-
+        trough by whatever QuickFlip was floating.
+        """
+        nonlocal peak_eq, max_valley
+        eq = bal + (basket_pl(px) if basket else 0.0) + qf_pl(px)
+        peak_eq = max(peak_eq, eq)
+        max_valley = max(max_valley, peak_eq - eq)
+
     def note_stop(bk, t, stop):
         """Append to the basket's stop history when the stop actually moved."""
         hist = bk["stop_history"]
@@ -925,19 +991,7 @@ def run(candles, start_balance, verbose):
         # ---- QuickFlip lane (independent of everything below) -------------
         if qf_pos is not None:
             qx = candles[i]
-            hit = None
-            if qf_pos["dir"] == "SELL":
-                if qx["h"] >= qf_pos["stop"]:
-                    hit = (qf_pos["stop"], "qf stop")
-                elif qx["l"] <= qf_pos["tp"]:
-                    hit = (qf_pos["tp"], "qf target")
-            else:
-                if qx["l"] <= qf_pos["stop"]:
-                    hit = (qf_pos["stop"], "qf stop")
-                elif qx["h"] >= qf_pos["tp"]:
-                    hit = (qf_pos["tp"], "qf target")
-            if hit is None and qx["t"] >= qf_pos["expire_t"]:
-                hit = (qx["c"], "qf expired")
+            hit = qf_resolve(qf_pos, qx)
             if hit is not None:
                 exit_px, why = hit
                 sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
@@ -956,7 +1010,7 @@ def run(candles, start_balance, verbose):
                     "stop_history": [{"t": qf_pos["entry_t"],
                                       "stop": qf_pos["stop"]}],
                     "tp": qf_pos["tp"], "bal_after": bal,
-                    "regime": None, "legs_count": 1})
+                    "regime": None})
                 if verbose:
                     print(f"  qf    {hhmm(qx['t'])[0]:%m-%d %H:%M} "
                           f"{qf_pos['dir']} {qf_pos['oz']}oz "
@@ -972,6 +1026,10 @@ def run(candles, start_balance, verbose):
                           "stop": s["stop"], "tp": s["tp"],
                           "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
         if STRATEGY == "qf":
+            # Same place in the bar as the HalfTrend path's mark below: after
+            # this bar has been fully processed. Nothing under this point
+            # runs in qf-only mode.
+            mark_equity(candles[i]["c"])
             continue
 
         x = candles[i]
@@ -1254,10 +1312,7 @@ def run(candles, start_balance, verbose):
                                  f"(dist {orig_dist:.2f}, {orig_oz}oz)"
                                  if floored else ""))
 
-        # open-equity valley (marked at bar close)
-        eq = bal + (basket_pl(px) if basket else 0.0)
-        peak_eq = max(peak_eq, eq)
-        max_valley = max(max_valley, peak_eq - eq)
+        mark_equity(px)          # open-equity valley, both lanes included
 
     if basket:
         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")

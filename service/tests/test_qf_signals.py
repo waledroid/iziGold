@@ -91,3 +91,64 @@ def test_atr_boundary_does_not_leak_the_last_days_close():
 
     assert first_day_after == first_day_before
     assert value_after == value_before
+
+
+# --- same-bar exit precedence -------------------------------------------
+# One M5 bar's range can cover BOTH the stop and the target, and OHLC cannot
+# say which price came first. The replay always books the loss. Nothing
+# pinned that before: the frozen fixture's only two QuickFlip trades exit
+# "qf expired" and "qf target", so reversing the precedence to target-first
+# -- the classic backtest-inflation bug -- left every golden green while the
+# 365-day QuickFlip net moved +354.56 -> +427.66 (+21%).
+
+def _pos(direction, entry, stop, tp, expire_t=10 ** 12):
+    return {"dir": direction, "entry": entry, "stop": stop, "tp": tp,
+            "expire_t": expire_t}
+
+
+def test_stop_beats_target_when_one_bar_covers_both_short():
+    bt = _load_bt()
+    # sold the sweep at 2000: stop 2005 above, target 1990 below. This bar
+    # trades through both.
+    pos = _pos("SELL", entry=2000.0, stop=2005.0, tp=1990.0)
+    bar = {"t": 0, "o": 2000.0, "h": 2006.0, "l": 1989.0, "c": 1995.0}
+    assert bt.qf_resolve(pos, bar) == (2005.0, "qf stop")
+
+
+def test_stop_beats_target_when_one_bar_covers_both_long():
+    bt = _load_bt()
+    pos = _pos("BUY", entry=2000.0, stop=1995.0, tp=2010.0)
+    bar = {"t": 0, "o": 2000.0, "h": 2011.0, "l": 1994.0, "c": 2005.0}
+    assert bt.qf_resolve(pos, bar) == (1995.0, "qf stop")
+
+
+def test_the_stop_does_not_win_when_it_was_never_touched():
+    """Guard against the pin passing for the wrong reason: a resolver that
+    always answered "qf stop" would satisfy the two tests above."""
+    bt = _load_bt()
+    bt_short = bt.qf_resolve(_pos("SELL", 2000.0, 2005.0, 1990.0),
+                             {"t": 0, "o": 2000.0, "h": 2001.0,
+                              "l": 1989.0, "c": 1991.0})
+    assert bt_short == (1990.0, "qf target")
+    bt_long = bt.qf_resolve(_pos("BUY", 2000.0, 1995.0, 2010.0),
+                            {"t": 0, "o": 2000.0, "h": 2011.0,
+                             "l": 1999.0, "c": 2009.0})
+    assert bt_long == (2010.0, "qf target")
+
+
+def test_expiry_never_pre_empts_a_stop_on_the_same_bar():
+    """The window closing does not turn a losing trade into a close-price
+    exit: stop first, expiry only if neither level was touched."""
+    bt = _load_bt()
+    pos = _pos("SELL", entry=2000.0, stop=2005.0, tp=1990.0, expire_t=0)
+    bar = {"t": 0, "o": 2000.0, "h": 2006.0, "l": 1998.0, "c": 2002.0}
+    assert bt.qf_resolve(pos, bar) == (2005.0, "qf stop")
+    quiet = {"t": 0, "o": 2000.0, "h": 2001.0, "l": 1999.0, "c": 2000.5}
+    assert bt.qf_resolve(pos, quiet) == (2000.5, "qf expired")
+
+
+def test_an_untouched_position_before_expiry_resolves_to_nothing():
+    bt = _load_bt()
+    pos = _pos("BUY", entry=2000.0, stop=1995.0, tp=2010.0)
+    bar = {"t": 0, "o": 2000.0, "h": 2001.0, "l": 1999.0, "c": 2000.5}
+    assert bt.qf_resolve(pos, bar) is None
