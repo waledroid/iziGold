@@ -52,6 +52,10 @@ private:
    ENUM_TIMEFRAMES m_htfTf;
    int      m_htfEmaLen;
    int      m_htfEmaHandle;
+   // Price must CLEAR the HTF EMA by this x ATR(14), not merely sit on the
+   // right side. Autopsy 2026-08-20: two losing sells passed the side-only
+   // test by $0.46 and $1.85 -- in chop the M15 EMA sits where price is.
+   double   m_htfBufferAtr;
 
    int      m_ema9Handle;
    int      m_ema21Handle;
@@ -267,7 +271,8 @@ private:
 public:
    CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
                          bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
-                         bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen)
+                         bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
+                         double htfBufferAtr)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
@@ -275,6 +280,7 @@ public:
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_htfConfirm(htfConfirm), m_htfEmaLen(htfEmaLen), m_htfEmaHandle(INVALID_HANDLE),
+        m_htfBufferAtr(htfBufferAtr),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -300,8 +306,17 @@ public:
       if(!m_htfConfirm || m_htfEmaHandle == INVALID_HANDLE) return true;
       double buf[];
       if(CopyBuffer(m_htfEmaHandle, 0, 1, 1, buf) != 1) return true;
-      if(dir == SIGNAL_BUY)  return price > buf[0];
-      if(dir == SIGNAL_SELL) return price < buf[0];
+      // Clearance, in ATR(14) of the TRADING timeframe (matches the replay).
+      // A failed ATR read degrades to the side-only test rather than blocking.
+      double pad = 0.0;
+      if(m_htfBufferAtr > 0 && m_atrHandle != INVALID_HANDLE)
+        {
+         double atrBuf[];
+         if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) == 1)
+            pad = m_htfBufferAtr * atrBuf[0];
+        }
+      if(dir == SIGNAL_BUY)  return price > buf[0] + pad;
+      if(dir == SIGNAL_SELL) return price < buf[0] - pad;
       return true;
      }
 

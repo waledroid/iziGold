@@ -801,6 +801,48 @@ defaults up. `HtfConfirm` is new, so it arrived on by itself.
 Tests that care about manual mode now SET it (`test_api.py`,
 `test_proposals_flow.py`) instead of inheriting the installation default.
 
+## The M15 gate needs CLEARANCE, not a side (autopsy 2026-08-20)
+
+Four stop-outs in one morning (-49.84, -41.76, -44.58, -46.86). The owner
+suspected the M15 gate had been ignored. It had not — both of the last two
+sells were genuinely below the M15 EMA-55, **by $0.46 and $1.85**. That is the
+defect: a side-only test is nearly meaningless in chop, because in chop the
+M15 EMA sits exactly where price is.
+
+That day measured as textbook chop: **7 HalfTrend flips**, price travelled
+$307.93 to finish $28.26 from the open (**efficiency 0.092**, and under 0.10 is
+the definition of chop), with 36% of bars within $3 of the EMA-55.
+
+Fix: `HtfConfirmBufferATR` (EA) / `--bias-buffer-atr` (replay), **default 2.0**.
+Price must clear the HTF EMA by that multiple of ATR(14) on the trading
+timeframe — roughly $8-9 at that day's volatility, against the $0.46 that let
+the morning's sell through. Measured, 516 days, $10k, M5 c=2:
+
+| buffer | H1 (older) | H2 (newer) | full 516d | trades/day |
+|---|---|---|---|---|
+| 0.0 (side only) | -1,861.15 | +4,456.35 | +1,679.70 | 4.54 |
+| 1.0 | +14.25 | +4,852.70 | +5,133.37 | 2.89 |
+| **2.0 (default)** | **+1,324.40** | **+3,427.33** | **+4,860.44** | **2.25** |
+| 3.0 | +5,984.05 | +4,725.19 | +14,168.17 | 1.59 |
+| 5.0 | +3,018.47 | +1,236.69 | +5,343.88 | 0.70 |
+
+**Every buffer from 1.0 to 5.0 is positive in BOTH halves** — that plateau is
+the finding, not the peak. 3.0 was NOT chosen despite being worth ~3x more: a
+lone spike sitting ~3x above both neighbours is what overfitting looks like.
+2.0 is the middle of the robust region.
+
+Both sides degrade safely: a failed EMA read leaves the strategy's own signal
+standing, and a failed ATR read falls back to the side-only test rather than
+blocking trades.
+
+**Test-isolation lesson from this change:** `test_strict_takes_fewer_entries_than_loose`
+broke when the buffer landed, because with both filters on, strict produces
+MORE trades than loose (43 vs 41) on the fixture. Not a regression — the
+filters interact through the BALANCE, since HalfTrend's profit target is a
+dollar amount taken from it, so moving an entry by one bar moves the target,
+the exit, and which later signals are reachable. The test now sets
+`BIAS_EMA = 0` to isolate the variable it names.
+
 ## M15 agreement gate (owner request, 2026-08-20)
 
 **We trade M5 and ask M15 for permission.** After the M5 strict-window confirm

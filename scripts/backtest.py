@@ -473,6 +473,18 @@ SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 # worst chop quarter from -4,255.64 to -1,723.72 (-59%), was near-neutral in
 # trending quarters, and turned the full period from -2,234.95 to +1,679.70.
 # --bias-ema 0 turns it off (the pre-2026-08-20 replay).
+# Price must CLEAR the bias EMA by this multiple of ATR(14), not merely sit on
+# the correct side of it. Owner autopsy 2026-08-20: two losing sells that day
+# passed the side-only gate by $0.46 and $1.85 -- in chop the M15 EMA sits
+# exactly where price is, so "which side?" answers yes on a coin flip.
+# Measured over 516 days at $10k (M5, c=2, M15 EMA-55 skip): every buffer from
+# 1.0 to 5.0 x ATR is positive in BOTH halves. 2.0 is the middle of that
+# plateau, chosen over the 3.0 peak (+$14,168) precisely because a lone spike
+# ~3x its neighbours is what overfitting looks like.
+#   buffer 0.0: H1 -1861.15  H2 +4456.35  full +1679.70
+#   buffer 2.0: H1 +1324.40  H2 +3427.33  full +4860.44   <- default
+#   buffer 3.0: H1 +5984.05  H2 +4725.19  full +14168.17  <- peak, not trusted
+BIAS_BUFFER_ATR = 2.0
 BIAS_EMA = 55
 BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
 BIAS_MODE = "skip"
@@ -988,8 +1000,11 @@ def run(candles, start_balance, verbose):
                     if px == bval:
                         bias = "with"
                     else:
-                        bias = "with" if ((px > bval) == (signal == "BUY")) \
-                            else "counter"
+                        buf = BIAS_BUFFER_ATR * (a or 0.0)
+                        if signal == "BUY":
+                            bias = "with" if px > bval + buf else "counter"
+                        else:
+                            bias = "with" if px < bval - buf else "counter"
                     if bias == "counter" and BIAS_MODE == "skip" and not blocked:
                         blocked = "counter-trend"
                 hr = None
@@ -1337,6 +1352,10 @@ def build_parser():
                          "an ENTRY stop closer than K x ATR is pushed out to "
                          "exactly K x ATR and lots are sized over the wider "
                          "distance (0 = off, byte-identical)")
+    exp.add_argument("--bias-buffer-atr", type=float, default=2.0,
+                     help="price must clear the bias EMA by this multiple of "
+                          "ATR(14) before the trade counts as with-bias; 0 = "
+                          "the side-only test used before 2026-08-20")
     exp.add_argument("--bias-ema", type=int, default=55,
                     help="EMA-N market bias at the entry bar (close vs EMA-N; "
                          "0 = off, byte-identical). Tags every trade "
@@ -1412,7 +1431,9 @@ def main():
               WINDOW[1] if args.window_end is None else args.window_end)
     HOUR_TABLE = args.hour_table
     global BIAS_EMA, BIAS_MODE, BIAS_TF
+    global BIAS_BUFFER_ATR
     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
+    BIAS_BUFFER_ATR = args.bias_buffer_atr
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global MIN_STOP_ATR

@@ -43,9 +43,20 @@ def test_apply_window_args_wires_the_cli_flag_to_the_runtime_flag():
 
 
 def test_strict_takes_fewer_entries_than_loose():
-    """Strict can only ever refuse entries loose would take, never add any."""
+    """The strict entry window refuses signals the loose latch would take.
+
+    Measured with the M15 agreement filter OFF, deliberately. The two filters
+    interact through the BALANCE: HalfTrend's profit target is a dollar amount
+    taken from the balance at entry, so moving an entry by a bar moves the
+    target, the exit, and which later signals a basket is free to take. With
+    both filters on, strict actually ends up with MORE trades than loose on
+    this fixture (43 vs 41) -- not because it refuses less, but because the
+    two paths diverge. Isolating the window is the only way this test measures
+    the window.
+    """
     bt = _load_bt()
     candles = json.loads(BARS.read_text())
+    bt.BIAS_EMA = 0            # M15 agreement off -- isolate the entry window
     bt.STRICT_WINDOW = True
     strict = bt.run(candles, 4000.0, False)[0]
     bt.STRICT_WINDOW = False
@@ -68,6 +79,7 @@ def test_cli_defaults_match_the_module_defaults():
     assert args.bias_ema == bt.BIAS_EMA
     assert args.bias_mode == bt.BIAS_MODE
     assert args.bias_tf == bt.BIAS_TF
+    assert args.bias_buffer_atr == bt.BIAS_BUFFER_ATR
     # --confirm/--ema-len use None as "leave the module constant alone"
     assert args.confirm is None
     assert args.ema_len is None

@@ -62,6 +62,7 @@ input double CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal cl
 input bool   HtfConfirm     = true;       // require higher-TF agreement before an entry: BUY needs price ABOVE the HTF EMA, SELL below (2026-08-20)
 input ENUM_TIMEFRAMES HtfConfirmTf = PERIOD_M15;  // the agreeing timeframe (M15 while trading M5)
 input int    HtfConfirmEma  = 55;        // EMA length on HtfConfirmTf, read at shift 1 (last CLOSED HTF bar)
+input double HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14); 0 = side-only (pre-2026-08-20). 2.0 = middle of the 1.0-5.0 plateau that is profitable in BOTH backtest halves
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
 input double BbDev           = 2.0;  // boll_stochrsi: Bollinger deviation
 input int    TrendCloses     = 2;    // boll_stochrsi: closes in trend zone
@@ -479,7 +480,7 @@ int OnInit()
    g_registry.Register(new CHalfTrendEmaStrategy(TradeTimeframe, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
                        CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
-                       HtfConfirm, HtfConfirmTf, HtfConfirmEma));
+                       HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR));
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));
