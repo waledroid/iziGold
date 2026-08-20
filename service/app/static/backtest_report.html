@@ -14,6 +14,12 @@
   .warn { margin:8px 14px 0; padding:8px 10px; border-radius:6px;
           background:#3a2a12; border:1px solid #6b4a18; color:#f0c674; }
   .caveats { margin:6px 14px 10px; color:#8b95a5; font-size:11px; }
+  .zoombar { margin:0 14px 8px; display:flex; flex-wrap:wrap; align-items:center;
+             gap:6px; font-size:11px; color:#8b95a5; }
+  .zoombar b { color:#d7dce3; font-weight:600; }
+  .zoombar button { background:#1a1f29; color:#d7dce3; border:1px solid #2b3240;
+                    border-radius:4px; padding:3px 9px; font-size:11px; cursor:pointer; }
+  .zoombar button:hover { background:#232a36; }
   #wrap { position:relative; height:62vh; margin:0 14px; }
   #chart, #overlay { position:absolute; inset:0; }
   #overlay { pointer-events:none; }
@@ -37,6 +43,15 @@
 </header>
 <div id="warnbox"></div>
 <div class="caveats" id="caveats"></div>
+
+<div class="zoombar" id="zoombar">
+  <b>Zoom in to see the trade boxes</b> — a trade is a fraction of a pixel wide at full-run scale.
+  Click any table row to jump to that trade.
+  <button data-z="trade">Last trade</button>
+  <button data-z="day">Last day</button>
+  <button data-z="week">Last week</button>
+  <button data-z="all">Whole run</button>
+</div>
 
 <div id="wrap">
   <div id="chart"></div>
@@ -259,7 +274,7 @@ function drawBoxes() {
     var entry = candles.priceToCoordinate(tr.legs[0].px);
     var stop0 = candles.priceToCoordinate(tr.stop_history[0].stop);
     if (entry == null || stop0 == null) return;
-    var w = Math.max(1, x1 - x0);
+    var w = Math.max(2, x1 - x0);   // sub-pixel boxes render as nothing
     // risk zone: entry -> initial stop
     ctx.fillStyle = RED;
     ctx.fillRect(x0, Math.min(entry, stop0), w, Math.abs(stop0 - entry));
@@ -281,6 +296,28 @@ function redraw() { sizeCanvas(); drawBoxes(); }
 chart.timeScale().subscribeVisibleTimeRangeChange(drawBoxes);
 new ResizeObserver(redraw).observe(document.getElementById("wrap"));
 redraw();
+
+// ---- zoom presets -------------------------------------------------------
+// At full-run scale a median trade is a fraction of a pixel wide, so the page
+// opens on the LAST TRADE -- where the boxes are legible -- not on the whole
+// run. "Whole run" is one click away for the equity-shape view.
+function showRange(kind) {
+  var T = RUN.candles.t, n = T.length;
+  if (!n) return;
+  if (kind === "all") { chart.timeScale().fitContent(); return; }
+  if (kind === "trade" && RUN.trades.length) {
+    var last = RUN.trades[RUN.trades.length - 1], pad = 60 * BAR_SEC;
+    chart.timeScale().setVisibleRange({ from: last.legs[0].t - pad, to: last.exit_t + pad });
+    return;
+  }
+  var span = (kind === "day" ? 86400 : 7 * 86400);
+  chart.timeScale().setVisibleRange({ from: Math.max(T[0], T[n - 1] - span), to: T[n - 1] });
+}
+document.getElementById("zoombar").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button");
+  if (b) showRange(b.dataset.z);
+});
+showRange(RUN.trades.length ? "trade" : "all");
 
 // ---- trade table --------------------------------------------------------
 document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {

@@ -161,6 +161,7 @@ function runScenario(runFixture, opts) {
     wrap: wrapEl,
     legend: {},
     rows: { innerHTML: '', _handlers: {}, addEventListener(t, fn) { this._handlers[t] = fn; } },
+    zoombar: { _handlers: {}, addEventListener(t, fn) { this._handlers[t] = fn; } },
   };
   const documentStub = {
     getElementById(id) {
@@ -179,6 +180,7 @@ function runScenario(runFixture, opts) {
     timeToCoordinate,
     subscribeVisibleTimeRangeChange(fn) { timeScaleStub._sub = fn; },
     setVisibleRange(r) { timeScaleStub._lastSetRange = r; },
+    fitContent() { timeScaleStub._fitContentCalls = (timeScaleStub._fitContentCalls || 0) + 1; },
   };
 
   const LightweightChartsStub = {
@@ -216,7 +218,7 @@ function runScenario(runFixture, opts) {
   const code = mainScriptRaw.replace('__DATA__', JSON.stringify(runFixture));
   vm.runInContext(code, sandbox, { filename: 'backtest_report_inline.js' });
 
-  return { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT };
+  return { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT, timeScaleStub };
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +282,22 @@ function buildSmallFixture(bar) {
 
 (function smallArtifactChecks() {
   const fixture = buildSmallFixture();
-  const { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT } =
+  const { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT, timeScaleStub } =
     runScenario(fixture, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
 
   // -- candle count fed to the chart -----------------------------------
   assert.strictEqual(candlestickStub.data.length, N, 'candle count mismatch');
   console.log(`ok    ${N} candles fed to the candlestick series`);
+
+  // -- the page must OPEN where trade boxes are legible ------------------
+  // A median trade is a fraction of a pixel wide at full-run scale, so an
+  // initial full-run view shows the user a chart with no visible boxes.
+  const opened = timeScaleStub._lastSetRange;
+  const lastTrade = fixture.trades[fixture.trades.length - 1];
+  assert.ok(opened, 'page never set an initial visible range -- it opens on the whole run');
+  assert.strictEqual(opened.from, lastTrade.legs[0].t - 60 * BAR);
+  assert.strictEqual(opened.to, lastTrade.exit_t + 60 * BAR);
+  console.log('ok    opens zoomed to the last trade (+/-60 bars), where the boxes are visible');
 
   // -- indicator series lengths ------------------------------------------
   assert.strictEqual(lineSeriesCalls.length, 6,
