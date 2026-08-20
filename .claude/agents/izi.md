@@ -801,6 +801,59 @@ defaults up. `HtfConfirm` is new, so it arrived on by itself.
 Tests that care about manual mode now SET it (`test_api.py`,
 `test_proposals_flow.py`) instead of inheriting the installation default.
 
+## The clearance buffer applies ONLY in chop (owner correction, 2026-08-20)
+
+The owner asked for this from the start — "the filter is only supposed to work
+in that zigzaggy market times" — and it was overridden to always-on on
+quarterly aggregates that averaged the effect away. Backfilling the 48 REAL
+live trades (2026-08-03..20) showed the override was wrong:
+
+| | trades | wins | losses | net |
+|---|---|---|---|---|
+| kept by an always-on buffer | 20 | 9 | 11 | +273.89 |
+| blocked by an always-on buffer | 28 | 14 | 14 | **+223.70** |
+| — of those, last 4 days (the chop stretch) | 12 | 3 | 9 | **-112.08** |
+
+Always-on blocked $223 of profit earned in the 08-03..14 TREND, while saving
+$112 of losses in the 08-17..20 CHOP. A chop filter that runs in trends is
+just a smaller strategy.
+
+**Gate: `HtfChopOnly` / `--chop-eff-max`.** Path efficiency = |net move| /
+total path over `HtfChopBars` (48 = 4h of M5) CLOSED bars. Below
+`HtfChopEffMax` (**0.08**) the tape is choppy and the 2xATR clearance applies;
+above it the HTF test degrades to the plain side check, so trends are not
+filtered. Both sides fail toward the buffer being ON when data cannot be read.
+
+Measured, 17 months, M5, $10k, ht lane:
+
+| when the buffer applies | H1 | H2 | full |
+|---|---|---|---|
+| never | -1,861.15 | +4,675.39 | +1,498.72 |
+| always | +1,324.40 | +3,524.56 | +4,781.54 |
+| eff < 0.06 | +527.29 | +9,543.06 | +11,184.42 |
+| **eff < 0.08 (default)** | **+401.27** | **+9,416.09** | **+11,349.93** |
+| eff < 0.10 | +368.09 | +9,937.24 | +11,453.73 |
+| eff < 0.15 | +1,686.53 | +5,015.65 | +7,125.89 |
+
+0.06-0.10 land within 2.5% of each other — a plateau, so 0.08 is the middle of
+the flat region rather than the peak. Higher thresholds buy a stronger older
+half at a large cost to the total.
+
+**Against today's five real trades** (4h efficiency at each entry): 07:40
+0.264, 09:20 0.179, 10:25 0.153, 12:50 **0.018**, 21:00 0.251. The gate blocks
+three and takes two: **-83.20 instead of the actual -224.48**.
+
+Golden pins moved deliberately with this default: strict 43 -> 52 trades
+(3879.97 -> 3689.95) and both 45 -> 54 (3895.85 -> 3700.19) on the frozen
+fixture; the loose pin is unchanged at 114/3906.30/468.06, as it must be — it
+runs with the M15 filter off.
+
+**Also on 2026-08-20**: `bars_max.json` was refreshed from the live terminal
+and merged with the old file — **100,950 bars, 2025-03-19 .. 2026-08-20 23:35**
+(it previously ended 08-17, so this week was missing from every backtest).
+Re-dump with `python.exe scripts/dump_bars.py 60000 <out>`; 100000 returns
+nothing, 60000 is the working ceiling.
+
 ## The M15 gate needs CLEARANCE, not a side (autopsy 2026-08-20)
 
 Four stop-outs in one morning (-49.84, -41.76, -44.58, -46.86). The owner

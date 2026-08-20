@@ -486,6 +486,21 @@ SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 #   buffer 0.0: H1 -1861.15  H2 +4456.35  full +1679.70
 #   buffer 2.0: H1 +1324.40  H2 +3427.33  full +4860.44   <- default
 #   buffer 3.0: H1 +5984.05  H2 +4725.19  full +14168.17  <- peak, not trusted
+# The buffer applies ONLY in chop (owner, 2026-08-20: "the filter is only
+# supposed to work in that zigzaggy market times"). efficiency = |net move| /
+# total path over CHOP_EFF_BARS closed bars: 1.0 = a straight line, under ~0.10
+# is textbook chop. Above the threshold the M15 test degrades to side-only.
+# Measured 17 months, M5, $10k, ht lane -- a genuine plateau, not a spike:
+#   never     H1 -1861.15  H2 +4675.39  full  +1498.72
+#   always    H1 +1324.40  H2 +3524.56  full  +4781.54
+#   eff<0.06  H1  +527.29  H2 +9543.06  full +11184.42
+#   eff<0.08  H1  +401.27  H2 +9416.09  full +11349.93   <- default, mid-plateau
+#   eff<0.10  H1  +368.09  H2 +9937.24  full +11453.73
+#   eff<0.15  H1 +1686.53  H2 +5015.65  full  +7125.89
+# Higher thresholds trade total return for a stronger older half; 0.06-0.10 sit
+# within 2.5% of each other, so 0.08 is chosen as the middle of the flat region.
+CHOP_EFF_BARS = 48        # 4 hours of M5
+CHOP_EFF_MAX = 0.08       # 0 = apply the buffer always (pre-2026-08-20)
 BIAS_BUFFER_ATR = 2.0
 BIAS_EMA = 55
 BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
@@ -1244,6 +1259,13 @@ def run(candles, start_balance, verbose):
                         bias = "with"
                     else:
                         buf = BIAS_BUFFER_ATR * (a or 0.0)
+                        if CHOP_EFF_MAX > 0 and buf > 0:
+                            seg = candles[max(0, i - CHOP_EFF_BARS):i + 1]
+                            path = sum(abs(seg[q]["c"] - seg[q - 1]["c"])
+                                       for q in range(1, len(seg)))
+                            eff = (abs(seg[-1]["c"] - seg[0]["c"]) / path) if path else 1.0
+                            if eff > CHOP_EFF_MAX:
+                                buf = 0.0     # trending: side-only test
                         if signal == "BUY":
                             bias = "with" if px > bval + buf else "counter"
                         else:
@@ -1652,6 +1674,11 @@ def build_parser():
                          "an ENTRY stop closer than K x ATR is pushed out to "
                          "exactly K x ATR and lots are sized over the wider "
                          "distance (0 = off, byte-identical)")
+    exp.add_argument("--chop-eff-max", type=float, default=0.08,
+                     help="apply the M15 buffer ONLY when path efficiency over "
+                          "--chop-eff-bars is below this (0 = always apply)")
+    exp.add_argument("--chop-eff-bars", type=int, default=48,
+                     help="bars in the path-efficiency window (48 = 4h of M5)")
     exp.add_argument("--bias-buffer-atr", type=float, default=2.0,
                      help="price must clear the bias EMA by this multiple of "
                           "ATR(14) before the trade counts as with-bias; 0 = "
@@ -1754,6 +1781,8 @@ def main():
     global BIAS_BUFFER_ATR
     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
     BIAS_BUFFER_ATR = args.bias_buffer_atr
+    global CHOP_EFF_MAX, CHOP_EFF_BARS
+    CHOP_EFF_MAX, CHOP_EFF_BARS = args.chop_eff_max, args.chop_eff_bars
     global STRATEGY
     STRATEGY = args.strategy
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO

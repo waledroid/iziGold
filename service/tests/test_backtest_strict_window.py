@@ -84,6 +84,8 @@ def test_cli_defaults_match_the_module_defaults():
     assert args.bias_mode == bt.BIAS_MODE
     assert args.bias_tf == bt.BIAS_TF
     assert args.bias_buffer_atr == bt.BIAS_BUFFER_ATR
+    assert args.chop_eff_max == bt.CHOP_EFF_MAX
+    assert args.chop_eff_bars == bt.CHOP_EFF_BARS
     # --confirm/--ema-len use None as "leave the module constant alone"
     assert args.confirm is None
     assert args.ema_len is None

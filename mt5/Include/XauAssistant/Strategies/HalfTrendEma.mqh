@@ -56,6 +56,13 @@ private:
    // right side. Autopsy 2026-08-20: two losing sells passed the side-only
    // test by $0.46 and $1.85 -- in chop the M15 EMA sits where price is.
    double   m_htfBufferAtr;
+   // The buffer applies ONLY in chop (owner 2026-08-20). efficiency =
+   // |net move| / total path over m_chopBars closed bars; 1.0 = a straight
+   // line, under ~0.10 is textbook chop. Above m_chopEffMax the HTF test
+   // degrades to side-only, so trends are not filtered.
+   bool     m_chopOnly;
+   int      m_chopBars;
+   double   m_chopEffMax;
 
    int      m_ema9Handle;
    int      m_ema21Handle;
@@ -272,7 +279,8 @@ public:
    CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
                          bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
                          bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
-                         double htfBufferAtr)
+                         double htfBufferAtr, bool chopOnly, int chopBars,
+                         double chopEffMax)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
@@ -280,7 +288,8 @@ public:
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_htfConfirm(htfConfirm), m_htfEmaLen(htfEmaLen), m_htfEmaHandle(INVALID_HANDLE),
-        m_htfBufferAtr(htfBufferAtr),
+        m_htfBufferAtr(htfBufferAtr), m_chopOnly(chopOnly),
+        m_chopBars(chopBars), m_chopEffMax(chopEffMax),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -301,6 +310,21 @@ public:
    // also exactly what the replay models.
    // FAIL-OPEN by house rule: a missing handle or a failed CopyBuffer lets
    // the strategy's own signal stand rather than silently suppressing trades.
+   // |net move| / total path over the last m_chopBars CLOSED bars.
+   // Returns 0.0 (= "choppy", buffer stays on) if the data cannot be read.
+   double ChopEfficiency()
+     {
+      if(m_chopBars < 2) return 0.0;
+      double cl[];
+      if(CopyClose(_Symbol, m_tf, 1, m_chopBars + 1, cl) != m_chopBars + 1)
+         return 0.0;
+      double path = 0.0;
+      for(int q = 1; q <= m_chopBars; q++)
+         path += MathAbs(cl[q] - cl[q - 1]);
+      if(path <= 0.0) return 0.0;
+      return MathAbs(cl[m_chopBars] - cl[0]) / path;
+     }
+
    bool HtfAgrees(int dir, double price)
      {
       if(!m_htfConfirm || m_htfEmaHandle == INVALID_HANDLE) return true;
@@ -315,6 +339,10 @@ public:
          if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) == 1)
             pad = m_htfBufferAtr * atrBuf[0];
         }
+      // Trending tape: drop the clearance requirement, keep the side test.
+      // A failed read leaves the buffer ON (the safer side: fewer entries).
+      if(pad > 0 && m_chopOnly && ChopEfficiency() > m_chopEffMax)
+         pad = 0.0;
       if(dir == SIGNAL_BUY)  return price > buf[0] + pad;
       if(dir == SIGNAL_SELL) return price < buf[0] - pad;
       return true;
