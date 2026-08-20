@@ -727,6 +727,108 @@ def hhmm(t):
     return d, d.hour, d.minute
 
 
+# --- quickflip_ny_v1: the second lane (spec 2026-08-20-quickflip-ny-design) --
+# Box the first M15 candle of QF_HOUR:QF_MINUTE, qualify it against daily
+# ATR(14), then trade the sweep-and-reverse back to the far side of the box.
+# Candle t is SERVER wall-clock -- never add an offset (a +3h shift is what
+# invalidated the original analysis).
+QF_HOUR = 13           # server; 13:30 had the best win% + both halves positive
+QF_MINUTE = 30
+QF_ATR_PCT = 5.0       # box range as % of daily ATR(14). Measured at 13:30
+                        # server over 17mo with quickflip_probe.py: >=10%
+                        # leaves only 35 trades whose older half is
+                        # indistinguishable from zero and earns LESS total
+                        # than a looser gate; >=5% is the best-performing cut
+                        # (165 trades, +75.55 total, older half +0.23/oz).
+                        # The published "25% of daily ATR" opening-range rule
+                        # does not transfer to gold and was never authoritative
+                        # here -- do not "restore" 10 or 25 believing otherwise.
+QF_WINDOW_MIN = 90
+QF_RISK_PCT = 0.25     # reduced size: a paid experiment, not a proven edge
+QF_ATR_DAYS = 14
+
+
+def qf_daily_atr(candles):
+    """server-day -> ATR(QF_ATR_DAYS) over the PRIOR days only."""
+    days = {}
+    for x in candles:
+        d = days.setdefault(x["t"] // 86400,
+                            {"h": x["h"], "l": x["l"], "c": x["c"]})
+        d["h"] = max(d["h"], x["h"])
+        d["l"] = min(d["l"], x["l"])
+        d["c"] = x["c"]
+    keys = sorted(days)
+    out = {}
+    for i, k in enumerate(keys):
+        # Eligibility starts one day past the raw QF_ATR_DAYS warm-up so that
+        # the inner loop's `j - 1` never hits index 0: at i == QF_ATR_DAYS,
+        # j == 0 would make keys[j - 1] wrap around to keys[-1] -- the LAST
+        # day in the whole dataset -- leaking months of future close into
+        # the first computed ATR (mirrors the fix in quickflip_probe.py's
+        # daily_atr(), commit 63defbc). Requiring i > QF_ATR_DAYS keeps j >= 1.
+        if i <= QF_ATR_DAYS:
+            continue
+        s = 0.0
+        for j in range(i - QF_ATR_DAYS, i):
+            dj, pc = days[keys[j]], days[keys[j - 1]]["c"]
+            s += max(dj["h"] - dj["l"], abs(dj["h"] - pc), abs(dj["l"] - pc))
+        out[k] = s / QF_ATR_DAYS
+    return out
+
+
+def qf_signals(candles):
+    """Every QuickFlip setup, as pure price geometry (no account state)."""
+    atr = qf_daily_atr(candles)
+    idx_of = {}
+    by_day = {}
+    for i, x in enumerate(candles):
+        idx_of[x["t"]] = i
+        by_day.setdefault(x["t"] // 86400, []).append(x)
+    out = []
+    for k in sorted(by_day):
+        if k not in atr:
+            continue
+        rows = by_day[k]
+        if len(rows) < 100:
+            continue
+        box = [x for x in rows
+               if hhmm(x["t"])[1] == QF_HOUR
+               and QF_MINUTE <= hhmm(x["t"])[2] < QF_MINUTE + 15]
+        if len(box) != 3:
+            continue
+        hi = max(x["h"] for x in box)
+        lo = min(x["l"] for x in box)
+        if (hi - lo) < QF_ATR_PCT / 100.0 * atr[k]:
+            continue
+        green = box[-1]["c"] >= box[0]["o"]
+        t_end = box[-1]["t"] + 300
+        expire = t_end + QF_WINDOW_MIN * 60
+        swept, ext = False, None
+        for x in [r for r in rows if t_end <= r["t"] < expire]:
+            if not swept:
+                if green and x["h"] > hi:
+                    swept, ext = True, x["h"]
+                elif not green and x["l"] < lo:
+                    swept, ext = True, x["l"]
+                continue
+            ext = max(ext, x["h"]) if green else min(ext, x["l"])
+            if green and x["c"] < hi:
+                out.append({"i": idx_of[x["t"]], "entry_t": x["t"],
+                            "dir": "SELL", "entry": x["c"], "stop": ext,
+                            "tp": lo, "expire_t": expire,
+                            "ratio": (hi - lo) / atr[k],
+                            "box_hi": hi, "box_lo": lo})
+                break
+            if not green and x["c"] > lo:
+                out.append({"i": idx_of[x["t"]], "entry_t": x["t"],
+                            "dir": "BUY", "entry": x["c"], "stop": ext,
+                            "tp": hi, "expire_t": expire,
+                            "ratio": (hi - lo) / atr[k],
+                            "box_hi": hi, "box_lo": lo})
+                break
+    return out
+
+
 def run(candles, start_balance, verbose):
     closes = [x["c"] for x in candles]
     ema55 = ema(closes, EMA_LEN)
