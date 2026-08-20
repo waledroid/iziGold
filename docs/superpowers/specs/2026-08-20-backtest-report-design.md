@@ -85,7 +85,8 @@ One JSON object, the only interface between engine and page:
 ```
 { "meta":   {generated_at, source, tf, start, end, args:{...}, caveats:[...]},
   "stats":  {trades, wins, losses, win_rate, net, start_balance, end_balance,
-             max_dd, max_valley, best, worst},
+             max_dd, max_valley, best, worst,
+             clamp_pct, risk_median, risk_p90},
   "candles": {"t":[...], "o":[...], "h":[...], "l":[...], "c":[...]},
   "ind":     {"ema9":[...], "ema21":[...], "ema55":[...], "ema200":[...],
               "ht":{"v":[...], "trend":[...]}},
@@ -134,7 +135,7 @@ under `service/`; miniapp serves it at `/api/backtest` behind the existing
 as the standalone page. Read-only, last run only. If no run exists the tab
 says so rather than erroring.
 
-## 4b. Starting balance and the minimum that means anything
+## 5. Starting balance and the minimum that means anything
 
 `--balance` already exists (default 4000). What is missing is the honesty
 around it.
@@ -194,7 +195,7 @@ genuinely interactive. That endpoint is the only compute-on-demand path in the
 system: owner-only via the existing `viewer_ok()`, one run at a time, and
 rate-limited.
 
-## 5. Backtest day/month report (later phase)
+## 6. Backtest day/month report (later phase)
 
 The backtest gets the SAME tabled report the Mini App shows for live trades —
 month view by default, a clickable day opening the full day table, back
@@ -246,7 +247,7 @@ time, running balance, regime are all present), rather than being retrofitted.
   expected trade count.
 - **Balance validation**: below $500 refuses; $500-$2,000 warns; clamp rate
   and realized-risk percentiles appear in stdout, `--json`, and the page.
-- **Report parity** (phase 5): the refactored shaping functions, fed the
+- **Report parity** (phase 6): the refactored shaping functions, fed the
   same baskets, produce byte-identical output to today's live report —
   captured as a golden test before the refactor.
 - Existing service suite (437 tests) stays green.
