@@ -122,6 +122,33 @@ stats come free once attribution is right.
 Chart drawing (`CTradeBoxes`) is per-magic; QuickFlip needs its own instance or
 per-magic keys, so boxes do not cross-label.
 
+## The replay must model BOTH lanes (owner: "go for it in both live and backtest")
+
+A replay of QuickFlip alone would answer the wrong question. The point of this
+work is whether the two strategies **coexist profitably** — sharing one
+balance, one set of rails, and one exposure budget — so the replay gains a
+second lane mirroring the EA:
+
+- `--strategy ht|qf|both` (default **both**). `ht` reproduces every study
+  published before today; `qf` isolates the new strategy; `both` is what now
+  runs live.
+- Both lanes trade against **one balance**, in chronological order, so their
+  P/L compounds together exactly as the account experiences it.
+- Each lane owns its own positions and cannot close the other's — the replay
+  mirror of the magic-number split.
+- The rails are evaluated **across both lanes**: the daily-loss brake, the
+  drawdown/kill-switch accounting and the exposure budget see combined
+  realized and open P/L. (The brake is still not modelled — see the standing
+  caveats — but exposure and sizing are, and both must be lane-aware.)
+- Reporting gains a per-lane breakdown (trades, win%, net, max DD) **and** a
+  combined equity curve, plus a correlation read: how often both lanes were in
+  the market at once, and what combined exposure peaked at.
+- `--web`/`--json` carry a `lane` on every trade so the report can colour and
+  filter them.
+
+The golden pins must be extended: the existing pins keep `--strategy ht` so
+they stay like-for-like change detectors, and a new pin captures `both`.
+
 ## Inputs
 
 | input | default |
@@ -137,11 +164,8 @@ per-magic keys, so boxes do not cross-label.
 
 - No hammer/engulfing detection (unmeasured — see rule 4).
 - No London/Asia sessions (measured negative / thin).
-- **Not added to the Python replay engine.** That engine replays HalfTrend's
-  money rules; teaching it a second strategy is a separate, larger job. The
-  offline evidence is `scripts/quickflip_probe.py` (this spike, promoted from
-  scratch to a reproducible tool); the live evidence is the per-strategy SQLite
-  log.
+- No third strategy, and no N-lane generalization of either the EA or the
+  replay. Two explicit lanes only.
 - No change to HalfTrend's rules, sizing, or exits.
 
 ## Testing
