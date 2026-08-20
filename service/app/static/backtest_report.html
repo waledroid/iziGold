@@ -84,12 +84,20 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
   }).join("");
   if (s.clamp_pct > 10) {
-    document.getElementById("warnbox").innerHTML =
+    document.getElementById("warnbox").innerHTML +=
       '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
       "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
       "balance the 1% risk rule is often not obeyed — this run measures " +
       "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
       "meaningful results; $10,000+ for a clean test.</div>";
+  }
+  var addTrades = RUN.trades.filter(function (t) { return t.legs.length > 1; }).length;
+  if (RUN.trades.length > 300 && addTrades > 0) {
+    document.getElementById("warnbox").innerHTML +=
+      '<div class="warn">Chart is thinned: pyramid-add ("+") markers are ' +
+      "hidden for " + addTrades + " of " + RUN.trades.length + " trades (runs " +
+      "over 300 trades drop them to keep the chart responsive). Entry/exit " +
+      "markers and the table's Legs column below are unaffected.</div>";
   }
   document.getElementById("caveats").textContent = "Not modelled: " + m.caveats.join(" · ");
 })();
