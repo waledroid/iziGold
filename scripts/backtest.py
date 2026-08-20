@@ -675,6 +675,11 @@ def run(candles, start_balance, verbose):
         bal += pl
         trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
                        "exit": px, "when": when, "why": why, "pl": pl,
+                       "opened_t": basket.get("opened_t"),
+                       "exit_t": int(when.timestamp()),
+                       "stop_history": list(basket.get("stop_history", [])),
+                       "tp": basket.get("tp"),
+                       "bal_after": bal,
                        "opened": basket.get("opened"),
                        "regime": basket.get("regime"),
                        "atr_ratio": basket.get("atr_ratio"),
@@ -704,6 +709,12 @@ def run(candles, start_balance, verbose):
             print(f"  close {when:%m-%d %H:%M} {basket['dir']} [{legs}] "
                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
         basket = None
+
+    def note_stop(bk, t, stop):
+        """Append to the basket's stop history when the stop actually moved."""
+        hist = bk["stop_history"]
+        if not hist or hist[-1]["stop"] != stop:
+            hist.append({"t": int(t), "stop": stop})
 
     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
         x = candles[i]
@@ -788,6 +799,8 @@ def run(candles, start_balance, verbose):
                     * basket.get("lock_mult", 1.0)
                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
                     * basket.get("target_mult", 1.0)
+                if basket.get("tp") is None and ENTRY_MODE != "fixed":
+                    basket["tp"] = floor_price(basket["legs"], s, target)
                 closed = False
                 if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
                     pass   # pure ride: no profit target / floor (EA: 0 = off)
@@ -811,6 +824,7 @@ def run(candles, start_balance, verbose):
                         # pure ratchet: the floor may only tighten the stop
                         if fpx * s > basket["stop"] * s:
                             basket["stop"] = fpx
+                            note_stop(basket, x["t"], fpx)
                         if verbose:
                             print(f"  floor {when:%m-%d %H:%M} armed "
                                   f"${arm:+.2f} stop->{basket['stop']:.2f}")
@@ -835,7 +849,7 @@ def run(candles, start_balance, verbose):
                             and len(basket["legs"]) < MAX_POSITIONS
                             and adv >= ADD_TRIGGER_ATR * a):
                         oz = max(MIN_OZ, int(basket["legs"][-1]["oz"] * ADD_SHRINK))
-                        basket["legs"].append({"px": px, "oz": oz})
+                        basket["legs"].append({"px": px, "oz": oz, "t": int(x["t"])})
                         n_adds = len(basket["legs"]) - 1
                         e0 = basket["legs"][0]["px"]
                         if n_adds == 1:      # halfway current stop -> entry
@@ -847,8 +861,10 @@ def run(candles, start_balance, verbose):
                             # armed: ladder may tighten the stop, never loosen
                             if ladder * s > basket["stop"] * s:
                                 basket["stop"] = ladder
+                                note_stop(basket, x["t"], ladder)
                         else:
                             basket["stop"] = ladder
+                            note_stop(basket, x["t"], ladder)
                         if verbose:
                             print(f"  add   {when:%m-%d %H:%M} {oz}oz @ {px:.2f} "
                                   f"stop->{basket['stop']:.2f}")
@@ -929,8 +945,11 @@ def run(candles, start_balance, verbose):
                         oz = max(MIN_OZ, int(risk / dist))
                         orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
                             if orig_dist > 0 else oz
-                    basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
+                    basket = {"dir": signal,
+                              "legs": [{"px": px, "oz": oz, "t": int(x["t"])}],
                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
+                              "stop_history": [{"t": int(x["t"]), "stop": stop}],
+                              "opened_t": int(x["t"]),
                               "dist_atr": (orig_dist / a) if a else None,
                               "floored": floored, "orig_stop": orig_stop,
                               "orig_dist": orig_dist, "orig_oz": orig_oz,
