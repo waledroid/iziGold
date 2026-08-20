@@ -179,6 +179,14 @@ var candles = chart.addCandlestickSeries({
   // that must be visible. An earlier "skip duplicates" version dropped the new
   // basket's first point instead, which left 71 trades with <= 1 point and no
   // stop line drawn at all.
+  //
+  // The whitespace separator is placed on the NEXT REAL BAR after the exit,
+  // not at exit + one bar length: a session break or a weekend means the next
+  // bar can be hours away, and a point at a timestamp no candle occupies adds
+  // a phantom column to the shared time scale.
+  var barAfter = {};                    // candle time -> the next candle's time
+  for (var k = 0; k + 1 < n; k++) barAfter[C.t[k]] = C.t[k + 1];
+
   var byTime = {};                      // time -> point; later trades overwrite
   var chrono = RUN.trades.slice().sort(function (a, b) {
     return a.legs[0].t - b.legs[0].t;   // "newer wins" needs chronological order
@@ -190,7 +198,8 @@ var candles = chart.addCandlestickSeries({
     // whitespace one bar after the exit -- but only where no later trade lives,
     // otherwise the gap point would cut the NEXT basket's line off at its first
     // step (back-to-back trades have no free bar to separate them).
-    var gap = tr.exit_t + BAR_SEC, next = chrono[i + 1];
+    var gap = barAfter[tr.exit_t], next = chrono[i + 1];
+    if (gap === undefined) return;      // exit on the last bar: nothing follows
     var nextStart = next ? (next.stop_history.length ? next.stop_history[0].t
                                                      : next.legs[0].t) : Infinity;
     if (gap < nextStart && byTime[gap] === undefined) byTime[gap] = { time: gap };

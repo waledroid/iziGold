@@ -537,6 +537,11 @@ function buildSmallFixture(bar) {
     .filter((p) => !('value' in p)).map((p) => p.time);
   assert.deepStrictEqual(whitespace, [T0 + 7 * M15, T0 + 13 * M15],
     'stop-line gap points must sit one M15 bar after each exit, on the bar grid');
+  // nothing on the stop series may sit at a timestamp no candle occupies: an
+  // off-grid point adds a phantom column to the shared time scale
+  const grid = new Set(f.candles.t);
+  const offGrid = Array.from(stopS.data).map((p) => p.time).filter((t) => !grid.has(t));
+  assert.deepStrictEqual(offGrid, [], 'stop-series points off the candle grid');
   // row-click zoom pads by 60 bars of the run's OWN timeframe
   const handler = elements.rows._handlers.click;
   assert.ok(handler, 'no click handler registered on the trade table');
