@@ -57,6 +57,10 @@ def test_fail_open_on_model_error(client):
 
 
 def test_shadows_logged_active_proposed_once(client):
+    # This test is ABOUT manual mode -- manual is what turns a signal into a
+    # pending proposal instead of an execution. Set it explicitly rather than
+    # inheriting the installation default, which became "auto" on 2026-08-20.
+    client.app.state.db.set_exec_mode("manual")
     # Updated for the alert-diet contract (Task 4): /analyze no longer sends
     # a per-bar text alert via send_alert. Instead, the active signal alone
     # may raise a pending proposal (default exec_mode is manual); shadow

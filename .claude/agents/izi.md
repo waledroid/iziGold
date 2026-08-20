@@ -767,6 +767,40 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Drag-and-go defaults (owner, 2026-08-20)
+
+Attaching `XauAssistant.mq5` to any XAUUSD chart is now the whole install —
+no input tuning. Fresh-attach defaults: `ExecutionMode=EXEC_AUTO`,
+`AllowLiveTrading=true`, `TradeTimeframe=PERIOD_M5`, `ConfirmCloses=2`,
+`HtfConfirm=true` (M15/EMA-55), `EntryMode=ENTRY_ADR`, `ActiveStrategy=
+halftrend_ema_v1`, endpoints on `127.0.0.1:9000`.
+
+**The service is the AUTHORITY on execution mode, not the EA input.**
+`/heartbeat` returns `db.exec_mode()` every 5 s and the EA obeys it
+(`XauAssistant.mq5` ~line 598). So `ExecutionMode` only decides the mode until
+the first heartbeat lands. That is why `db.exec_mode()`'s fresh-install default
+moved `manual` -> `auto` in the same change: leaving it manual would have
+silently flipped an AUTO-attached EA back within seconds, and the input would
+have looked broken.
+
+**Two safety rails were deliberately spent to buy this, and both are one edit
+back:**
+- `AllowLiveTrading=true` is the ONLY gate stopping AUTO from trading a REAL
+  account on attach (`OnInit` returns `INIT_FAILED`, and the heartbeat path
+  forces MANUAL, when it is false on a live account). Set it back to `false`
+  before this EA ever meets a funded account you did not intend to trade.
+- A fresh service now auto-trades without being told to. `/mode` still switches
+  at runtime and the stored value always wins over the input.
+
+**Existing charts keep their old values.** Recompiling hot-reloads the EA but
+does NOT reset inputs that already exist on an attached chart — only NEW inputs
+take defaults. After this change an already-attached instance still runs its old
+`ConfirmCloses`; remove and re-drag the EA (or edit the inputs) to pick the new
+defaults up. `HtfConfirm` is new, so it arrived on by itself.
+
+Tests that care about manual mode now SET it (`test_api.py`,
+`test_proposals_flow.py`) instead of inheriting the installation default.
+
 ## M15 agreement gate (owner request, 2026-08-20)
 
 **We trade M5 and ask M15 for permission.** After the M5 strict-window confirm

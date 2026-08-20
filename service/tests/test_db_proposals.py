@@ -12,7 +12,10 @@ def db(tmp_path):
 
 
 def test_exec_mode_default_and_set(db):
-    assert db.exec_mode() == "manual"
+    # A fresh install defaults to AUTO (owner decision 2026-08-20): the
+    # service is the authority on mode, so "manual" here would override an
+    # EA attached in AUTO on its very first heartbeat.
+    assert db.exec_mode() == "auto"
     db.set_exec_mode("auto")
     assert db.exec_mode() == "auto"
     with pytest.raises(ValueError):

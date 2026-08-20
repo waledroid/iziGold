@@ -354,8 +354,13 @@ class SignalDb:
         return [r[0] for r in rows]
 
     def exec_mode(self) -> str:
+        # Default AUTO since 2026-08-20 (owner: "all I need to do is drag it
+        # into the chart"). The service is the AUTHORITY on execution mode --
+        # it ships `mode` on every heartbeat and the EA obeys it -- so a
+        # fresh install defaulting to "manual" would silently override an
+        # EA attached with ExecutionMode=EXEC_AUTO within ~5 seconds.
         val = self.get_kv("exec_mode")
-        return val if val else "manual"
+        return val if val else "auto"
 
     def set_exec_mode(self, mode: str) -> None:
         if mode not in ("auto", "manual"):

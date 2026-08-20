@@ -17,8 +17,8 @@
 
 enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
-input ENUM_EXEC_MODE ExecutionMode          = EXEC_MANUAL;
-input bool           AllowLiveTrading       = false;
+input ENUM_EXEC_MODE ExecutionMode          = EXEC_AUTO;   // AUTO on attach (owner 2026-08-20). NOTE: the SERVICE is the authority — it sends `mode` every heartbeat and the EA obeys; this input only sets the mode until the first heartbeat lands.
+input bool           AllowLiveTrading       = true;    // owner 2026-08-20: drag-and-go. WARNING: this is the ONLY gate stopping AUTO from trading a REAL account on attach. Set false to restore it.
 input ENUM_TIMEFRAMES TradeTimeframe        = PERIOD_M5; // trading TF — chart TF is visual only
 input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
