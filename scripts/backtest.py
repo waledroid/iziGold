@@ -466,11 +466,18 @@ SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 # --- EMA-200 market-bias experiment (owner's idea 2026-08-18) ---
 # BIAS_EMA 0 = off. bias := close vs EMA-N at the entry bar; with/counter
 # tags every trade; BIAS_MODE decides what a counter-trend entry gets.
-BIAS_EMA = 0
+# Higher-timeframe agreement, LIVE DEFAULT since 2026-08-20 (EA inputs
+# HtfConfirm/HtfConfirmTf/HtfConfirmEma). An M5 entry is refused unless price
+# sits on the signal's side of the EMA-55 of the last CLOSED M15 bar. Owner
+# asked for it to survive zigzag markets; measured over 516 days it cut the
+# worst chop quarter from -4,255.64 to -1,723.72 (-59%), was near-neutral in
+# trending quarters, and turned the full period from -2,234.95 to +1,679.70.
+# --bias-ema 0 turns it off (the pre-2026-08-20 replay).
+BIAS_EMA = 55
 BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
-BIAS_MODE = "tag"
+BIAS_MODE = "skip"
 BIAS_TFS = ("M5", "M15")
-BIAS_TF = "M5"
+BIAS_TF = "M15"
 BIAS_TARGET_MULT = 0.5    # counter-trend profit target multiplier
 BIAS_RISK_MULT = 0.5      # counter-trend risk multiplier (size_target only)
 M15_SEC = 900
@@ -1330,16 +1337,16 @@ def build_parser():
                          "an ENTRY stop closer than K x ATR is pushed out to "
                          "exactly K x ATR and lots are sized over the wider "
                          "distance (0 = off, byte-identical)")
-    exp.add_argument("--bias-ema", type=int, default=0,
+    exp.add_argument("--bias-ema", type=int, default=55,
                     help="EMA-N market bias at the entry bar (close vs EMA-N; "
                          "0 = off, byte-identical). Tags every trade "
                          "with/counter and prints the split")
-    exp.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
+    exp.add_argument("--bias-mode", choices=BIAS_MODES, default="skip",
                     help="tag = report only; target = counter-trend target "
                          "x0.5 (lock untouched, EA-literal); target_lock = "
                          "target x0.5 and lock arm x0.5; size_target = target "
                          "x0.5 and risk x0.5; skip = refuse counter-trend")
-    exp.add_argument("--bias-tf", choices=BIAS_TFS, default="M5",
+    exp.add_argument("--bias-tf", choices=BIAS_TFS, default="M15",
                     help="timeframe of the bias EMA: M5 (default) or M15 "
                          "(resampled, last completed M15 bar)")
     exp.add_argument("--window-start", type=int, default=None,

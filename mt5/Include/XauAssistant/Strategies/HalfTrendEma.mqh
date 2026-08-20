@@ -43,6 +43,16 @@ private:
    double   m_confirmClose;    // confirmed during processing; 0 = none yet
    datetime m_confirmTime;     // bar time of the confirm bar; 0 = none yet
 
+   // Higher-timeframe agreement (owner request 2026-08-20, after the M5
+   // replay showed the worst chop quarter losing -$4,256): an M5 entry is
+   // refused unless the HIGHER timeframe agrees -- BUY needs price above the
+   // HTF EMA, SELL below it. Measured over 516 days it cut that quarter's
+   // loss by 59% (-4,255.64 -> -1,723.72) and was near-neutral elsewhere.
+   bool     m_htfConfirm;
+   ENUM_TIMEFRAMES m_htfTf;
+   int      m_htfEmaLen;
+   int      m_htfEmaHandle;
+
    int      m_ema9Handle;
    int      m_ema21Handle;
    int      m_ema200Handle;
@@ -256,13 +266,15 @@ private:
 
 public:
    CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
-                         bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr)
+                         bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
+                         bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen)
       : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_barsSinceFlip(0), m_signalDead(false), m_fired(false), m_lastProcessed(0),
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
+        m_htfConfirm(htfConfirm), m_htfEmaLen(htfEmaLen), m_htfEmaHandle(INVALID_HANDLE),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -272,6 +284,25 @@ public:
       m_ema21Handle  = iMA(_Symbol, m_tf, 21,  0, MODE_EMA, PRICE_CLOSE);
       m_ema200Handle = iMA(_Symbol, m_tf, 200, 0, MODE_EMA, PRICE_CLOSE);
       m_atrHandle    = iATR(_Symbol, m_tf, 14);
+      m_htfTf        = htfTf;
+      if(m_htfConfirm)
+         m_htfEmaHandle = iMA(_Symbol, m_htfTf, m_htfEmaLen, 0, MODE_EMA, PRICE_CLOSE);
+     }
+
+   // True when the higher timeframe agrees with `dir` (or when the check is
+   // off / unavailable). Reads shift 1 -- the last COMPLETED HTF bar -- so a
+   // still-forming M15 candle can never flip the answer mid-bar, which is
+   // also exactly what the replay models.
+   // FAIL-OPEN by house rule: a missing handle or a failed CopyBuffer lets
+   // the strategy's own signal stand rather than silently suppressing trades.
+   bool HtfAgrees(int dir, double price)
+     {
+      if(!m_htfConfirm || m_htfEmaHandle == INVALID_HANDLE) return true;
+      double buf[];
+      if(CopyBuffer(m_htfEmaHandle, 0, 1, 1, buf) != 1) return true;
+      if(dir == SIGNAL_BUY)  return price > buf[0];
+      if(dir == SIGNAL_SELL) return price < buf[0];
+      return true;
      }
 
    virtual string Id() { return "halftrend_ema_v1"; }
@@ -321,6 +352,15 @@ public:
       if(!m_fired && m_confirmShift != 0)
         {
          m_fired = true;
+         int wanted = (m_trend == 0) ? SIGNAL_BUY : SIGNAL_SELL;
+         if(!HtfAgrees(wanted, m_confirmClose))
+           {
+            Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " refused — ", EnumToString(m_htfTf), " disagrees (price ",
+                  DoubleToString(m_confirmClose, 2), " on the wrong side of its EMA",
+                  m_htfEmaLen, ")");
+            return SIGNAL_NONE;
+           }
          if(m_trend == 0)
            {
             Print("halftrend_ema_v1: BUY confirmed — entry bar opens above EMA",

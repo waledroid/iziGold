@@ -51,3 +51,23 @@ def test_strict_takes_fewer_entries_than_loose():
     bt.STRICT_WINDOW = False
     loose = bt.run(candles, 4000.0, False)[0]
     assert len(strict) < len(loose), "strict must filter something in this slice"
+
+
+def test_cli_defaults_match_the_module_defaults():
+    """A default set only as a module constant is NOT the shipped default:
+    main() overwrites the globals with argparse's own defaults, so the two
+    must agree or the CLI silently runs something the tests never see.
+
+    Caught live on 2026-08-20: BIAS_EMA/BIAS_MODE/BIAS_TF were changed to the
+    M15-agreement defaults as module constants, the golden pinned the new
+    behaviour, every test passed -- and a plain `backtest.py` run still took
+    counter-trend entries because --bias-ema still defaulted to 0.
+    """
+    bt = _load_bt()
+    args = bt.build_parser().parse_args([])
+    assert args.bias_ema == bt.BIAS_EMA
+    assert args.bias_mode == bt.BIAS_MODE
+    assert args.bias_tf == bt.BIAS_TF
+    # --confirm/--ema-len use None as "leave the module constant alone"
+    assert args.confirm is None
+    assert args.ema_len is None

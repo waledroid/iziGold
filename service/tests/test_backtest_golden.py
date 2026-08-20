@@ -71,6 +71,9 @@ def _replay():
     # owner moved the default to 2 on 2026-08-20. Pinning it here keeps the
     # loose golden a like-for-like detector across BOTH default changes.
     bt.CONFIRM_CLOSES = 1
+    # Same again for the M15 agreement filter, which became a default on
+    # 2026-08-20, after this pin was captured. Off here = like-for-like.
+    bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF = 0, "tag", "M5"
     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
@@ -81,6 +84,8 @@ def _replay_strict():
     candles = json.loads(BARS.read_text())
     assert bt.STRICT_WINDOW is True, "strict is supposed to be the default"
     assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
+    assert (bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF) == (55, "skip", "M15"), \
+        "M15 EMA-55 agreement is supposed to be the default"
     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 

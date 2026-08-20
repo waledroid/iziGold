@@ -767,6 +767,47 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## M15 agreement gate (owner request, 2026-08-20)
+
+**We trade M5 and ask M15 for permission.** After the M5 strict-window confirm
+fires, the entry is REFUSED unless price sits on the signal's side of the
+**EMA-55 of the last CLOSED M15 bar**: BUY needs price above it, SELL below.
+Shift 1 on purpose — a still-forming M15 candle can never flip the answer
+mid-bar, and it is exactly what the replay models (no lookahead).
+
+- EA: `HalfTrendEma.mqh::HtfAgrees()`, inputs `HtfConfirm` (default **true**),
+  `HtfConfirmTf` (**PERIOD_M15**), `HtfConfirmEma` (**55**). **Fail-open** by
+  house rule: a missing handle or failed `CopyBuffer` lets the strategy's own
+  signal stand rather than silently suppressing trades. A refusal prints
+  `... refused — PERIOD_M15 disagrees (price X on the wrong side of its EMA55)`.
+- Replay: `BIAS_EMA=55, BIAS_MODE="skip", BIAS_TF="M15"` — now the DEFAULT, so a
+  plain `backtest.py` run models the live EA. `--bias-ema 0` restores the old
+  behaviour.
+
+Why (backtest.py, bars_max.json, $10,000, M5 c=2):
+
+| window | without M15 | with M15 |
+|---|---|---|
+| H1 2025-03..11 | -4,516.76 | **-1,861.15** |
+| H2 2025-12..2026-08 | +4,155.29 | **+4,456.35** |
+| full 516d | -2,234.95 | **+1,679.70** |
+| worst chop quarter (2025 Q3) | -4,255.64 | **-1,723.72** (-59%) |
+
+It improved BOTH halves, which is the signature of a filter rather than a fit,
+and it helps 3 of the 4 entry timings (loose, c=1, c=2 — not c=3). It refuses
+452 counter-trend entries over 516 days; win rate 35% -> 37.6%.
+
+**Do not read the +1,679.70 as an edge.** Quarter by quarter, four of six
+still lose and the positive total is dominated by one six-week window
+(2026-07-01..08-17, +9,154.98). The defensible claim is narrow and is the one
+the owner asked for: it cuts the damage in zigzag markets.
+
+**A trap this change exposed, worth remembering:** changing a module constant
+in `backtest.py` does NOT change the shipped default — `main()` overwrites the
+globals from argparse, so a constant-only edit leaves the CLI running the old
+value while every test passes. Both must move together;
+`test_cli_defaults_match_the_module_defaults` now pins that.
+
 ## Entry timing: ConfirmCloses = 2 (owner decision, 2026-08-20)
 
 `ConfirmCloses` is **2** in both the EA (`XauAssistant.mq5` input) and the
