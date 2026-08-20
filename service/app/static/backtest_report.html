@@ -58,6 +58,12 @@
 <script>
 var RUN = __DATA__;
 
+// One bar's length in seconds, read off the data rather than assumed: --tf M15
+// runs carry 900-second bars, and a hard-coded 300 put every stop-line gap
+// point off-grid (phantom columns) and gave row-click zoom a third of the
+// intended context.
+var BAR_SEC = (RUN.candles.t.length > 1 ? RUN.candles.t[1] - RUN.candles.t[0] : 300);
+
 var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
 var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
 var GREEN_L = "#26a69a", RED_L = "#ef5350";
@@ -143,14 +149,33 @@ var candles = chart.addCandlestickSeries({
   htSeries.setData(ht);
 
   // stepped stop line: one segment per trade, whitespace between them so
-  // separate trades never join into one line
-  var stops = [], seen = {};
-  RUN.trades.forEach(function (tr) {
-    tr.stop_history.forEach(function (h) { if (!seen[h.t]) { seen[h.t] = 1; stops.push({ time: h.t, value: h.stop }); } });
-    if (!seen[tr.exit_t]) { seen[tr.exit_t] = 1; stops.push({ time: tr.exit_t, value: tr.stop_history[tr.stop_history.length - 1].stop }); }
-    var gap = tr.exit_t + 300;
-    if (!seen[gap]) { seen[gap] = 1; stops.push({ time: gap }); }
+  // separate trades never join into one line.
+  //
+  // A Lightweight Charts series holds ONE point per timestamp, and the engine
+  // opens a new basket in the same loop iteration that closed the previous one
+  // (a reversal exit and the next entry share a bar). So collisions are normal
+  // -- 124 of the 1,729 trades in the real 12-month run -- and the rule is that
+  // the NEWER basket wins the shared timestamp: its initial stop is the one
+  // that must be visible. An earlier "skip duplicates" version dropped the new
+  // basket's first point instead, which left 71 trades with <= 1 point and no
+  // stop line drawn at all.
+  var byTime = {};                      // time -> point; later trades overwrite
+  var chrono = RUN.trades.slice().sort(function (a, b) {
+    return a.legs[0].t - b.legs[0].t;   // "newer wins" needs chronological order
   });
+  chrono.forEach(function (tr, i) {
+    tr.stop_history.forEach(function (h) { byTime[h.t] = { time: h.t, value: h.stop }; });
+    var last = tr.stop_history[tr.stop_history.length - 1];
+    if (last) byTime[tr.exit_t] = { time: tr.exit_t, value: last.stop };
+    // whitespace one bar after the exit -- but only where no later trade lives,
+    // otherwise the gap point would cut the NEXT basket's line off at its first
+    // step (back-to-back trades have no free bar to separate them).
+    var gap = tr.exit_t + BAR_SEC, next = chrono[i + 1];
+    var nextStart = next ? (next.stop_history.length ? next.stop_history[0].t
+                                                     : next.legs[0].t) : Infinity;
+    if (gap < nextStart && byTime[gap] === undefined) byTime[gap] = { time: gap };
+  });
+  var stops = Object.keys(byTime).map(function (k) { return byTime[k]; });
   stops.sort(function (a, b) { return a.time - b.time; });
   stopSeries.setData(stops);
 
@@ -239,7 +264,7 @@ document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
 
 document.getElementById("rows").addEventListener("click", function (ev) {
   var tr = ev.target.closest("tr"); if (!tr) return;
-  var t = RUN.trades[+tr.dataset.i], pad = 60 * 300;   // 60 M5 bars of context
+  var t = RUN.trades[+tr.dataset.i], pad = 60 * BAR_SEC;   // 60 bars of context
   chart.timeScale().setVisibleRange({ from: t.legs[0].t - pad, to: t.exit_t + pad });
 });
 </script>

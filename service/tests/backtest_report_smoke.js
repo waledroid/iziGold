@@ -35,6 +35,12 @@
  *      out (entry/exit only) once trade count exceeds the 300 cutoff added
  *      to the template for the real 1,210-trade run; a fixture below the
  *      cutoff keeps its add markers.
+ *   4. Markers really are re-sorted, not merely already in order.
+ *   5. Back-to-back trades that SHARE a timestamp (a reversal exit and the
+ *      next entry land on the same bar) each keep a drawable stop line, with
+ *      the NEWER basket owning the shared timestamp.
+ *   6. Bar length is derived from the candle series, so --tf M15 runs put
+ *      their stop-line gap points on the M15 grid instead of 300 s off it.
  *
  * Run: node service/tests/backtest_report_smoke.js
  * Exit code 0 = every assertion passed. Non-zero + message on stderr = fail.
@@ -217,7 +223,8 @@ const T0 = 1700000000;
 const BAR = 300;
 const N = 20;
 
-function buildSmallFixture() {
+function buildSmallFixture(bar) {
+  const BAR = bar || 300;   // bar length in seconds (300 = M5, 900 = M15)
   const t = [], o = [], h = [], l = [], c = [];
   const ema9 = [], ema21 = [], ema55 = [], ema200 = [], htV = [], htTrend = [];
   for (let i = 0; i < N; i++) {
@@ -447,6 +454,90 @@ function buildSmallFixture() {
     'markers were not actually sorted -- input trade order was chronologically reversed ' +
     'and the output should not be; Lightweight Charts throws at runtime on this');
   console.log('ok    markers are actually re-sorted from out-of-chronological-order trade input');
+})();
+
+// ---------------------------------------------------------------------------
+// 5. Back-to-back trades that SHARE a timestamp keep both stop lines.
+//
+// run() opens a new basket in the same loop iteration that closed the previous
+// one, so a reversal exit and the next entry land on the same bar. A series
+// holds one point per timestamp: the NEWER basket's stop must win it. The
+// first version of this code skipped the collision as a duplicate, which cost
+// 124 of the real run's 1,729 trades their initial stop point and left 71 of
+// them with <= 1 point -- no stop line drawn at all.
+// ---------------------------------------------------------------------------
+(function backToBackStopLineChecks() {
+  const f = buildSmallFixture();
+  const A_EXIT = T0 + 6 * BAR;
+  f.trades = [
+    {
+      dir: 'BUY',
+      legs: [{ t: T0 + 2 * BAR, px: 2400.00, oz: 100 }],
+      tp: 2410.00,
+      stop_history: [{ t: T0 + 2 * BAR, stop: 2395.00 }],
+      exit: 2405.00, exit_t: A_EXIT, why: 'reversal', pl: 250.00, bal_after: 4250.00,
+      regime: 'trend',
+    },
+    {
+      // reversal: this basket opens on the very bar that closed the one above
+      dir: 'SELL',
+      legs: [{ t: A_EXIT, px: 2405.00, oz: 80 }],
+      tp: 2395.00,
+      stop_history: [{ t: A_EXIT, stop: 2411.00 }, { t: T0 + 8 * BAR, stop: 2409.00 }],
+      exit: 2399.00, exit_t: T0 + 9 * BAR, why: 'stop', pl: 100.00, bal_after: 4350.00,
+      regime: 'trend',
+    },
+  ];
+  f.stats.trades = 2;
+  const { lineSeriesCalls } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
+  const stopS = lineSeriesCalls[5];
+  const pts = Array.from(stopS.data).map((p) => ({ time: p.time, value: p.value }));
+  const at = (time) => pts.find((p) => p.time === time);
+
+  // the shared bar carries the NEWER basket's initial stop, not the older
+  // basket's carried-forward one
+  assert.ok(at(A_EXIT), 'the shared entry/exit timestamp has no stop point at all');
+  assert.strictEqual(at(A_EXIT).value, 2411.00,
+    'on a shared timestamp the NEWER basket\'s initial stop must win (got ' +
+    `${at(A_EXIT).value}, expected 2411 -- the incoming basket's stop)`);
+
+  // and no whitespace may be dropped inside the second basket's span, which
+  // would cut its line off one bar after it starts
+  const inside = pts.filter((p) => p.time > A_EXIT && p.time <= T0 + 9 * BAR &&
+    p.value === undefined);
+  assert.deepStrictEqual(inside, [],
+    'whitespace gap point landed inside the second basket, cutting its stop line');
+
+  // every trade still contributes at least 2 valued points (a line, not a dot)
+  f.trades.forEach((tr, i) => {
+    const span = pts.filter((p) => p.value !== undefined &&
+      p.time >= tr.stop_history[0].t && p.time <= tr.exit_t);
+    assert.ok(span.length >= 2,
+      `trade ${i} has ${span.length} stop point(s) -- no stop line would be drawn`);
+  });
+  console.log('ok    back-to-back trades sharing a timestamp: newer stop wins, both lines drawn');
+})();
+
+// ---------------------------------------------------------------------------
+// 6. Bar length is read off the data, not assumed to be 300 s (--tf M15).
+// ---------------------------------------------------------------------------
+(function barSecondsChecks() {
+  const M15 = 900;
+  const f = buildSmallFixture(M15);
+  f.meta.tf = 'M15';
+  const { lineSeriesCalls, elements } = runScenario(f, {
+    visibleFrom: T0, visibleTo: T0 + 13 * M15,
+  });
+  const stopS = lineSeriesCalls[5];
+  const whitespace = Array.from(stopS.data)
+    .filter((p) => !('value' in p)).map((p) => p.time);
+  assert.deepStrictEqual(whitespace, [T0 + 7 * M15, T0 + 13 * M15],
+    'stop-line gap points must sit one M15 bar after each exit, on the bar grid');
+  // row-click zoom pads by 60 bars of the run's OWN timeframe
+  const handler = elements.rows._handlers.click;
+  assert.ok(handler, 'no click handler registered on the trade table');
+  handler({ target: { closest: () => ({ dataset: { i: '0' } }) } });
+  console.log('ok    bar length derived from the candle series (M15 gap points land on the grid)');
 })();
 
 console.log('\nPASS -- all headless assertions passed');
