@@ -95,8 +95,10 @@ One JSON object, the only interface between engine and page:
 ```
 
 Candles and indicators are **parallel arrays**, not per-bar objects: 12 months
-of M5 is ~74k bars, and the array form keeps the payload near 3–4 MB instead
+of M5 is ~74k bars, and the array form keeps the payload near 6–7 MB instead
 of ~12 MB with no loss of detail. `null` marks an unwarmed indicator bar.
+Measured: a 365-day M5 run (70,707 bars, 1,210 trades) writes a 6.3 MB `--json`
+artifact and a 6.4 MB `--web` report.
 
 Indicators come from `app.indicators.ema/halftrend` (amplitude 4) — the same
 functions the Mini App and the EA port use. The page never computes a rule or
@@ -257,7 +259,14 @@ time, running balance, regime are all present), rather than being retrofitted.
 - **Silent behaviour change while editing a 1,429-line engine.** Mitigated by
   the golden-run test captured first.
 - **Page weight.** 74k bars is the owner's explicit choice; parallel arrays and
-  a single indicator pass keep it near 3–4 MB. If the browser struggles, the
-  fallback is a timeframe switcher, not a change of default.
+  a single indicator pass keep it near 6–7 MB (measured: 6.3 MB JSON / 6.4 MB
+  HTML for a 365-day, 70,707-bar, 1,210-trade run). What actually shipped for
+  a struggling browser is not a timeframe switcher: candles, indicators, the
+  stepped stop and every trade's entry/exit markers still draw in full at any
+  trade count, and the trade table is never thinned; above 300 trades the page
+  drops only the pyramid-add ("+") chart markers, and discloses on-page how
+  many trades' add markers it hid (the Legs column in the table still shows
+  every add). A timeframe switcher was considered and rejected — it would
+  change what the replay tests, not just how it renders.
 - **Reports read as truth.** Every report and `--help` carries the caveat block
   naming the unmodelled brake and news blackout.

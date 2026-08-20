@@ -1072,7 +1072,7 @@ print('bars', len(a['candles']['t']), 'trades', len(a['trades']))
 print('stats', a['stats'])"
 ```
 
-Expected: ~74,000 bars, a few hundred trades, and a file in the 5–7 MB range. Record the actual size — Task 7 embeds it.
+Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (365-day M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md.
 
 - [ ] **Step 7: Commit**
 
@@ -1529,13 +1529,13 @@ git commit -m "feat(backtest): --web writes a self-contained report with MT5-sty
 - Modify: `.claude/agents/izi.md`
 - Modify: `docs/superpowers/plans/2026-08-20-backtest-report.md` (tick the boxes)
 
-- [ ] **Step 1: Find the backtest section**
+- [x] **Step 1: Find the backtest section**
 
 ```bash
 grep -n -i 'backtest' .claude/agents/izi.md | head -20
 ```
 
-- [ ] **Step 2: Document the new behaviour**
+- [x] **Step 2: Document the new behaviour**
 
 Update (or add) the backtest section to state, in izi.md's voice:
 
@@ -1545,11 +1545,11 @@ Update (or add) the backtest section to state, in izi.md's voice:
 - The replay does NOT model the daily-loss brake, the kill switch, or the news blackout — and now says so in `--help` and on every report.
 - `service/tests/test_backtest_golden.py` pins replay behaviour over a fixed slice; if it fails and you did not intend to change a rule, you broke one.
 
-- [ ] **Step 3: Record the headline result**
+- [x] **Step 3: Record the headline result**
 
 Add the strict-vs-loose 12-month comparison measured in Task 3 Step 8 to izi.md's history section — this is the first evidence of what the strict-entry fix is worth over a year.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .claude/agents/izi.md docs/superpowers/plans/2026-08-20-backtest-report.md
@@ -1560,5 +1560,5 @@ git commit -m "docs(izi): backtest defaults, balance floors, --json/--web report
 
 ## Later phases (not this plan)
 
-- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 5–7 MB over the wire.
+- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire (measured for a 365-day, 70,707-bar, 1,210-trade run).
 - **Spec §6 — day/month report views.** Refactor `_report_month()` / `_report_day()` in `service/app/miniapp.py` to take a list of baskets instead of a sqlite connection, capture a golden test of today's live output first, then feed them backtest trades so the live and backtest reports share one shaper and one renderer.

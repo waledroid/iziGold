@@ -540,7 +540,24 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
   the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
   the news blackout (NewsGuard) — replay results are slightly optimistic vs
-  the live rulebook around losing days and high-impact events. `--source
+  the live rulebook around losing days and high-impact events; both
+  omissions are now named in `--help` and on every report's caveats line
+  (2026-08-20), so the limitation travels with the output instead of living
+  only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
+  → wait one closed bar → enter only if the next bar opens beyond EMA-55,
+  else the signal is dead until the next flip — this has been the live EA's
+  law since 2026-08-16 (`767497a`). `--loose-window` restores the pre-2026-08-20
+  replay behaviour (enter on the flip bar itself) for reproducing old
+  studies — **every dated report under `.superpowers/` from before
+  2026-08-20 is a LOOSE run**; re-running one with today's default gets
+  different trades and different P/L. `--balance` refuses below $500 (the
+  result would be fiction) and warns below $2,000; the binding constraint is
+  the 0.01-minimum-lot floor, not spread — measured over 12 months of M5
+  (`bars_max.json`, 365 days): entries clamp to that floor 88.7% of the time
+  at $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000. Every run now
+  reports its own clamp rate and the realized risk actually taken (median /
+  p90 vs the 1% target), in stdout, `--json`, and the `--web` page (a
+  `>10%` clamp rate renders an on-page warning). `--source
   PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
   `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
   every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
@@ -557,11 +574,14 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   render) + a stepped stop-loss line + a canvas overlay drawing each trade's
   red risk / green reward zone (green zone omitted when `tp` is null, e.g.
   `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
-  A real 12-month run is ~1,210 trades / 6.4 MB; above 300 trades the page
-  thins pyramid-add chart markers (entry/exit markers always draw; the trade
-  table is never thinned) to keep Lightweight Charts responsive — this is a
-  report-rendering thinning only, it does not touch replay logic or the
-  artifact JSON. `--web` and `--json` share one artifact build when both are
+  A real 365-day M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
+  6.4 MB `--web`; above 300 trades the page thins pyramid-add chart markers
+  (entry/exit markers always draw; the trade table's Legs column is never
+  thinned) to keep Lightweight Charts responsive — this is a report-rendering
+  thinning only, it does not touch replay logic or the artifact JSON. The page
+  now discloses this on-page (a `.warn` line naming how many trades' add
+  markers it hid, e.g. "638 of 1,210" for that run) so the limit travels with
+  the report instead of silently vanishing markers. `--web` and `--json` share one artifact build when both are
   passed together. `--json`/`--web` output is unvalidated by eye beyond the
   automated tests (`service/tests/test_backtest_web.py`,
   `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
@@ -689,6 +709,23 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   per-phase OK/SKIP/FAILED summary (§6). Rule of the house: **an optional
   component must never be able to cost the trader the components after it,
   and least of all the watchdog.**
+
+- **2026-08-20 first measured cost of the strict-entry fix** — the backtester
+  flipped its default to the strict 3-bar entry window (§3 above), matching
+  what the live EA has done since 2026-08-16. Run head-to-head over the same
+  12 months (`bars_max.json`, 365 days, $4,000 start): **loose (old replay
+  behaviour) net −$1,998.59 (−49.96%), final balance $2,001.41, max drawdown
+  $2,576.96** vs **strict (live EA's actual rule) net −$2,874.96 (−71.87%),
+  final balance $1,125.04, max drawdown $3,035.57**. Strict is *worse* on
+  this window — both deeper loss and deeper drawdown — and it stays the
+  default anyway because it is what the EA actually does; a backtester that
+  quietly modelled the easier rule would be lying about live risk. This is
+  not a verdict on the strategy, it is the first real evidence of what the
+  08-16 entry-window fix costs over a year. Strict enters more often than the
+  live EA is observed to (4.69 trades/day over the 365-day run vs ~3/day
+  observed live on 2026-08-19) — most likely the daily-loss brake, kill
+  switch and news blackout this replay still does not model (hypothesis, not
+  confirmed; see §3 above and re-check once more live days accumulate).
 
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
