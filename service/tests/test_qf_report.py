@@ -45,3 +45,39 @@ def test_concurrency_is_reported():
     0) cannot slip through unnoticed."""
     _bt, art = _artifact()
     assert art["stats"]["lanes"]["qf_trades_overlapping_ht"] == 1
+
+
+def test_lane_stats_carry_a_per_lane_max_drawdown():
+    """Spec 2026-08-20 asks for "(trades, win%, net, max DD)" per lane. The
+    first three shipped; max DD did not."""
+    _bt, art = _artifact()
+    for key in ("ht", "qf"):
+        assert "max_dd" in art["stats"]["lanes"][key]
+        assert art["stats"]["lanes"][key]["max_dd"] >= 0.0
+
+
+def test_lane_drawdown_is_a_path_measure_not_a_sum_of_losers():
+    bt = _load_bt()
+    rows = [{"pl": 100.0, "exit_t": 4}, {"pl": -30.0, "exit_t": 1},
+            {"pl": -20.0, "exit_t": 3}, {"pl": 10.0, "exit_t": 2}]
+    # chronological: -30, +10, -20, +100 -> cumulative -30, -20, -40, +60.
+    # The peak starts at 0 (the lane's own starting point), so the deepest
+    # dig below any prior peak is 40, not the 50 you get by summing losers.
+    assert bt._lane_drawdown(rows) == 40.0
+    assert bt._lane_drawdown([{"pl": 5.0, "exit_t": 1},
+                              {"pl": 7.0, "exit_t": 2}]) == 0.0
+    assert bt._lane_drawdown([]) == 0.0
+
+
+def test_quickflip_entries_reach_the_sizing_report():
+    """M8: sizing["clamped"] was incremented only in the HalfTrend block, so
+    a lane clamping its own entries to the minimum lot was invisible in the
+    printed clamp rate."""
+    bt = _load_bt()
+    bt.STRATEGY = "qf"
+    bt.run(json.loads(BARS.read_text()), 10000.0, False)
+    s = bt.run.sizing
+    assert s["entries"] == 0, "a qf-only run risk-sizes no HalfTrend entry"
+    assert s["qf_entries"] > 0, "...but QuickFlip's entries must be counted"
+    assert s["qf_clamp_pct"] is not None
+    assert s["qf_risk_median"] is not None

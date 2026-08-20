@@ -123,3 +123,24 @@ def test_the_valley_is_never_shallower_than_the_closed_drawdown():
         _t, _b, max_dd, valley = bt.run(
             json.loads(BARS.read_text()), 10000.0, False)
         assert valley >= max_dd - 1e-9, strategy
+
+
+def test_a_quickflip_lane_on_m15_warns_instead_of_going_silent():
+    """M5: qf_signals() needs THREE M5 bars to box its 15-minute opening
+    range, so on M15 (one bar at 13:30) it produces zero setups, always,
+    with no warning -- a `--tf M15 --strategy both` study silently measured
+    HalfTrend alone."""
+    bt = _load_bt()
+    assert bt.qf_timeframe_warning("M5", "both") is None
+    assert bt.qf_timeframe_warning("M15", "ht") is None
+    for strategy in ("qf", "both"):
+        warning = bt.qf_timeframe_warning("M15", strategy)
+        assert warning and "ZERO" in warning
+
+
+def test_the_m15_warning_is_telling_the_truth():
+    """Not a guess: the lane really is empty on M15 and non-empty on M5."""
+    bt = _load_bt()
+    candles = json.loads(BARS.read_text())
+    assert bt.qf_signals(candles), "fixture must hold M5 setups"
+    assert bt.qf_signals(bt.resample(candles, 900)) == []

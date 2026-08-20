@@ -901,6 +901,17 @@ def run(candles, start_balance, verbose):
     qf_pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
 
     sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
+    # QuickFlip sizes off the same balance but at its own risk percent, so
+    # its clamps are counted separately rather than blended into HalfTrend's
+    # (a 0.25%-risk entry and a 1%-risk entry are not the same measurement).
+    # Blended, they were simply invisible: the clamp line counted only
+    # HalfTrend's entries while QuickFlip clamped 13.6% of its own.
+    # "clamped" keeps HalfTrend's meaning (risk sizing asked for LESS than
+    # one ounce and was overruled upward = risk exceeded). "min_lot" counts
+    # every entry that ended at the broker floor, including the ones where
+    # one ounce is genuinely what 0.25% bought -- a different and much larger
+    # number, reported next to it so neither reading can be mistaken.
+    qf_sizing = {"entries": 0, "clamped": 0, "min_lot": 0, "risk_pct": []}
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
@@ -1021,7 +1032,14 @@ def run(candles, start_balance, verbose):
             s = qf_by_i[i]
             dist = abs(s["entry"] - s["stop"])
             if dist > 0:
-                oz = max(MIN_OZ, int(bal * QF_RISK_PCT / 100 / dist))
+                want = int(bal * QF_RISK_PCT / 100 / dist)
+                oz = max(MIN_OZ, want)
+                qf_sizing["entries"] += 1
+                if want < MIN_OZ:
+                    qf_sizing["clamped"] += 1
+                if oz == MIN_OZ:
+                    qf_sizing["min_lot"] += 1
+                qf_sizing["risk_pct"].append(100.0 * oz * dist / bal)
                 qf_pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
                           "stop": s["stop"], "tp": s["tp"],
                           "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
@@ -1330,14 +1348,40 @@ def run(candles, start_balance, verbose):
     # None, not 0.0, when nothing was risk-sized (--entry-mode fixed sizes
     # every entry at --fixed-lots): "0.00% risk taken" reads as "we risked
     # nothing", when the truth is that risk sizing never ran.
+    qr = sorted(qf_sizing["risk_pct"])
+    qn = qf_sizing["entries"]
     run.sizing = {
         "entries": n,
         "clamped": sizing["clamped"],
         "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
         "risk_median": round(r[len(r) // 2], 2) if r else None,
         "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
+        # the QuickFlip lane, counted separately (see qf_sizing above)
+        "qf_entries": qn,
+        "qf_clamped": qf_sizing["clamped"],
+        "qf_min_lot": qf_sizing["min_lot"],
+        "qf_clamp_pct": round(100.0 * qf_sizing["clamped"] / qn, 1) if qn else None,
+        "qf_risk_median": round(qr[len(qr) // 2], 2) if qr else None,
+        "qf_risk_p90": round(qr[int(0.9 * len(qr))], 2) if qr else None,
     }
     return trades, bal, max_dd, max_valley
+
+
+def _lane_drawdown(rows):
+    """Max peak-to-trough of ONE lane's own realized P/L curve, in dollars.
+
+    Deliberately the lane's own curve, not the account's: the account
+    drawdown is a joint number and already reported as `max drawdown`. This
+    answers "how deep did THIS strategy dig on its own?" -- so the two lanes'
+    figures do not add up to the account's, and are not meant to.
+    """
+    peak = run_sum = 0.0
+    dd = 0.0
+    for t in sorted(rows, key=lambda t: t["exit_t"]):
+        run_sum += t["pl"]
+        peak = max(peak, run_sum)
+        dd = max(dd, peak - run_sum)
+    return round(dd, 2)
 
 
 def _lane_stats(trades):
@@ -1354,6 +1398,7 @@ def _lane_stats(trades):
             "losses": sum(1 for t in rows if t["pl"] < 0),
             "win_rate": round(100.0 * wins / len(rows), 1) if rows else 0.0,
             "net": round(sum(t["pl"] for t in rows), 2),
+            "max_dd": _lane_drawdown(rows),
             "best": round(max((t["pl"] for t in rows), default=0.0), 2),
             "worst": round(min((t["pl"] for t in rows), default=0.0), 2),
         }
@@ -1665,6 +1710,22 @@ def build_parser():
     return ap
 
 
+def qf_timeframe_warning(tf, strategy):
+    """QuickFlip boxes a 15-minute opening range out of THREE M5 bars
+    (`len(box) != 3: continue` in qf_signals). On any timeframe other than
+    M5 that condition can never be met -- on M15 there is exactly one bar at
+    13:30 -- so the lane produces zero setups, silently, forever. Return the
+    warning a run must print, or None."""
+    if tf == "M5" or strategy not in ("qf", "both"):
+        return None
+    return (f"WARNING: --strategy {strategy} asked for the QuickFlip lane, but "
+            f"QuickFlip boxes its opening range from THREE M5 bars and this "
+            f"run is on {tf}. It will produce ZERO QuickFlip setups"
+            + (" -- this run measures HalfTrend alone."
+               if strategy == "both" else
+               " -- this run measures NOTHING."))
+
+
 def apply_window_args(args):
     """Wire --loose-window (and the suppressed --strict-window no-op) into
     the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
@@ -1749,29 +1810,53 @@ def main():
         sys.exit(f"only {len(candles)} candles available - need at least 100")
 
     t0, t1 = hhmm(candles[0]["t"])[0], hhmm(candles[-1]["t"])[0]
-    mode = (f" | entry mode fixed ({FIXED_LOTS:g} lots)"
-            if ENTRY_MODE == "fixed" else "")
-    print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
-          f"(server time) | start balance ${args.balance:,.0f} "
-          f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}"
-          f" | atr-spike gate {ATR_SPIKE_RATIO:g} | ema {EMA_LEN} "
-          f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"
-          + (f" | chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}/X{CHOP_BOX_ATR:g}"
-             if CHOP_FLIPS > 0 else "")
-          + (" | STRICT WINDOW" if STRICT_WINDOW else "")
-          + (f" | min stop {MIN_STOP_ATR:g} ATR" if MIN_STOP_ATR > 0 else "")
-          + (f" | sr lookback {SR_LOOKBACK}"
-             + (" report-only" if SR_REPORT else
-                (f" min-headroom {SR_MIN_HEADROOM:g} ATR"
-                 if SR_MIN_HEADROOM > 0 else " tag-only"))
-             if SR_LOOKBACK > 0 else "")
-          + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
-             if BIAS_EMA > 0 else "")
-          + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
-          + (f" | TF {TF}" if TF != "M5" else "")
-          + (f" | profit target {PROFIT_TARGET_PCT:g}%"
-             if PROFIT_TARGET_PCT != 2.0 else "")
-          + "\n")
+    # The header is the only place a reader learns what the run measured, and
+    # --strategy was missing from it: a qf run advertised HalfTrend's entire
+    # parameter set for a run in which HalfTrend never traded. Name the lane,
+    # and print each lane's parameters only when that lane actually runs.
+    lane_desc = {"ht": "halftrend only", "qf": "quickflip only",
+                 "both": "halftrend + quickflip"}
+    head = [f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> "
+            f"{t1:%m-%d %H:%M} (server time)",
+            f"start balance ${args.balance:,.0f}",
+            f"strategy {STRATEGY} ({lane_desc[STRATEGY]})"]
+    if STRATEGY in ("ht", "both"):
+        head.append(f"exit scheme {EXIT_SCHEME}")
+        if ENTRY_MODE == "fixed":
+            head.append(f"entry mode fixed ({FIXED_LOTS:g} lots)")
+        head += [f"regime gate {REGIME_GATE}",
+                 f"atr-spike gate {ATR_SPIKE_RATIO:g}",
+                 f"ema {EMA_LEN}",
+                 f"confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"]
+        if CHOP_FLIPS > 0:
+            head.append(f"chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}"
+                        f"/X{CHOP_BOX_ATR:g}")
+        if STRICT_WINDOW:
+            head.append("STRICT WINDOW")
+        if MIN_STOP_ATR > 0:
+            head.append(f"min stop {MIN_STOP_ATR:g} ATR")
+        if SR_LOOKBACK > 0:
+            head.append(f"sr lookback {SR_LOOKBACK}"
+                        + (" report-only" if SR_REPORT else
+                           (f" min-headroom {SR_MIN_HEADROOM:g} ATR"
+                            if SR_MIN_HEADROOM > 0 else " tag-only")))
+        if BIAS_EMA > 0:
+            head.append(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}")
+        if WINDOW != (4, 23):
+            head.append(f"window {WINDOW[0]}-{WINDOW[1]}")
+        if PROFIT_TARGET_PCT != 2.0:
+            head.append(f"profit target {PROFIT_TARGET_PCT:g}%")
+    if STRATEGY in ("qf", "both"):
+        head.append(f"quickflip {QF_HOUR:02d}:{QF_MINUTE:02d} server, box >= "
+                    f"{QF_ATR_PCT:g}% daily ATR, {QF_WINDOW_MIN}min window, "
+                    f"{QF_RISK_PCT:g}% risk")
+    if TF != "M5":
+        head.append(f"TF {TF}")
+    print(" | ".join(head))
+    tf_warning = qf_timeframe_warning(TF, STRATEGY)
+    if tf_warning:
+        print(tf_warning)
+    print()
 
     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
     # Several report blocks below read keys only HalfTrend's baskets carry
@@ -1816,26 +1901,31 @@ def main():
           f"win% {100 * len(wins) / max(1, len(trades)):.1f}  "
           f"avg winner {sum(t['pl'] for t in wins) / max(1, len(wins)):+.2f}  "
           f"avg loser {sum(t['pl'] for t in losses) / max(1, len(losses)):+.2f}")
-    print("entry regime breakdown (service classifier on the 300-bar window):")
-    for rg in ("trend", "range", "high_volatility"):
-        sub = [t for t in ht_trades if t.get("regime") == rg]
-        w = [t for t in sub if t["pl"] > 0]
-        print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
-              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
-    print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
-    for r in ATR_SPIKE_BUCKETS:
-        sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
-        w = [t for t in sub if t["pl"] > 0]
-        print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
-              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+    # Every block from here to the lane summary reads HalfTrend-only fields.
+    # With no HalfTrend trade they printed rows of zeros -- and on a qf run
+    # "trend trades 0 net +0.00" reads as "QuickFlip took no trend trades",
+    # which is not a fact about anything. Say nothing instead.
+    if ht_trades:
+        print("entry regime breakdown (service classifier on the 300-bar window):")
+        for rg in ("trend", "range", "high_volatility"):
+            sub = [t for t in ht_trades if t.get("regime") == rg]
+            w = [t for t in sub if t["pl"] > 0]
+            print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+        print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
+        for r in ATR_SPIKE_BUCKETS:
+            sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
+            w = [t for t in sub if t["pl"] > 0]
+            print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
     sk = getattr(run, "skipped", [])
-    if REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0:
+    if ht_trades and (REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0):
         from collections import Counter
         cnt = Counter(r for _, _, r in sk)
         print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
               f"refused {len(sk)} entries "
               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
-    if CHOP_FLIPS > 0:
+    if ht_trades and CHOP_FLIPS > 0:
         ch = [t for t in ht_trades if t.get("chop")]
         nc = [t for t in ht_trades if not t.get("chop")]
         for lab, sub in (("chop-tagged", ch), ("not chop", nc)):
@@ -1848,12 +1938,12 @@ def main():
         nchop = sum(1 for _, _, r in sk if r == "chop")
         print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
               f"soft-sized {sum(1 for t in ht_trades if t.get('soft'))} baskets")
-    if STRICT_WINDOW:
+    if ht_trades and STRICT_WINDOW:
         dd = getattr(run, "dead_signals", [])
         print(f"strict window: {len(dd)} flips died at the decision bar "
               f"(entry bar would open on the wrong side of the EMA); "
               f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
-    if MIN_STOP_ATR > 0:
+    if ht_trades and MIN_STOP_ATR > 0:
         fl = [t for t in ht_trades if t.get("floored")]
         saved = [t for t in fl if t.get("orig_hit_bar") is not None
                  and t["orig_hit_bar"] <= NOISE_BARS]
@@ -1881,7 +1971,7 @@ def main():
                   f"stop {t['entry_stop']:.2f} (was {t['orig_stop']:.2f}, "
                   f"{t['dist_atr']:.2f} ATR) old-stop hit bar "
                   f"{t['orig_hit_bar']} -> {t['why']} {t['pl']:+.2f}")
-    if BIAS_EMA > 0:
+    if ht_trades and BIAS_EMA > 0:
         print(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE} "
               f"(with = BUY above / SELL below the EMA at entry):")
         for lab in ("with", "counter"):
@@ -1905,7 +1995,7 @@ def main():
             if tf in bf:
                 per, tot, nd = bf[tf]
                 print(f"  bias flips/day on {tf}: {per:.2f} ({tot} flips over {nd} days)")
-    if HOUR_TABLE:
+    if ht_trades and HOUR_TABLE:
         print("entry-hour breakdown (server time; trade attributed to the "
               "hour its first leg opened):")
         print("  hour  trades   win%        net        avg      worst")
@@ -1919,7 +2009,7 @@ def main():
             print(f"  {hr:02d}    {len(sub):6}  {100 * len(w) / len(sub):5.1f}"
                   f"  {net:+10.2f} {net / len(sub):+10.2f} "
                   f"{min(t['pl'] for t in sub):+10.2f}")
-    if SR_LOOKBACK > 0:
+    if ht_trades and SR_LOOKBACK > 0:
         b1, b2, b3 = SR_BUCKETS
         print(f"headroom to the nearest opposing level (pivots k={SR_PIVOT_K} "
               f"over {SR_LOOKBACK} bars + prev-day H/L + session H/L, "
@@ -1960,18 +2050,24 @@ def main():
         if untag:
             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
                   f"trades; these are never refused)")
-    if CONFIRM_MODE == "open":
+    if ht_trades and CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
               f"open sat on a different side of the EMA than the close")
     ls = _lane_stats(trades)
-    if ls["ht"]["trades"] and ls["qf"]["trades"]:
-        for lane, label in (("ht", "halftrend"), ("qf", "quickflip")):
-            d = ls[lane]
-            print(f"lane {label:<10} trades {d['trades']:>5}  win% "
-                  f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
+    present = [(k, lab) for k, lab in (("ht", "halftrend"), ("qf", "quickflip"))
+               if ls[k]["trades"]]
+    for lane, label in present:
+        d = ls[lane]
+        print(f"lane {label:<10} trades {d['trades']:>5}  win% "
+              f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}  "
+              f"max dd {d['max_dd']:>9.2f}")
+    if len(present) > 1:
         print(f"           quickflip trades overlapping a halftrend position: "
               f"{ls['qf_trades_overlapping_ht']}")
+    if present:
+        print("           lane max dd walks that lane's OWN realized curve; "
+              "the account's joint drawdown is on the line below.")
     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
           f"({100 * (bal / args.balance - 1):+.2f}%)")
     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
@@ -1979,10 +2075,48 @@ def main():
     s = getattr(run, "sizing", None)
     if s and s["entries"]:
         flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
-        print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
-              f"0.01 minimum lot{flag}")
+        lane_tag = " (halftrend lane)" if STRATEGY == "both" else ""
+        print(f"sizing     {s['clamp_pct']:.1f}% of {s['entries']} entries "
+              f"clamped to the 0.01 minimum lot{lane_tag}{flag}")
         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
               f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
+    # QuickFlip sizes off the same balance at its own risk percent. Its
+    # clamps used to be counted nowhere: the line above only ever saw
+    # HalfTrend's entries, so a lane clamping 13.6% of its entries looked
+    # like a lane that never clamped.
+    if s and s.get("qf_entries"):
+        qflag = "  <-- results distorted" if s["qf_clamp_pct"] > 10 else ""
+        print(f"sizing     {s['qf_clamp_pct']:.1f}% of {s['qf_entries']} "
+              f"entries clamped to the 0.01 minimum lot (quickflip lane)"
+              f"{qflag}")
+        print(f"           quickflip risk actually taken: median "
+              f"{s['qf_risk_median']:.2f}% p90 {s['qf_risk_p90']:.2f}%  "
+              f"(target {QF_RISK_PCT:.2f}%); "
+              f"{s['qf_min_lot']} of {s['qf_entries']} entries "
+              f"({100.0 * s['qf_min_lot'] / s['qf_entries']:.1f}%) ended at "
+              f"the 0.01 minimum lot")
+    qf_trades = [t for t in trades if t.get("lane") == "qf"]
+    if qf_trades:
+        # QuickFlip's stop is the sweep extreme with no minimum distance, so
+        # a sweep that barely cleared the box divides the risk budget by a
+        # very small number. No floor is applied here on purpose (adding one
+        # would change measured results and the value is an owner decision) --
+        # but the exposure it produces is printed so it cannot hide.
+        big = max(qf_trades, key=lambda t: t["legs"][0]["oz"])
+        boz, bpx = big["legs"][0]["oz"], big["legs"][0]["px"]
+        notional = boz * bpx
+        dists = [abs(t["legs"][0]["px"] - t["stop_history"][0]["stop"])
+                 for t in qf_trades]
+        bdist = abs(bpx - big["stop_history"][0]["stop"])
+        print(f"quickflip  largest position {boz}oz ({boz / 100:.2f} lots) on "
+              f"{hhmm(big['legs'][0]['t'])[0]:%m-%d %H:%M} @ {bpx:.2f} = "
+              f"${notional:,.0f} notional, "
+              f"{notional / args.balance:.1f}x the starting balance "
+              f"(stop distance ${bdist:.2f})")
+        print(f"           tightest quickflip stop this run ${min(dists):.2f}; "
+              f"median ${sorted(dists)[len(dists) // 2]:.2f}. QuickFlip has "
+              f"NO minimum stop distance -- unlike HalfTrend (--min-stop-atr) "
+              f"nothing bounds how large a tight sweep can size it.")
     armed = [t for t in ht_trades if t.get("floor") is not None]
     if EXIT_SCHEME != "target-exit":
         print(f"floor armed on {len(armed)} trades; "
