@@ -1302,6 +1302,10 @@ def build_parser():
                          "percent of cycle balance (default 2.0; <= 0 turns "
                          "the target off exactly like the EA input, leaving "
                          "the lock / stop / reversal to close the basket)")
+    out.add_argument("--web", default=None, metavar="PATH",
+                     help="write a self-contained HTML report (chart with "
+                          "HalfTrend/EMA overlays and every trade drawn with "
+                          "its SL/TP and stop path) to this file")
     return ap
 
 
@@ -1610,12 +1614,22 @@ def main():
     if args.chart:
         plot(candles, trades, args.balance, args.chart)
         print(f"chart      {args.chart}")
+    art = None
     if args.json:
         art = build_run_json(candles, trades, args,
                              {"bal": bal, "max_dd": max_dd, "valley": max_valley})
         Path(args.json).write_text(json.dumps(art, separators=(",", ":")))
         print(f"json       {args.json} "
               f"({Path(args.json).stat().st_size / 1e6:.1f} MB)")
+    if args.web:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from backtest_report import write_report
+        if art is None:
+            art = build_run_json(candles, trades, args,
+                                 {"bal": bal, "max_dd": max_dd, "valley": max_valley})
+        write_report(art, args.web)
+        print(f"report     {args.web} "
+              f"({Path(args.web).stat().st_size / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":

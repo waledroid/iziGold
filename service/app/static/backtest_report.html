@@ -1,0 +1,237 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#0e1116; color:#d7dce3;
+         font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:10px 14px; border-bottom:1px solid #232833; }
+  h1 { margin:0 0 6px; font-size:15px; font-weight:600; }
+  .stats { display:flex; flex-wrap:wrap; gap:14px; font-variant-numeric:tabular-nums; }
+  .stat b { display:block; font-size:16px; }
+  .stat span { color:#8b95a5; font-size:11px; text-transform:uppercase; }
+  .pos { color:#26a69a; } .neg { color:#ef5350; }
+  .warn { margin:8px 14px 0; padding:8px 10px; border-radius:6px;
+          background:#3a2a12; border:1px solid #6b4a18; color:#f0c674; }
+  .caveats { margin:6px 14px 10px; color:#8b95a5; font-size:11px; }
+  #wrap { position:relative; height:62vh; margin:0 14px; }
+  #chart, #overlay { position:absolute; inset:0; }
+  #overlay { pointer-events:none; }
+  #legend { position:absolute; top:6px; left:8px; z-index:3; font-size:11px;
+            background:rgba(14,17,22,.72); padding:4px 7px; border-radius:4px;
+            pointer-events:none; }
+  #legend i { font-style:normal; margin-right:8px; }
+  table { width:calc(100% - 28px); margin:12px 14px 40px; border-collapse:collapse;
+          font-variant-numeric:tabular-nums; }
+  th,td { padding:5px 8px; border-bottom:1px solid #1c212b; text-align:right; }
+  th { color:#8b95a5; font-weight:500; text-align:right; position:sticky; top:0;
+       background:#0e1116; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#161b24; }
+</style>
+
+<header>
+  <h1 id="title">XAUUSD backtest</h1>
+  <div class="stats" id="stats"></div>
+</header>
+<div id="warnbox"></div>
+<div class="caveats" id="caveats"></div>
+
+<div id="wrap">
+  <div id="chart"></div>
+  <canvas id="overlay"></canvas>
+  <div id="legend">
+    <i style="color:#1e90ff">HalfTrend</i><i style="color:#e0e0e0">EMA9</i>
+    <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5">EMA55</i>
+    <i style="color:#ab47bc">EMA200</i>
+  </div>
+</div>
+
+<table>
+  <thead><tr><th>#</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
+  <th>Exit</th><th>Why</th><th>P/L</th><th>Balance</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>__LIB__</script>
+<script>
+var RUN = __DATA__;
+
+var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
+var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
+var GREEN_L = "#26a69a", RED_L = "#ef5350";
+
+function money(v) { return (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2); }
+function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " "); }
+
+// ---- header -------------------------------------------------------------
+(function header() {
+  var s = RUN.stats, m = RUN.meta;
+  document.getElementById("title").textContent =
+    "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
+    "  (" + m.bars.toLocaleString() + " bars, " +
+    (m.strict_window ? "strict" : "loose") + " entry window)";
+  var cells = [
+    ["Net P/L", money(s.net), s.net >= 0 ? "pos" : "neg"],
+    ["Trades", String(s.trades), ""],
+    ["Win rate", s.win_rate.toFixed(1) + "%", ""],
+    ["Max drawdown", "$" + s.max_dd.toFixed(2), "neg"],
+    ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
+    ["Risk taken", s.risk_median.toFixed(2) + "% / p90 " + s.risk_p90.toFixed(2) + "%", ""]
+  ];
+  document.getElementById("stats").innerHTML = cells.map(function (c) {
+    return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
+  }).join("");
+  if (s.clamp_pct > 10) {
+    document.getElementById("warnbox").innerHTML =
+      '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
+      "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
+      "balance the 1% risk rule is often not obeyed — this run measures " +
+      "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
+      "meaningful results; $10,000+ for a clean test.</div>";
+  }
+  document.getElementById("caveats").textContent = "Not modelled: " + m.caveats.join(" · ");
+})();
+
+// ---- chart --------------------------------------------------------------
+var chart = LightweightCharts.createChart(document.getElementById("chart"), {
+  layout: { background: { color: "#0e1116" }, textColor: "#8b95a5" },
+  grid: { vertLines: { color: "#171b24" }, horzLines: { color: "#171b24" } },
+  rightPriceScale: { borderColor: "#232833" },
+  timeScale: { borderColor: "#232833", timeVisible: true, secondsVisible: false },
+  crosshair: { mode: 0 }
+});
+
+var noLabel = { lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
+function line(color, width) {
+  return chart.addLineSeries(Object.assign({ color: color, lineWidth: width }, noLabel));
+}
+var ema9 = line("#e0e0e0", 1), ema21 = line("#ffb74d", 1),
+    ema55 = line("#42a5f5", 2), ema200 = line("#ab47bc", 1);
+var htSeries = chart.addLineSeries(Object.assign({ color: HT_UP, lineWidth: 2 }, noLabel));
+var stopSeries = chart.addLineSeries(Object.assign({
+  color: "#f0c674", lineWidth: 1, lineStyle: 2,
+  lineType: LightweightCharts.LineType.WithSteps }, noLabel));
+var candles = chart.addCandlestickSeries({
+  upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
+  wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
+
+(function feed() {
+  var C = RUN.candles, I = RUN.ind, n = C.t.length;
+  var bars = [], e9 = [], e21 = [], e55 = [], e200 = [], ht = [];
+  for (var i = 0; i < n; i++) {
+    var t = C.t[i];
+    bars.push({ time: t, open: C.o[i], high: C.h[i], low: C.l[i], close: C.c[i] });
+    e9.push(I.ema9[i] == null ? { time: t } : { time: t, value: I.ema9[i] });
+    e21.push(I.ema21[i] == null ? { time: t } : { time: t, value: I.ema21[i] });
+    e55.push(I.ema55[i] == null ? { time: t } : { time: t, value: I.ema55[i] });
+    e200.push(I.ema200[i] == null ? { time: t } : { time: t, value: I.ema200[i] });
+    ht.push(I.ht.v[i] == null ? { time: t }
+      : { time: t, value: I.ht.v[i], color: I.ht.trend[i] === 0 ? HT_UP : HT_DOWN });
+  }
+  candles.setData(bars);
+  ema9.setData(e9); ema21.setData(e21); ema55.setData(e55); ema200.setData(e200);
+  htSeries.setData(ht);
+
+  // stepped stop line: one segment per trade, whitespace between them so
+  // separate trades never join into one line
+  var stops = [], seen = {};
+  RUN.trades.forEach(function (tr) {
+    tr.stop_history.forEach(function (h) { if (!seen[h.t]) { seen[h.t] = 1; stops.push({ time: h.t, value: h.stop }); } });
+    if (!seen[tr.exit_t]) { seen[tr.exit_t] = 1; stops.push({ time: tr.exit_t, value: tr.stop_history[tr.stop_history.length - 1].stop }); }
+    var gap = tr.exit_t + 300;
+    if (!seen[gap]) { seen[gap] = 1; stops.push({ time: gap }); }
+  });
+  stops.sort(function (a, b) { return a.time - b.time; });
+  stopSeries.setData(stops);
+
+  // markers: entry, each pyramid add, exit. Real 12-month runs carry ~1,200
+  // trades (~3,600 marker candidates); Lightweight Charts gets visibly
+  // sluggish rendering that many at once, so pyramid-add markers ("+") are
+  // included only when there aren't too many trades to begin with. Entry and
+  // exit markers (the ones the trade table's row-click needs to make sense
+  // of what it zoomed to) are always drawn.
+  var SHOW_ADDS = RUN.trades.length <= 300;
+  var marks = [];
+  RUN.trades.forEach(function (tr, i) {
+    var up = tr.dir === "BUY";
+    marks.push({ time: tr.legs[0].t, position: up ? "belowBar" : "aboveBar",
+                 color: up ? GREEN_L : RED_L, shape: up ? "arrowUp" : "arrowDown",
+                 text: "#" + (i + 1) });
+    if (SHOW_ADDS) {
+      tr.legs.slice(1).forEach(function (leg) {
+        marks.push({ time: leg.t, position: up ? "belowBar" : "aboveBar",
+                     color: "#f0c674", shape: "circle", text: "+" });
+      });
+    }
+    marks.push({ time: tr.exit_t, position: up ? "aboveBar" : "belowBar",
+                 color: tr.pl >= 0 ? GREEN_L : RED_L, shape: "square",
+                 text: money(tr.pl) });
+  });
+  marks.sort(function (a, b) { return a.time - b.time; });
+  candles.setMarkers(marks);
+})();
+
+// ---- trade boxes on the overlay canvas ----------------------------------
+var cv = document.getElementById("overlay"), ctx = cv.getContext("2d");
+
+function sizeCanvas() {
+  var r = document.getElementById("wrap").getBoundingClientRect();
+  var dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawBoxes() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  var ts = chart.timeScale(), vr = ts.getVisibleRange();
+  if (!vr) return;
+  RUN.trades.forEach(function (tr) {
+    var t0 = tr.legs[0].t, t1 = tr.exit_t;
+    if (t1 < vr.from || t0 > vr.to) return;              // off screen
+    var x0 = ts.timeToCoordinate(Math.max(t0, vr.from));
+    var x1 = ts.timeToCoordinate(Math.min(t1, vr.to));
+    if (x0 == null || x1 == null) return;
+    var entry = candles.priceToCoordinate(tr.legs[0].px);
+    var stop0 = candles.priceToCoordinate(tr.stop_history[0].stop);
+    if (entry == null || stop0 == null) return;
+    var w = Math.max(1, x1 - x0);
+    // risk zone: entry -> initial stop
+    ctx.fillStyle = RED;
+    ctx.fillRect(x0, Math.min(entry, stop0), w, Math.abs(stop0 - entry));
+    // reward zone: entry -> target (fixed mode has no target: nothing drawn)
+    if (tr.tp != null) {
+      var tp = candles.priceToCoordinate(tr.tp);
+      if (tp != null) {
+        ctx.fillStyle = GREEN;
+        ctx.fillRect(x0, Math.min(entry, tp), w, Math.abs(tp - entry));
+      }
+    }
+    ctx.strokeStyle = tr.pl >= 0 ? GREEN_L : RED_L;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, Math.min(entry, stop0) + 0.5, w, Math.abs(stop0 - entry));
+  });
+}
+
+function redraw() { sizeCanvas(); drawBoxes(); }
+chart.timeScale().subscribeVisibleTimeRangeChange(drawBoxes);
+new ResizeObserver(redraw).observe(document.getElementById("wrap"));
+redraw();
+
+// ---- trade table --------------------------------------------------------
+document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
+  return '<tr data-i="' + i + '"><td>' + (i + 1) + "</td><td>" + stamp(t.legs[0].t) +
+    "</td><td>" + t.dir + "</td><td>" + t.legs.length + "</td><td>" +
+    t.legs[0].px.toFixed(2) + "</td><td>" + t.exit.toFixed(2) + "</td><td>" +
+    t.why + '</td><td class="' + (t.pl >= 0 ? "pos" : "neg") + '">' + money(t.pl) +
+    "</td><td>" + t.bal_after.toFixed(2) + "</td></tr>";
+}).join("");
+
+document.getElementById("rows").addEventListener("click", function (ev) {
+  var tr = ev.target.closest("tr"); if (!tr) return;
+  var t = RUN.trades[+tr.dataset.i], pad = 60 * 300;   // 60 M5 bars of context
+  chart.timeScale().setVisibleRange({ from: t.legs[0].t - pad, to: t.exit_t + pad });
+});
+</script>
