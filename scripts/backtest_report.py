@@ -22,8 +22,17 @@ def write_report(artifact, out_path):
     """artifact: the dict from backtest.build_run_json(). Writes out_path."""
     html = TEMPLATE.read_text(encoding="utf-8")
     meta = artifact.get("meta", {})
+    trades = artifact.get("trades", [])
+    # Name the lanes in the title: the report defaults to --strategy both, and
+    # a bare "N trades" reads as one strategy's record when it is two.
+    lanes = {}
+    for t in trades:
+        lanes[t.get("lane", "ht")] = lanes.get(t.get("lane", "ht"), 0) + 1
+    breakdown = ""
+    if len(lanes) > 1:
+        breakdown = " (" + ", ".join(f"{n} {k}" for k, n in sorted(lanes.items())) + ")"
     title = f"XAUUSD backtest — {meta.get('bars', 0)} bars, " \
-            f"{len(artifact.get('trades', []))} trades"
+            f"{len(trades)} trades{breakdown}"
     # Substitute data LAST: the artifact is arbitrary JSON and must never be
     # re-scanned for placeholder tokens.
     html = html.replace("__TITLE__", title)

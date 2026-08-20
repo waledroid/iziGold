@@ -2,7 +2,7 @@
 which strategy actually made the money."""
 import json
 
-from tests.test_backtest_golden import BARS, _load_bt
+from tests.test_backtest_golden import BARS, ROOT, _load_bt
 
 
 def _artifact(balance=10000.0):
@@ -81,3 +81,19 @@ def test_quickflip_entries_reach_the_sizing_report():
     assert s["qf_entries"] > 0, "...but QuickFlip's entries must be counted"
     assert s["qf_clamp_pct"] is not None
     assert s["qf_risk_median"] is not None
+
+
+def test_the_html_report_names_both_lanes_in_its_title(tmp_path):
+    """M4b: --web/--json carry `lane` "so the report can colour and filter
+    them" (spec 2026-08-20), but scripts/backtest_report.py contained the
+    string "lane" zero times -- so the shared page blended both lanes while
+    `both` is the default."""
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from backtest_report import write_report
+
+    _bt, art = _artifact()
+    out = tmp_path / "report.html"
+    write_report(art, out)
+    html = out.read_text(encoding="utf-8")
+    assert "ht)" in html and "qf)" in html, "the title does not break out the lanes"
