@@ -273,6 +273,17 @@ reversal or the pre-break flatten — sizing, adds and lock are untouched. This
 is NOT the same as --entry-mode fixed, which additionally drops the risk
 sizing, the adds and the lock.
 """
+
+# Stated in --help, in the --json artifact and on the report page. A model's
+# limits must travel with its output.
+CAVEATS = [
+    "daily-loss brake NOT modelled -- a real losing day would have been cut short",
+    "kill switch NOT modelled -- a real 10% drawdown would have stopped trading",
+    "news blackout NOT modelled -- no offline calendar of high-impact USD events",
+    "acts on bar CLOSES only; fills at close +/- half-spread, $0.20/oz round trip",
+    "no margin modelling and no stop-out: a small account can go negative here",
+]
+
 import argparse
 import datetime as dt
 import json
@@ -1098,112 +1109,128 @@ def plot(candles, trades, start_balance, out_path):
 
 
 def build_parser():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--balance", type=float, default=4000)
-    ap.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
-    ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--adx", type=float, default=None, help="override ADX gate")
-    ap.add_argument("--chart", default=None, help="write a PNG chart to this path")
-    ap.add_argument("--days", type=float, default=None,
+    ap = argparse.ArgumentParser(
+        description="Replay halftrend_ema_v1 with the current money rulebook "
+                    "over historical candles and report P/L.",
+        epilog="NOT MODELLED:\n  " + "\n  ".join(CAVEATS) +
+               "\n\nSTARTING BALANCE: $4,000 minimum for meaningful results; "
+               "$10,000+ for a clean\ntest of the risk rules. Below $2,000 most "
+               "entries clamp to the 0.01 minimum\nlot and take more than the "
+               "intended 1% risk; below $500 the run is refused.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    data = ap.add_argument_group("Data")
+    rules = ap.add_argument_group(
+        "Rules", "the EA's real knobs -- defaults are what the live EA does")
+    exp = ap.add_argument_group(
+        "Experiments", "study filters; all default to OFF (live EA has none)")
+    out = ap.add_argument_group("Output")
+
+    data.add_argument("--balance", type=float, default=4000)
+    data.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
+    out.add_argument("--verbose", action="store_true")
+    rules.add_argument("--adx", type=float, default=None, help="override ADX gate")
+    out.add_argument("--chart", default=None, help="write a PNG chart to this path")
+    data.add_argument("--days", type=float, default=None,
                     help="backtest only the last N days of the source data")
-    ap.add_argument("--expo", type=float, default=None,
+    rules.add_argument("--expo", type=float, default=None,
                     help="override daily exposure minutes (0 = unlimited)")
-    ap.add_argument("--risk", type=float, default=None,
+    rules.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
-    ap.add_argument("--confirm", type=int, default=None,
+    rules.add_argument("--confirm", type=int, default=None,
                     help="override ConfirmCloses (consecutive closes beyond "
                          "the EMA required after a flip; default 1)")
-    ap.add_argument("--stop-buffer", type=float, default=None,
+    rules.add_argument("--stop-buffer", type=float, default=None,
                     help="override the stop pad in ATR(14) multiples "
                          "(default 0.75)")
-    ap.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
+    rules.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
                     help="profit-floor experiment scheme (default: current "
                          "behavior, close at profit target)")
-    ap.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
+    rules.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
                     help="adr = live behavior; fixed = fixed lots, no adds/"
                          "target/lock, exit on confirmed reversal or stop")
-    ap.add_argument("--fixed-lots", type=float, default=0.05)
-    ap.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
+    rules.add_argument("--fixed-lots", type=float, default=0.05)
+    exp.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
                     help="refuse new entries by the service's live regime "
                          "classifier: range = skip 'range' bars, "
                          "range-strict = only enter on 'trend' bars, "
                          "highvol = skip 'high_volatility' bars")
-    ap.add_argument("--atr-spike-gate", type=float, default=0.0,
+    exp.add_argument("--atr-spike-gate", type=float, default=0.0,
                     help="refuse new entries when ATR(14) > RATIO x its "
                          "median over the last 100 bars (0 = off)")
-    ap.add_argument("--start", default=None,
+    data.add_argument("--start", default=None,
                     help="drop candles before this server time "
                          "(YYYY-MM-DD[THH:MM]); indicators warm up from here")
-    ap.add_argument("--end", default=None,
+    data.add_argument("--end", default=None,
                     help="drop candles after this server time (YYYY-MM-DD[THH:MM])")
-    ap.add_argument("--ema-len", type=int, default=None,
+    rules.add_argument("--ema-len", type=int, default=None,
                     help="override the trading EMA length (default 55)")
-    ap.add_argument("--confirm-mode", choices=CONFIRM_MODES, default="close",
+    exp.add_argument("--confirm-mode", choices=CONFIRM_MODES, default="close",
                     help="close = EA behavior (closes beyond the EMA); open = "
                          "next bar's open beyond the EMA (same decision bar)")
-    ap.add_argument("--chop-flips", type=int, default=0,
+    exp.add_argument("--chop-flips", type=int, default=0,
                     help="chop filter: HalfTrend flips within --chop-bars "
                          "that mark a bar as chop (0 = off)")
-    ap.add_argument("--chop-bars", type=int, default=24,
+    exp.add_argument("--chop-bars", type=int, default=24,
                     help="chop filter lookback in closed bars (default 24)")
-    ap.add_argument("--chop-box-atr", type=float, default=2.0,
+    exp.add_argument("--chop-box-atr", type=float, default=2.0,
                     help="chop filter: box over the lookback must be < X x "
                          "ATR(14) (default 2.0; 0 = flip count alone)")
-    ap.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
+    exp.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
                     help="skip = refuse chop entries (H1); soft = enter at "
                          "half risk with no adds (H2); off = tag/report only")
-    ap.add_argument("--loose-window", action="store_true",
+    rules.add_argument("--loose-window", action="store_true",
                     help="disable the EA's strict 3-bar entry window (flip -> "
                          "one waiting bar -> entry only if that bar opens "
                          "beyond the EMA). Use to reproduce studies run before "
                          "2026-08-20, when loose was the default.")
-    ap.add_argument("--strict-window", action="store_true",
+    rules.add_argument("--strict-window", action="store_true",
                     help=argparse.SUPPRESS)   # now the default; kept so older
                                               # scripted runs keep working
-    ap.add_argument("--min-stop-atr", type=float, default=0.0,
+    exp.add_argument("--min-stop-atr", type=float, default=0.0,
                     help="minimum stop distance floor in ATR(14) multiples: "
                          "an ENTRY stop closer than K x ATR is pushed out to "
                          "exactly K x ATR and lots are sized over the wider "
                          "distance (0 = off, byte-identical)")
-    ap.add_argument("--bias-ema", type=int, default=0,
+    exp.add_argument("--bias-ema", type=int, default=0,
                     help="EMA-N market bias at the entry bar (close vs EMA-N; "
                          "0 = off, byte-identical). Tags every trade "
                          "with/counter and prints the split")
-    ap.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
+    exp.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
                     help="tag = report only; target = counter-trend target "
                          "x0.5 (lock untouched, EA-literal); target_lock = "
                          "target x0.5 and lock arm x0.5; size_target = target "
                          "x0.5 and risk x0.5; skip = refuse counter-trend")
-    ap.add_argument("--bias-tf", choices=BIAS_TFS, default="M5",
+    exp.add_argument("--bias-tf", choices=BIAS_TFS, default="M5",
                     help="timeframe of the bias EMA: M5 (default) or M15 "
                          "(resampled, last completed M15 bar)")
-    ap.add_argument("--window-start", type=int, default=None,
+    exp.add_argument("--window-start", type=int, default=None,
                     help="first server hour that may OPEN a trade "
                          "(EA TradingWindowStartHour, default 4)")
-    ap.add_argument("--window-end", type=int, default=None,
+    exp.add_argument("--window-end", type=int, default=None,
                     help="first server hour that may NOT open a trade "
                          "(EA TradingWindowEndHour, default 23); exits and "
                          "the 23:50 flatten are never gated by the window")
-    ap.add_argument("--hour-table", action="store_true",
+    out.add_argument("--hour-table", action="store_true",
                     help="print the entry-hour breakdown (trades / win%% / "
                          "net / avg P/L per server hour 0-23)")
-    ap.add_argument("--sr-lookback", type=int, default=0,
+    exp.add_argument("--sr-lookback", type=int, default=0,
                     help="support/resistance: swing-pivot lookback in bars "
                          "(0 = off). Tags every entry with its headroom.")
-    ap.add_argument("--sr-min-headroom", type=float, default=0.0,
+    exp.add_argument("--sr-min-headroom", type=float, default=0.0,
                     help="skip entries whose headroom to the nearest opposing "
                          "level is below this many ATR(14) (0 = tag only)")
-    ap.add_argument("--sr-report", action="store_true",
+    out.add_argument("--sr-report", action="store_true",
                     help="S/R diagnostic: tag and report headroom but never "
                          "refuse an entry (overrides --sr-min-headroom)")
-    ap.add_argument("--tf", choices=TFS, default="M5",
+    data.add_argument("--tf", choices=TFS, default="M5",
                     help="trading timeframe (EA TradeTimeframe): M5 (default, "
                          "byte-identical) or M15 (the M5 source aggregated to "
                          "15-minute bars before anything else runs). Bar-based "
                          "parameters are then read in M15 bars; the exposure "
                          "budget and the trading-window hours keep their "
                          "wall-clock meaning")
-    ap.add_argument("--profit-target", type=float, default=None,
+    rules.add_argument("--profit-target", type=float, default=None,
                     help="override ProfitTargetPct, the basket's bank-at "
                          "percent of cycle balance (default 2.0; <= 0 turns "
                          "the target off exactly like the EA input, leaving "
