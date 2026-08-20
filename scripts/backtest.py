@@ -29,7 +29,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--atr-spike-gate RATIO] [--ema-len N]
                    [--confirm-mode close|open] [--start T] [--end T]
                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
-                   [--chop-mode skip|soft|off] [--strict-window]
+                   [--chop-mode skip|soft|off] [--loose-window]
                    [--min-stop-atr K] [--bias-ema N]
                    [--sr-lookback N] [--sr-min-headroom X] [--sr-report]
                    [--bias-mode tag|target|target_lock|size_target|skip]
@@ -112,21 +112,23 @@ TradeManager reads m_risk.RiskPct(), so a half-size basket needs twice the
 move to arm it); off = tag and report only, nothing refused or resized.
 Adds/exits are otherwise untouched; the rule lives only in the entry block.
 
---strict-window (entry-window correctness fix, 2026-08-17 owner's rule):
+--loose-window (entry-window correctness fix, 2026-08-17 owner's rule; strict
+is now the DEFAULT as of 2026-08-20 -- this flag restores the old replay):
 the TRUE halftrend_ema_v1 entry is "arrow on bar 1; wait bar 2; ENTER at
 bar 3's OPEN if bar 3 opens on the trend's side of the EMA (= bar 2 CLOSED
-there); otherwise the signal is DEAD until the next HalfTrend flip". Off
-(default, byte-identical) reproduces what the EA did until today: fire on
-the FIRST close beyond the EMA after a flip, whenever that came (the arrow
-bar itself, bar 2, or a late drift 20 bars on). On: exactly one decision
-per flip, at the close of the bar CONFIRM_CLOSES bars after the arrow bar
-(default 1 = bar 2): pass -> signal on that closed bar (fill at its close,
-which IS bar 3's open barring the tick gap — the replay's usual entry-at-close
-convention, unchanged); fail -> no entry for that flip, ever. Same for the
-reversal exit, since a reversal is the opposite direction's entry. Every
-trade is tagged with its entry offset in bars after the arrow (0 = arrow
-bar, 1 = strict bar, >=2 = late drift) so a baseline run can be diffed
-against a strict run per flip.
+there); otherwise the signal is DEAD until the next HalfTrend flip". Default
+(strict): exactly one decision per flip, at the close of the bar
+CONFIRM_CLOSES bars after the arrow bar (default 1 = bar 2): pass -> signal
+on that closed bar (fill at its close, which IS bar 3's open barring the
+tick gap — the replay's usual entry-at-close convention, unchanged); fail ->
+no entry for that flip, ever. Same for the reversal exit, since a reversal
+is the opposite direction's entry. --loose-window reproduces what the EA
+did before 2026-08-16: fire on the FIRST close beyond the EMA after a flip,
+whenever that came (the arrow bar itself, bar 2, or a late drift 20 bars
+on). Every trade is tagged with its entry offset in bars after the arrow
+(0 = arrow bar, 1 = strict bar, >=2 = late drift) so a loose run can be
+diffed against a strict run per flip. --strict-window still parses (no-op;
+strict is already the default) so older scripted runs keep working.
 
 --min-stop-atr K (minimum-stop-distance floor, 2026-08-18 noise-stop autopsy:
 a $2.99 stop on a BUY at 4399.06 with ATR ~ $4-5 put 0.15 lots on and
@@ -372,7 +374,10 @@ CHOP_SOFT_RISK_DIV = 2.0   # soft mode: risk percent divided by this
 # --- strict entry window (owner's rule 2026-08-17) ---
 # False: legacy latch (first close beyond the EMA after the flip, any bar).
 # True : one-shot decision at bar (flip + CONFIRM_CLOSES) close; miss = dead.
-STRICT_WINDOW = False
+STRICT_WINDOW = True      # EA law since 2026-08-16: flip -> wait one closed
+                          # bar -> enter only if the next bar OPENS beyond the
+                          # EMA, else the signal is dead until the next flip.
+                          # --loose-window restores the pre-2026-08-16 replay.
 
 # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
 # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
@@ -1048,7 +1053,7 @@ def plot(candles, trades, start_balance, out_path):
     fig.savefig(out_path, dpi=110)
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--balance", type=float, default=4000)
     ap.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
@@ -1103,11 +1108,14 @@ def main():
     ap.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
                     help="skip = refuse chop entries (H1); soft = enter at "
                          "half risk with no adds (H2); off = tag/report only")
+    ap.add_argument("--loose-window", action="store_true",
+                    help="disable the EA's strict 3-bar entry window (flip -> "
+                         "one waiting bar -> entry only if that bar opens "
+                         "beyond the EMA). Use to reproduce studies run before "
+                         "2026-08-20, when loose was the default.")
     ap.add_argument("--strict-window", action="store_true",
-                    help="owner's entry rule: arrow bar, wait --confirm "
-                         "bar(s), enter at the next bar's open only if that "
-                         "bar opens on the trend's side of the EMA; else the "
-                         "flip is dead (default off = legacy first-close latch)")
+                    help=argparse.SUPPRESS)   # now the default; kept so older
+                                              # scripted runs keep working
     ap.add_argument("--min-stop-atr", type=float, default=0.0,
                     help="minimum stop distance floor in ATR(14) multiples: "
                          "an ENTRY stop closer than K x ATR is pushed out to "
@@ -1156,7 +1164,11 @@ def main():
                          "percent of cycle balance (default 2.0; <= 0 turns "
                          "the target off exactly like the EA input, leaving "
                          "the lock / stop / reversal to close the basket)")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
     global TF, BAR_MIN, FLATTEN_HM
     TF = args.tf
     BAR_MIN = TF_SEC[TF] // 60
@@ -1173,7 +1185,7 @@ def main():
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global STRICT_WINDOW, MIN_STOP_ATR
-    STRICT_WINDOW = args.strict_window
+    STRICT_WINDOW = not args.loose_window
     MIN_STOP_ATR = args.min_stop_atr
     global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
     SR_LOOKBACK = args.sr_lookback

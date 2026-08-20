@@ -5,8 +5,15 @@ of real M5 data. This is NOT a correctness test -- it is a change detector.
 If it fails, the replay's behaviour moved. Unless the task you are doing
 explicitly changes replay behaviour, the change is a bug.
 
-Regenerate deliberately (and only deliberately) with:
-    cd service && .venv/bin/python -m pytest tests/test_backtest_golden.py --regen-golden
+Regenerate deliberately (and only deliberately) with the manual script from
+task-1-brief.md Step 4 (.superpowers/sdd/2026-08-20-backtest-report/):
+    cd service && .venv/bin/python - <<'PY'
+    import json
+    from tests.test_backtest_golden import _replay, GOLDEN
+    digest, bal, dd = _replay()
+    GOLDEN.write_text(json.dumps(
+        {"trades": digest, "final_balance": bal, "max_dd": dd}, indent=1))
+    PY
 """
 import importlib.util
 import json
@@ -44,6 +51,10 @@ def _digest(trades):
 def _replay():
     bt = _load_bt()
     candles = json.loads(BARS.read_text())
+    # The golden file pins LOOSE-window behaviour, captured 2026-08-20 before
+    # strict became the default. Keep it loose so the pin stays a like-for-like
+    # change detector across that default flip.
+    bt.STRICT_WINDOW = False
     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
