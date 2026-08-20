@@ -536,6 +536,18 @@ git commit -m "feat(backtest): strict 3-bar entry window is the default, --loose
 
 ### Task 4: Balance validation and the sizing-clamp measurement
 
+> **Superseded 2026-08-20 (post-review).** Every clamp figure quoted in this
+> task was measured under the **LOOSE** entry window, before strict became the
+> default. Re-measured on the shipped default (strict),
+> `--source bars_max.json --days 365`: **94.7%** at $500, 68.5% at $800,
+> **47.0%** at $1,200, 32.3% at $2,000, **16.7%** at $4,000, **1.3%** at
+> $10,000, 0.0% at $25,000 (20.5% at $4,000 / 3.7% at $10,000 over the full
+> 516-day source). The guidance moved with it: **$10,000+ is the floor for a
+> clean test; $4,000 still clamps roughly one entry in six**, which trips the
+> tool's own >10% "results distorted" flag. The >10% threshold itself is
+> unchanged. Live text lives in `scripts/backtest.py` (constants comment,
+> `validate_balance()`, the `--help` epilog), the report page, and spec §5.
+
 Small balances do not fail loudly — `oz = max(MIN_OZ, int(risk / dist))` takes the minimum lot and over-risks. Measure it and say so.
 
 **Files:**
@@ -1072,7 +1084,7 @@ print('bars', len(a['candles']['t']), 'trades', len(a['trades']))
 print('stats', a['stats'])"
 ```
 
-Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (365-day M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md.
+Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (`--days 365` M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md. Those sizes are for `--days 365` only: a plain run over the whole source (516 days, 99,999 bars, 1,729 trades) writes ~8.9 MB JSON / ~9.0 MB HTML.
 
 - [ ] **Step 7: Commit**
 
@@ -1560,5 +1572,5 @@ git commit -m "docs(izi): backtest defaults, balance floors, --json/--web report
 
 ## Later phases (not this plan)
 
-- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire (measured for a 365-day, 70,707-bar, 1,210-trade run).
+- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire for a `--days 365` run (70,707 bars, 1,210 trades) and ~8.9 MB for the full 516-day source (99,999 bars, 1,729 trades).
 - **Spec §6 — day/month report views.** Refactor `_report_month()` / `_report_day()` in `service/app/miniapp.py` to take a list of baskets instead of a sqlite connection, capture a golden test of today's live output first, then feed them backtest trades so the live and backtest reports share one shaper and one renderer.

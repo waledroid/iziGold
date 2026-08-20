@@ -1,6 +1,15 @@
-"""Below ~$4,000 the 1% risk rule stops being obeyed: sizing clamps to the
-0.01 minimum lot and over-risks rather than skipping the trade. Measured over
-12 months of M5: 51% of entries clamp at $1,200, 89% at $500."""
+"""Below ~$10,000 the 1% risk rule stops being reliably obeyed: sizing clamps
+to the 0.01 minimum lot and over-risks rather than skipping the trade.
+
+Measured 2026-08-20 on the SHIPPED DEFAULT (strict entry window),
+`scripts/backtest.py --source bars_max.json --days 365`: entries clamp 94.7%
+at $500, 68.5% at $800, 47.0% at $1,200, 32.3% at $2,000, 16.7% at $4,000,
+1.3% at $10,000, 0.0% at $25,000. (Older copies of this table were measured
+under the LOOSE window, before strict became the default, and read materially
+lower -- 10.2% at $4,000 rather than 16.7%.)
+
+$4,000 therefore trips the tool's own ">10% => results distorted" flag;
+$10,000+ is the floor for a clean test."""
 import json
 
 import pytest

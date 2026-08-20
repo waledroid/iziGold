@@ -11,3 +11,4 @@ mt5/**/*.ex5
 !.claude/agents/**
 !.claude/settings.json
 week.json
+bars_max.json

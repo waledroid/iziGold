@@ -537,13 +537,14 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
   on service restart). Validated against reality (reproduced the +$94.81
   live basket within $0.35). Simplifications: bar-close granularity, own
-  Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
-  the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
-  the news blackout (NewsGuard) — replay results are slightly optimistic vs
-  the live rulebook around losing days and high-impact events; both
-  omissions are now named in `--help` and on every report's caveats line
-  (2026-08-20), so the limitation travels with the output instead of living
-  only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
+  Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates — **THREE**
+  rails, not two: the daily loss brake (MaxDailyLossPct), the drawdown kill
+  switch (RiskManager's 10% stop), and the news blackout (NewsGuard) are all
+  absent, so replay results are optimistic vs the live rulebook around losing
+  days, deep drawdowns and high-impact events. All three are named in
+  `--help`, in `--json` `meta.caveats`, on every report page, and (since
+  2026-08-20) on the last line of every run's stdout, so the limitation
+  travels with the output instead of living only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
   → wait one closed bar → enter only if the next bar opens beyond EMA-55,
   else the signal is dead until the next flip — this has been the live EA's
   law since 2026-08-16 (`767497a`). `--loose-window` restores the pre-2026-08-20
@@ -552,12 +553,23 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   2026-08-20 is a LOOSE run**; re-running one with today's default gets
   different trades and different P/L. `--balance` refuses below $500 (the
   result would be fiction) and warns below $2,000; the binding constraint is
-  the 0.01-minimum-lot floor, not spread — measured over 12 months of M5
-  (`bars_max.json`, 365 days): entries clamp to that floor 88.7% of the time
-  at $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000. Every run now
-  reports its own clamp rate and the realized risk actually taken (median /
-  p90 vs the 1% target), in stdout, `--json`, and the `--web` page (a
-  `>10%` clamp rate renders an on-page warning). `--source
+  the 0.01-minimum-lot floor, not spread. **Re-measured 2026-08-20 on the
+  SHIPPED DEFAULT (strict window)**, `--source bars_max.json --days 365`:
+  entries clamp to that floor **94.7% at $500, 68.5% at $800, 47.0% at
+  $1,200, 32.3% at $2,000, 16.7% at $4,000, 1.3% at $10,000, 0.0% at
+  $25,000** (20.5% at $4,000 and 3.7% at $10,000 over the full 516-day
+  source). The older table quoted here (88.7 / 50.8 / 10.2 / 0.4%) was a
+  LOOSE-window measurement — always name the window when quoting a clamp
+  rate. Guidance therefore moved: **$10,000+ is the floor for a clean test
+  of the risk rules, and $4,000 still clamps roughly one entry in six**,
+  which trips the tool's own `>10% → results distorted` flag. The >10%
+  threshold itself is unchanged. Every run reports its own clamp rate and
+  the realized risk actually taken (median / p90 vs the 1% target), in
+  stdout, `--json`, and the `--web` page (a `>10%` clamp rate renders an
+  on-page warning, and a $500–$2,000 starting balance renders its own).
+  In `--entry-mode fixed` nothing is risk-sized, so those three stats are
+  emitted as `null` and the page shows `n/a` — never `0.00%`, which would
+  read as "we risked nothing". `--source
   PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
   `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
   every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
@@ -574,8 +586,10 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   render) + a stepped stop-loss line + a canvas overlay drawing each trade's
   red risk / green reward zone (green zone omitted when `tp` is null, e.g.
   `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
-  A real 365-day M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
-  6.4 MB `--web`; above 300 trades the page thins pyramid-add chart markers
+  A `--days 365` M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
+  6.4 MB `--web`; a plain run over the whole source (516 days, 99,999 bars,
+  1,729 trades) writes ~8.9 MB / ~9.0 MB, so always quote the window with the
+  size; above 300 trades the page thins pyramid-add chart markers
   (entry/exit markers always draw; the trade table's Legs column is never
   thinned) to keep Lightweight Charts responsive — this is a report-rendering
   thinning only, it does not touch replay logic or the artifact JSON. The page
@@ -586,8 +600,27 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   automated tests (`service/tests/test_backtest_web.py`,
   `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
   hand-rolled DOM/canvas/LightweightCharts stubs since no npm/browser deps
-  were added) — a human should open a generated report at least once after
+  were added; it now runs inside pytest via
+  `service/tests/test_backtest_report_smoke.py`, skipping cleanly when `node`
+  is missing) — a human should open a generated report at least once after
   any further change to the template or writer.
+  **The branch's safety net is `service/tests/test_backtest_golden.py`**: two
+  characterization pins over one frozen M5 slice (`tests/data/bars_slice.json`)
+  — `golden_trades.json` (LOOSE, captured before strict became the default, so
+  it survives that flip; its provenance is load-bearing, never regenerate it)
+  and `golden_trades_strict.json` (STRICT, the shipped default, added
+  2026-08-20). Any edit to `scripts/backtest.py` that moves a trade fails them.
+  If you did not mean to change replay behaviour, a failure there is a bug —
+  regenerate only deliberately, with the snippet in that file's docstring.
+  Report-layer facts worth knowing: the stepped stop line resolves the
+  timestamp a reversal exit shares with the next entry in favour of the NEWER
+  basket (the engine opens the new basket in the same loop iteration that
+  closed the old one — 124 of 1,729 trades in the reference run); `tp` is
+  recomputed on every bar so it tracks pyramid adds (frozen-at-first-leg drew
+  a reward zone the trade never reached); the page derives bar seconds from
+  the candle series, so `--tf M15` reports draw on the right grid; and the
+  header shows BOTH drawdowns — `max_dd` (closed balance) and `max_valley`
+  (open equity, never smaller).
 
 # 7. History worth knowing (why rules exist)
 

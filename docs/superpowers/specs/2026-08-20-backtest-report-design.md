@@ -71,12 +71,22 @@ do not break.
 
 Four argparse groups: **Data** (`--source --start --end --days --tf`),
 **Rules** (the EA's real knobs: `--risk --confirm --stop-buffer --adx --expo
---entry-mode --fixed-lots --profit-target --ema-len --loose-window`),
-**Experiments** (study flags: regime/chop/bias/sr/min-stop/window/exit-scheme),
+--entry-mode --fixed-lots --profit-target --ema-len --loose-window
+--exit-scheme --strict-window`),
+**Experiments** (study flags: regime/chop/bias/sr/min-stop/window),
 **Output** (`--verbose --json --web --chart --hour-table --sr-report`).
 
-The epilog carries the caveat block (brake, news, close-only fills, spread
-model) so `--help` states the model's limits.
+The epilog carries the caveat block (brake, kill switch, news, close-only
+fills, spread model) so `--help` states the model's limits; the same line is
+printed at the end of every run, since stdout is where most results are read.
+
+**Shipped deviations from this section.** `--exit-scheme` is listed above
+under Experiments in the original draft but shipped under **Rules**, which is
+correct: its default (`target-exit`) is live EA behaviour, and the Experiments
+group is defined as flags that are off in the live EA. `--window-start` /
+`--window-end` are the reverse case — they live in Experiments but default to
+the EA's real 4-23 trading window, so the group blurb says so explicitly
+instead of claiming everything in it defaults to OFF.
 
 ## 2. `--json PATH` — the run artifact
 
@@ -97,8 +107,10 @@ One JSON object, the only interface between engine and page:
 Candles and indicators are **parallel arrays**, not per-bar objects: 12 months
 of M5 is ~74k bars, and the array form keeps the payload near 6–7 MB instead
 of ~12 MB with no loss of detail. `null` marks an unwarmed indicator bar.
-Measured: a 365-day M5 run (70,707 bars, 1,210 trades) writes a 6.3 MB `--json`
-artifact and a 6.4 MB `--web` report.
+Measured: a 365-day M5 run (`--days 365`, 70,707 bars, 1,210 trades) writes a
+6.3 MB `--json` artifact and a 6.4 MB `--web` report. Those figures are for
+`--days 365` only — a plain run over the whole of `bars_max.json` (516 days,
+99,999 bars, 1,729 trades) writes ~8.9 MB JSON / ~9.0 MB HTML.
 
 Indicators come from `app.indicators.ema/halftrend` (amplitude 4) — the same
 functions the Mini App and the EA port use. The page never computes a rule or
@@ -120,7 +132,12 @@ Per trade:
 - a box from entry bar to exit bar: green zone entry→TP, red zone entry→SL;
 - a **stepped stop line** drawn from `stop_history`, so a ratcheting stop is
   visible as it actually moved;
-- a triangle at each pyramid add, an X at the exit, and a P/L label;
+- a marker at each pyramid add, a marker at the exit, and a P/L label.
+  **Shipped deviation:** this section asked for a triangle at the add and an X
+  at the exit; Lightweight Charts v4 offers neither shape (`arrowUp`,
+  `arrowDown`, `circle`, `square` only), so the add ships as a yellow circle
+  and the exit as a P/L-coloured square. Entry keeps `arrowUp`/`arrowDown`,
+  which is the direction cue the next bullet asks for;
 - BUY and SELL are distinguished by marker direction, not box colour;
 - in `fixed` entry mode there is no TP, so the box shows only the red
   entry→SL zone and the stepped stop — never an invented target.
@@ -145,23 +162,36 @@ around it.
 **The binding constraint is the 0.01 minimum lot, not spread.** Sizing is
 `oz = max(MIN_OZ, int(risk / dist))`: when 1% of balance cannot cover one
 ounce at the stop distance, the replay does not skip the trade — it takes the
-minimum lot and **over-risks**. Measured over 12 months of M5 (2025-08 →
-2026-08):
+minimum lot and **over-risks**.
+
+**Re-measured 2026-08-20 on the shipped default (STRICT entry window)**, with
+`scripts/backtest.py --source bars_max.json --days 365 --balance N`:
 
 | Starting balance | entries clamped to min lot | risk actually taken (median / p90) |
 |---|---|---|
-| $500   | 88.7% | 2.78% / 17.69% |
-| $800   | 67.9% | 1.35% / 3.94% |
-| $1,200 | 50.8% | 1.01% / 2.60% |
-| $2,000 | 40.3% | 0.94% / 2.14% |
-| $4,000 | 10.2% | 0.88% / 1.01% |
-| $10,000 | 0.4% | 0.94% / 0.99% |
-| $25,000 | 0.1% | 0.98% / 1.00% |
+| $500   | 94.7% | 1.72% / 34.71% |
+| $800   | 68.5% | 1.43% / 3.89% |
+| $1,200 | 47.0% | 0.98% / 2.28% |
+| $2,000 | 32.3% | 0.90% / 1.77% |
+| $4,000 | 16.7% | 0.89% / 1.27% |
+| $10,000 | 1.3% | 0.93% / 0.99% |
+| $25,000 | 0.0% | 0.97% / 0.99% |
 
-Below ~$4,000 the 1% rule stops being obeyed often enough to change what is
-being measured: a $1,200 run tests minimum-lot behaviour on half its entries,
-not the rulebook. At $300 the account goes negative (-155%) because margin
-stop-out is not modelled.
+Over the full source (516 days, no `--days`) the same command clamps **20.5%**
+at $4,000 and **3.7%** at $10,000.
+
+> The first version of this table was measured under the **LOOSE** window,
+> before strict became the default on 2026-08-20, and read materially lower
+> (88.7% / 50.8% / 10.2% / 0.4% at $500 / $1,200 / $4,000 / $10,000). Strict
+> refuses late-drift entries, which are disproportionately the wide-stop ones
+> that size fine — so the surviving population clamps more often. Any clamp
+> figure quoted anywhere must name the window it was measured under.
+
+Below ~$10,000 the 1% rule stops being reliably obeyed. **$4,000 clamps
+roughly one entry in six — enough to trip this tool's own ">10% ⇒ results
+distorted" flag**, so it is no longer described as the minimum for meaningful
+results. At $300 the account goes negative (-155%) because margin stop-out is
+not modelled.
 
 Spread is $0.20/oz round-trip and scales linearly with size — ~$950 over 12
 months at $4,000, roughly half that year's net loss. Material to the RESULT,
@@ -186,9 +216,10 @@ wide the stops were in the period tested — a volatile month clamps a balance
 that a quiet month would have sized fine. A run whose clamp rate exceeds 10%
 draws a visible warning banner on the page.
 
-Guidance text shown in `--help` and on the page:
-**"$4,000 minimum for meaningful results; $10,000+ for a clean test of the
-risk rules."**
+Guidance text shown in `--help`, in `validate_balance()` and on the page:
+**"$10,000+ for a clean test of the risk rules; $4,000 still clamps roughly
+one entry in six."** The **>10% "results distorted" threshold is unchanged** —
+the guidance moved to match the measurement, not the other way round.
 
 In the Mini App tab (§4), the balance is an input with presets
 **$1k · $4k · $10k · $25k**, a $500 floor enforced client- and server-side,
@@ -259,8 +290,9 @@ time, running balance, regime are all present), rather than being retrofitted.
 - **Silent behaviour change while editing a 1,429-line engine.** Mitigated by
   the golden-run test captured first.
 - **Page weight.** 74k bars is the owner's explicit choice; parallel arrays and
-  a single indicator pass keep it near 6–7 MB (measured: 6.3 MB JSON / 6.4 MB
-  HTML for a 365-day, 70,707-bar, 1,210-trade run). What actually shipped for
+  a single indicator pass keep it near 6–7 MB for a 365-day run (measured:
+  6.3 MB JSON / 6.4 MB HTML at 70,707 bars / 1,210 trades) and ~9 MB for the
+  full 516-day source (99,999 bars, 1,729 trades). What actually shipped for
   a struggling browser is not a timeframe switcher: candles, indicators, the
   stepped stop and every trade's entry/exit markers still draw in full at any
   trade count, and the trade table is never thinned; above 300 trades the page

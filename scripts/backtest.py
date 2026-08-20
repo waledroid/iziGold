@@ -331,8 +331,25 @@ MIN_OZ = 1                # 0.01 lots
 # Starting-balance floors. The binding constraint is the 0.01 minimum lot,
 # not spread: when 1% of balance cannot cover one ounce at the stop distance,
 # sizing clamps to the minimum and OVER-risks instead of skipping the trade.
-# Measured over 12 months of M5 (2025-08 -> 2026-08): entries clamped 88.7% at
-# $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000.
+#
+# Measured 2026-08-20 on the SHIPPED DEFAULT (strict entry window),
+# `--source bars_max.json --days 365` -- 1,196-1,302 trades depending on
+# balance. Earlier copies of this table were measured under the LOOSE window
+# before strict became the default and read materially lower:
+#     balance   entries clamped   risk actually taken (median / p90)
+#     $500          94.7%            1.72% / 34.71%
+#     $800          68.5%            1.43% /  3.89%
+#     $1,200        47.0%            0.98% /  2.28%
+#     $2,000        32.3%            0.90% /  1.77%
+#     $4,000        16.7%            0.89% /  1.27%
+#     $10,000        1.3%            0.93% /  0.99%
+#     $25,000        0.0%            0.97% /  0.99%
+# Over the full source (516 days) the same run clamps 20.5% at $4,000 and
+# 3.7% at $10,000 -- the rate depends on how wide the stops were in the
+# window tested, which is why every run measures and prints its own.
+# $4,000 clamps roughly one entry in six and therefore trips this tool's own
+# ">10% => results distorted" flag; $10,000+ is the honest floor for a clean
+# test of the risk rules.
 MIN_BALANCE = 500.0     # below this the result is fiction (no margin stop-out
                         # is modelled either -- a $300 account goes negative)
 WARN_BALANCE = 2000.0   # below this, warn loudly and name the clamp rate
@@ -343,17 +360,19 @@ def validate_balance(value):
     if value < MIN_BALANCE:
         raise SystemExit(
             f"--balance {value:.0f} is below the ${MIN_BALANCE:.0f} floor.\n"
-            "At that size nearly every entry clamps to the 0.01 minimum lot, "
-            "so the replay measures minimum-lot behaviour, not the rulebook -- "
-            "and margin stop-out is not modelled, so the account can go "
-            "negative. Use $4,000+ for meaningful results, $10,000+ for a "
-            "clean test of the risk rules.")
+            "At that size nearly every entry clamps to the 0.01 minimum lot "
+            "(94.7% at $500, measured over the last 365 days), so the replay "
+            "measures minimum-lot behaviour, not the rulebook -- and margin "
+            "stop-out is not modelled, so the account can go negative. "
+            "$10,000+ is the floor for a clean test of the risk rules; "
+            "$4,000 still clamps roughly one entry in six.")
     if value < WARN_BALANCE:
         return (f"WARNING: at ${value:.0f}, 1% risk often cannot cover one "
                 f"ounce at the stop distance, so sizing falls back to the "
-                f"0.01 minimum lot and takes MORE than 1% risk. The clamp "
-                f"rate for this run is reported below -- read it before "
-                f"trusting the P/L.")
+                f"0.01 minimum lot and takes MORE than 1% risk (measured over "
+                f"the last 365 days: 47% of entries clamp at $1,200, 32% at "
+                f"$2,000). The clamp rate for this run is reported below -- "
+                f"read it before trusting the P/L.")
     return None
 
 
@@ -1190,10 +1209,17 @@ def build_parser():
         description="Replay halftrend_ema_v1 with the current money rulebook "
                     "over historical candles and report P/L.",
         epilog="NOT MODELLED:\n  " + "\n  ".join(CAVEATS) +
-               "\n\nSTARTING BALANCE: $4,000 minimum for meaningful results; "
-               "$10,000+ for a clean\ntest of the risk rules. Below $2,000 most "
-               "entries clamp to the 0.01 minimum\nlot and take more than the "
-               "intended 1% risk; below $500 the run is refused.",
+               "\n\nSTARTING BALANCE: $10,000+ for a clean test of the risk "
+               "rules. $4,000 still clamps\nroughly one entry in six to the "
+               "0.01 minimum lot -- enough to trip this tool's\nown \"results "
+               "distorted\" flag -- and below $2,000 clamping dominates the "
+               "result\nentirely. Below $500 the run is refused. Measured "
+               "2026-08-20 on the default\n(strict) window over the last 365 "
+               "days: entries clamped 94.7% at $500, 47.0%\nat $1,200, 32.3% "
+               "at $2,000, 16.7% at $4,000, 1.3% at $10,000, 0.0% at "
+               "$25,000.\nEvery run prints its OWN clamp rate: that is the "
+               "number to read, since it depends\non how wide the stops were "
+               "in the window tested.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
     data = ap.add_argument_group("Data")

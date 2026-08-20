@@ -43,6 +43,8 @@
  *      their stop-line gap points on the M15 grid instead of 300 s off it.
  *   7. Header honesty: null risk stats render "n/a" rather than "0.00%",
  *      and both drawdown figures (closed balance, open equity) are shown.
+ *   8. A $500-$2,000 starting balance raises its own on-page banner (spec
+ *      section 5), independent of the unchanged >10% clamp-rate banner.
  *
  * Run: node service/tests/backtest_report_smoke.js
  * Exit code 0 = every assertion passed. Non-zero + message on stderr = fail.
@@ -568,6 +570,34 @@ function buildSmallFixture(bar) {
   assert.ok(h2.includes('Max valley (open equity)') && h2.includes('$60.00'),
     'open-equity valley (max_valley) is in the artifact but not shown');
   console.log('ok    header shows n/a for null risk stats and both drawdown figures');
+})();
+
+// ---------------------------------------------------------------------------
+// 8. Balance-band banner (spec section 5): $500-$2,000 warns on the page, not
+//    only in stdout, whatever this particular window happened to clamp.
+// ---------------------------------------------------------------------------
+(function balanceBandChecks() {
+  function warnFor(balance, clampPct) {
+    const f = buildSmallFixture();
+    f.stats.start_balance = balance;
+    f.stats.clamp_pct = clampPct;
+    return runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR })
+      .elements.warnbox.innerHTML;
+  }
+  assert.ok(/\$500.\$2,000 warn band/.test(warnFor(1200, 0.0)),
+    'a $1,200 start balance must raise the warn-band banner even at 0% clamp');
+  assert.ok(/warn band/.test(warnFor(500, 0.0)),
+    'the band is inclusive at its $500 floor');
+  assert.ok(!/warn band/.test(warnFor(2000, 0.0)),
+    '$2,000 is the top of the band and must not raise it');
+  assert.ok(!/warn band/.test(warnFor(10000, 0.0)),
+    'a healthy balance must raise no banner');
+  // the >10% clamp banner is a separate, unchanged threshold
+  assert.ok(/forced to the 0.01 minimum lot/.test(warnFor(10000, 16.7)),
+    'the >10% clamp banner must still fire on its own');
+  assert.ok(!/forced to the 0.01 minimum lot/.test(warnFor(10000, 10.0)),
+    'the "results distorted" threshold stays at >10%, not >=10%');
+  console.log('ok    $500-$2,000 start balance raises its own banner; >10% clamp banner unchanged');
 })();
 
 console.log('\nPASS -- all headless assertions passed');

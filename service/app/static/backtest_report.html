@@ -95,13 +95,27 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
   document.getElementById("stats").innerHTML = cells.map(function (c) {
     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
   }).join("");
+  // Spec §5: the $500–$2,000 band runs, but warns loudly, whatever this
+  // particular window happened to clamp.
+  if (s.start_balance >= 500 && s.start_balance < 2000) {
+    document.getElementById("warnbox").innerHTML +=
+      '<div class="warn"><b>Started at $' + s.start_balance.toFixed(0) +
+      ", inside the $500–$2,000 warn band.</b> At this size 1% of balance " +
+      "often cannot cover one ounce at the stop distance, so sizing falls " +
+      "back to the 0.01 minimum lot and over-risks. Measured 2026-08-20 over " +
+      "the last 365 days: 47.0% of entries clamp at $1,200, 32.3% at $2,000, " +
+      "94.7% at $500. Read this run's own clamp rate below before trusting " +
+      "the P/L.</div>";
+  }
   if (s.clamp_pct > 10) {
     document.getElementById("warnbox").innerHTML +=
       '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
       "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
       "balance the 1% risk rule is often not obeyed — this run measures " +
-      "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
-      "meaningful results; $10,000+ for a clean test.</div>";
+      "minimum-lot behaviour as much as the rulebook. $10,000+ is the floor " +
+      "for a clean test of the risk rules; $4,000 still clamps roughly one " +
+      "entry in six (16.7% over the last 365 days, measured 2026-08-20 on " +
+      "the strict window).</div>";
   }
   var addTrades = RUN.trades.filter(function (t) { return t.legs.length > 1; }).length;
   if (RUN.trades.length > 300 && addTrades > 0) {
