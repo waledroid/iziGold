@@ -595,7 +595,14 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   thinning only, it does not touch replay logic or the artifact JSON. The page
   now discloses this on-page (a `.warn` line naming how many trades' add
   markers it hid, e.g. "638 of 1,210" for that run) so the limit travels with
-  the report instead of silently vanishing markers. `--web` and `--json` share one artifact build when both are
+  the report instead of silently vanishing markers. **The page OPENS zoomed to
+  the last trade (+/-60 bars), not on the whole run** (owner report 2026-08-20:
+  "the red/green box ... i cant see it"). At full-run scale a median trade is 9
+  bars = **0.15 px wide** with a 2.2 px stop box, so the boxes were being drawn
+  correctly and were invisible to everyone. The page carries Last trade / Last
+  day / Last week / Whole run presets, a line saying boxes need zoom, and a 2 px
+  floor on drawn box width; `backtest_report_smoke.js` pins the initial range so
+  a future edit cannot quietly reopen on the full run. `--web` and `--json` share one artifact build when both are
   passed together. `--json`/`--web` output is unvalidated by eye beyond the
   automated tests (`service/tests/test_backtest_web.py`,
   `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
