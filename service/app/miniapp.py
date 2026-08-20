@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from app import miniapp_auth
 from app.config import settings
 from app.indicators import ema, halftrend
+from app.telegram import market_session_short
 from app.models import Candle
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -368,6 +369,17 @@ def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
+def _htf_flag(entries):
+    """The higher-timeframe verdict recorded on a basket's FIRST leg.
+    None when unknown (-1, or no entry row carried the column)."""
+    for e in sorted(entries, key=lambda x: x.get("ts") or 0):
+        v = e.get("htf_agree")
+        if v is None or int(v) < 0:
+            continue
+        return bool(int(v))
+    return None
+
+
 def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int) -> list[dict]:
     """All baskets whose FINAL close falls in [start_utc, end_utc), with
     the entry-signal join (regime / AI direction) and balance-after
@@ -378,15 +390,18 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     has_mode = "entry_mode" in cols
     has_reason = "reason" in cols
     has_strat = "strategy_id" in cols
+    has_htf = "htf_agree" in cols
     sel = ("SELECT id, ts, event, direction, lots, price, profit, final, "
            + ("entry_mode" if has_mode else "''") + ", "
            + ("reason" if has_reason else "''") + ", "
-           + ("strategy_id" if has_strat else "''")
+           + ("strategy_id" if has_strat else "''") + ", "
+           + ("htf_agree" if has_htf else "-1")
            + " FROM trades WHERE ts >= ? AND ts < ? ORDER BY id ASC")
     raw = conn.execute(sel, (start_utc - REPORT_LOOKBACK_S, end_utc)).fetchall()
     rows = [{"id": r[0], "ts": r[1], "event": r[2], "direction": r[3], "lots": r[4],
              "price": r[5], "profit": r[6], "final": r[7], "entry_mode": r[8],
-             "reason": r[9], "strategy_id": r[10]} for r in raw]
+             "reason": r[9], "strategy_id": r[10], "htf_agree": r[11]}
+            for r in raw]
     baskets = [b for b in _group_baskets(rows, cap=None)
                if b.get("exit") and isinstance(b["exit"].get("ts"), (int, float))
                and start_utc <= b["exit"]["ts"] < end_utc]
@@ -493,6 +508,14 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             "pl": round(b.get("pl") or 0.0, 2),
             "balance_after": bal, "balance_src": bal_src,
             "regime": regime,
+            # M15 agreement as the EA judged it at ENTRY (the first leg):
+            # True / False / None when unknown. Older rows are backfilled by
+            # scripts/backfill_htf_agree.py.
+            "m15": _htf_flag(entries),
+            # Which market session the trade was OPENED in -- entry time is
+            # what the session describes, not the exit.
+            "session": market_session_short(
+                _dt.datetime.fromtimestamp(open_ts, _dt.UTC)),
             "ai": ai, "ai_direction": ai_dir,
             "ai_confidence": sig[3] if sig else None,
             "ai_verdict": sig[5] if sig else None,

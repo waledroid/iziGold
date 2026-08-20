@@ -1152,15 +1152,23 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
     thead.innerHTML = ""; tbody.innerHTML = "";
     var hr = el("tr");
-    ["Time", "Dir", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    ["Time", "Session", "Dir", "M15", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
     thead.appendChild(hr);
     var rows = Array.isArray(data.rows) ? data.rows : [];
     rows.forEach(function (r) {
       if (!r || typeof r !== "object") return;
       var tr = el("tr");
       tr.appendChild(el("td", null, r.time || "–"));
+      tr.appendChild(el("td", "muted", r.session || "–"));
       var dir = (r.direction || "").toString().toUpperCase();
       tr.appendChild(el("td", dir === "BUY" ? "dir-buy" : (dir === "SELL" ? "dir-sell" : ""), dir === "BUY" || dir === "SELL" ? dir : "–"));
+      // M15 agreement at entry: Yes / No / – when the row predates the field.
+      var m15cell = el("td", r.m15 === true ? "dir-buy" : (r.m15 === false ? "dir-sell" : "muted"),
+                       r.m15 === true ? "Yes" : (r.m15 === false ? "No" : "–"));
+      m15cell.title = r.m15 === true ? "M15 agreed with this entry"
+                    : (r.m15 === false ? "M15 disagreed — this trade would be refused today"
+                                       : "not recorded for this trade");
+      tr.appendChild(m15cell);
       tr.appendChild(el("td", "muted", (r.mode || "adr").toString().toUpperCase()));
       var ent = fmtPx(r.entry) + (isNumeric(r.entries) && r.entries > 1 ? " (" + r.entries + ")" : "");
       tr.appendChild(el("td", null, ent + " → " + fmtPx(r.exit)));

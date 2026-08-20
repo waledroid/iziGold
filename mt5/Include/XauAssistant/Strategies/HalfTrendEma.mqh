@@ -60,6 +60,7 @@ private:
    // |net move| / total path over m_chopBars closed bars; 1.0 = a straight
    // line, under ~0.10 is textbook chop. Above m_chopEffMax the HTF test
    // degrades to side-only, so trends are not filtered.
+   int      m_lastHtfAgree;   // 1 agreed / 0 refused / -1 not evaluated
    bool     m_chopOnly;
    int      m_chopBars;
    double   m_chopEffMax;
@@ -288,7 +289,7 @@ public:
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_htfConfirm(htfConfirm), m_htfEmaLen(htfEmaLen), m_htfEmaHandle(INVALID_HANDLE),
-        m_htfBufferAtr(htfBufferAtr), m_chopOnly(chopOnly),
+        m_htfBufferAtr(htfBufferAtr), m_lastHtfAgree(-1), m_chopOnly(chopOnly),
         m_chopBars(chopBars), m_chopEffMax(chopEffMax),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
@@ -324,6 +325,10 @@ public:
       if(path <= 0.0) return 0.0;
       return MathAbs(cl[m_chopBars] - cl[0]) / path;
      }
+
+   // The higher-timeframe verdict behind the CURRENT signal, for the trade
+   // log: 1 agreed, 0 refused, -1 not evaluated yet.
+   virtual int LastHtfAgree() const override { return m_lastHtfAgree; }
 
    bool HtfAgrees(int dir, double price)
      {
@@ -396,7 +401,9 @@ public:
         {
          m_fired = true;
          int wanted = (m_trend == 0) ? SIGNAL_BUY : SIGNAL_SELL;
-         if(!HtfAgrees(wanted, m_confirmClose))
+         bool htfOk = HtfAgrees(wanted, m_confirmClose);
+         m_lastHtfAgree = htfOk ? 1 : 0;   // recorded for the trade log
+         if(!htfOk)
            {
             Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " refused — ", EnumToString(m_htfTf), " disagrees (price ",

@@ -40,6 +40,27 @@ def market_session(dt: datetime | None = None) -> str:
     return "Rollover — thin market"  # 23:00-01:00, wraps midnight
 
 
+# Short forms for table columns. Kept HERE, beside market_session(), so the
+# band definitions have exactly one home -- a second table elsewhere would
+# drift the moment the bands change.
+SESSION_SHORT = {
+    "Asian session": "Asia",
+    "London open": "LDN open",
+    "London morning": "London",
+    "London+NY overlap \u00b7 US data window": "LDN+NY data",
+    "London+NY overlap": "LDN+NY",
+    "New York afternoon": "NY",
+    "Late New York": "Late NY",
+    "NY close / pre-rollover": "NY close",
+    "Rollover \u2014 thin market": "Rollover",
+}
+
+
+def market_session_short(dt: datetime | None = None) -> str:
+    """Column-width label for the same bands market_session() names."""
+    return SESSION_SHORT.get(market_session(dt), "\u2014")
+
+
 def kb(rows: list[list[tuple[str, str]]]) -> dict:
     """Build an inline keyboard from rows of (text, callback_data) tuples.
 

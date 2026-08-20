@@ -801,6 +801,33 @@ defaults up. `HtfConfirm` is new, so it arrived on by itself.
 Tests that care about manual mode now SET it (`test_api.py`,
 `test_proposals_flow.py`) instead of inheriting the installation default.
 
+## Trade reports carry M15 agreement and market session (2026-08-20)
+
+The day-view table in the Mini App gained two columns:
+
+- **Session** — which market session the trade was OPENED in (Asia / LDN open
+  / London / LDN+NY / LDN+NY data / NY / Late NY / NY close / Rollover). Free:
+  computed at report time from the entry timestamp. The bands live in ONE
+  place, `telegram.market_session()`, with `market_session_short()` beside it
+  for column width — a second band table would drift the moment the bands do.
+- **M15** — Yes / No / – for the higher-timeframe verdict at entry. Stored, not
+  reconstructed: `trades.htf_agree` (1 agreed, 0 refused, **-1 unknown**), sent
+  by the EA on open/add rows (`CStrategy::LastHtfAgree()`, default -1 so
+  strategies without an HTF gate need not implement it). Closes carry -1: the
+  verdict belongs to the entry decision.
+
+`scripts/backfill_htf_agree.py` fills the column for rows written before the EA
+sent it, reconstructing the decision from the candle history (`--buffer` and
+`--chop-max` mirror the shipped inputs, so it also answers "what would a
+different setting have done"). Run on 2026-08-20 over all 48 live trades:
+**23 agree / 25 disagree / 0 uncovered**. Rows the history cannot cover stay
+-1 rather than being guessed.
+
+**Note going forward:** the EA now REFUSES entries the filter disagrees with,
+so new live rows will read Yes by construction. The column's evidence value is
+in the backfilled history and in spotting a row that says No — which would mean
+the filter was off or fell open.
+
 ## The clearance buffer applies ONLY in chop (owner correction, 2026-08-20)
 
 The owner asked for this from the start — "the filter is only supposed to work

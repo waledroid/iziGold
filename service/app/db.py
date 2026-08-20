@@ -139,6 +139,16 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN entry_mode TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+        if "htf_agree" not in trade_cols:
+            # -1 = unknown (rows written before 2026-08-20, or by an EA build
+            # that does not send it); 1 = the higher-timeframe filter agreed
+            # at entry, 0 = it did not. Older rows are filled in by
+            # scripts/backfill_htf_agree.py.
+            try:
+                self.conn.execute(
+                    "ALTER TABLE trades ADD COLUMN htf_agree INTEGER DEFAULT -1")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
@@ -261,13 +271,13 @@ class SignalDb:
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(
             "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-            " sl, reason, ticket, profit, tp, final, entry_mode)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
              ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
              ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
              ev.get("tp", 0.0), int(ev.get("final", True)),
-             ev.get("entry_mode", "")))
+             ev.get("entry_mode", ""), int(ev.get("htf_agree", -1))))
         self.conn.commit()
         return cur.lastrowid
 

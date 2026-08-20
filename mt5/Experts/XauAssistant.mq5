@@ -186,8 +186,13 @@ public:
                                  (dir == "SELL") ? SIGNAL_SELL : SIGNAL_NONE;
          active.OnBasketClosed(closedDir);
         }
+      // The higher-timeframe verdict belongs to the ENTRY decision, so it is
+      // only meaningful on open/add rows; closes carry -1 (unknown).
+      int htfAgree = -1;
+      if(event != "close" && active != NULL)
+         htfAgree = active.LastHtfAgree();
       long id = g_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
-                                    profit, tp, basketGone, entryMode);
+                                    profit, tp, basketGone, entryMode, htfAgree);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
       // re-report this deal on the next MT5/service restart. CloseAll's

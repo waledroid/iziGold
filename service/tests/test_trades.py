@@ -388,3 +388,37 @@ def test_trade_event_responds_before_slow_telegram(client):
     assert r.status_code == 200 and r.json()["id"] > 0
     assert elapsed < 1.0, f"response took {elapsed:.2f}s — EA would time out"
     assert _wait_calls(ft, "sendMessage", 1, timeout=5.0)  # report still happens
+
+
+def test_trade_event_carries_and_stores_the_m15_verdict(tmp_path):
+    """The EA records what the higher-timeframe filter decided at ENTRY, so
+    the report can show it per trade rather than reconstructing it."""
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "t.db"))
+    agreed = db.insert_trade({"event": "open", "direction": "BUY", "lots": 0.1,
+                              "price": 4500.0, "htf_agree": 1})
+    refused = db.insert_trade({"event": "open", "direction": "SELL", "lots": 0.1,
+                               "price": 4500.0, "htf_agree": 0})
+    legacy = db.insert_trade({"event": "open", "direction": "BUY", "lots": 0.1,
+                              "price": 4500.0})
+    got = {r[0]: r[1] for r in
+           db.conn.execute("SELECT id, htf_agree FROM trades")}
+    assert got[agreed] == 1
+    assert got[refused] == 0
+    assert got[legacy] == -1, "an EA that does not send it must read as unknown"
+
+
+def test_report_rows_carry_m15_and_session():
+    """Both new report columns come off the same row the table renders."""
+    import datetime as dt
+    from app.miniapp import _htf_flag, market_session_short
+    assert _htf_flag([{"ts": 1, "htf_agree": 1}]) is True
+    assert _htf_flag([{"ts": 1, "htf_agree": 0}]) is False
+    assert _htf_flag([{"ts": 1, "htf_agree": -1}]) is None, "unknown is not False"
+    assert _htf_flag([]) is None
+    # the first leg decides -- a later add must not overwrite the entry verdict
+    assert _htf_flag([{"ts": 2, "htf_agree": 0}, {"ts": 1, "htf_agree": 1}]) is True
+    # session labels are short enough for a table column
+    for h in (2, 8, 12, 16, 20, 22):
+        lab = market_session_short(dt.datetime(2026, 8, 20, h, 0, tzinfo=dt.UTC))
+        assert lab and lab != "—" and len(lab) <= 12

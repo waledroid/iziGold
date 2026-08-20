@@ -25,6 +25,11 @@ public:
    // Painting: the EA enables this on the ACTIVE strategy only. Strategies
    // that support it draw their indicator state per closed bar; default no-op.
    virtual void EnablePaint(bool on) { m_paint = on; if(!on) ClearPaint(); }
+
+   // The higher-timeframe verdict behind the current signal, for the trade
+   // log: 1 agreed, 0 refused, -1 not evaluated / strategy has no HTF gate.
+   // Default -1 so strategies without one need not implement it.
+   virtual int LastHtfAgree() const { return -1; }
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }

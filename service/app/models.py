@@ -98,6 +98,9 @@ class TradeEventRequest(BaseModel):
     profit: float = 0.0
     final: bool = True
     entry_mode: str = ""
+    # Higher-timeframe agreement at entry, as the EA judged it:
+    # 1 = agreed, 0 = disagreed, -1 = unknown (older EA builds).
+    htf_agree: int = -1
 
 
 class ProposalResultRequest(BaseModel):
