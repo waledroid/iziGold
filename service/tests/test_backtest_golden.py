@@ -67,6 +67,10 @@ def _replay():
     # strict became the default. Keep it loose so the pin stays a like-for-like
     # change detector across that default flip.
     bt.STRICT_WINDOW = False
+    # Same reason for CONFIRM_CLOSES: this pin was captured at 1, before the
+    # owner moved the default to 2 on 2026-08-20. Pinning it here keeps the
+    # loose golden a like-for-like detector across BOTH default changes.
+    bt.CONFIRM_CLOSES = 1
     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
@@ -76,6 +80,7 @@ def _replay_strict():
     bt = _load_bt()
     candles = json.loads(BARS.read_text())
     assert bt.STRICT_WINDOW is True, "strict is supposed to be the default"
+    assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 

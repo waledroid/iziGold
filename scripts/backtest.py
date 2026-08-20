@@ -118,7 +118,7 @@ the TRUE halftrend_ema_v1 entry is "arrow on bar 1; wait bar 2; ENTER at
 bar 3's OPEN if bar 3 opens on the trend's side of the EMA (= bar 2 CLOSED
 there); otherwise the signal is DEAD until the next HalfTrend flip". Default
 (strict): exactly one decision per flip, at the close of the bar
-CONFIRM_CLOSES bars after the arrow bar (default 1 = bar 2): pass -> signal
+CONFIRM_CLOSES bars after the arrow bar (default 2 = bar 3): pass -> signal
 on that closed bar (fill at its close, which IS bar 3's open barring the
 tick gap — the replay's usual entry-at-close convention, unchanged); fail ->
 no entry for that flip, ever. Same for the reversal exit, since a reversal
@@ -298,7 +298,13 @@ from app.regime import classify_regime  # noqa: E402
 # --- current EA inputs ---
 RISK_PCT = 1.0
 STOP_BUFFER_ATR = 0.75
-CONFIRM_CLOSES = 1
+CONFIRM_CLOSES = 2      # waiting bars after the HalfTrend arrow; the entry
+                        # bar is the NEXT one. Owner decision 2026-08-20 on
+                        # measured evidence: 1 was the worst of {loose,1,2,3}
+                        # in EVERY window tested; 2 was the best M5 variant
+                        # (+$779 over 365d at $10k). Caveat recorded with it:
+                        # 2's profit is one regime (+$4,155 newer half,
+                        # -$4,517 older half), not a demonstrated edge.
 EMA_LEN = 55
 AMPLITUDE = 4
 ADD_TRIGGER_ATR = 1.0

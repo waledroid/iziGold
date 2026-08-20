@@ -767,6 +767,37 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Entry timing: ConfirmCloses = 2 (owner decision, 2026-08-20)
+
+`ConfirmCloses` is **2** in both the EA (`XauAssistant.mq5` input) and the
+replay (`backtest.py CONFIRM_CLOSES`) — two waiting bars after the HalfTrend
+arrow, entry on the next bar, which must OPEN beyond the EMA or the signal is
+dead until the next flip. Both are INPUTS/constants: changing this needs no
+recompile, only an input change on the running chart.
+
+Why, with the numbers (backtest.py, bars_max.json, $10,000, non-overlapping
+halves so the comparison is honest):
+
+| M5 variant | H1 2025-03..11 | H2 2025-12..2026-08 | full 516d |
+|---|---|---|---|
+| loose (pre-2026-08-16) | -4,745.57 | -2,812.91 | -6,780.30 |
+| strict, 1 waiting bar | **-6,240.78** | **-3,435.79** | **-7,894.26** |
+| strict, 2 waiting bars | -4,516.76 | **+4,155.29** | -2,234.95 |
+| strict, 3 waiting bars | -2,752.21 | -1,103.34 | -2,343.26 |
+
+**1 waiting bar was the worst of the four in EVERY window** — that is the
+finding that forced the change, and it was the shipped default for four days
+(2026-08-16..20). **Caveat that must travel with this setting:** 2's advantage
+is one regime, not a demonstrated edge — it is +$4,155 in the newer half and
+-$4,517 in the older one. Re-check monthly; if H2's behaviour stops, 3 waiting
+bars is the steadier choice (-2,752 / -1,103, positive nowhere but worst
+nowhere either).
+
+**Not taken, and worth remembering:** on M15 the same sweep puts 3 waiting bars
+at **-189.36 / +1,603.50 / +1,477.65** — the only configuration measured this
+week that is roughly flat in one half and profitable in the other. The owner
+chose to stay on M5. That option is still on the table.
+
 # 7b. Watchdog — the chart chain (and service processes) self-heal
 
 `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
