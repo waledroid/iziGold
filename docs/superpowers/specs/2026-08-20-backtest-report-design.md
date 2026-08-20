@@ -134,6 +134,66 @@ under `service/`; miniapp serves it at `/api/backtest` behind the existing
 as the standalone page. Read-only, last run only. If no run exists the tab
 says so rather than erroring.
 
+## 4b. Starting balance and the minimum that means anything
+
+`--balance` already exists (default 4000). What is missing is the honesty
+around it.
+
+**The binding constraint is the 0.01 minimum lot, not spread.** Sizing is
+`oz = max(MIN_OZ, int(risk / dist))`: when 1% of balance cannot cover one
+ounce at the stop distance, the replay does not skip the trade — it takes the
+minimum lot and **over-risks**. Measured over 12 months of M5 (2025-08 →
+2026-08):
+
+| Starting balance | entries clamped to min lot | risk actually taken (median / p90) |
+|---|---|---|
+| $500   | 88.7% | 2.78% / 17.69% |
+| $800   | 67.9% | 1.35% / 3.94% |
+| $1,200 | 50.8% | 1.01% / 2.60% |
+| $2,000 | 40.3% | 0.94% / 2.14% |
+| $4,000 | 10.2% | 0.88% / 1.01% |
+| $10,000 | 0.4% | 0.94% / 0.99% |
+| $25,000 | 0.1% | 0.98% / 1.00% |
+
+Below ~$4,000 the 1% rule stops being obeyed often enough to change what is
+being measured: a $1,200 run tests minimum-lot behaviour on half its entries,
+not the rulebook. At $300 the account goes negative (-155%) because margin
+stop-out is not modelled.
+
+Spread is $0.20/oz round-trip and scales linearly with size — ~$950 over 12
+months at $4,000, roughly half that year's net loss. Material to the RESULT,
+irrelevant to the MINIMUM, because it costs the same fraction at every
+balance.
+
+### Interface
+
+CLI validation on `--balance`:
+
+- **< $500 — refuse.** Exit with the reason: below this the replay's result is
+  fiction (near-total clamping, and an account that goes negative because no
+  margin stop-out is modelled).
+- **$500–$2,000 — run, warn loudly.** A banner in stdout and in the report
+  naming the measured clamp rate for THAT run.
+- **>= $2,000 — run clean**, still reporting clamp rate when it exceeds 5%.
+
+**Every run reports its measured clamp rate and the risk actually taken**
+(median and p90), in stdout, in `--json` `stats`, and in the report header.
+This is a measurement, not a static threshold, because clamping depends on how
+wide the stops were in the period tested — a volatile month clamps a balance
+that a quiet month would have sized fine. A run whose clamp rate exceeds 10%
+draws a visible warning banner on the page.
+
+Guidance text shown in `--help` and on the page:
+**"$4,000 minimum for meaningful results; $10,000+ for a clean test of the
+risk rules."**
+
+In the Mini App tab (§4), the balance is an input with presets
+**$1k · $4k · $10k · $25k**, a $500 floor enforced client- and server-side,
+and a **[Run backtest]** button — a 12-month replay takes ~3.6 s, so it is
+genuinely interactive. That endpoint is the only compute-on-demand path in the
+system: owner-only via the existing `viewer_ok()`, one run at a time, and
+rate-limited.
+
 ## 5. Backtest day/month report (later phase)
 
 The backtest gets the SAME tabled report the Mini App shows for live trades —
@@ -184,6 +244,8 @@ time, running balance, regime are all present), rather than being retrofitted.
   entry times, round-trips through `json.load`.
 - **`--web`** test: file written, self-contained (no external URLs), embeds the
   expected trade count.
+- **Balance validation**: below $500 refuses; $500-$2,000 warns; clamp rate
+  and realized-risk percentiles appear in stdout, `--json`, and the page.
 - **Report parity** (phase 5): the refactored shaping functions, fed the
   same baskets, produce byte-identical output to today's live report —
   captured as a golden test before the refactor.
