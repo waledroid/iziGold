@@ -43,10 +43,24 @@ def test_lanes_close_only_their_own_positions():
 
 
 def test_ht_decisions_match_until_the_first_qf_close():
-    """Before any QuickFlip trade has resolved, the balance is untouched, so
-    HalfTrend's decisions must be bit-identical to running it alone. After
-    that point they may legitimately diverge -- the profit target is a dollar
-    amount off a balance both lanes now share."""
+    """The QuickFlip lane's presence does not perturb HalfTrend BEFORE
+    QuickFlip trades.
+
+    That weaker claim is all this can honestly assert on the frozen fixture,
+    and the earlier docstring claimed more. The mechanism is real -- until a
+    QuickFlip trade RESOLVES the shared balance is untouched, so HalfTrend's
+    decisions must be bit-identical to running it alone -- but the fixture
+    holds only two QuickFlip setups (opening 2025-10-30 14:55 and 2025-11-06
+    14:00), and the last HalfTrend trade this compares exits 2025-10-30 06:10,
+    nearly NINE HOURS before the first QuickFlip position is even opened. So
+    it exercises leakage before QuickFlip trades at all; it does not exercise
+    the interesting window -- a HalfTrend basket held open ACROSS a live
+    QuickFlip position, before that position resolves. Do not stretch the
+    fixture to fix this: it is frozen and three golden pins depend on it.
+
+    After the first QuickFlip close the two paths may legitimately diverge --
+    the profit target is a dollar amount off a balance both lanes now share.
+    """
     _b1, ht_only, _x = _run("ht")
     _b2, both, _y = _run("both")
     qf_closes = [t["exit_t"] for t in both if t["lane"] == "qf"]

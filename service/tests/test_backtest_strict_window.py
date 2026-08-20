@@ -76,6 +76,10 @@ def test_cli_defaults_match_the_module_defaults():
     """
     bt = _load_bt()
     args = bt.build_parser().parse_args([])
+    # --strategy joined this list on 2026-08-20: its default silently decides
+    # what EVERY historical backtest command measures, and setting the
+    # argparse default to "ht" left all 505 tests passing.
+    assert args.strategy == bt.STRATEGY
     assert args.bias_ema == bt.BIAS_EMA
     assert args.bias_mode == bt.BIAS_MODE
     assert args.bias_tf == bt.BIAS_TF
