@@ -61,7 +61,12 @@ def daily_atr(candles):
     keys = sorted(days)
     out = {}
     for i, k in enumerate(keys):
-        if i < ATR_DAYS:
+        # Eligibility starts one day past the raw ATR_DAYS warm-up so that
+        # the inner loop's `j - 1` never hits index 0: at i == ATR_DAYS,
+        # j == 0 would make keys[j - 1] wrap around to keys[-1] -- the LAST
+        # day in the whole dataset -- leaking months of future close into
+        # the first computed ATR. Requiring i > ATR_DAYS keeps j >= 1.
+        if i <= ATR_DAYS:
             continue
         s = 0.0
         for j in range(i - ATR_DAYS, i):
@@ -91,6 +96,9 @@ def setups_at(candles, hour, minute, atr, window_min=WINDOW_MIN,
         hi = max(x["h"] for x in box)
         lo = min(x["l"] for x in box)
         green = box[-1]["c"] >= box[0]["o"]
+        # ratio is informational only in this probe -- it is not filtered
+        # on here. scripts/backtest.py's qf_signals() (this file's twin,
+        # see module docstring) gates trade selection on it.
         ratio = (hi - lo) / atr[k]
         t_end = box[-1]["t"] + 300
         path = [x for x in rows if t_end <= x["t"] < t_end + window_min * 60]
