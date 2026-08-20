@@ -1167,6 +1167,14 @@ def build_parser():
     return ap
 
 
+def apply_window_args(args):
+    """Wire --loose-window (and the suppressed --strict-window no-op) into
+    the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
+    drive the real CLI-to-global path without running a whole backtest."""
+    global STRICT_WINDOW
+    STRICT_WINDOW = not args.loose_window
+
+
 def main():
     args = build_parser().parse_args()
     global TF, BAR_MIN, FLATTEN_HM
@@ -1184,8 +1192,8 @@ def main():
     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
-    global STRICT_WINDOW, MIN_STOP_ATR
-    STRICT_WINDOW = not args.loose_window
+    global MIN_STOP_ATR
+    apply_window_args(args)
     MIN_STOP_ATR = args.min_stop_atr
     global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
     SR_LOOKBACK = args.sr_lookback
