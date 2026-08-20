@@ -1062,6 +1062,70 @@ def run(candles, start_balance, verbose):
     return trades, bal, max_dd, max_valley
 
 
+def build_run_json(candles, trades, args, res):
+    """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
+    per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
+    halves the payload with no loss of detail."""
+    closes = [x["c"] for x in candles]
+    ht = halftrend([type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+    r2 = lambda v: None if v is None else round(v, 2)   # noqa: E731
+    sizing = getattr(run, "sizing", {}) or {}
+    n = len(trades)
+    wins = sum(1 for t in trades if t["pl"] > 0)
+    net = res["bal"] - args.balance
+    return {
+        "meta": {
+            "generated_at": int(dt.datetime.now(dt.UTC).timestamp()),
+            "source": args.source, "tf": TF, "bars": len(candles),
+            "start": int(candles[0]["t"]), "end": int(candles[-1]["t"]),
+            "strict_window": STRICT_WINDOW,
+            "entry_mode": ENTRY_MODE,
+            "args": {k: v for k, v in vars(args).items() if v is not None},
+            "caveats": CAVEATS,
+        },
+        "stats": {
+            "trades": n, "wins": wins, "losses": n - wins,
+            "win_rate": round(100.0 * wins / n, 1) if n else 0.0,
+            "net": round(net, 2),
+            "start_balance": round(args.balance, 2),
+            "end_balance": round(res["bal"], 2),
+            "max_dd": round(res["max_dd"], 2),
+            "max_valley": round(res["valley"], 2),
+            "best": round(max((t["pl"] for t in trades), default=0.0), 2),
+            "worst": round(min((t["pl"] for t in trades), default=0.0), 2),
+            "clamp_pct": sizing.get("clamp_pct", 0.0),
+            "risk_median": sizing.get("risk_median", 0.0),
+            "risk_p90": sizing.get("risk_p90", 0.0),
+        },
+        "candles": {
+            "t": [int(x["t"]) for x in candles],
+            "o": [r2(x["o"]) for x in candles],
+            "h": [r2(x["h"]) for x in candles],
+            "l": [r2(x["l"]) for x in candles],
+            "c": [r2(x["c"]) for x in candles],
+        },
+        "ind": {
+            "ema9": [r2(v) for v in ema(closes, 9)],
+            "ema21": [r2(v) for v in ema(closes, 21)],
+            "ema55": [r2(v) for v in ema(closes, 55)],
+            "ema200": [r2(v) for v in ema(closes, 200)],
+            "ht": {"v": [r2(p[0]) if p else None for p in ht],
+                   "trend": [p[1] if p else None for p in ht]},
+        },
+        "trades": [{
+            "dir": t["dir"],
+            "legs": [{"t": leg["t"], "px": r2(leg["px"]), "oz": leg["oz"]}
+                     for leg in t["legs"]],
+            "tp": r2(t.get("tp")),
+            "stop_history": [{"t": h["t"], "stop": r2(h["stop"])}
+                             for h in t["stop_history"]],
+            "exit": r2(t["exit"]), "exit_t": t["exit_t"], "why": t["why"],
+            "pl": round(t["pl"], 2), "bal_after": round(t["bal_after"], 2),
+            "regime": t.get("regime"),
+        } for t in trades],
+    }
+
+
 def plot(candles, trades, start_balance, out_path):
     """Two-panel PNG: price with trade spans/markers, and the equity curve."""
     import matplotlib
@@ -1131,6 +1195,9 @@ def build_parser():
     out.add_argument("--verbose", action="store_true")
     rules.add_argument("--adx", type=float, default=None, help="override ADX gate")
     out.add_argument("--chart", default=None, help="write a PNG chart to this path")
+    out.add_argument("--json", default=None, metavar="PATH",
+                     help="write the full run (candles, indicators, trades, "
+                          "stats) to this JSON file")
     data.add_argument("--days", type=float, default=None,
                     help="backtest only the last N days of the source data")
     rules.add_argument("--expo", type=float, default=None,
@@ -1543,6 +1610,12 @@ def main():
     if args.chart:
         plot(candles, trades, args.balance, args.chart)
         print(f"chart      {args.chart}")
+    if args.json:
+        art = build_run_json(candles, trades, args,
+                             {"bal": bal, "max_dd": max_dd, "valley": max_valley})
+        Path(args.json).write_text(json.dumps(art, separators=(",", ":")))
+        print(f"json       {args.json} "
+              f"({Path(args.json).stat().st_size / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":
