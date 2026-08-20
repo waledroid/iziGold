@@ -134,6 +134,42 @@ under `service/`; miniapp serves it at `/api/backtest` behind the existing
 as the standalone page. Read-only, last run only. If no run exists the tab
 says so rather than erroring.
 
+## 5. Backtest day/month report (later phase)
+
+The backtest gets the SAME tabled report the Mini App shows for live trades —
+month view by default, a clickable day opening the full day table, back
+navigation, and CSV export from both views.
+
+"Exactly as today's Mini App reporting" is a structural guarantee, not a
+resemblance: `_report_month()` and `_report_day()` in `miniapp.py` are pure
+shaping functions sitting on top of one fetch (`_fetch_closed_baskets`). They
+are refactored to take a **list of baskets** instead of a sqlite connection,
+with the caller doing the fetch. Then:
+
+- live view  = shape(baskets read from SQLite)
+- backtest view = shape(baskets converted from the §2 `trades` array)
+
+One renderer, one shaper, two sources. The two reports cannot drift apart,
+and a change to either view lands in both.
+
+The backtest→basket conversion maps a replayed basket onto the live row shape:
+open/close time, direction, total lots, entry (size-weighted average of the
+legs), exit, exit reason, P/L, running balance, regime. Fields the replay has
+no source for (broker ticket, commission, swap) are omitted, not faked.
+
+Differences forced by the data, and nothing else:
+
+- the month picker spans the whole backtest range (a 12-month run has 12
+  months to page through), where the live view centres on the current month;
+- every report header carries the run's caveat block, so a backtest month can
+  never be mistaken for a live month;
+- day labels use the same server-time convention (`SERVER_UTC_OFFSET_H`) as
+  the live report, so a backtest day and a live day mean the same hours.
+
+Sequencing: this phase follows §4. It is specified here so §2's `trades`
+array is designed to carry everything the report needs (open time, close
+time, running balance, regime are all present), rather than being retrofitted.
+
 ## Testing
 
 - **Golden-run regression.** A fixed slice of `bars_max.json` replayed with
@@ -148,6 +184,9 @@ says so rather than erroring.
   entry times, round-trips through `json.load`.
 - **`--web`** test: file written, self-contained (no external URLs), embeds the
   expected trade count.
+- **Report parity** (phase 5): the refactored shaping functions, fed the
+  same baskets, produce byte-identical output to today's live report —
+  captured as a golden test before the refactor.
 - Existing service suite (437 tests) stays green.
 
 ## Risks
