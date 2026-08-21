@@ -286,6 +286,7 @@ CAVEATS = [
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import sys
 import urllib.request
@@ -1492,6 +1493,14 @@ def _lane_stats(trades):
     return out
 
 
+def _run_fingerprint(candles) -> str:
+    """Short hash of the exact bars a run measured. The header and the --json
+    artifact both use THIS function so they can never disagree."""
+    return hashlib.sha256(
+        json.dumps([[c["t"], c["o"], c["h"], c["l"], c["c"]] for c in candles],
+                   separators=(",", ":")).encode()).hexdigest()[:12]
+
+
 def build_run_json(candles, trades, args, res):
     """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
     per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
@@ -1508,6 +1517,10 @@ def build_run_json(candles, trades, args, res):
         "meta": {
             "generated_at": int(dt.datetime.now(dt.UTC).timestamp()),
             "source": args.source, "tf": TF, "bars": len(candles),
+            # see the DATASET FINGERPRINT note in main(): the source file is
+            # mutable, so a result is only reproducible against the dataset
+            # that produced it
+            "dataset": _run_fingerprint(candles),
             "start": int(candles[0]["t"]), "end": int(candles[-1]["t"]),
             "strict_window": STRICT_WINDOW,
             "entry_mode": ENTRY_MODE,
@@ -1893,6 +1906,14 @@ def main():
         sys.exit(f"only {len(candles)} candles available - need at least 100")
 
     t0, t1 = hhmm(candles[0]["t"])[0], hhmm(candles[-1]["t"])[0]
+    # DATASET FINGERPRINT. bars_max.json is untracked and MUTABLE -- a refresh
+    # from the terminal overwrites months of history with the broker's current
+    # version. On 2026-08-21 that moved a published figure from +7380.53 to
+    # +7625.63 with the code byte-identical (the frozen-fixture golden pins
+    # proved it). Without a fingerprint nobody can tell "the code changed" from
+    # "the data changed", so every quoted number must name the dataset it came
+    # from. Cheap: hashing 100k bars costs well under a second.
+    _fp = _run_fingerprint(candles)
     # The header is the only place a reader learns what the run measured, and
     # --strategy was missing from it: a qf run advertised HalfTrend's entire
     # parameter set for a run in which HalfTrend never traded. Name the lane,
@@ -1900,7 +1921,7 @@ def main():
     lane_desc = {"ht": "halftrend only", "qf": "quickflip only",
                  "both": "halftrend + quickflip"}
     head = [f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> "
-            f"{t1:%m-%d %H:%M} (server time)",
+            f"{t1:%m-%d %H:%M} (server time)  [dataset {_fp}]",
             f"start balance ${args.balance:,.0f}",
             f"strategy {STRATEGY} ({lane_desc[STRATEGY]})"]
     if STRATEGY in ("ht", "both"):

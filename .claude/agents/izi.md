@@ -767,6 +767,29 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Every backtest names its dataset (2026-08-21)
+
+`bars_max.json` is untracked and **mutable** — `scripts/dump_bars.py` pulls
+60,000 fresh bars and the merge overwrites ~7 months of history with the
+broker's CURRENT version of it. On 2026-08-21 that moved a published figure
+from **+7380.53 to +7625.63 with the code byte-identical**; the frozen-fixture
+golden pins passing unchanged is what proved the code was innocent.
+
+Every run now prints `[dataset <12-hex>]` in its header and carries
+`meta.dataset` in the `--json` artifact, both from `_run_fingerprint()` so they
+cannot disagree. A changed PRICE or an appended bar both move it.
+
+**Therefore: a quoted P/L without a dataset id is not reproducible evidence.**
+Figures in this file recorded before 2026-08-21 predate fingerprinting and were
+measured against whatever snapshot existed that day — treat their exact digits
+as indicative, not reproducible. Their RANKINGS (A beats B) are what carried the
+decisions and remain sound, because each comparison was run against one
+snapshot.
+
+Re-dump with `python.exe scripts/dump_bars.py 60000 <out>` (100000 returns
+nothing; 60000 is the working ceiling), then merge into `bars_max.json`.
+
+
 ## Corrupt toggle values fail toward NOT trading (2026-08-21)
 
 `db.get_choice()` separates two questions that look the same and are not:

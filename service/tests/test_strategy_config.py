@@ -168,3 +168,34 @@ def test_config_file_has_explanatory_header():
 def test_every_mapping_entry_has_an_ea_name(key, names):
     ea_name, _bt_attr = names
     assert ea_name, f"MAPPING[{key!r}] has no EA input name"
+
+
+def test_runs_carry_a_dataset_fingerprint():
+    """bars_max.json is untracked and mutable: a terminal refresh rewrites
+    months of history. A result is only reproducible against the dataset that
+    produced it, so every run names one -- and the header and the --json
+    artifact must use the SAME function or they will disagree."""
+    import importlib.util
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "bt_fp", root / "scripts" / "backtest.py")
+    bt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bt)
+
+    a = [{"t": 1, "o": 1.0, "h": 2.0, "l": 0.5, "c": 1.5},
+         {"t": 2, "o": 1.5, "h": 2.5, "l": 1.0, "c": 2.0}]
+    same = [dict(x) for x in a]
+    fp = bt._run_fingerprint(a)
+    assert fp == bt._run_fingerprint(same), "identical bars must fingerprint alike"
+    assert len(fp) == 12
+
+    # a single changed PRICE must move it -- otherwise the fingerprint cannot
+    # detect the refresh that actually bit us
+    moved = [dict(x) for x in a]
+    moved[1]["c"] = 2.01
+    assert bt._run_fingerprint(moved) != fp
+
+    # so must an extra bar (the append case: yesterday's file vs today's)
+    assert bt._run_fingerprint(a + [{"t": 3, "o": 2.0, "h": 2.1,
+                                     "l": 1.9, "c": 2.05}]) != fp
