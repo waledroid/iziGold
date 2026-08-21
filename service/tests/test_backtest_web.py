@@ -72,13 +72,13 @@ def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
     bt.STRICT_WINDOW = False
     bt.ENTRY_MODE = "fixed"
     bt.FIXED_LOTS = 0.05
+    args = bt.build_parser().parse_args(
+        ["--balance", "10000", "--entry-mode", "fixed"])
     # ENTRY_MODE is a HalfTrend-only concept; the QuickFlip lane (default
     # STRATEGY "both") always sets a tp and would otherwise sneak an
     # unrelated trade into this assertion. Isolate the lane under test.
-    bt.STRATEGY = "ht"
-    args = bt.build_parser().parse_args(
-        ["--balance", "10000", "--entry-mode", "fixed"])
-    trades, bal, dd, valley = bt.run(candles, 10000.0, False)
+    trades, bal, dd, valley = bt.run(
+        candles, 10000.0, False, bt.lanes_for("ht"))
     art = bt.build_run_json(candles, trades, args,
                             {"bal": bal, "max_dd": dd, "valley": valley})
     assert art["trades"], "expected at least one trade in the fixture slice"

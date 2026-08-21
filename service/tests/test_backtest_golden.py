@@ -76,9 +76,11 @@ def _replay():
     # 2026-08-20, after this pin was captured. Off here = like-for-like.
     bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF = 0, "tag", "M5"
     # The golden pins HalfTrend alone; QuickFlip is a separate lane added
-    # 2026-08-20, after this pin was captured.
-    bt.STRATEGY = "ht"
-    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+    # 2026-08-20, after this pin was captured. Lane selection is passed
+    # explicitly into run() now (not a mutated module global), so drive it
+    # the same way main() does: bt.lanes_for("ht") -> {"ht"}.
+    trades, bal, max_dd, _valley = bt.run(
+        candles, 4000.0, False, bt.lanes_for("ht"))
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
 
@@ -87,13 +89,13 @@ def _replay_strict():
     bt = _load_bt()
     candles = json.loads(BARS.read_text())
     assert bt.STRICT_WINDOW is True, "strict is supposed to be the default"
-    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
-    # 2026-08-20, after this pin was captured.
-    bt.STRATEGY = "ht"
     assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
     assert (bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF) == (55, "skip", "M15"), \
         "M15 EMA-55 agreement is supposed to be the default"
-    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
+    # 2026-08-20, after this pin was captured.
+    trades, bal, max_dd, _valley = bt.run(
+        candles, 4000.0, False, bt.lanes_for("ht"))
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
 
@@ -133,7 +135,8 @@ def _replay_both():
     bt = _load_bt()
     candles = json.loads(BARS.read_text())
     assert bt.STRATEGY == "both", "both-lane is supposed to be the default"
-    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+    trades, bal, max_dd, _valley = bt.run(
+        candles, 4000.0, False, bt.lanes_for(bt.STRATEGY))
     return _digest(trades), round(bal, 2), round(max_dd, 2)
 
 

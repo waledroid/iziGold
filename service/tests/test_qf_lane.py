@@ -6,8 +6,8 @@ from tests.test_backtest_golden import BARS, _load_bt
 
 def _run(strategy, balance=10000.0):
     bt = _load_bt()
-    bt.STRATEGY = strategy
-    trades, bal, dd, valley = bt.run(json.loads(BARS.read_text()), balance, False)
+    trades, bal, dd, valley = bt.run(
+        json.loads(BARS.read_text()), balance, False, bt.lanes_for(strategy))
     return bt, trades, bal
 
 
@@ -102,12 +102,12 @@ def test_the_open_equity_valley_is_marked_in_a_qf_only_run():
     365-day run. On this fixture QuickFlip's realized drawdown is exactly
     zero, which makes the pin sharp: a positive valley can ONLY come from
     marking the open position's floating P/L, so this fails if the mark is
-    ever moved back below the short-circuit or stops counting qf_pl().
+    ever moved back below the short-circuit or stops summing lanes'
+    floating_pl() in mark_equity().
     """
     bt = _load_bt()
-    bt.STRATEGY = "qf"
     trades, _bal, max_dd, valley = bt.run(
-        json.loads(BARS.read_text()), 10000.0, False)
+        json.loads(BARS.read_text()), 10000.0, False, bt.lanes_for("qf"))
     assert trades
     assert max_dd == 0.0, "fixture assumption: QuickFlip never closes lower"
     assert valley > 0.0, "a valley of 0.00 across real trades is fiction"
@@ -119,9 +119,8 @@ def test_the_valley_is_never_shallower_than_the_closed_drawdown():
     floating P/L is part of the equity being marked."""
     for strategy in ("ht", "qf", "both"):
         bt = _load_bt()
-        bt.STRATEGY = strategy
         _t, _b, max_dd, valley = bt.run(
-            json.loads(BARS.read_text()), 10000.0, False)
+            json.loads(BARS.read_text()), 10000.0, False, bt.lanes_for(strategy))
         assert valley >= max_dd - 1e-9, strategy
 
 

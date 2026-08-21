@@ -356,7 +356,13 @@ HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
 EXPO_MIN = _CFG["max_daily_exposure_min"]  # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 
-STRATEGY = "both"      # ht | qf | both
+# ht | qf | both. NOT read by run() any more -- it is the single source of
+# truth for the --strategy argparse default only (pinned by
+# test_cli_defaults_match_the_module_defaults). main() turns args.strategy
+# into an explicit set of lane ids via lanes_for() and passes it into run()
+# as active_lanes; run() takes NO module global for lane selection. See
+# LANES / lanes_for() / class Lane below for the plug-in lane contract.
+STRATEGY = "both"
 
 # --- trading timeframe (EA input TradeTimeframe; M15 study 2026-08-19) ---
 # The source JSON is always M5; --tf M15 aggregates it before anything else
@@ -937,7 +943,160 @@ def qf_resolve(pos, bar):
     return None
 
 
-def run(candles, start_balance, verbose):
+# --- lane plug-in contract --------------------------------------------------
+# A lane is a self-contained trading unit that runs on the shared account
+# without reaching into another lane's state. QuickFlip below is the
+# reference implementation; HalfTrend stays inline in run() (tangled with
+# basket/pyramiding/SR/bias state -- see the note above the main loop), so
+# this is deliberately the floor a lane needs to clear, not everything
+# run() happens to offer HalfTrend.
+class Account:
+    """The shared account surface a plug-in lane may touch.
+
+    `bal` is a read-only view of the CURRENT shared balance (both lanes'
+    realized P/L folded in, in whichever order their trades actually
+    closed). `realize(trade)` is the only way a lane may spend money: it
+    appends `trade` to the shared trade list and folds `trade["pl"]` into
+    bal/peak_bal/max_dd -- the same three numbers close_basket() updates
+    for the (inline) HalfTrend lane, so both paths keep one ledger. A lane
+    must never touch bal/trades/peak_bal/max_dd directly.
+    """
+    __slots__ = ("_get_bal", "_realize")
+
+    def __init__(self, get_bal, realize):
+        self._get_bal = get_bal
+        self._realize = realize
+
+    @property
+    def bal(self):
+        return self._get_bal()
+
+    def realize(self, trade):
+        self._realize(trade)
+
+
+class Lane:
+    """Minimal per-bar contract a plug-in lane must satisfy to run inside
+    run()'s loop alongside (inline) HalfTrend, and to be folded into the
+    open-equity valley every bar without run() needing to know it exists.
+
+    step(i, candles, account) is called once per closed bar, for every
+    ACTIVE lane, before the HalfTrend block runs. It may open/manage/close
+    the lane's own position(s), calling account.realize() for each close.
+
+    floating_pl(px) returns the lane's CURRENT unrealized P/L at price px
+    (0.0 if flat). mark_equity() -- the one place the open-equity valley is
+    computed, for every active lane, every bar -- sums this over `lanes`
+    unconditionally. THAT is what keeps the mark-every-bar invariant from
+    being an accident of code order: see mark_equity()'s docstring for the
+    bug that shipped when the marker instead lived inside the HalfTrend
+    code path (a qf-only run reported a fabricated valley of 0.00).
+    """
+    id = None
+
+    def step(self, i, candles, account):
+        raise NotImplementedError
+
+    def floating_pl(self, px):
+        raise NotImplementedError
+
+
+class QuickFlipLane(Lane):
+    """quickflip_ny_v1 as a plug-in Lane (spec 2026-08-20-quickflip-ny-
+    design). Setups are pure price geometry (qf_signals), precomputed once
+    at construction; step() manages at most one open position, sized off
+    account.bal at its own QF_RISK_PCT -- independent of whatever HalfTrend
+    is doing with the same shared balance.
+    """
+    id = "qf"
+
+    def __init__(self, candles, verbose):
+        self._by_i = {s["i"]: s for s in qf_signals(candles)}
+        self.verbose = verbose
+        self.pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
+        # QuickFlip sizes off the same balance but at its own risk percent,
+        # so its clamps are counted separately rather than blended into
+        # HalfTrend's (a 0.25%-risk entry and a 1%-risk entry are not the
+        # same measurement). "clamped" keeps HalfTrend's meaning (risk
+        # sizing asked for LESS than one ounce and was overruled upward =
+        # risk exceeded). "min_lot" counts every entry that ended at the
+        # broker floor, including the ones where one ounce is genuinely
+        # what the risk percent bought -- a different and much larger
+        # number, reported next to it so neither reading can be mistaken.
+        self.sizing = {"entries": 0, "clamped": 0, "min_lot": 0, "risk_pct": []}
+
+    def floating_pl(self, px):
+        """Unrealized P/L of the open position at this price (0.0 if flat)."""
+        if self.pos is None:
+            return 0.0
+        sgn = 1.0 if self.pos["dir"] == "BUY" else -1.0
+        return (px - self.pos["entry"]) * sgn * self.pos["oz"] \
+            - SPREAD_USD * self.pos["oz"]
+
+    def step(self, i, candles, account):
+        x = candles[i]
+        if self.pos is not None:
+            hit = qf_resolve(self.pos, x)
+            if hit is not None:
+                exit_px, why = hit
+                sgn = 1.0 if self.pos["dir"] == "BUY" else -1.0
+                pl = (exit_px - self.pos["entry"]) * sgn * self.pos["oz"] \
+                    - SPREAD_USD * self.pos["oz"]
+                trade = {
+                    "lane": "qf", "dir": self.pos["dir"],
+                    "legs": [{"px": self.pos["entry"], "oz": self.pos["oz"],
+                              "t": self.pos["entry_t"]}],
+                    "exit": exit_px, "when": hhmm(x["t"])[0],
+                    "exit_t": int(x["t"]), "why": why, "pl": pl,
+                    "opened_t": self.pos["entry_t"],
+                    "stop_history": [{"t": self.pos["entry_t"],
+                                      "stop": self.pos["stop"]}],
+                    "tp": self.pos["tp"], "regime": None}
+                account.realize(trade)
+                if self.verbose:
+                    print(f"  qf    {hhmm(x['t'])[0]:%m-%d %H:%M} "
+                          f"{self.pos['dir']} {self.pos['oz']}oz "
+                          f"@ {self.pos['entry']:.2f} -> {exit_px:.2f} "
+                          f"{why:>12}  P/L {pl:+8.2f}  bal {account.bal:9.2f}")
+                self.pos = None
+        if self.pos is None and i in self._by_i:
+            s = self._by_i[i]
+            dist = abs(s["entry"] - s["stop"])
+            if dist > 0:
+                want = int(account.bal * QF_RISK_PCT / 100 / dist)
+                oz = max(MIN_OZ, want)
+                self.sizing["entries"] += 1
+                if want < MIN_OZ:
+                    self.sizing["clamped"] += 1
+                if oz == MIN_OZ:
+                    self.sizing["min_lot"] += 1
+                self.sizing["risk_pct"].append(100.0 * oz * dist / account.bal)
+                self.pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
+                             "stop": s["stop"], "tp": s["tp"],
+                             "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
+
+
+# ht has no factory: it is not a plug-in, it is orchestrated inline in
+# run() (tangled with basket/pyramiding/SR/bias state -- see the note above
+# the main loop). Its entry keeps LANES the one place that lists every lane
+# id backtest.py knows about, including the one that is not pluggable yet --
+# so a third lane is an entry here, not an edit to a conditional.
+LANES = {
+    "ht": None,
+    "qf": QuickFlipLane,
+}
+
+
+def lanes_for(strategy):
+    """--strategy ht|qf|both -> the set of active lane ids."""
+    if strategy == "ht":
+        return {"ht"}
+    if strategy == "qf":
+        return {"qf"}
+    return set(LANES)
+
+
+def run(candles, start_balance, verbose, active_lanes=None):
     closes = [x["c"] for x in candles]
     ema55 = ema(closes, EMA_LEN)
     ht = halftrend(
@@ -947,6 +1106,8 @@ def run(candles, start_balance, verbose):
     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
         else None
 
+    active_lanes = set(LANES) if active_lanes is None else active_lanes
+
     bal = start_balance
     basket = None          # dict: dir, legs[{px,oz}], stop, peak, cycle_bal
     fired_flip = None      # flip index already traded
@@ -955,27 +1116,15 @@ def run(candles, start_balance, verbose):
     consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
     trades = []
 
-    # --- QuickFlip lane: independent positions, shared balance -------------
-    # Precomputed because setups are pure geometry; executed here so sizing
-    # sees the balance both lanes have produced so far.
-    qf_by_i = {}
-    if STRATEGY in ("qf", "both"):
-        for s in qf_signals(candles):
-            qf_by_i[s["i"]] = s
-    qf_pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
+    # --- plug-in lanes: which are active this run, instantiated once -------
+    # LANES lists every lane id backtest.py knows (ht's factory is None: it
+    # is not a plug-in, see the note by LANES); a third plug-in lane needs
+    # no change here, only an entry in LANES.
+    lanes = [factory(candles, verbose) for lane_id, factory in LANES.items()
+             if factory is not None and lane_id in active_lanes]
+    qf_lane = next((ln for ln in lanes if ln.id == "qf"), None)
 
     sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
-    # QuickFlip sizes off the same balance but at its own risk percent, so
-    # its clamps are counted separately rather than blended into HalfTrend's
-    # (a 0.25%-risk entry and a 1%-risk entry are not the same measurement).
-    # Blended, they were simply invisible: the clamp line counted only
-    # HalfTrend's entries while QuickFlip clamped 13.6% of its own.
-    # "clamped" keeps HalfTrend's meaning (risk sizing asked for LESS than
-    # one ounce and was overruled upward = risk exceeded). "min_lot" counts
-    # every entry that ended at the broker floor, including the ones where
-    # one ounce is genuinely what 0.25% bought -- a different and much larger
-    # number, reported next to it so neither reading can be mistaken.
-    qf_sizing = {"entries": 0, "clamped": 0, "min_lot": 0, "risk_pct": []}
     peak_bal, max_dd = bal, 0.0
     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
     expo = {}              # server-day -> minutes of open-position time
@@ -1032,27 +1181,37 @@ def run(candles, start_balance, verbose):
                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
         basket = None
 
-    def qf_pl(px):
-        """Unrealized P/L of the open QuickFlip position at this price."""
-        if qf_pos is None:
-            return 0.0
-        sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
-        return (px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
-            - SPREAD_USD * qf_pos["oz"]
+    def _realize(trade):
+        """Account.realize(): fold a plug-in lane's closed trade into the
+        shared bal/trades/peak_bal/max_dd -- the same three numbers
+        close_basket() above updates for the (inline) HalfTrend lane, so
+        both paths keep one ledger."""
+        nonlocal bal, peak_bal, max_dd
+        bal += trade["pl"]
+        trade["bal_after"] = bal
+        trades.append(trade)
+        peak_bal = max(peak_bal, bal)
+        max_dd = max(max_dd, peak_bal - bal)
+
+    account = Account(get_bal=lambda: bal, realize=_realize)
 
     def mark_equity(px):
         """Mark the open-equity valley at this bar's close, in EVERY mode.
 
-        BOTH lanes' floating P/L counts, because the valley describes the
-        ACCOUNT: an account $300 under water on a QuickFlip position is $300
-        under water whether or not HalfTrend also holds a basket. This used
-        to live inside the HalfTrend section, BELOW the `--strategy qf`
-        short-circuit, so a qf-only run reported a fabricated valley of 0.00
-        across 118 trades and a `both` run understated the real peak-to-
-        trough by whatever QuickFlip was floating.
+        EVERY active lane's floating P/L counts, because the valley
+        describes the ACCOUNT: an account $300 under water on a QuickFlip
+        position is $300 under water whether or not HalfTrend also holds a
+        basket. This used to live inside the HalfTrend section, BELOW the
+        `--strategy qf` short-circuit, so a qf-only run reported a
+        fabricated valley of 0.00 across 118 trades and a `both` run
+        understated the real peak-to-trough by whatever QuickFlip was
+        floating. Summing over `lanes` (rather than naming a lane) is what
+        keeps a future third lane covered by this invariant automatically,
+        with no edit here.
         """
         nonlocal peak_eq, max_valley
-        eq = bal + (basket_pl(px) if basket else 0.0) + qf_pl(px)
+        eq = bal + (basket_pl(px) if basket else 0.0) \
+            + sum(ln.floating_pl(px) for ln in lanes)
         peak_eq = max(peak_eq, eq)
         max_valley = max(max_valley, peak_eq - eq)
 
@@ -1063,54 +1222,16 @@ def run(candles, start_balance, verbose):
             hist.append({"t": int(t), "stop": stop})
 
     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
-        # ---- QuickFlip lane (independent of everything below) -------------
-        if qf_pos is not None:
-            qx = candles[i]
-            hit = qf_resolve(qf_pos, qx)
-            if hit is not None:
-                exit_px, why = hit
-                sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
-                pl = (exit_px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
-                    - SPREAD_USD * qf_pos["oz"]
-                bal += pl
-                peak_bal = max(peak_bal, bal)
-                max_dd = max(max_dd, peak_bal - bal)
-                trades.append({
-                    "lane": "qf", "dir": qf_pos["dir"],
-                    "legs": [{"px": qf_pos["entry"], "oz": qf_pos["oz"],
-                              "t": qf_pos["entry_t"]}],
-                    "exit": exit_px, "when": hhmm(qx["t"])[0],
-                    "exit_t": int(qx["t"]), "why": why, "pl": pl,
-                    "opened_t": qf_pos["entry_t"],
-                    "stop_history": [{"t": qf_pos["entry_t"],
-                                      "stop": qf_pos["stop"]}],
-                    "tp": qf_pos["tp"], "bal_after": bal,
-                    "regime": None})
-                if verbose:
-                    print(f"  qf    {hhmm(qx['t'])[0]:%m-%d %H:%M} "
-                          f"{qf_pos['dir']} {qf_pos['oz']}oz "
-                          f"@ {qf_pos['entry']:.2f} -> {exit_px:.2f} "
-                          f"{why:>12}  P/L {pl:+8.2f}  bal {bal:9.2f}")
-                qf_pos = None
-        if qf_pos is None and i in qf_by_i:
-            s = qf_by_i[i]
-            dist = abs(s["entry"] - s["stop"])
-            if dist > 0:
-                want = int(bal * QF_RISK_PCT / 100 / dist)
-                oz = max(MIN_OZ, want)
-                qf_sizing["entries"] += 1
-                if want < MIN_OZ:
-                    qf_sizing["clamped"] += 1
-                if oz == MIN_OZ:
-                    qf_sizing["min_lot"] += 1
-                qf_sizing["risk_pct"].append(100.0 * oz * dist / bal)
-                qf_pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
-                          "stop": s["stop"], "tp": s["tp"],
-                          "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
-        if STRATEGY == "qf":
+        # ---- plug-in lanes (independent of HalfTrend below) ----------------
+        for ln in lanes:
+            ln.step(i, candles, account)
+
+        if "ht" not in active_lanes:
             # Same place in the bar as the HalfTrend path's mark below: after
             # this bar has been fully processed. Nothing under this point
-            # runs in qf-only mode.
+            # runs when HalfTrend isn't active -- but every ACTIVE lane's
+            # floating P/L still gets marked (see mark_equity()'s docstring):
+            # this is not conditioned on which lanes those are.
             mark_equity(candles[i]["c"])
             continue
 
@@ -1425,6 +1546,8 @@ def run(candles, start_balance, verbose):
     # None, not 0.0, when nothing was risk-sized (--entry-mode fixed sizes
     # every entry at --fixed-lots): "0.00% risk taken" reads as "we risked
     # nothing", when the truth is that risk sizing never ran.
+    qf_sizing = qf_lane.sizing if qf_lane else \
+        {"entries": 0, "clamped": 0, "min_lot": 0, "risk_pct": []}
     qr = sorted(qf_sizing["risk_pct"])
     qn = qf_sizing["entries"]
     run.sizing = {
@@ -1850,8 +1973,12 @@ def main():
     BIAS_BUFFER_ATR = args.bias_buffer_atr
     global CHOP_EFF_MAX, CHOP_EFF_BARS
     CHOP_EFF_MAX, CHOP_EFF_BARS = args.chop_eff_max, args.chop_eff_bars
-    global STRATEGY
-    STRATEGY = args.strategy
+    # Lane selection is NOT a mutated global (that was the smell): args.strategy
+    # is turned into an explicit set of lane ids and passed straight into
+    # run() below. STRATEGY the module constant still exists, but only as the
+    # single source of truth for the argparse default (test_cli_defaults_
+    # match_the_module_defaults pins args.strategy == STRATEGY).
+    active_lanes = lanes_for(args.strategy)
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global MIN_STOP_ATR
@@ -1923,8 +2050,8 @@ def main():
     head = [f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> "
             f"{t1:%m-%d %H:%M} (server time)  [dataset {_fp}]",
             f"start balance ${args.balance:,.0f}",
-            f"strategy {STRATEGY} ({lane_desc[STRATEGY]})"]
-    if STRATEGY in ("ht", "both"):
+            f"strategy {args.strategy} ({lane_desc[args.strategy]})"]
+    if "ht" in active_lanes:
         head.append(f"exit scheme {EXIT_SCHEME}")
         if ENTRY_MODE == "fixed":
             head.append(f"entry mode fixed ({FIXED_LOTS:g} lots)")
@@ -1950,19 +2077,20 @@ def main():
             head.append(f"window {WINDOW[0]}-{WINDOW[1]}")
         if PROFIT_TARGET_PCT != 2.0:
             head.append(f"profit target {PROFIT_TARGET_PCT:g}%")
-    if STRATEGY in ("qf", "both"):
+    if "qf" in active_lanes:
         head.append(f"quickflip {QF_HOUR:02d}:{QF_MINUTE:02d} server, box >= "
                     f"{QF_ATR_PCT:g}% daily ATR, {QF_WINDOW_MIN}min window, "
                     f"{QF_RISK_PCT:g}% risk")
     if TF != "M5":
         head.append(f"TF {TF}")
     print(" | ".join(head))
-    tf_warning = qf_timeframe_warning(TF, STRATEGY)
+    tf_warning = qf_timeframe_warning(TF, args.strategy)
     if tf_warning:
         print(tf_warning)
     print()
 
-    trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
+    trades, bal, max_dd, max_valley = run(
+        candles, args.balance, args.verbose, active_lanes)
     # Several report blocks below read keys only HalfTrend's baskets carry
     # (orig_dist/orig_oz, regime, chop, bias, floor). A QuickFlip trade
     # reaching them would raise KeyError or silently pollute a per-regime
@@ -2179,7 +2307,7 @@ def main():
     s = getattr(run, "sizing", None)
     if s and s["entries"]:
         flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
-        lane_tag = " (halftrend lane)" if STRATEGY == "both" else ""
+        lane_tag = " (halftrend lane)" if args.strategy == "both" else ""
         print(f"sizing     {s['clamp_pct']:.1f}% of {s['entries']} entries "
               f"clamped to the 0.01 minimum lot{lane_tag}{flag}")
         print(f"           risk actually taken: median {s['risk_median']:.2f}% "

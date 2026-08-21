@@ -7,9 +7,9 @@ from tests.test_backtest_golden import BARS, ROOT, _load_bt
 
 def _artifact(balance=10000.0):
     bt = _load_bt()
-    bt.STRATEGY = "both"
     candles = json.loads(BARS.read_text())
-    trades, bal, dd, valley = bt.run(candles, balance, False)
+    trades, bal, dd, valley = bt.run(
+        candles, balance, False, bt.lanes_for("both"))
     args = bt.build_parser().parse_args(["--balance", str(balance)])
     return bt, bt.build_run_json(candles, trades, args,
                                  {"bal": bal, "max_dd": dd, "valley": valley})
@@ -74,8 +74,7 @@ def test_quickflip_entries_reach_the_sizing_report():
     a lane clamping its own entries to the minimum lot was invisible in the
     printed clamp rate."""
     bt = _load_bt()
-    bt.STRATEGY = "qf"
-    bt.run(json.loads(BARS.read_text()), 10000.0, False)
+    bt.run(json.loads(BARS.read_text()), 10000.0, False, bt.lanes_for("qf"))
     s = bt.run.sizing
     assert s["entries"] == 0, "a qf-only run risk-sizes no HalfTrend entry"
     assert s["qf_entries"] > 0, "...but QuickFlip's entries must be counted"
