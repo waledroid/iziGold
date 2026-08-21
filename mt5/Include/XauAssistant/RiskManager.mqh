@@ -9,7 +9,13 @@ private:
    double m_maxDailyLossPct;
    int    m_winStart, m_winEnd, m_maxExpoMin;
    int    m_adxHandle;
-   long   m_login, m_magic;
+   long   m_login;
+   // Magics whose deals count toward the daily-loss brake. A fixed-size
+   // slot array (MQL5 has no set type) — Init() seeds slot 0 from its
+   // single-magic parameter so the brake stays bit-identical to the old
+   // `!= m_magic` test until AddMagic() registers a second lane.
+   long   m_magics[4];
+   int    m_magicCount;
    ENUM_TIMEFRAMES m_tf;
    CNewsGuard *m_news;   // injected (may be NULL) — fail-open when absent
    // per-bar cache for the daily realized-loss scan (HistorySelect is not
@@ -68,12 +74,35 @@ public:
       m_riskPct = riskPct; m_maxDdPct = maxDdPct; m_maxSpread = maxSpread;
       m_adxThreshold = adxThr; m_winStart = winStart; m_winEnd = winEnd;
       m_maxExpoMin = maxExpoMin;
-      m_maxDailyLossPct = maxDailyLossPct; m_magic = magic;
+      m_maxDailyLossPct = maxDailyLossPct;
       m_tf = tf;
       m_news = news;
       m_dlCacheBar = 0; m_dlRealized = 0; m_dlLastWarn = 0;
       m_login = AccountInfoInteger(ACCOUNT_LOGIN);
       m_adxHandle = iADX(_Symbol, m_tf, 14);
+      m_magicCount = 0;
+      AddMagic(magic);
+     }
+
+   // Register an additional magic number whose deals count toward the
+   // daily-loss brake (e.g. a second trading lane sharing this account's
+   // protection). Duplicates are ignored; once every slot is used, further
+   // calls are silently ignored rather than overflowing the array — the
+   // caller does not need to check capacity.
+   void AddMagic(long m)
+     {
+      for(int i = 0; i < m_magicCount; i++)
+         if(m_magics[i] == m) return;                  // already registered
+      if(m_magicCount >= ArraySize(m_magics)) return;   // no free slot
+      m_magics[m_magicCount++] = m;
+     }
+
+   // True if `m` is one of the registered magics.
+   bool HasMagic(long m)
+     {
+      for(int i = 0; i < m_magicCount; i++)
+         if(m_magics[i] == m) return true;
+      return false;
      }
 
    void OnBarUpdate()
@@ -104,10 +133,11 @@ public:
       return dt.hour >= m_winStart && dt.hour < m_winEnd;
      }
 
-   // TODAY's realized P/L from our own closed deals (symbol+magic) since
-   // server midnight — broker history is the source of truth (no global-var
-   // state, reload-safe). Includes profit AND swap/commission of every own
-   // deal in the window (entry deals contribute their commission too).
+   // TODAY's realized P/L from our own closed deals (symbol + any registered
+   // magic) since server midnight — broker history is the source of truth
+   // (no global-var state, reload-safe). Includes profit AND swap/commission
+   // of every own deal in the window (entry deals contribute their
+   // commission too).
    // Cached per bar: the HistorySelect scan runs at most once per new bar.
    double TodayRealized()
      {
@@ -124,7 +154,7 @@ public:
             ulong tk = HistoryDealGetTicket(i);
             if(tk == 0) continue;
             if(HistoryDealGetString(tk, DEAL_SYMBOL) != _Symbol) continue;
-            if(HistoryDealGetInteger(tk, DEAL_MAGIC) != m_magic) continue;
+            if(!HasMagic(HistoryDealGetInteger(tk, DEAL_MAGIC))) continue;
             realized += HistoryDealGetDouble(tk, DEAL_PROFIT)
                       + HistoryDealGetDouble(tk, DEAL_SWAP)
                       + HistoryDealGetDouble(tk, DEAL_COMMISSION);
