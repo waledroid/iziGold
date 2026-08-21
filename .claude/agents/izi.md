@@ -767,6 +767,27 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Corrupt toggle values fail toward NOT trading (2026-08-21)
+
+`db.get_choice()` separates two questions that look the same and are not:
+
+- **unset** -> `default` (a fresh install; `exec_mode` defaults to `auto` for
+  drag-and-go)
+- **stored but unrecognised** -> `on_invalid`, falling back to `default`
+
+`exec_mode` passes `on_invalid="manual"`. Caught during the Stage-1 refactor:
+folding the three toggles onto one helper made a corrupt `exec_mode` degrade to
+`"auto"` — i.e. a damaged kv row could have switched auto-trading ON. Before
+the refactor a corrupt value round-tripped raw and the EA ignored it
+(`if(mode == "auto" || mode == "manual")`), leaving the mode untouched, which
+was the safer failure. The explicit `on_invalid` restores that direction and
+makes it deliberate rather than incidental.
+
+`entry_mode` and `htf_enforce` keep degrading to their defaults: both of their
+choices trade, so the question is only HOW, never WHETHER. Pinned by
+`test_corrupt_exec_mode_fails_toward_not_trading`.
+
+
 ## Drag-and-go defaults (owner, 2026-08-20)
 
 Attaching `XauAssistant.mq5` to any XAUUSD chart is now the whole install —

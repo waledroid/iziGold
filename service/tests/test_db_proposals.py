@@ -39,11 +39,18 @@ def test_get_choice_set_choice_generic_pair(db):
 
 
 def test_exec_mode_and_entry_mode_reimplemented_on_get_choice(db):
-    """Both are now backed by get_choice/set_choice, so a stale/garbage kv
-    value degrades to the documented default instead of round-tripping
-    unvalidated -- the same guarantee htf_enforce already made."""
+    """Both are backed by get_choice/set_choice, so a stale/garbage kv value
+    degrades instead of round-tripping unvalidated -- the guarantee
+    htf_enforce already made.
+
+    Where they degrade TO differs on purpose: entry_mode picks how to size
+    and both options trade, so it takes the default; exec_mode decides
+    WHETHER to trade, so a corrupt value fails toward MANUAL rather than
+    switching auto-trading on. See
+    test_corrupt_exec_mode_fails_toward_not_trading.
+    """
     db.set_kv("exec_mode", "garbage")
-    assert db.exec_mode() == "auto"
+    assert db.exec_mode() == "manual"
     db.set_kv("entry_mode", "garbage")
     assert db.entry_mode() == "adr"
 
@@ -193,3 +200,21 @@ def test_pop_approved_command_durability(tmp_path):
     # Assert the change is persisted (if not committed, this would still be 'approved')
     assert row[0] == "dispatched", \
         f"Status not durably committed to disk; got {row[0]}"
+
+
+def test_corrupt_exec_mode_fails_toward_not_trading(db):
+    """A fresh install trades (drag-and-go). A CORRUPT stored value must not:
+    degrading it to "auto" would let a damaged row switch auto-trading on.
+    Unset and invalid are deliberately different answers."""
+    assert db.exec_mode() == "auto", "unset = fresh install = trade"
+    db.set_kv("exec_mode", "garbage")          # bypass the validating setter
+    assert db.exec_mode() == "manual", "corrupt must fail toward NOT trading"
+    db.set_exec_mode("auto")
+    assert db.exec_mode() == "auto"
+
+
+def test_corrupt_entry_mode_degrades_to_the_default(db):
+    """entry_mode picks HOW to size, not WHETHER to trade, so degrading to
+    the default is right here -- both choices trade."""
+    db.set_kv("entry_mode", "garbage")
+    assert db.entry_mode() == "adr"

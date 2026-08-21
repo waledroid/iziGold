@@ -370,12 +370,25 @@ class SignalDb:
     # public methods below are thin wrappers so callers and tests (which key
     # off exec_mode()/entry_mode()/htf_enforce() by name) don't have to
     # change.
-    def get_choice(self, name: str, choices: tuple, default: str) -> str:
-        """The kv-stored value for `name` if it's one of `choices`, else
-        `default` -- an unset OR unrecognised (e.g. pre-migration) stored
-        value degrades to `default` rather than leaking out unvalidated."""
+    def get_choice(self, name: str, choices: tuple, default: str,
+                   on_invalid: str | None = None) -> str:
+        """The kv-stored value for `name` if it's one of `choices`.
+
+        UNSET degrades to `default` -- what a fresh install should do.
+        A stored value that is not in `choices` degrades to `on_invalid`
+        (falling back to `default` when not given). The two are separated
+        deliberately: for a trading toggle the safe answer to "the stored
+        value is corrupt" is not always the same as the answer to "nothing
+        has been chosen yet". exec_mode is exactly that case -- a fresh
+        install should trade (drag-and-go), but a CORRUPT value must not
+        silently switch trading ON.
+        """
         val = self.get_kv(name)
-        return val if val in choices else default
+        if val is None:
+            return default
+        if val in choices:
+            return val
+        return on_invalid if on_invalid is not None else default
 
     def set_choice(self, name: str, value: str, choices: tuple) -> None:
         """Store `value` under `name`, or raise ValueError if it is not one
@@ -390,7 +403,11 @@ class SignalDb:
         # it ships `mode` on every heartbeat and the EA obeys it -- so a
         # fresh install defaulting to "manual" would silently override an
         # EA attached with ExecutionMode=EXEC_AUTO within ~5 seconds.
-        return self.get_choice("exec_mode", ("auto", "manual"), "auto")
+        # on_invalid="manual": a corrupt stored value must fail toward NOT
+        # trading. Before this was explicit the value degraded to "auto",
+        # i.e. a damaged row could have switched auto-trading ON.
+        return self.get_choice("exec_mode", ("auto", "manual"), "auto",
+                               on_invalid="manual")
 
     def set_exec_mode(self, mode: str) -> None:
         self.set_choice("exec_mode", mode, ("auto", "manual"))
