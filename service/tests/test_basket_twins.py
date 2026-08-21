@@ -1,5 +1,5 @@
 """Pins the shared contract between the basket-boundary twins:
-`app/main.py::_basket_legs` and `app/miniapp.py::_group_baskets`. Both answer
+`app/main.py::_basket_legs` and `app/reports.py::_group_baskets`. Both answer
 the same question -- "which trade rows belong to this basket, in what
 order" -- from the same underlying `trades` table, but independently (see
 the TWIN WARNING comment on each function). This is the same treatment
@@ -37,7 +37,7 @@ def _trade(**overrides):
 
 def _rows_for_group_baskets(db):
     """The same row shape `/api/trades` and the Trades report build for
-    `_group_baskets` -- see `_fetch_closed_baskets` in app/miniapp.py."""
+    `_group_baskets` -- see `_fetch_closed_baskets` in app/reports.py."""
     cols = ["id", "ts", "event", "direction", "lots", "price", "profit",
             "final", "entry_mode", "reason", "strategy_id", "htf_agree"]
     raw = db.conn.execute(
@@ -52,7 +52,7 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     the fields they share -- while documenting exactly where they diverge
     on purpose."""
     from app.main import _basket_legs
-    from app.miniapp import _group_baskets
+    from app.reports import _group_baskets
     from app import main
     db = main.app.state.db
 

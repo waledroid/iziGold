@@ -411,7 +411,8 @@ def test_trade_event_carries_and_stores_the_m15_verdict(tmp_path):
 def test_report_rows_carry_m15_and_session():
     """Both new report columns come off the same row the table renders."""
     import datetime as dt
-    from app.miniapp import _htf_flag, market_session_short
+    from app.reports import _htf_flag
+    from app.telegram import market_session_short
     assert _htf_flag([{"ts": 1, "htf_agree": 1}]) is True
     assert _htf_flag([{"ts": 1, "htf_agree": 0}]) is False
     assert _htf_flag([{"ts": 1, "htf_agree": -1}]) is None, "unknown is not False"
@@ -428,7 +429,7 @@ def test_basket_grouping_preserves_the_m15_verdict():
     """Regression: _group_baskets rebuilt each leg with only ts/price/lots,
     so htf_agree was dropped between the DB and the report and EVERY row
     rendered a dash even with the column fully populated."""
-    from app.miniapp import _group_baskets, _htf_flag
+    from app.reports import _group_baskets, _htf_flag
     rows = [
         {"id": 1, "ts": 100, "event": "open", "direction": "BUY", "lots": 0.1,
          "price": 4500.0, "profit": 0.0, "final": 1, "entry_mode": "adr",
