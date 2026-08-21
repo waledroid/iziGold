@@ -363,28 +363,43 @@ class SignalDb:
             " ORDER BY strategy_id").fetchall()
         return [r[0] for r in rows]
 
+    # --- generic toggle shape ----------------------------------------------
+    # exec_mode/entry_mode/htf_enforce are three near-identical
+    # "kv-backed value restricted to a fixed choice set, with a default"
+    # pairs. get_choice/set_choice are that shape pulled out once; the three
+    # public methods below are thin wrappers so callers and tests (which key
+    # off exec_mode()/entry_mode()/htf_enforce() by name) don't have to
+    # change.
+    def get_choice(self, name: str, choices: tuple, default: str) -> str:
+        """The kv-stored value for `name` if it's one of `choices`, else
+        `default` -- an unset OR unrecognised (e.g. pre-migration) stored
+        value degrades to `default` rather than leaking out unvalidated."""
+        val = self.get_kv(name)
+        return val if val in choices else default
+
+    def set_choice(self, name: str, value: str, choices: tuple) -> None:
+        """Store `value` under `name`, or raise ValueError if it is not one
+        of `choices`."""
+        if value not in choices:
+            raise ValueError(f"invalid {name}: {value}")
+        self.set_kv(name, value)
+
     def exec_mode(self) -> str:
         # Default AUTO since 2026-08-20 (owner: "all I need to do is drag it
         # into the chart"). The service is the AUTHORITY on execution mode --
         # it ships `mode` on every heartbeat and the EA obeys it -- so a
         # fresh install defaulting to "manual" would silently override an
         # EA attached with ExecutionMode=EXEC_AUTO within ~5 seconds.
-        val = self.get_kv("exec_mode")
-        return val if val else "auto"
+        return self.get_choice("exec_mode", ("auto", "manual"), "auto")
 
     def set_exec_mode(self, mode: str) -> None:
-        if mode not in ("auto", "manual"):
-            raise ValueError(f"invalid exec mode: {mode}")
-        self.set_kv("exec_mode", mode)
+        self.set_choice("exec_mode", mode, ("auto", "manual"))
 
     def entry_mode(self) -> str:
-        val = self.get_kv("entry_mode")
-        return val if val else "adr"
+        return self.get_choice("entry_mode", ("adr", "fixed"), "adr")
 
     def set_entry_mode(self, mode: str) -> None:
-        if mode not in ("adr", "fixed"):
-            raise ValueError(f"invalid entry mode: {mode}")
-        self.set_kv("entry_mode", mode)
+        self.set_choice("entry_mode", mode, ("adr", "fixed"))
 
     # --- higher-timeframe agreement: a togglable module -------------------
     # Value is the timeframe it ENFORCES on ("M15"/"M30"/"H1"), or "off" to
@@ -394,13 +409,10 @@ class SignalDb:
     HTF_CHOICES = ("off", "M15", "M30", "H1")
 
     def htf_enforce(self) -> str:
-        val = self.get_kv("htf_enforce")
-        return val if val in self.HTF_CHOICES else "off"
+        return self.get_choice("htf_enforce", self.HTF_CHOICES, "off")
 
     def set_htf_enforce(self, value: str) -> None:
-        if value not in self.HTF_CHOICES:
-            raise ValueError(f"invalid htf enforce: {value}")
-        self.set_kv("htf_enforce", value)
+        self.set_choice("htf_enforce", value, self.HTF_CHOICES)
 
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:

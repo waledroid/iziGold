@@ -22,6 +22,32 @@ def test_exec_mode_default_and_set(db):
         db.set_exec_mode("yolo")
 
 
+def test_get_choice_set_choice_generic_pair(db):
+    """exec_mode/entry_mode/htf_enforce are all thin wrappers over this
+    generic toggle shape (db.py). A stored value outside `choices` (e.g. a
+    pre-migration leftover) degrades to `default` rather than leaking out
+    unvalidated, matching what htf_enforce already guaranteed."""
+    assert db.get_choice("widget", ("a", "b"), "a") == "a"
+    db.set_choice("widget", "b", ("a", "b"))
+    assert db.get_choice("widget", ("a", "b"), "a") == "b"
+    with pytest.raises(ValueError):
+        db.set_choice("widget", "c", ("a", "b"))
+    # bypass set_choice's validation to simulate a garbage/stale stored
+    # value, and confirm the getter still degrades to the default
+    db.set_kv("widget", "garbage")
+    assert db.get_choice("widget", ("a", "b"), "a") == "a"
+
+
+def test_exec_mode_and_entry_mode_reimplemented_on_get_choice(db):
+    """Both are now backed by get_choice/set_choice, so a stale/garbage kv
+    value degrades to the documented default instead of round-tripping
+    unvalidated -- the same guarantee htf_enforce already made."""
+    db.set_kv("exec_mode", "garbage")
+    assert db.exec_mode() == "auto"
+    db.set_kv("entry_mode", "garbage")
+    assert db.entry_mode() == "adr"
+
+
 def test_proposal_lifecycle(db):
     pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
     row = db.get_proposal(pid)

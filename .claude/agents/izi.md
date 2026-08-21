@@ -783,6 +783,16 @@ moved `manual` -> `auto` in the same change: leaving it manual would have
 silently flipped an AUTO-attached EA back within seconds, and the input would
 have looked broken.
 
+`exec_mode()`/`entry_mode()`/`htf_enforce()` and their setters (`db.py`) are
+all thin wrappers over a generic `get_choice(name, choices, default)` /
+`set_choice(name, value, choices)` pair (Stage 1 refactor, 2026-08-21) — same
+kv-backed "value restricted to a fixed choice set, with a default" shape,
+pulled out once. Public method names/signatures/defaults are unchanged; the
+one behavior tightening is that `exec_mode()`/`entry_mode()` now degrade an
+unrecognised stored value to their default instead of returning it raw
+(`htf_enforce()` already worked this way) — unreachable in practice since the
+kv store is only ever written by the validating setters.
+
 **Two safety rails were deliberately spent to buy this, and both are one edit
 back:**
 - `AllowLiveTrading=true` is the ONLY gate stopping AUTO from trading a REAL
