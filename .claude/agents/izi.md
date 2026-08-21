@@ -767,6 +767,45 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Where the code lives after the 2026-08-21 modularity pass
+
+Two files that claimed to be "wiring only" were carrying real logic. Pure
+moves, no behaviour change — the EA compiled 0/0 and the Python suite stayed at
+555 throughout.
+
+| file | was | now |
+|---|---|---|
+| `mt5/Experts/XauAssistant.mq5` | 882 | **567** |
+| `service/app/main.py` | 1081 | **987** |
+| `service/app/miniapp.py` | 685 | **346** |
+
+New homes:
+- **`mt5/Include/XauAssistant/Reconciler.mqh`** — offline-close reconciliation
+  and the `XAU_RECON` watermark. **Parameterised by magic number**, not reading
+  the `MagicNumber` input, so the planned second lane gets its own watermark
+  without moving this again.
+- **`mt5/Include/XauAssistant/UiSink.mqh`** — the `CTradeEventSink`
+  implementation and its five-concern dispatch, now injected
+  (`Init(registry, ui, boxes, recon)`) like `CRiskManager`/`CTradeManager`
+  already were.
+- **`service/app/reports.py`** — the trades-report engine as pure functions
+  over a `sqlite3.Connection`, no FastAPI coupling. Verified byte-identical by
+  diffing real `/api/report` month and day output before and after.
+- **`service/app/trade_report.py`** — trade-event reporting, captions, render
+  and screenshot retention.
+
+**Twin pointers moved with them.** `_basket_legs` (now in `trade_report.py`)
+and `_group_baskets` (now in `reports.py`) still name each other, and
+`test_basket_twins.py` still pins them. A twin warning aimed at the wrong file
+is worse than none — the next reader trusts it — so the pointers were corrected
+in the same commits that invalidated them.
+
+Also: `_send_render_photo` was deleted (no callers in either home), and the
+background trade report now captures `app.state` at task-creation time rather
+than inside the coroutine — sub-millisecond, deliberate, documented at the call
+site: the report describes the account as it was when the event ARRIVED.
+
+
 ## Every backtest names its dataset (2026-08-21)
 
 `bars_max.json` is untracked and **mutable** — `scripts/dump_bars.py` pulls
