@@ -880,7 +880,21 @@ def _basket_legs(db: SignalDb, trade_id: int) -> list:
     For a "close" event `trade_id` is the just-inserted close row itself --
     it's excluded automatically since its own event isn't 'open'/'add'. For
     "open"/"add" events, `trade_id`'s row already satisfies id > last_close
-    and event IN ('open','add'), so it's included as the newest leg."""
+    and event IN ('open','add'), so it's included as the newest leg.
+
+    TWIN WARNING: `app/miniapp.py`'s `_group_baskets` implements this same
+    basket-boundary rule independently (it groups a whole fetched window at
+    once instead of walking backward from one row id, because the mini-app
+    needs every basket in a range, not just the one around a fresh insert).
+    Both MUST agree on which rows are legs of a basket, in what order --
+    that agreement is pinned by
+    `tests/test_basket_twins.py::test_basket_legs_and_group_baskets_agree_
+    on_the_same_legs`. They deliberately return different SHAPES: this
+    function's legs carry `sl`/`tp` (needed to backfill/redraw the chart
+    render) and no `ts`/`htf_agree`; `_group_baskets`' entries carry
+    `ts`/`htf_agree` (needed for the report) and no `sl`/`tp` (the mini-app
+    query never selects them). If you change the boundary rule here, change
+    it there too, and vice versa."""
     last_close = db.conn.execute(
         "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
         (trade_id,)).fetchone()[0] or 0

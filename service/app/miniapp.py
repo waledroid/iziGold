@@ -257,7 +257,21 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
     `rows` must be ordered by id ascending. The trailing basket (still
     open, no close row yet in the fetched window) gets `exit: None`.
     Capped to the last `cap` baskets (BASKETS_MAX for the chart markers;
-    the Trades report passes None for "everything in the window")."""
+    the Trades report passes None for "everything in the window").
+
+    TWIN WARNING: `app/main.py`'s `_basket_legs` implements this same
+    basket-boundary rule independently (it walks backward in SQL from one
+    just-inserted row id instead of grouping a whole fetched window, because
+    it only ever needs the ONE basket around a fresh trade-event). Both MUST
+    agree on which rows are legs of a basket, in what order -- that
+    agreement is pinned by `tests/test_basket_twins.py::
+    test_basket_legs_and_group_baskets_agree_on_the_same_legs`. They
+    deliberately return different SHAPES: this function's entries carry
+    `ts`/`htf_agree` (needed for the report) and no `sl`/`tp` (the mini-app's
+    SQL never selects them), plus basket-level `entry_mode`/`strategy_id`/
+    `reason`/`direction` that `_basket_legs` has no reason to carry (it feeds
+    a single render/Telegram call, not a report table). If you change the
+    boundary rule here, change it there too, and vice versa."""
     baskets: list[dict] = []
     current: dict | None = None
     for r in rows:
