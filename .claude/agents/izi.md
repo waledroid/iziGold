@@ -828,6 +828,35 @@ so new live rows will read Yes by construction. The column's evidence value is
 in the backfilled history and in spotting a row that says No — which would mean
 the filter was off or fell open.
 
+## The M15 check runs ONLY in chop — it does not gate a trend (2026-08-21)
+
+**Owner's design, stated three times before it was implemented correctly.** The
+first attempt (2026-08-20) gated only the CLEARANCE BUFFER on chop and left the
+plain side test (`price > M15 EMA`) running all day, so M15 still blocked
+entries in trending tape. That was not what was asked for. `HtfChopOnly=true`
+now means the check does not run at all above the chop threshold — no
+clearance, no side test, `HtfAgrees()` returns true.
+
+Measured, 17 months, M5, $10k, ht lane:
+
+| | H1 (older) | H2 (newer) | full |
+|---|---|---|---|
+| side test all day (the wrong reading) | +401.27 | +8,837.28 | +11,349.93 |
+| **check OFF in trends (correct)** | **-1,371.15** | **+9,693.90** | **+7,380.53** |
+
+The correct behaviour scores **~$3,969 LOWER over the full 17 months** and
+**~$857 higher in the recent half**. It ships anyway: it is the owner's design
+principle, the recent half supports it, and `--chop-eff-max 0` / `HtfChopOnly
+=false` restores all-day gating if the older-half evidence ever wins.
+
+Widening the chop definition makes it worse, not better — eff<0.12 scores
++4,046.18, eff<0.16 +1,508.53, eff<0.25 +911.01. Same finding from the other
+side: **the check only pays inside real chop.** 0.08 stands.
+
+Goldens moved with the shipped default: strict 52 -> 43 trades (3,689.95 ->
+3,657.74), both 54 -> 45 (3,700.19 -> 3,668.66). The loose pin is unchanged at
+114/3,906.30/468.06 — it runs with the filter off, so it must not move.
+
 ## The clearance buffer applies ONLY in chop (owner correction, 2026-08-20)
 
 The owner asked for this from the start — "the filter is only supposed to work
@@ -849,7 +878,8 @@ just a smaller strategy.
 total path over `HtfChopBars` (48 = 4h of M5) CLOSED bars. Below
 `HtfChopEffMax` (**0.08**) the tape is choppy and the 2xATR clearance applies;
 above it the HTF test degrades to the plain side check, so trends are not
-filtered. Both sides fail toward the buffer being ON when data cannot be read.
+filtered. **Superseded 2026-08-21** -- the side check was still gating trends;
+the check is now skipped entirely above the threshold (see the section above). Both sides fail toward the buffer being ON when data cannot be read.
 
 Measured, 17 months, M5, $10k, ht lane:
 

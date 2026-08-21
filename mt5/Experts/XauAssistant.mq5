@@ -62,7 +62,7 @@ input double CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal cl
 input bool   HtfConfirm     = true;       // require higher-TF agreement before an entry: BUY needs price ABOVE the HTF EMA, SELL below (2026-08-20)
 input ENUM_TIMEFRAMES HtfConfirmTf = PERIOD_M15;  // the agreeing timeframe (M15 while trading M5)
 input int    HtfConfirmEma  = 55;        // EMA length on HtfConfirmTf, read at shift 1 (last CLOSED HTF bar)
-input bool   HtfChopOnly    = true;      // apply the clearance buffer ONLY in choppy tape; trends keep the plain side test (2026-08-20)
+input bool   HtfChopOnly    = true;      // run the M15 check ONLY in choppy tape; in a trend it does not gate at all (2026-08-21)
 input int    HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (48 = 4h of M5)
 input double HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy; 0.06-0.10 measured as one plateau
 input double HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14); 0 = side-only (pre-2026-08-20). 2.0 = middle of the 1.0-5.0 plateau that is profitable in BOTH backtest halves

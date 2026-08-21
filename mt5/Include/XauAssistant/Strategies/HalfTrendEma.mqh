@@ -344,10 +344,13 @@ public:
          if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) == 1)
             pad = m_htfBufferAtr * atrBuf[0];
         }
-      // Trending tape: drop the clearance requirement, keep the side test.
-      // A failed read leaves the buffer ON (the safer side: fewer entries).
-      if(pad > 0 && m_chopOnly && ChopEfficiency() > m_chopEffMax)
-         pad = 0.0;
+      // Trending tape: the higher-timeframe check does not run AT ALL --
+      // not the clearance, not the side test. It is a chop tool, and gating
+      // a trend with it costs entries the trend would have paid for.
+      // ChopEfficiency() returns 0.0 (= choppy, check stays ON) when the
+      // data cannot be read, so a failed read never opens the gate.
+      if(m_chopOnly && ChopEfficiency() > m_chopEffMax)
+         return true;
       if(dir == SIGNAL_BUY)  return price > buf[0] + pad;
       if(dir == SIGNAL_SELL) return price < buf[0] - pad;
       return true;

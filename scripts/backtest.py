@@ -500,7 +500,19 @@ SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 # Higher thresholds trade total return for a stronger older half; 0.06-0.10 sit
 # within 2.5% of each other, so 0.08 is chosen as the middle of the flat region.
 CHOP_EFF_BARS = 48        # 4 hours of M5
-CHOP_EFF_MAX = 0.08       # 0 = apply the buffer always (pre-2026-08-20)
+# Above this efficiency the tape is TRENDING and the higher-timeframe check is
+# skipped entirely -- not merely relaxed to a side test. Owner's design, stated
+# repeatedly: M15 confirmation is a chop tool and must not gate a trend.
+# Measured 17 months, M5, $10k, ht lane, M15 check OFF in trends:
+#   eff<0.08  H1 -1371.15  H2 +9693.90  full +7380.53   <- default
+#   eff<0.12  H1  +654.62  H2 +3916.71  full +4046.18
+#   eff<0.16  H1  -360.70  H2 +1882.24  full +1508.53
+#   eff<0.25  H1  +230.84  H2  -111.88  full  +911.01
+# Widening the chop definition filters MORE and earns LESS, which is the same
+# finding from the other direction: the check only pays inside real chop.
+# For comparison, running its side test all day scores full +11349.93 with a
+# weaker recent half (+8837.28) -- kept available via --chop-eff-max 0.
+CHOP_EFF_MAX = 0.08       # 0 = run the check all day (pre-2026-08-21)
 BIAS_BUFFER_ATR = 2.0
 BIAS_EMA = 55
 BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
@@ -1259,14 +1271,20 @@ def run(candles, start_balance, verbose):
                         bias = "with"
                     else:
                         buf = BIAS_BUFFER_ATR * (a or 0.0)
-                        if CHOP_EFF_MAX > 0 and buf > 0:
+                        trending = False
+                        if CHOP_EFF_MAX > 0:
                             seg = candles[max(0, i - CHOP_EFF_BARS):i + 1]
                             path = sum(abs(seg[q]["c"] - seg[q - 1]["c"])
                                        for q in range(1, len(seg)))
                             eff = (abs(seg[-1]["c"] - seg[0]["c"]) / path) if path else 1.0
-                            if eff > CHOP_EFF_MAX:
-                                buf = 0.0     # trending: side-only test
-                        if signal == "BUY":
+                            trending = eff > CHOP_EFF_MAX
+                        if trending:
+                            # Trending tape: the higher-timeframe check does
+                            # NOT run at all. It is a chop tool; letting even
+                            # its side test gate a trend costs entries the
+                            # trend would have paid for.
+                            bias = "with"
+                        elif signal == "BUY":
                             bias = "with" if px > bval + buf else "counter"
                         else:
                             bias = "with" if px < bval - buf else "counter"
