@@ -268,7 +268,8 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
                            "pl": 0.0, "entry_mode": (r.get("entry_mode") or "adr"),
                            "strategy_id": r.get("strategy_id"), "reason": None}
             current["entries"].append(
-                {"ts": r.get("ts"), "price": r.get("price"), "lots": r.get("lots")})
+                {"ts": r.get("ts"), "price": r.get("price"),
+                 "lots": r.get("lots"), "htf_agree": r.get("htf_agree")})
         elif event == "close":
             if current is None:
                 # a close with no open basket in the fetched window is a

@@ -422,3 +422,38 @@ def test_report_rows_carry_m15_and_session():
     for h in (2, 8, 12, 16, 20, 22):
         lab = market_session_short(dt.datetime(2026, 8, 20, h, 0, tzinfo=dt.UTC))
         assert lab and lab != "—" and len(lab) <= 12
+
+
+def test_basket_grouping_preserves_the_m15_verdict():
+    """Regression: _group_baskets rebuilt each leg with only ts/price/lots,
+    so htf_agree was dropped between the DB and the report and EVERY row
+    rendered a dash even with the column fully populated."""
+    from app.miniapp import _group_baskets, _htf_flag
+    rows = [
+        {"id": 1, "ts": 100, "event": "open", "direction": "BUY", "lots": 0.1,
+         "price": 4500.0, "profit": 0.0, "final": 1, "entry_mode": "adr",
+         "reason": "signal BUY", "strategy_id": "x", "htf_agree": 1},
+        {"id": 2, "ts": 200, "event": "add", "direction": "BUY", "lots": 0.05,
+         "price": 4510.0, "profit": 0.0, "final": 1, "entry_mode": "adr",
+         "reason": "pyramid add", "strategy_id": "x", "htf_agree": -1},
+        {"id": 3, "ts": 300, "event": "close", "direction": "BUY", "lots": 0.15,
+         "price": 4520.0, "profit": 30.0, "final": 1, "entry_mode": "adr",
+         "reason": "profit target", "strategy_id": "x", "htf_agree": -1},
+    ]
+    baskets = _group_baskets(rows, cap=None)
+    assert baskets, "the fixture must group into one basket"
+    assert _htf_flag(baskets[0]["entries"]) is True
+
+
+def test_entry_caption_reports_the_m15_verdict():
+    """The verdict is evaluated on every entry and reported even when the
+    tape was trending and it was not allowed to block."""
+    from app.main import _trade_caption
+    agree = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, 1)
+    refuse = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0, 0)
+    unknown = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, -1)
+    closed = _trade_caption("close", "BUY", 0.1, 4500.0, "stop-loss", -20.0, 1)
+    assert "M15: agrees" in agree
+    assert "M15: DISAGREES" in refuse
+    assert "M15" not in unknown, "an unknown verdict must not be asserted"
+    assert "M15" not in closed, "the verdict belongs to the entry, not the close"

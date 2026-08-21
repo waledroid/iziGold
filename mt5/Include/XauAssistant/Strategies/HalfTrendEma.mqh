@@ -330,27 +330,35 @@ public:
    // log: 1 agreed, 0 refused, -1 not evaluated yet.
    virtual int LastHtfAgree() const override { return m_lastHtfAgree; }
 
+   // Is the tape choppy enough for the M15 verdict to BLOCK an entry?
+   // ChopEfficiency() returns 0.0 (= choppy) when the data cannot be read,
+   // so a failed read never silently opens the gate.
+   bool HtfEnforced()
+     {
+      if(!m_htfConfirm) return false;
+      if(!m_chopOnly)   return true;          // gate all day
+      return ChopEfficiency() <= m_chopEffMax;
+     }
+
+   // Does M15 agree with `dir` at `price`? ALWAYS evaluated, in every
+   // session, so the answer can be reported on the entry alert and stored on
+   // the trade even when it is not allowed to block (owner 2026-08-21:
+   // "always check and report ... regardless the market session").
+   // The clearance buffer is a CHOP tool, so in a trend the verdict is the
+   // plain side test; in chop it also requires m_htfBufferAtr x ATR(14).
    bool HtfAgrees(int dir, double price)
      {
       if(!m_htfConfirm || m_htfEmaHandle == INVALID_HANDLE) return true;
       double buf[];
       if(CopyBuffer(m_htfEmaHandle, 0, 1, 1, buf) != 1) return true;
-      // Clearance, in ATR(14) of the TRADING timeframe (matches the replay).
-      // A failed ATR read degrades to the side-only test rather than blocking.
       double pad = 0.0;
-      if(m_htfBufferAtr > 0 && m_atrHandle != INVALID_HANDLE)
+      if(m_htfBufferAtr > 0 && m_atrHandle != INVALID_HANDLE
+         && HtfEnforced())
         {
          double atrBuf[];
          if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) == 1)
             pad = m_htfBufferAtr * atrBuf[0];
         }
-      // Trending tape: the higher-timeframe check does not run AT ALL --
-      // not the clearance, not the side test. It is a chop tool, and gating
-      // a trend with it costs entries the trend would have paid for.
-      // ChopEfficiency() returns 0.0 (= choppy, check stays ON) when the
-      // data cannot be read, so a failed read never opens the gate.
-      if(m_chopOnly && ChopEfficiency() > m_chopEffMax)
-         return true;
       if(dir == SIGNAL_BUY)  return price > buf[0] + pad;
       if(dir == SIGNAL_SELL) return price < buf[0] - pad;
       return true;
@@ -404,9 +412,15 @@ public:
         {
          m_fired = true;
          int wanted = (m_trend == 0) ? SIGNAL_BUY : SIGNAL_SELL;
+         // Verdict first and ALWAYS -- it is reported whether or not it is
+         // allowed to act. Enforcement is separate and chop-only.
          bool htfOk = HtfAgrees(wanted, m_confirmClose);
-         m_lastHtfAgree = htfOk ? 1 : 0;   // recorded for the trade log
-         if(!htfOk)
+         m_lastHtfAgree = htfOk ? 1 : 0;
+         if(!htfOk && !HtfEnforced())
+            Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "
+                  "trending, so the check does not block; entering anyway");
+         if(!htfOk && HtfEnforced())
            {
             Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " refused — ", EnumToString(m_htfTf), " disagrees (price ",

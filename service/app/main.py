@@ -1017,7 +1017,8 @@ async def screenshot(event: int, request: Request):
     if app.state.telegram is not None:
         try:
             row = app.state.db.conn.execute(
-                "SELECT event, direction, lots, price, reason, profit"
+                "SELECT event, direction, lots, price, reason, profit,"
+                " COALESCE(htf_agree, -1)"
                 " FROM trades WHERE id=?", (event,)).fetchone()
             if row is not None:
                 caption = _trade_caption(*row)
@@ -1029,10 +1030,17 @@ async def screenshot(event: int, request: Request):
     return {"saved": str(file_path)}
 
 
-def _trade_caption(event, direction, lots, price, reason, profit) -> str:
+def _trade_caption(event, direction, lots, price, reason, profit,
+                   htf_agree: int = -1) -> str:
     caption = f"{event} {direction} {lots}@{price} — {reason}"
     if event == "close":
         caption += f"; P/L {profit}"
+    elif htf_agree in (0, 1):
+        # The M15 verdict is evaluated on EVERY entry, in every session, and
+        # reported here even when the tape was trending and it was not
+        # allowed to block (owner 2026-08-21). "no" on a live entry therefore
+        # means: taken in a trend, against M15.
+        caption += f"\nM15: {'agrees ✅' if htf_agree == 1 else 'DISAGREES ⚠️'}"
     return caption
 
 

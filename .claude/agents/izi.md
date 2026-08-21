@@ -828,6 +828,48 @@ so new live rows will read Yes by construction. The column's evidence value is
 in the backfilled history and in spotting a row that says No — which would mean
 the filter was off or fell open.
 
+## M15: checked always, enforced only in chop, reported everywhere (2026-08-21)
+
+Owner's final shape for this feature:
+
+- **Evaluated on EVERY entry, in every session.** `HtfAgrees()` always runs.
+- **Enforced only in chop.** `HtfEnforced()` is the separate gate; above the
+  chop threshold a disagreement is logged and the entry is taken anyway.
+- **Reported everywhere**: stored on the trade (`trades.htf_agree`), shown as
+  the **M15** column in the day report, and on the Telegram entry caption as
+  `M15: agrees ✅` / `M15: DISAGREES ⚠️`.
+- The clearance buffer is chop-specific, so the reported verdict in a trend is
+  the plain side test; in chop it also requires the 2xATR clearance. A live
+  entry reading **DISAGREES therefore means: taken in a trend, against M15** —
+  which is exactly the sample needed to judge whether enforcing it more widely
+  would pay.
+
+**Bug this exposed:** `_group_baskets` rebuilt each leg as
+`{ts, price, lots}`, dropping `htf_agree` between the DB and the report, so
+EVERY M15 cell rendered a dash even with the column fully populated. Pinned by
+`test_basket_grouping_preserves_the_m15_verdict`.
+
+### There is no "choppy session" — chop is a condition, not a clock
+
+Measured over 17 months, share of bars whose 4h path efficiency is below 0.08
+(server hours; the daily break is 00:00):
+
+| server | session | % choppy |
+|---|---|---|
+| 14:00 | London | 41.1% |
+| 15:00 | LDN+NY data | 40.0% |
+| 13:00 | London | 38.4% |
+| 21:00 | Late NY | 35.3% |
+| ... | | |
+| 17:00 | LDN+NY | 27.9% |
+| 02:00 | Asia | 27.4% |
+
+**Overall 32.4% of all bars are choppy, and every hour sits between 27% and
+41%.** The London/NY overlap is the worst by a few points, but nothing is
+clean and nothing is hopeless. That is why the gate is measured live from
+price rather than defined as a time window — a clock-based rule would filter
+the wrong 32%.
+
 ## The M15 check runs ONLY in chop — it does not gate a trend (2026-08-21)
 
 **Owner's design, stated three times before it was implemented correctly.** The

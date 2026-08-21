@@ -106,9 +106,13 @@ def main():
             unknown += 1
             continue
         ev, av = ema[j][1], atr[i]
+        # Same semantics the EA reports with (2026-08-21): the clearance
+        # buffer is a CHOP tool, so in a trend the verdict is the plain side
+        # test. The verdict is recorded either way -- in a trend it simply
+        # was not allowed to block the entry.
         pad = args.buffer * av
         if args.chop_max > 0 and efficiency(candles, i, args.chop_bars) > args.chop_max:
-            pad = 0.0          # trending: the side test alone, as the EA does
+            pad = 0.0
         ok = (price > ev + pad) if direction == "BUY" else (price < ev - pad)
         updates.append((1 if ok else 0, rid))
         agree += ok
