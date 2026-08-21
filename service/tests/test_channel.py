@@ -210,7 +210,11 @@ def test_channel_command_states_and_unlink():
 
 def test_pinned_help_mentions_channel_and_version_bumped():
     assert "/channel" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "7"
+    # The version must RISE whenever the pinned text changes -- Telegram
+    # only re-pins when it differs, so an edit without a bump is invisible
+    # to users. Pinned as >= rather than == so adding a command to the
+    # help does not break every other feature's test.
+    assert int(PINNED_HELP_VERSION) >= 8
 
 
 import importlib

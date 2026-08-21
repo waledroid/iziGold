@@ -828,6 +828,32 @@ so new live rows will read Yes by construction. The column's evidence value is
 in the backfilled history and in spotting a row that says No — which would mean
 the filter was off or fell open.
 
+## /agree — the higher-timeframe check is a togglable module (2026-08-21)
+
+It is now a module you switch on and off at runtime, and it ships **OFF**:
+the verdict is computed and reported on every trade, but does not touch the
+trade decision until you enable it.
+
+`/agree` in Telegram shows the current state and four buttons:
+**Off (report only) · M15 · M30 · H1**. Choosing a timeframe enforces on that
+timeframe; choosing a different one rebuilds the EA's EMA handle for it.
+
+Plumbing mirrors `/mode` exactly — **the SERVICE is the authority**:
+`db.htf_enforce()` (kv, default `"off"`) rides every `/heartbeat` response as
+`htf_enforce`, and `CStrategy::SetHtfOverride()` applies it to every registered
+strategy, shadows included, so their logged verdicts match what the active one
+would do. The EA inputs (`HtfConfirm`, `HtfConfirmTf`) remain the fallback:
+an EMPTY string from the service changes nothing, so an older service never
+disturbs a running EA.
+
+Enforcement, when switched on, is still chop-only — `/agree M15` does not gate
+a trend. Off vs on therefore differ only in whether a disagreement may BLOCK;
+the check, the storage and the reporting are identical either way.
+
+**Why off:** the owner wants a clean sample of trades taken WITH a
+disagreement, to judge from live evidence whether enforcing pays. Every such
+entry is flagged `M15: DISAGREES ⚠️` on Telegram and `No` in the report.
+
 ## M15: checked always, enforced only in chop, reported everywhere (2026-08-21)
 
 Owner's final shape for this feature:

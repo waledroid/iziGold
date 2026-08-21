@@ -430,7 +430,7 @@ def _format_switch(app, args: list) -> str:
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "7"
+PINNED_HELP_VERSION = "8"
 
 
 def format_pinned_help() -> str:
@@ -441,6 +441,7 @@ def format_pinned_help() -> str:
         "/status — snapshot + EA connection state",
         "/bal — balance, equity, floating P/L",
         "/mode — execution (AUTO/MANUAL) + entry mode (ADR/FIXED)",
+        "/agree — higher-timeframe agreement: enforce on M15/M30/H1, or check only",
         "/strategy — switch active strategy",
         "/config — current settings",
         "/chart — open the live chart",
@@ -528,6 +529,20 @@ def handle_command(text: str, app, redacted=False) -> str | None:
                 f"the trend confirms a change.",
                 kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")],
                     [("📊 ADR", "tmode:adr"), ("🎯 FIXED", "tmode:fixed")]]))
+    if cmd == "/agree":
+        cur = app.state.db.htf_enforce()
+        on = cur != "off"
+        body = (
+            "Higher-timeframe agreement\n"
+            f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n\n"
+            "The check runs on EVERY entry either way and is reported on the "
+            "trade and in the M15 column.\n"
+            "Enforcing means it may also BLOCK an entry — and only while the "
+            "tape is choppy; in a trend it never blocks.\n"
+            "Off = report only, the trade decision is untouched.")
+        row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
+                f"agree:{c}") for c in app.state.db.HTF_CHOICES]
+        return (body, kb([row[:2], row[2:]]))
     if cmd == "/strategy":
         rows = app.state.db.strategy_ids()
         latest = app.state.latest_heartbeat
@@ -604,6 +619,15 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
         db.set_entry_mode(parts[1])
         return (f"Entry mode → {parts[1].upper()} — applies from the next trade.",
                 f"entry mode: {parts[1]}")
+    if parts[0] == "agree" and len(parts) > 1 and parts[1] in db.HTF_CHOICES:
+        db.set_htf_enforce(parts[1])
+        if parts[1] == "off":
+            return ("Higher-timeframe agreement → CHECK ONLY. It is still "
+                    "evaluated and reported on every trade, but will not block "
+                    "an entry.", "agreement: off")
+        return (f"Higher-timeframe agreement → ENFORCING on {parts[1]} "
+                f"(in choppy tape only; a trend is never blocked).",
+                f"agreement: {parts[1]}")
     if parts[0] == "strat" and len(parts) > 1:
         sid = parts[1]
         app.state.pending_switch = sid

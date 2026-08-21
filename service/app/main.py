@@ -573,6 +573,7 @@ async def heartbeat(hb: HeartbeatRequest):
         switch_to=app.state.pending_switch,
         mode=app.state.db.exec_mode(),
         entry_mode=app.state.db.entry_mode(),
+        htf_enforce=app.state.db.htf_enforce(),
         command=command
     )
 

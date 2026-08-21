@@ -386,6 +386,22 @@ class SignalDb:
             raise ValueError(f"invalid entry mode: {mode}")
         self.set_kv("entry_mode", mode)
 
+    # --- higher-timeframe agreement: a togglable module -------------------
+    # Value is the timeframe it ENFORCES on ("M15"/"M30"/"H1"), or "off" to
+    # check and report without ever blocking an entry. Default "off" (owner
+    # 2026-08-21): the check runs and is reported on every trade, but does not
+    # touch the trade decision until it is switched on from /agree.
+    HTF_CHOICES = ("off", "M15", "M30", "H1")
+
+    def htf_enforce(self) -> str:
+        val = self.get_kv("htf_enforce")
+        return val if val in self.HTF_CHOICES else "off"
+
+    def set_htf_enforce(self, value: str) -> None:
+        if value not in self.HTF_CHOICES:
+            raise ValueError(f"invalid htf enforce: {value}")
+        self.set_kv("htf_enforce", value)
+
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:
         cur = self.conn.execute(

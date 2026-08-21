@@ -82,6 +82,10 @@ class HeartbeatResponse(BaseModel):
     switch_to: str | None = None
     mode: Literal["auto", "manual"] = "manual"
     entry_mode: Literal["adr", "fixed"] = "adr"
+    # Higher-timeframe agreement module: the timeframe it ENFORCES on, or
+    # "off" to check and report without blocking. The EA obeys this over its
+    # own input, so the module can be toggled from Telegram at runtime.
+    htf_enforce: str = "off"
     command: dict | None = None
 
 

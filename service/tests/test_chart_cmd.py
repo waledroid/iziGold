@@ -233,7 +233,11 @@ def test_chart_renders_png_when_miniapp_url_unset(tmp_path, monkeypatch):
 
 def test_pinned_help_lists_chart_and_version_bumped():
     assert "/chart" in format_pinned_help()
-    assert PINNED_HELP_VERSION == "7"
+    # The version must RISE whenever the pinned text changes -- Telegram
+    # only re-pins when it differs, so an edit without a bump is invisible
+    # to users. Pinned as >= rather than == so adding a command to the
+    # help does not break every other feature's test.
+    assert int(PINNED_HELP_VERSION) >= 8
 
 
 def test_chart_channel_mirror_prefers_direct_link(tmp_path, monkeypatch):

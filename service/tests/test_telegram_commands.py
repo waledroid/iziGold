@@ -903,3 +903,43 @@ def test_status_protection_line_unchanged_for_old_heartbeat():
     reply = handle_command("/status", _app(latest_heartbeat=_hb()))
     line = [l for l in reply.splitlines() if l.startswith("🛡 Protection armed")][0]
     assert "daily loss" not in line
+
+
+def test_agree_command_offers_the_module_toggle(client):
+    """/agree exposes the higher-timeframe module: off, or enforce on a TF."""
+    from app.telegram import handle_command
+    app = client.app
+    app.state.db.set_htf_enforce("off")
+    text, markup = handle_command("/agree", app)
+    assert "CHECK ONLY" in text
+    labels = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    for choice in ("agree:off", "agree:M15", "agree:M30", "agree:H1"):
+        assert choice in labels
+    # the current setting is marked
+    marked = [b["text"] for row in markup["inline_keyboard"] for b in row
+              if b["text"].startswith("●")]
+    assert marked and "Off" in marked[0]
+
+
+def test_agree_callback_sets_and_clears_enforcement(client):
+    from app.telegram import handle_callback
+    app = client.app
+    reply, toast = handle_callback("agree:M15", app)
+    assert app.state.db.htf_enforce() == "M15"
+    assert "ENFORCING on M15" in reply and "choppy" in reply
+    reply, toast = handle_callback("agree:off", app)
+    assert app.state.db.htf_enforce() == "off"
+    assert "CHECK ONLY" in reply
+    assert "reported" in reply, "off must still promise the check is reported"
+
+
+def test_heartbeat_carries_the_agree_setting(client):
+    """The EA obeys the service, so the setting must ride every heartbeat."""
+    client.app.state.db.set_htf_enforce("M15")
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["htf_enforce"] == "M15"
+    client.app.state.db.set_htf_enforce("off")
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["htf_enforce"] == "off"

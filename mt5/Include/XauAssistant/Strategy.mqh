@@ -30,6 +30,10 @@ public:
    // log: 1 agreed, 0 refused, -1 not evaluated / strategy has no HTF gate.
    // Default -1 so strategies without one need not implement it.
    virtual int LastHtfAgree() const { return -1; }
+
+   // Runtime toggle for a strategy's higher-timeframe agreement module.
+   // No-op for strategies that have none.
+   virtual void SetHtfOverride(string v) {}
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }

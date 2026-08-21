@@ -584,7 +584,7 @@ void OnTimer()
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    SampleSpread(spreadPts);
 
-   string mode = "", entryModeResp = "", cmd = "", cmdDir = "";
+   string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "";
    long cmdId = 0;
    bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
    string entryModeStr = (g_entryMode == ENTRY_FIXED) ? "fixed" : "adr";
@@ -592,8 +592,16 @@ void OnTimer()
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
-                                  mode, entryModeResp, cmd, cmdId, cmdDir,
+                                  mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce,
                                   g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday());
+   // Push the /agree setting to every strategy (shadows included, so their
+   // logged verdicts match what the active one would do).
+   if(htfEnforce != "")
+      for(int si = 0; si < g_registry.Count(); si++)
+        {
+         CStrategy *st = g_registry.Get(si);
+         if(st != NULL) st.SetHtfOverride(htfEnforce);
+        }
    if(sw != "") g_pendingSwitch = sw;
 
    // Brake & kill-switch awareness (2026-08-18): once-per-crossing Telegram

@@ -61,6 +61,11 @@ private:
    // line, under ~0.10 is textbook chop. Above m_chopEffMax the HTF test
    // degrades to side-only, so trends are not filtered.
    int      m_lastHtfAgree;   // 1 agreed / 0 refused / -1 not evaluated
+   // Runtime override from the service (/agree), which WINS over the EA
+   // input: "" = follow the input, "off" = check and report but never block,
+   // "M15"/"M30"/"H1" = enforce on that timeframe. Pushed every heartbeat so
+   // the module can be toggled from Telegram without a recompile.
+   string   m_htfOverride;
    bool     m_chopOnly;
    int      m_chopBars;
    double   m_chopEffMax;
@@ -289,7 +294,8 @@ public:
         m_catchupEnabled(catchupEnabled), m_catchupMaxAge(catchupMaxAgeBars),
         m_catchupMaxChaseAtr(catchupMaxChaseAtr), m_confirmShift(0), m_confirmClose(0), m_confirmTime(0),
         m_htfConfirm(htfConfirm), m_htfEmaLen(htfEmaLen), m_htfEmaHandle(INVALID_HANDLE),
-        m_htfBufferAtr(htfBufferAtr), m_lastHtfAgree(-1), m_chopOnly(chopOnly),
+        m_htfBufferAtr(htfBufferAtr), m_lastHtfAgree(-1),
+        m_htfOverride(""), m_chopOnly(chopOnly),
         m_chopBars(chopBars), m_chopEffMax(chopEffMax),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
@@ -335,9 +341,39 @@ public:
    // so a failed read never silently opens the gate.
    bool HtfEnforced()
      {
-      if(!m_htfConfirm) return false;
+      // The service's setting wins: "off" means the verdict is still
+      // computed and reported, it simply may not touch the trade decision.
+      if(m_htfOverride == "off") return false;
+      if(m_htfOverride == "" && !m_htfConfirm) return false;
       if(!m_chopOnly)   return true;          // gate all day
       return ChopEfficiency() <= m_chopEffMax;
+     }
+
+   // Called from the heartbeat. An empty string leaves the EA input in
+   // charge, so a service that never sends the field changes nothing.
+   void SetHtfOverride(string v)
+     {
+      if(v == "off" || v == "M15" || v == "M30" || v == "H1" || v == "")
+        {
+         if(v != m_htfOverride && v != "")
+            Print("halftrend_ema_v1: higher-timeframe agreement -> ",
+                  v == "off" ? "CHECK ONLY (will not block)" : "ENFORCING on " + v);
+         m_htfOverride = v;
+         // Enforcing on a different timeframe than the handle was built for
+         // means rebuilding it; the verdict must come from the timeframe the
+         // owner actually chose.
+         if(v != "" && v != "off")
+           {
+            ENUM_TIMEFRAMES want = (v == "M30") ? PERIOD_M30
+                                 : (v == "H1")  ? PERIOD_H1 : PERIOD_M15;
+            if(want != m_htfTf)
+              {
+               m_htfTf = want;
+               m_htfEmaHandle = iMA(_Symbol, m_htfTf, m_htfEmaLen, 0,
+                                    MODE_EMA, PRICE_CLOSE);
+              }
+           }
+        }
      }
 
    // Does M15 agree with `dir` at `price`? ALWAYS evaluated, in every

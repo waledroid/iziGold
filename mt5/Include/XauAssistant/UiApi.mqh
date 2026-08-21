@@ -148,7 +148,7 @@ public:
                         bool window_open, double spread_points, string active_strategy,
                         bool algo_trading, string entryMode,
                         string &mode, string &entryMode_out, string &cmd,
-                        long &cmdId, string &cmdDir,
+                        long &cmdId, string &cmdDir, string &htfEnforce_out,
                         double daily_loss_pct = 0.0, bool brake_reset = false)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
