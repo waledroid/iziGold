@@ -426,6 +426,169 @@ def _format_switch(app, args: list) -> str:
     return f"switch to {target} queued — confirms on next EA heartbeat"
 
 
+def _format_mode(app) -> tuple:
+    mode = app.state.db.exec_mode()
+    emode = app.state.db.entry_mode()
+    return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
+            f"immediately; MANUAL sends proposals with buttons.\n"
+            f"Entry mode: {emode.upper()}\nADR sizes by 1% risk with "
+            f"pyramid adds and targets; FIXED rides a fixed lot until "
+            f"the trend confirms a change.",
+            kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")],
+                [("📊 ADR", "tmode:adr"), ("🎯 FIXED", "tmode:fixed")]]))
+
+
+def _format_agree(app) -> tuple:
+    cur = app.state.db.htf_enforce()
+    on = cur != "off"
+    body = (
+        "Higher-timeframe agreement\n"
+        f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n\n"
+        "The check runs on EVERY entry either way and is reported on the "
+        "trade and in the M15 column.\n"
+        "Enforcing means it may also BLOCK an entry — and only while the "
+        "tape is choppy; in a trend it never blocks.\n"
+        "Off = report only, the trade decision is untouched.")
+    row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
+            f"agree:{c}") for c in app.state.db.HTF_CHOICES]
+    return (body, kb([row[:2], row[2:]]))
+
+
+def _format_strategy(app) -> tuple:
+    rows = app.state.db.strategy_ids()
+    latest = app.state.latest_heartbeat
+    active = latest[1].active_strategy if latest else ""
+    buttons = [[(("● " if s == active else "") + s, f"strat:{s}")] for s in rows]
+    return ("Switch active strategy (applies at next bar):",
+            kb(buttons) if buttons else None)
+
+
+def _format_config(app, redacted=False) -> str:
+    db = app.state.db
+    from app.config import settings
+    latest = app.state.latest_heartbeat
+    hb = latest[1] if latest else None
+    return (
+        "⚙️ Config\n"
+        f"mode: {db.exec_mode()}\n"
+        f"entry mode: {db.entry_mode()}\n"
+        f"strategy: {hb.active_strategy if hb else '?'}\n"
+        f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
+        f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
+        f"balance: {REDACTED if redacted else (hb.balance if hb else '?')} | "
+        f"equity: {REDACTED if redacted else (hb.equity if hb else '?')}\n"
+        f"kill switch: {hb.kill_switch if hb else '?'} | "
+        f"window open: {hb.window_open if hb else '?'}\n"
+        f"spread: {hb.spread_points if hb else '?'}pt")
+
+
+def _format_channel(app, args: list) -> str:
+    if args and args[0].lower() == "unlink":
+        app.state.db.set_kv("channel_id", "")
+        return "🔗 channel unlinked — mirroring off"
+    cid = app.state.db.get_kv("channel_id")
+    if cid:
+        return f"🔗 linked to channel {cid} — /channel unlink to stop"
+    return ("no channel linked — add the bot as admin to your channel, "
+            "post any message there, then approve the prompt that "
+            "appears here")
+
+
+# ---------------------------------------------------------------------------
+# Command registry: single source of truth for both dispatch (handle_command)
+# and the pinned help text (format_pinned_help). A command that exists but
+# isn't listed here -- or a help line with no matching handler -- used to be
+# possible because the two lived as separate hand-maintained lists; now the
+# help is generated FROM this table so the two cannot drift.
+#
+# Each handler has signature (app, parts, redacted) -> str | tuple | None,
+# where `parts` is the full whitespace-split command line (parts[0] is the
+# command itself, matching how handle_command already sliced args) and
+# `redacted` is only meaningful to handlers that surface account figures.
+#
+# /chart is deliberately NOT here: it renders a photo (or opens the mini
+# app) and is special-cased in main.py's poller *before* handle_command is
+# even called, because that needs an async send_photo / web_app button, not
+# a text reply this pure function can return. It still needs a pinned-help
+# line, so _PINNED_EXTRA below carries it verbatim at the right position.
+# ---------------------------------------------------------------------------
+
+def _cmd_status(app, parts, redacted):
+    return _format_status(app, redacted=redacted)
+
+
+def _cmd_bal(app, parts, redacted):
+    return _format_balance(app, redacted=redacted)
+
+
+def _cmd_mode(app, parts, redacted):
+    return _format_mode(app)
+
+
+def _cmd_agree(app, parts, redacted):
+    return _format_agree(app)
+
+
+def _cmd_strategy(app, parts, redacted):
+    return _format_strategy(app)
+
+
+def _cmd_config(app, parts, redacted):
+    return _format_config(app, redacted=redacted)
+
+
+def _cmd_stats(app, parts, redacted):
+    return _format_stats(app)
+
+
+def _cmd_history(app, parts, redacted):
+    return _format_history(app)
+
+
+def _cmd_switch(app, parts, redacted):
+    return _format_switch(app, parts[1:])
+
+
+def _cmd_channel(app, parts, redacted):
+    return _format_channel(app, parts[1:])
+
+
+class CommandSpec:
+    """handler(app, parts, redacted) -> reply; arg_hint/help build the pinned
+    help line as f"/{cmd}{arg_hint} — {help}"."""
+
+    __slots__ = ("handler", "arg_hint", "help")
+
+    def __init__(self, handler, help, arg_hint=""):
+        self.handler = handler
+        self.arg_hint = arg_hint
+        self.help = help
+
+
+# Order here is the order the pinned help lists commands in.
+COMMANDS: dict[str, CommandSpec] = {
+    "/status": CommandSpec(_cmd_status, "snapshot + EA connection state"),
+    "/bal": CommandSpec(_cmd_bal, "balance, equity, floating P/L"),
+    "/mode": CommandSpec(_cmd_mode, "execution (AUTO/MANUAL) + entry mode (ADR/FIXED)"),
+    "/agree": CommandSpec(_cmd_agree,
+                          "higher-timeframe agreement: enforce on M15/M30/H1, or check only"),
+    "/strategy": CommandSpec(_cmd_strategy, "switch active strategy"),
+    "/config": CommandSpec(_cmd_config, "current settings"),
+    "/stats": CommandSpec(_cmd_stats, "per-strategy signal hit-rates"),
+    "/history": CommandSpec(_cmd_history, "last 10 trade events"),
+    "/switch": CommandSpec(_cmd_switch, "queue a strategy switch (/switch cancel)",
+                           arg_hint=" <id>"),
+    "/channel": CommandSpec(_cmd_channel, "link/unlink the broadcast channel"),
+}
+
+# Pinned-help-only lines inserted after a given registered command's line.
+# See the COMMANDS docstring above for why /chart lives here instead of in
+# COMMANDS itself.
+_PINNED_EXTRA: dict[str, list[str]] = {
+    "/config": ["/chart — open the live chart"],
+}
+
+
 # Bumped whenever format_pinned_help()'s text changes. pinned_tick compares
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
@@ -435,23 +598,20 @@ PINNED_HELP_VERSION = "8"
 
 def format_pinned_help() -> str:
     """Static command reference pinned in the chat. Not live status --
-    content only changes when this text (and PINNED_HELP_VERSION) changes."""
-    return "\n".join([
-        "📌 Command reference",
-        "/status — snapshot + EA connection state",
-        "/bal — balance, equity, floating P/L",
-        "/mode — execution (AUTO/MANUAL) + entry mode (ADR/FIXED)",
-        "/agree — higher-timeframe agreement: enforce on M15/M30/H1, or check only",
-        "/strategy — switch active strategy",
-        "/config — current settings",
-        "/chart — open the live chart",
-        "/stats — per-strategy signal hit-rates",
-        "/history — last 10 trade events",
-        "/switch <id> — queue a strategy switch (/switch cancel)",
-        "/channel — link/unlink the broadcast channel",
+    content only changes when this text (and PINNED_HELP_VERSION) changes.
+
+    Generated from COMMANDS (plus _PINNED_EXTRA for the one command that
+    bypasses handle_command) so this can never list a command that isn't
+    dispatched, or dispatch one that isn't listed."""
+    lines = ["📌 Command reference"]
+    for cmd, spec in COMMANDS.items():
+        lines.append(f"{cmd}{spec.arg_hint} — {spec.help}")
+        lines.extend(_PINNED_EXTRA.get(cmd, []))
+    lines += [
         "🟢 Take / 🔴 Skip on a proposal to act on it.",
         "Valid while the strategy holds this stance.",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def pinned_tick(app, client: "TelegramClient") -> None:
@@ -509,75 +669,10 @@ def handle_command(text: str, app, redacted=False) -> str | None:
     if not parts:
         return None
     cmd = parts[0].lower()
-    if cmd == "/status":
-        return _format_status(app, redacted=redacted)
-    if cmd == "/bal":
-        return _format_balance(app, redacted=redacted)
-    if cmd == "/stats":
-        return _format_stats(app)
-    if cmd == "/history":
-        return _format_history(app)
-    if cmd == "/switch":
-        return _format_switch(app, parts[1:])
-    if cmd == "/mode":
-        mode = app.state.db.exec_mode()
-        emode = app.state.db.entry_mode()
-        return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
-                f"immediately; MANUAL sends proposals with buttons.\n"
-                f"Entry mode: {emode.upper()}\nADR sizes by 1% risk with "
-                f"pyramid adds and targets; FIXED rides a fixed lot until "
-                f"the trend confirms a change.",
-                kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")],
-                    [("📊 ADR", "tmode:adr"), ("🎯 FIXED", "tmode:fixed")]]))
-    if cmd == "/agree":
-        cur = app.state.db.htf_enforce()
-        on = cur != "off"
-        body = (
-            "Higher-timeframe agreement\n"
-            f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n\n"
-            "The check runs on EVERY entry either way and is reported on the "
-            "trade and in the M15 column.\n"
-            "Enforcing means it may also BLOCK an entry — and only while the "
-            "tape is choppy; in a trend it never blocks.\n"
-            "Off = report only, the trade decision is untouched.")
-        row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
-                f"agree:{c}") for c in app.state.db.HTF_CHOICES]
-        return (body, kb([row[:2], row[2:]]))
-    if cmd == "/strategy":
-        rows = app.state.db.strategy_ids()
-        latest = app.state.latest_heartbeat
-        active = latest[1].active_strategy if latest else ""
-        buttons = [[(("● " if s == active else "") + s, f"strat:{s}")] for s in rows]
-        return ("Switch active strategy (applies at next bar):",
-                kb(buttons) if buttons else None)
-    if cmd == "/config":
-        db = app.state.db
-        from app.config import settings
-        latest = app.state.latest_heartbeat
-        hb = latest[1] if latest else None
-        return (
-            "⚙️ Config\n"
-            f"mode: {db.exec_mode()}\n"
-            f"entry mode: {db.entry_mode()}\n"
-            f"strategy: {hb.active_strategy if hb else '?'}\n"
-            f"forecaster: {settings.forecaster} | horizon: {settings.horizon}\n"
-            f"ai mode: {settings.mode} | confirm ≥ {settings.confirm_threshold}\n"
-            f"balance: {REDACTED if redacted else (hb.balance if hb else '?')} | "
-            f"equity: {REDACTED if redacted else (hb.equity if hb else '?')}\n"
-            f"kill switch: {hb.kill_switch if hb else '?'} | "
-            f"window open: {hb.window_open if hb else '?'}\n"
-            f"spread: {hb.spread_points if hb else '?'}pt")
-    if cmd == "/channel":
-        if parts[1:] and parts[1].lower() == "unlink":
-            app.state.db.set_kv("channel_id", "")
-            return "🔗 channel unlinked — mirroring off"
-        cid = app.state.db.get_kv("channel_id")
-        if cid:
-            return f"🔗 linked to channel {cid} — /channel unlink to stop"
-        return ("no channel linked — add the bot as admin to your channel, "
-                "post any message there, then approve the prompt that "
-                "appears here")
-    return None
+    spec = COMMANDS.get(cmd)
+    if spec is None:
+        return None
+    return spec.handler(app, parts, redacted)
 
 
 def handle_channel_post(post: dict, app):
@@ -603,23 +698,34 @@ def handle_channel_post(post: dict, app):
     return (text, keyboard)
 
 
-def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
-    """Pure function mapping a callback_query's data to (edit_text_or_None,
-    toast). The poller edits the tapped message when edit_text is not None
-    and always answers the callback with toast (fail-open UX).
-    `message_id` (the tapped message, when the poller knows it) lets a
-    callback that queues a deferred command remember which message to edit
-    once the EA reports the outcome (brakereset:)."""
-    db = app.state.db
-    parts = data.split(":")
-    if parts[0] == "mode" and len(parts) > 1 and parts[1] in ("auto", "manual"):
+# ---------------------------------------------------------------------------
+# Callback registry: dispatch on parts[0] (the prefix before the first ":")
+# into a dict instead of an if/elif chain. The prefixes take different
+# arity/shape (mode:auto vs prop:123:take vs chan:link:-100…), so each
+# handler keeps its own signature-independent validation and simply returns
+# (None, "unknown") when its own arity/value check fails -- exactly what the
+# old chain fell through to when a condition didn't match.
+#
+# Handler signature: (parts, app, db, message_id) -> (edit_text_or_None, toast)
+# ---------------------------------------------------------------------------
+
+def _cb_mode(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in ("auto", "manual"):
         db.set_exec_mode(parts[1])
         return (f"Execution mode → {parts[1].upper()}", f"mode: {parts[1]}")
-    if parts[0] == "tmode" and len(parts) > 1 and parts[1] in ("adr", "fixed"):
+    return (None, "unknown")
+
+
+def _cb_tmode(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in ("adr", "fixed"):
         db.set_entry_mode(parts[1])
         return (f"Entry mode → {parts[1].upper()} — applies from the next trade.",
                 f"entry mode: {parts[1]}")
-    if parts[0] == "agree" and len(parts) > 1 and parts[1] in db.HTF_CHOICES:
+    return (None, "unknown")
+
+
+def _cb_agree(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in db.HTF_CHOICES:
         db.set_htf_enforce(parts[1])
         if parts[1] == "off":
             return ("Higher-timeframe agreement → CHECK ONLY. It is still "
@@ -628,11 +734,19 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
         return (f"Higher-timeframe agreement → ENFORCING on {parts[1]} "
                 f"(in choppy tape only; a trend is never blocked).",
                 f"agreement: {parts[1]}")
-    if parts[0] == "strat" and len(parts) > 1:
+    return (None, "unknown")
+
+
+def _cb_strat(parts, app, db, message_id):
+    if len(parts) > 1:
         sid = parts[1]
         app.state.pending_switch = sid
         return (f"Switching to {sid} at next bar.", f"→ {sid}")
-    if parts[0] == "prop" and len(parts) == 3 and parts[1].isdigit():
+    return (None, "unknown")
+
+
+def _cb_prop(parts, app, db, message_id):
+    if len(parts) == 3 and parts[1].isdigit():
         pid, action = int(parts[1]), parts[2]
         row = db.get_proposal(pid)
         if row is None or row["status"] != "pending":
@@ -650,9 +764,13 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
             return (f"{row['direction']} @ {row['price']} — 👍 approved, "
                     f"executing on next heartbeat…", "approved")
         return (f"{row['direction']} @ {row['price']} — ❌ skipped", "skipped")
-    if parts[0] == "exitnow" and len(parts) == 2:
-        # EXIT button on a trade-open notification: queue an immediate
-        # basket close (dispatched as close_all on the next heartbeat).
+    return (None, "unknown")
+
+
+def _cb_exitnow(parts, app, db, message_id):
+    # EXIT button on a trade-open notification: queue an immediate basket
+    # close (dispatched as close_all on the next heartbeat).
+    if len(parts) == 2:
         latest = app.state.latest_heartbeat
         if latest is None or not latest[1].positions:
             return (None, "already flat")
@@ -664,31 +782,37 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
                                  latest[1].active_strategy, 0.0, None)
         db.set_proposal_status(pid, "approved", expected="pending")
         return (None, "closing on next heartbeat…")
-    if parts[0] == "brakereset":
-        # [Reset brake for today] on a daily-loss-brake notice: queue an
-        # owner-approved reset_brake command (same rails as close_all:
-        # pre-approved proposal -> next heartbeat -> EA -> /proposal-result
-        # edits the tapped message). Guarded like exitnow: one in flight.
-        # UX pre-check (the EA re-checks authoritatively): a stale [Reset]
-        # button stays tappable forever — don't queue a command when the
-        # brake isn't actually ≥70% spent per the latest heartbeat.
-        latest = app.state.latest_heartbeat
-        pct = float(getattr(latest[1], "daily_loss_pct", 0.0) or 0.0) if latest else 0.0
-        if pct < 70.0:
-            return (None, f"brake at {pct:.0f}% — nothing to reset")
-        for st in ("pending", "approved", "dispatched"):
-            if db.pending_proposal(kind="reset_brake", status=st) is not None:
-                return (None, f"reset already {st}")
-        strategy = latest[1].active_strategy
-        pid = db.create_proposal("reset_brake", "-", strategy, 0.0, None)
-        if message_id:
-            db.set_proposal_message(pid, message_id)
-        db.set_proposal_status(pid, "approved", expected="pending")
-        return (None, "resetting brake on next heartbeat…")
-    if parts[0] == "chan" and len(parts) == 3:
-        # parts[2] is the channel id; ids are negative ("-100..."), but the
-        # split on ":" is safe — callback data is built as chan:<action>:<id>
-        # and the id contains no colon.
+    return (None, "unknown")
+
+
+def _cb_brakereset(parts, app, db, message_id):
+    # [Reset brake for today] on a daily-loss-brake notice: queue an
+    # owner-approved reset_brake command (same rails as close_all:
+    # pre-approved proposal -> next heartbeat -> EA -> /proposal-result
+    # edits the tapped message). Guarded like exitnow: one in flight.
+    # UX pre-check (the EA re-checks authoritatively): a stale [Reset]
+    # button stays tappable forever — don't queue a command when the brake
+    # isn't actually ≥70% spent per the latest heartbeat.
+    latest = app.state.latest_heartbeat
+    pct = float(getattr(latest[1], "daily_loss_pct", 0.0) or 0.0) if latest else 0.0
+    if pct < 70.0:
+        return (None, f"brake at {pct:.0f}% — nothing to reset")
+    for st in ("pending", "approved", "dispatched"):
+        if db.pending_proposal(kind="reset_brake", status=st) is not None:
+            return (None, f"reset already {st}")
+    strategy = latest[1].active_strategy
+    pid = db.create_proposal("reset_brake", "-", strategy, 0.0, None)
+    if message_id:
+        db.set_proposal_message(pid, message_id)
+    db.set_proposal_status(pid, "approved", expected="pending")
+    return (None, "resetting brake on next heartbeat…")
+
+
+def _cb_chan(parts, app, db, message_id):
+    # parts[2] is the channel id; ids are negative ("-100..."), but the
+    # split on ":" is safe — callback data is built as chan:<action>:<id>
+    # and the id contains no colon.
+    if len(parts) == 3:
         # Only honor a tap that matches the current pending offer -- a stale
         # button from a superseded/ignored offer, still sitting in chat
         # history, must not silently re-link (or ignore) some other
@@ -702,3 +826,30 @@ def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
             return (f"🔗 Channel linked ({parts[2]}) — mirroring on.", "linked")
         return ("Channel ignored.", "ignored")
     return (None, "unknown")
+
+
+CALLBACKS = {
+    "mode": _cb_mode,
+    "tmode": _cb_tmode,
+    "agree": _cb_agree,
+    "strat": _cb_strat,
+    "prop": _cb_prop,
+    "exitnow": _cb_exitnow,
+    "brakereset": _cb_brakereset,
+    "chan": _cb_chan,
+}
+
+
+def handle_callback(data: str, app, message_id: int | None = None) -> tuple:
+    """Pure function mapping a callback_query's data to (edit_text_or_None,
+    toast). The poller edits the tapped message when edit_text is not None
+    and always answers the callback with toast (fail-open UX).
+    `message_id` (the tapped message, when the poller knows it) lets a
+    callback that queues a deferred command remember which message to edit
+    once the EA reports the outcome (brakereset:)."""
+    db = app.state.db
+    parts = data.split(":")
+    handler = CALLBACKS.get(parts[0])
+    if handler is None:
+        return (None, "unknown")
+    return handler(parts, app, db, message_id)

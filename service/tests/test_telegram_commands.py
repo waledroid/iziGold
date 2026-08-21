@@ -9,9 +9,9 @@ from zoneinfo import ZoneInfo
 
 from app import main as app_main
 from app.db import SignalDb
-from app.telegram import (PINNED_HELP_VERSION, TelegramClient, format_pinned_help,
-                          format_proposal, handle_callback, handle_command,
-                          market_session, pinned_tick)
+from app.telegram import (COMMANDS, PINNED_HELP_VERSION, TelegramClient,
+                          _PINNED_EXTRA, format_pinned_help, format_proposal,
+                          handle_callback, handle_command, market_session, pinned_tick)
 from tests.test_proposals_flow import _post_signal, client, fake_tg  # noqa: F401
 
 _PARIS = ZoneInfo("Europe/Paris")
@@ -368,6 +368,16 @@ def test_unknown_command_returns_none():
     assert handle_command("/foo", app) is None
 
 
+def test_every_registered_command_returns_something(client):
+    """Regression guard for the COMMANDS registry: a typo'd dict entry (or a
+    handler wired to the wrong key) would silently make handle_command()
+    return None for a real command instead of raising -- this walks every
+    entry and proves each one still produces a reply."""
+    for cmd in COMMANDS:
+        out = handle_command(cmd, client.app)
+        assert out is not None, f"{cmd} returned None"
+
+
 # ---------------------------------------------------------------------------
 # Lifespan wiring
 # ---------------------------------------------------------------------------
@@ -559,6 +569,24 @@ def test_format_pinned_help_does_not_depend_on_heartbeat():
     """Static content -- calling it twice (no app/state involved at all)
     must produce identical text."""
     assert format_pinned_help() == format_pinned_help()
+
+
+def test_pinned_help_and_command_registry_cannot_drift():
+    """format_pinned_help() is generated from COMMANDS (plus _PINNED_EXTRA
+    for the one command -- /chart -- that bypasses handle_command entirely,
+    see its docstring in telegram.py). This is the whole point of the
+    registry: a command can no longer exist without being documented, or be
+    documented without existing, because both come from the same table."""
+    listed = {line.split()[0] for line in format_pinned_help().splitlines()
+              if line.startswith("/")}
+    registered = set(COMMANDS)
+    known_external = {line.split()[0] for lines in _PINNED_EXTRA.values()
+                      for line in lines if line.startswith("/")}
+    # Every registered command is documented.
+    assert registered <= listed
+    # Nothing is documented that isn't either dispatched via COMMANDS or a
+    # known, explained exception (_PINNED_EXTRA).
+    assert listed == registered | known_external
 
 
 # ---------------------------------------------------------------------------
