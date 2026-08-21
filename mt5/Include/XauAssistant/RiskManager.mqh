@@ -112,12 +112,31 @@ public:
       if(eq > hwm) { hwm = eq; GlobalVariableSet(Key("HWM"), hwm); }
       if(hwm > 0 && eq <= hwm * (1.0 - m_maxDdPct / 100.0))
          GlobalVariableSet(Key("KILL"), 1);
-      // accumulate exposure: bar minutes while a position of ours is open
-      if(PositionsTotal() > 0)
+      // Accumulate exposure: bar minutes while a position OF OURS is open.
+      // PositionsTotal() alone counts every position on the ACCOUNT -- another
+      // EA, another symbol, or a hand-placed trade -- so the budget could burn
+      // down while this EA held nothing, and then refuse its own entries. The
+      // comment always claimed "of ours"; the code did not (found 2026-08-21).
+      // Now filtered on symbol AND any registered magic, which also makes it
+      // correct for a second lane.
+      if(OwnPositionOpen())
         {
          double mins = GlobalVariableGet(ExpoKey());
          GlobalVariableSet(ExpoKey(), mins + PeriodSeconds(m_tf) / 60.0);
         }
+     }
+
+   // Any position on THIS symbol carrying one of our magics.
+   bool OwnPositionOpen()
+     {
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0) continue;
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         if(HasMagic(PositionGetInteger(POSITION_MAGIC))) return true;
+        }
+      return false;
      }
 
    bool KillSwitchTripped() { return GlobalVariableGet(Key("KILL")) > 0; }

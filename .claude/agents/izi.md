@@ -767,6 +767,26 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## Exposure counted the WHOLE account, not our own trades (fixed 2026-08-21)
+
+`CRiskManager::OnBarUpdate()` accumulated `MaxDailyExposureMin` whenever
+`PositionsTotal() > 0` — MT5's count of every position on the ACCOUNT. Another
+EA, another symbol, or a hand-placed trade would burn this EA's daily budget
+while it held nothing, and it would then refuse its OWN entries for the rest of
+the day. The comment above the line always said "a position of ours"; the code
+never checked.
+
+Now gated on `OwnPositionOpen()` — this symbol AND any registered magic — which
+also makes it correct for a second lane. Found while auditing the rails during
+the magic-set widening.
+
+**Not currently biting** (the account holds nothing else; exposure sat at
+70/360, peak 145/360 in 24h), so this is a latent defect being closed, not an
+incident. It does change behaviour in the direction of MORE trading: entries
+that would previously have been blocked by foreign exposure are now allowed.
+`MaxDailyExposureMin=0` still disables the budget entirely.
+
+
 ## Where the code lives after the 2026-08-21 modularity pass
 
 Two files that claimed to be "wiring only" were carrying real logic. Pure
