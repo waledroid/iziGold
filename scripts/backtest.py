@@ -295,28 +295,64 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
 from app.indicators import ema, halftrend  # noqa: E402
 from app.regime import classify_regime  # noqa: E402
 
-# --- current EA inputs ---
-RISK_PCT = 1.0
-STOP_BUFFER_ATR = 0.75
-CONFIRM_CLOSES = 2      # waiting bars after the HalfTrend arrow; the entry
+# --- shared strategy config (single source of truth) ---
+# The 16 parameters below (plus the trading window) used to be declared
+# TWICE -- once as an MQL5 `input` default in mt5/Experts/XauAssistant.mq5,
+# once as a module constant here -- and only agreed because a human kept
+# both edits in sync by hand. config/strategy.json is now the one place
+# these values live; the EA inputs remain the LIVE authority and this file
+# must match them (enforced by
+# service/tests/test_strategy_config.py::test_strategy_config_matches_the_ea).
+# A missing/unreadable config file fails LOUDLY here rather than silently
+# falling back to hardcoded defaults, which would recreate the exact drift
+# this file exists to prevent.
+STRATEGY_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "strategy.json"
+
+
+def _load_strategy_config(path=STRATEGY_CONFIG_PATH):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError as exc:
+        raise SystemExit(
+            f"backtest.py: cannot read the strategy config at {path}: {exc}. "
+            "This file is the single source of truth for the parameters "
+            "mirrored from the live EA's `input` defaults -- without it the "
+            "backtest cannot promise it still matches the EA. Restore "
+            "config/strategy.json or fix its permissions.") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"backtest.py: {path} is not valid JSON: {exc}. Fix the file -- "
+            "it is the single source of truth for the parameters mirrored "
+            "from the live EA's `input` defaults.") from exc
+
+
+_CFG = _load_strategy_config()
+
+# --- current EA inputs (values loaded from config/strategy.json) ---
+RISK_PCT = _CFG["risk_per_trade_pct"]
+STOP_BUFFER_ATR = _CFG["stop_buffer_atr"]
+CONFIRM_CLOSES = _CFG["confirm_closes"]
+                        # waiting bars after the HalfTrend arrow; the entry
                         # bar is the NEXT one. Owner decision 2026-08-20 on
                         # measured evidence: 1 was the worst of {loose,1,2,3}
                         # in EVERY window tested; 2 was the best M5 variant
                         # (+$779 over 365d at $10k). Caveat recorded with it:
                         # 2's profit is one regime (+$4,155 newer half,
                         # -$4,517 older half), not a demonstrated edge.
-EMA_LEN = 55
-AMPLITUDE = 4
-ADD_TRIGGER_ATR = 1.0
-MAX_POSITIONS = 3
+EMA_LEN = _CFG["ema_length"]
+AMPLITUDE = _CFG["ht_amplitude"]
+ADD_TRIGGER_ATR = _CFG["add_trigger_atr"]
+MAX_POSITIONS = _CFG["max_positions"]
 ADD_SHRINK = 0.7
-PROFIT_TARGET_PCT = 2.0
-TRAIL_LOCK_PCT = 50.0
-TRAIL_ACTIVATE_R = 1.0
-WINDOW = (4, 23)          # server hours (EA TradingWindowStart/EndHour);
+PROFIT_TARGET_PCT = _CFG["profit_target_pct"]
+TRAIL_LOCK_PCT = _CFG["trail_lock_pct"]
+TRAIL_ACTIVATE_R = _CFG["trail_activate_r"]
+WINDOW = (_CFG["trading_window_start_hour"], _CFG["trading_window_end_hour"])
+                          # server hours (EA TradingWindowStart/EndHour);
                           # gates NEW ENTRIES only, never exits
 HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
-EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
+EXPO_MIN = _CFG["max_daily_exposure_min"]  # daily open-position minutes budget; 0 = unlimited
 FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
 
 STRATEGY = "both"      # ht | qf | both
@@ -332,7 +368,7 @@ SRC_SEC = 300             # the source feed's bar length
 BAR_MIN = 5               # minutes of open-position time charged per held bar
 FLATTEN_BY_TF = {"M5": (23, 50), "M15": (23, 45)}   # last bar of the server day
 
-ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
+ADX_MIN = _CFG["adx_trend_threshold"]  # matches EA AdxTrendThreshold; overridable via --adx
 SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
 MIN_OZ = 1                # 0.01 lots
 
@@ -499,7 +535,7 @@ SR_BUCKETS = (0.5, 1.0, 2.0)   # headroom bucket edges, in ATR
 #   eff<0.15  H1 +1686.53  H2 +5015.65  full  +7125.89
 # Higher thresholds trade total return for a stronger older half; 0.06-0.10 sit
 # within 2.5% of each other, so 0.08 is chosen as the middle of the flat region.
-CHOP_EFF_BARS = 48        # 4 hours of M5
+CHOP_EFF_BARS = _CFG["htf_chop_bars"]        # 4 hours of M5
 # Above this efficiency the tape is TRENDING and the higher-timeframe check is
 # skipped entirely -- not merely relaxed to a side test. Owner's design, stated
 # repeatedly: M15 confirmation is a chop tool and must not gate a trend.
@@ -512,9 +548,9 @@ CHOP_EFF_BARS = 48        # 4 hours of M5
 # finding from the other direction: the check only pays inside real chop.
 # For comparison, running its side test all day scores full +11349.93 with a
 # weaker recent half (+8837.28) -- kept available via --chop-eff-max 0.
-CHOP_EFF_MAX = 0.08       # 0 = run the check all day (pre-2026-08-21)
-BIAS_BUFFER_ATR = 2.0
-BIAS_EMA = 55
+CHOP_EFF_MAX = _CFG["htf_chop_eff_max"]       # 0 = run the check all day (pre-2026-08-21)
+BIAS_BUFFER_ATR = _CFG["htf_confirm_buffer_atr"]
+BIAS_EMA = _CFG["htf_confirm_ema"]
 BIAS_MODES = ("tag", "target", "target_lock", "size_target", "skip")
 BIAS_MODE = "skip"
 BIAS_TFS = ("M5", "M15")
