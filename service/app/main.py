@@ -912,6 +912,13 @@ async def trade_event(ev: TradeEventRequest):
     # slow final close as FAILED and re-deliver it forever (the 2026-08-13
     # reconcile spam). The report runs as a background task instead; task
     # refs are held on app.state so they can't be garbage-collected.
+    # State is captured HERE, at task-creation time, not read inside the
+    # coroutine as it was before the 2026-08-21 extraction. The difference is
+    # sub-millisecond and no test exercises it, but it is a real semantic
+    # change and is kept deliberately: the report then describes the account
+    # as it was WHEN THE TRADE EVENT ARRIVED, rather than as it happens to be
+    # whenever the task gets scheduled. A swapped Telegram client or a newer
+    # candle set arriving in between no longer changes what this report says.
     task = asyncio.create_task(_report_trade_event(
         ev, trade_id, legs,
         last_candles=app.state.last_candles,

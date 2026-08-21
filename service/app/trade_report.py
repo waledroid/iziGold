@@ -132,9 +132,6 @@ def _pl_message(profit: float, direction: str = "", legs: list | None = None,
     return head
 
 
-def _send_render_photo(telegram: TelegramClient, caption: str, path: Path,
-                       reply_markup: dict | None = None) -> None:
-    telegram.send_photo(caption, path.read_bytes(), reply_markup)
 
 
 def _trade_caption(event, direction, lots, price, reason, profit,
