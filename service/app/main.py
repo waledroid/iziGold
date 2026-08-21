@@ -781,6 +781,34 @@ def ui_candles():
             "candles": [c.model_dump() for c in rc["candles"]]}
 
 
+def _overlays_halftrend_ema_v1(candles: list, closes: list) -> dict:
+    ht = halftrend(candles, amplitude=4)
+    return {
+        "halftrend": [list(v) if v is not None else None for v in ht],
+        "ema55": ema(closes, 55),
+        "ema9": ema(closes, 9),
+        "ema21": ema(closes, 21),
+        "ema200": ema(closes, 200),
+    }
+
+
+def _overlays_boll_stochrsi_v1(candles: list, closes: list) -> dict:
+    upper, mid, lower = bollinger(closes, period=20, dev=2.0)
+    return {"bb_upper": upper, "bb_mid": mid, "bb_lower": lower}
+
+
+# strategy_id -> overlay builder(candles, closes) -> dict. Everywhere else,
+# strategies are handled by tag rather than by per-strategy branching (see
+# db.stats() in db.py) -- this registry is that pattern applied to
+# /ui/overlays. A new strategy adds an entry here instead of another
+# if/elif; an unrecognised strategy_id (or none registered) falls through
+# to ui_overlays' existing {} fallback.
+_OVERLAY_BUILDERS = {
+    "halftrend_ema_v1": _overlays_halftrend_ema_v1,
+    "boll_stochrsi_v1": _overlays_boll_stochrsi_v1,
+}
+
+
 @app.get("/ui/overlays")
 def ui_overlays(strategy: str = ""):
     """Chart-overlay series for the dashboard's price chart, aligned 1:1
@@ -790,21 +818,12 @@ def ui_overlays(strategy: str = ""):
     rc = app.state.recent_candles
     if not rc or not rc["candles"]:
         return {}
+    builder = _OVERLAY_BUILDERS.get(strategy)
+    if builder is None:
+        return {}
     candles = rc["candles"]
     closes = [c.c for c in candles]
-    if strategy == "halftrend_ema_v1":
-        ht = halftrend(candles, amplitude=4)
-        return {
-            "halftrend": [list(v) if v is not None else None for v in ht],
-            "ema55": ema(closes, 55),
-            "ema9": ema(closes, 9),
-            "ema21": ema(closes, 21),
-            "ema200": ema(closes, 200),
-        }
-    if strategy == "boll_stochrsi_v1":
-        upper, mid, lower = bollinger(closes, period=20, dev=2.0)
-        return {"bb_upper": upper, "bb_mid": mid, "bb_lower": lower}
-    return {}
+    return builder(candles, closes)
 
 
 def _mask_secret(value: str) -> str:
