@@ -202,7 +202,7 @@ def test_trade_event_sl_persists_and_returned_by_ui_trades(client):
 # ---------------------------------------------------------------------------
 
 def test_basket_legs_returns_open_and_add_rows_after_last_close(client):
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
 
     id1 = client.post(
         "/trade-event", json=_trade(event="open", price=2400.0)).json()["id"]
@@ -221,7 +221,7 @@ def test_basket_legs_returns_open_and_add_rows_after_last_close(client):
 
 
 def test_basket_legs_excludes_prior_baskets(client):
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
     from app import main
 
     client.post("/trade-event", json=_trade(event="open", price=2300.0))
@@ -244,7 +244,7 @@ def test_basket_legs_excludes_prior_baskets(client):
 
 
 def test_basket_legs_includes_just_inserted_open_row(client):
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
     from app import main
 
     trade_id = client.post(
@@ -449,7 +449,7 @@ def test_basket_grouping_preserves_the_m15_verdict():
 def test_entry_caption_reports_the_m15_verdict():
     """The verdict is evaluated on every entry and reported even when the
     tape was trending and it was not allowed to block."""
-    from app.main import _trade_caption
+    from app.trade_report import _trade_caption
     agree = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, 1)
     refuse = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0, 0)
     unknown = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, -1)

@@ -20,7 +20,7 @@ BASKETS_MAX = 30
 
 
 def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict]:
-    """Mirrors `_basket_legs` in app/main.py: a basket is the run of
+    """Mirrors `_basket_legs` in app/trade_report.py: a basket is the run of
     'open'/'add' rows since the previous FINAL 'close' row, closed by the
     next FINAL 'close'. Non-final closes (a single leg stopping out while
     the rest of the basket survives) are ignored for boundary purposes --
@@ -33,7 +33,7 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
     Capped to the last `cap` baskets (BASKETS_MAX for the chart markers;
     the Trades report passes None for "everything in the window").
 
-    TWIN WARNING: `app/main.py`'s `_basket_legs` implements this same
+    TWIN WARNING: `app/trade_report.py`'s `_basket_legs` implements this same
     basket-boundary rule independently (it walks backward in SQL from one
     just-inserted row id instead of grouping a whole fetched window, because
     it only ever needs the ONE basket around a fresh trade-event). Both MUST

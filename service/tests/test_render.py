@@ -439,7 +439,8 @@ def test_close_render_inherits_open_legs_sl_and_tp_when_own_are_zero(client, mon
         captured["trade"] = trade
         return True
 
-    monkeypatch.setattr(main, "render_trade_chart", _fake_render)
+    from app import trade_report
+    monkeypatch.setattr(trade_report, "render_trade_chart", _fake_render)
 
     client.post(
         "/trade-event",
@@ -466,7 +467,8 @@ def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
         captured["trade"] = trade
         return True
 
-    monkeypatch.setattr(main, "render_trade_chart", _fake_render)
+    from app import trade_report
+    monkeypatch.setattr(trade_report, "render_trade_chart", _fake_render)
 
     client.post(
         "/trade-event",
@@ -489,7 +491,7 @@ def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
 
 def test_add_event_sends_no_photo_close_render_still_carries_add_leg(client):
     from app import main
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
     from app.telegram import TelegramClient
 
     client.post("/analyze", json=_analyze_payload())
@@ -551,7 +553,7 @@ def test_non_final_close_sends_no_pl_message_and_no_photo(client):
 
 
 def test_basket_legs_span_a_non_final_close_row(client):
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
     from app import main
 
     id_open = client.post(

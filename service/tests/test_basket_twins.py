@@ -1,5 +1,5 @@
 """Pins the shared contract between the basket-boundary twins:
-`app/main.py::_basket_legs` and `app/reports.py::_group_baskets`. Both answer
+`app/trade_report.py::_basket_legs` and `app/reports.py::_group_baskets`. Both answer
 the same question -- "which trade rows belong to this basket, in what
 order" -- from the same underlying `trades` table, but independently (see
 the TWIN WARNING comment on each function). This is the same treatment
@@ -51,7 +51,7 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     check both twins agree on the leg set, order, and (price, lots) --
     the fields they share -- while documenting exactly where they diverge
     on purpose."""
-    from app.main import _basket_legs
+    from app.trade_report import _basket_legs
     from app.reports import _group_baskets
     from app import main
     db = main.app.state.db

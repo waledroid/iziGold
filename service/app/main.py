@@ -17,15 +17,15 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         HeartbeatResponse, NotifyRequest, ProposalResultRequest,
                         TradeEventRequest)
 from app.regime import classify_regime, last_atr
-from app.render import render_snapshot_chart, render_trade_chart
+from app.render import render_snapshot_chart
 from app.telegram import (BRAKE_RESET_KB, EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB,
                           TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
 from app.ticker import TickerState, load_ticker_state, ticker_tick
+from app.trade_report import (_basket_legs, _prune_screenshots,
+                              _report_trade_event, _trade_caption)
 from app.verdict import combine
-
-_SCREENSHOT_RETENTION = 500
 
 # /ui/candles and /ui/overlays serve from an accumulator, not the latest
 # /analyze payload alone -- the EA only resends its own rolling window each
@@ -886,44 +886,6 @@ def ui_onboarding():
                         media_type="text/html")
 
 
-def _basket_legs(db: SignalDb, trade_id: int) -> list:
-    """Rows belonging to the current basket, in entry order: every
-    'open'/'add' trade row after the last previous FINAL 'close' row (there
-    is no dedicated basket/ticket column, so basket boundaries are inferred
-    from 'close' rows). A non-final close (a single leg stopping out while
-    the rest of the basket survives -- see TradeEventRequest.final) does NOT
-    end the basket, so it is excluded from the boundary search: legs from
-    before AND after such a row still belong to the same basket and are both
-    returned once the basket's eventual final close arrives.
-
-    For a "close" event `trade_id` is the just-inserted close row itself --
-    it's excluded automatically since its own event isn't 'open'/'add'. For
-    "open"/"add" events, `trade_id`'s row already satisfies id > last_close
-    and event IN ('open','add'), so it's included as the newest leg.
-
-    TWIN WARNING: `app/miniapp.py`'s `_group_baskets` implements this same
-    basket-boundary rule independently (it groups a whole fetched window at
-    once instead of walking backward from one row id, because the mini-app
-    needs every basket in a range, not just the one around a fresh insert).
-    Both MUST agree on which rows are legs of a basket, in what order --
-    that agreement is pinned by
-    `tests/test_basket_twins.py::test_basket_legs_and_group_baskets_agree_
-    on_the_same_legs`. They deliberately return different SHAPES: this
-    function's legs carry `sl`/`tp` (needed to backfill/redraw the chart
-    render) and no `ts`/`htf_agree`; `_group_baskets`' entries carry
-    `ts`/`htf_agree` (needed for the report) and no `sl`/`tp` (the mini-app
-    query never selects them). If you change the boundary rule here, change
-    it there too, and vice versa."""
-    last_close = db.conn.execute(
-        "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
-        (trade_id,)).fetchone()[0] or 0
-    rows = db.conn.execute(
-        "SELECT price, lots, event, sl, tp FROM trades WHERE id > ? AND event IN"
-        " ('open','add') ORDER BY id ASC", (last_close,)).fetchall()
-    return [{"price": r[0], "lots": r[1], "event": r[2], "sl": r[3], "tp": r[4]}
-            for r in rows]
-
-
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
     # Idempotent receiver for the EA's at-least-once close delivery: deal
@@ -950,91 +912,16 @@ async def trade_event(ev: TradeEventRequest):
     # slow final close as FAILED and re-deliver it forever (the 2026-08-13
     # reconcile spam). The report runs as a background task instead; task
     # refs are held on app.state so they can't be garbage-collected.
-    task = asyncio.create_task(_report_trade_event(ev, trade_id, legs))
+    task = asyncio.create_task(_report_trade_event(
+        ev, trade_id, legs,
+        last_candles=app.state.last_candles,
+        screenshot_dir=app.state.screenshot_dir,
+        db=app.state.db,
+        telegram=app.state.telegram,
+        mirror=lambda **kw: _mirror(app, **kw)))
     app.state.report_tasks.add(task)
     task.add_done_callback(app.state.report_tasks.discard)
     return {"id": trade_id}
-
-
-async def _report_trade_event(ev: TradeEventRequest, trade_id: int,
-                              legs: list) -> None:
-    """Render/photo/P&L message for a trade event, OFF the response path.
-    Render/photo only for opens and FINAL closes -- 'add' legs are still
-    recorded (so the eventual close chart can draw their A-lines via
-    _basket_legs) but must not themselves trigger a render/Telegram photo,
-    and a non-final close (a single leg stopping out mid-basket) is
-    telemetry-only, not a basket-ending event worth a chart/P&L message.
-    Fail-open: every failure is swallowed."""
-    should_render = ev.event == "open" or (ev.event == "close" and ev.final)
-    if should_render and app.state.last_candles:
-        render_path = app.state.screenshot_dir / f"render_{trade_id}.png"
-        try:
-            trade_dict = ev.model_dump()
-            trade_dict["legs"] = legs
-            if ev.event == "close":
-                # Real close events (broker-side SL/TP touches) carry
-                # sl=0/tp=0 -- the EA has no per-position SL/TP snapshot to
-                # resend at close time. Backfill from the basket's own
-                # stored legs instead of relying on the EA: sl from the
-                # basket's first ('open') leg (the original protective
-                # stop), tp from the latest non-zero tp seen across the
-                # basket's legs (a pyramided add can move the target).
-                if not trade_dict.get("sl") and legs:
-                    trade_dict["sl"] = legs[0]["sl"]
-                if not trade_dict.get("tp"):
-                    for leg in reversed(legs):
-                        if leg.get("tp"):
-                            trade_dict["tp"] = leg["tp"]
-                            break
-            ok = await asyncio.to_thread(
-                render_trade_chart, app.state.last_candles, trade_dict,
-                str(render_path))
-            if ok:
-                app.state.db.set_render(trade_id, str(render_path))
-                await asyncio.to_thread(_prune_screenshots, app.state.screenshot_dir)
-                # The PNG is kept ON DISK for the dashboard's trade list; it
-                # is no longer sent to Telegram (owner request 2026-08-17 —
-                # the live ticker + [📈 Live Chart] mini app cover the
-                # visual, and the extra "render:" photos were noise).
-        except Exception:
-            pass
-    # No open-time Telegram message here at all: the EA's own chart
-    # screenshot (POST /screenshot, caption "open BUY 0.09@4399.17 — signal
-    # BUY") already arrives with the EXIT button — that is the ONE chart the
-    # owner wants per entry (2026-08-17). Anything sent here would be a
-    # duplicate.
-    if ev.event == "close" and ev.final and app.state.telegram is not None:
-        try:
-            await asyncio.to_thread(
-                app.state.telegram.send_message,
-                _pl_message(ev.profit, ev.direction, legs, ev.price))
-        except Exception:
-            pass
-        await _mirror(app, text=_pl_message(ev.profit, ev.direction,
-                                            legs, ev.price))
-
-
-def _pl_message(profit: float, direction: str = "", legs: list | None = None,
-                exit_price: float = 0.0) -> str:
-    if profit > 0:
-        head = f"💰 Trade closed: +${profit:.2f} profit"
-    elif profit < 0:
-        head = f"🔻 Trade closed: -${abs(profit):.2f} loss"
-    else:
-        head = "⚖️ Trade closed: breakeven"
-    # lot-weighted average entry across the basket's open/add legs, so
-    # pyramided trades report the entry that actually determined the P/L
-    if legs and exit_price:
-        tot = sum(l.get("lots", 0) for l in legs)
-        if tot > 0:
-            avg = sum(l["price"] * l.get("lots", 0) for l in legs) / tot
-            head += f" ({direction} {avg:.2f} → {exit_price:.2f})"
-    return head
-
-
-def _send_render_photo(telegram: TelegramClient, caption: str, path: Path,
-                       reply_markup: dict | None = None) -> None:
-    telegram.send_photo(caption, path.read_bytes(), reply_markup)
 
 
 @app.post("/screenshot")
@@ -1062,27 +949,6 @@ async def screenshot(event: int, request: Request):
         except Exception:
             pass
     return {"saved": str(file_path)}
-
-
-def _trade_caption(event, direction, lots, price, reason, profit,
-                   htf_agree: int = -1) -> str:
-    caption = f"{event} {direction} {lots}@{price} — {reason}"
-    if event == "close":
-        caption += f"; P/L {profit}"
-    elif htf_agree in (0, 1):
-        # The M15 verdict is evaluated on EVERY entry, in every session, and
-        # reported here even when the tape was trending and it was not
-        # allowed to block (owner 2026-08-21). "no" on a live entry therefore
-        # means: taken in a trend, against M15.
-        caption += f"\nM15: {'agrees ✅' if htf_agree == 1 else 'DISAGREES ⚠️'}"
-    return caption
-
-
-def _prune_screenshots(dir_path: Path, keep: int = _SCREENSHOT_RETENTION) -> None:
-    files = sorted(dir_path.glob("*.png"), key=lambda p: p.stat().st_mtime,
-                   reverse=True)
-    for stale in files[keep:]:
-        stale.unlink()
 
 
 @app.get("/ui/trades")
