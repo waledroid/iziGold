@@ -573,6 +573,13 @@ BIAS_TARGET_MULT = 0.5    # counter-trend profit target multiplier
 BIAS_RISK_MULT = 0.5      # counter-trend risk multiplier (size_target only)
 M15_SEC = 900
 
+# EMA-200 (OWN-timeframe) confirmation (owner 2026-08-22): unlike BIAS_*
+# above (a HIGHER timeframe's EMA), this reads EMA200 on the trading
+# timeframe itself -- BUY agrees when price is above it, SELL below, no
+# buffer, no chop-only gate (see the EA's Ema200Agrees()/Ema200Enforced()).
+# Default off, byte-identical to every existing pin.
+EMA200_CONFIRM = False
+
 
 class _Bar:
     __slots__ = ("h", "l", "c")
@@ -899,6 +906,7 @@ def run(candles, start_balance, verbose, active_lanes=None):
     sr_ctx = sr_context(candles) if SR_LOOKBACK > 0 else None
     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
         else None
+    ema200 = ema(closes, 200) if EMA200_CONFIRM else None
 
     active_lanes = set(LANES) if active_lanes is None else active_lanes
 
@@ -965,6 +973,7 @@ def run(candles, start_balance, verbose, active_lanes=None):
                        "bars_open": basket.get("bars_open", 0),
                        "bias": basket.get("bias"),
                        "bias_ema": basket.get("bias_ema"),
+                       "ema200_agree": basket.get("ema200_agree"),
                        "headroom": basket.get("headroom"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
@@ -1262,6 +1271,16 @@ def run(candles, start_balance, verbose, active_lanes=None):
                     if (SR_MIN_HEADROOM > 0 and not SR_REPORT and not blocked
                             and hr is not None and hr < SR_MIN_HEADROOM):
                         blocked = f"headroom<{SR_MIN_HEADROOM:g}"
+                # EMA200 (own-timeframe) confirmation: BUY needs price above
+                # its own EMA200, SELL below -- plain side test, no buffer,
+                # no chop exception (mirrors Ema200Agrees()/Ema200Enforced()
+                # in HalfTrendEma.mqh). Verdict is tagged on the trade either
+                # way; EMA200_CONFIRM only decides whether it can block.
+                e200_agree = None
+                if ema200 is not None and ema200[i] is not None:
+                    e200_agree = (px > ema200[i]) if signal == "BUY" else (px < ema200[i])
+                    if not e200_agree and not blocked:
+                        blocked = "ema200"
                 if blocked:
                     skipped.append((when, signal, blocked))
                     if verbose:
@@ -1313,7 +1332,8 @@ def run(candles, start_balance, verbose, active_lanes=None):
                               "headroom": hr,
                               "flip_t": candles[last_flip]["t"],
                               "entry_offset": i - last_flip,
-                              "bias": bias, "bias_ema": bval}
+                              "bias": bias, "bias_ema": bval,
+                              "ema200_agree": e200_agree}
                     if bias == "counter" and BIAS_MODE in (
                             "target", "target_lock", "size_target"):
                         # basket-sticky: decided once, here, at entry
@@ -1672,6 +1692,11 @@ def build_parser():
     exp.add_argument("--bias-tf", choices=BIAS_TFS, default="M15",
                     help="timeframe of the bias EMA: M5 (default) or M15 "
                          "(resampled, last completed M15 bar)")
+    exp.add_argument("--ema200-confirm", choices=("off", "on"), default="off",
+                    help="own-timeframe EMA200 confirmation (2026-08-22): "
+                         "BUY needs price above EMA200, SELL below, on the "
+                         "TRADING timeframe (--tf) itself -- no buffer, no "
+                         "chop exception. off (default) is byte-identical")
     exp.add_argument("--window-start", type=int, default=None,
                     help="first server hour that may OPEN a trade "
                          "(EA TradingWindowStartHour, default 4)")
@@ -1738,6 +1763,8 @@ def main():
     global BIAS_BUFFER_ATR
     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
     BIAS_BUFFER_ATR = args.bias_buffer_atr
+    global EMA200_CONFIRM
+    EMA200_CONFIRM = args.ema200_confirm == "on"
     global CHOP_EFF_MAX, CHOP_EFF_BARS
     CHOP_EFF_MAX, CHOP_EFF_BARS = args.chop_eff_max, args.chop_eff_bars
     # Lane selection is NOT a mutated global (that was the smell): it is an
@@ -1834,6 +1861,8 @@ def main():
                         if SR_MIN_HEADROOM > 0 else " tag-only")))
     if BIAS_EMA > 0:
         head.append(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}")
+    if EMA200_CONFIRM:
+        head.append("ema200-confirm on")
     if WINDOW != (4, 23):
         head.append(f"window {WINDOW[0]}-{WINDOW[1]}")
     if PROFIT_TARGET_PCT != 2.0:
