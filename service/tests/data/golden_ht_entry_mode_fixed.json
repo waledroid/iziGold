@@ -1,0 +1,348 @@
+{
+ "trades": [
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3984.22,
+   "legs": 1,
+   "exit": 3980.8,
+   "why": "stop",
+   "pl": -18.11
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3982.9,
+   "legs": 1,
+   "exit": 3978.68,
+   "why": "stop",
+   "pl": -22.11
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3969.23,
+   "legs": 1,
+   "exit": 3978.93,
+   "why": "stop",
+   "pl": -49.48
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3988.08,
+   "legs": 1,
+   "exit": 3988.66,
+   "why": "reversal",
+   "pl": 1.9
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4081.05,
+   "legs": 1,
+   "exit": 4075.54,
+   "why": "stop",
+   "pl": -28.56
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4087.45,
+   "legs": 1,
+   "exit": 4112.1,
+   "why": "flatten",
+   "pl": 122.25
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4146.44,
+   "legs": 1,
+   "exit": 4124.77,
+   "why": "stop",
+   "pl": -109.36
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4140.72,
+   "legs": 1,
+   "exit": 4130.66,
+   "why": "reversal",
+   "pl": -51.3
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4186.87,
+   "legs": 1,
+   "exit": 4192.27,
+   "why": "stop",
+   "pl": -28.0
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4216.66,
+   "legs": 1,
+   "exit": 4231.82,
+   "why": "stop",
+   "pl": -76.8
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4332.46,
+   "legs": 1,
+   "exit": 4356.24,
+   "why": "flatten",
+   "pl": 117.9
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4341.41,
+   "legs": 1,
+   "exit": 4125.78,
+   "why": "flatten",
+   "pl": 1077.15
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4102.48,
+   "legs": 1,
+   "exit": 4058.13,
+   "why": "reversal",
+   "pl": 220.75
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4116.37,
+   "legs": 1,
+   "exit": 4104.63,
+   "why": "stop",
+   "pl": -59.69
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4129.34,
+   "legs": 1,
+   "exit": 4132.11,
+   "why": "reversal",
+   "pl": 12.85
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4128.63,
+   "legs": 1,
+   "exit": 4121.64,
+   "why": "flatten",
+   "pl": 33.95
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4106.65,
+   "legs": 1,
+   "exit": 4111.13,
+   "why": "stop",
+   "pl": -23.41
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4083.58,
+   "legs": 1,
+   "exit": 4083.47,
+   "why": "reversal",
+   "pl": -0.45
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 4018.57,
+   "legs": 1,
+   "exit": 3980.16,
+   "why": "flatten",
+   "pl": 191.05
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3922.87,
+   "legs": 1,
+   "exit": 3905.33,
+   "why": "stop",
+   "pl": -88.71
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3912.84,
+   "legs": 1,
+   "exit": 3920.85,
+   "why": "stop",
+   "pl": -41.04
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3941.35,
+   "legs": 1,
+   "exit": 3950.24,
+   "why": "flatten",
+   "pl": 43.45
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3969.91,
+   "legs": 1,
+   "exit": 3963.42,
+   "why": "stop",
+   "pl": -33.44
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3957.43,
+   "legs": 1,
+   "exit": 3968.89,
+   "why": "stop",
+   "pl": -58.29
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4012.65,
+   "legs": 1,
+   "exit": 4006.37,
+   "why": "stop",
+   "pl": -32.38
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4008.99,
+   "legs": 1,
+   "exit": 3992.86,
+   "why": "stop",
+   "pl": -81.65
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3994.27,
+   "legs": 1,
+   "exit": 4003.0,
+   "why": "reversal",
+   "pl": -44.65
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4013.98,
+   "legs": 1,
+   "exit": 4008.44,
+   "why": "stop",
+   "pl": -28.71
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4011.53,
+   "legs": 1,
+   "exit": 4006.77,
+   "why": "stop",
+   "pl": -24.82
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3959.34,
+   "legs": 1,
+   "exit": 3933.14,
+   "why": "flatten",
+   "pl": 130.0
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3982.27,
+   "legs": 1,
+   "exit": 3969.58,
+   "why": "stop",
+   "pl": -64.46
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3965.5,
+   "legs": 1,
+   "exit": 3967.55,
+   "why": "reversal",
+   "pl": -11.25
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 3967.55,
+   "legs": 1,
+   "exit": 3970.54,
+   "why": "reversal",
+   "pl": 13.95
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4015.89,
+   "legs": 1,
+   "exit": 4007.54,
+   "why": "stop",
+   "pl": -42.77
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3991.83,
+   "legs": 1,
+   "exit": 3977.19,
+   "why": "flatten",
+   "pl": 72.2
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3995.93,
+   "legs": 1,
+   "exit": 4001.38,
+   "why": "stop",
+   "pl": -28.23
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3990.19,
+   "legs": 1,
+   "exit": 3998.97,
+   "why": "stop",
+   "pl": -44.91
+  },
+  {
+   "lane": "ht",
+   "dir": "BUY",
+   "entry": 4006.23,
+   "legs": 1,
+   "exit": 4000.94,
+   "why": "stop",
+   "pl": -27.45
+  }
+ ],
+ "final_balance": 4917.38,
+ "max_dd": 393.16
+}
