@@ -27,11 +27,7 @@
       "confirm_closes": 3,
       "ema_length": 55,
       "ht_amplitude": 4,
-      "stop_buffer_atr": 0.75,
-      "htf_confirm_ema": 55,
-      "htf_confirm_buffer_atr": 2.0,
-      "htf_chop_eff_max": 0.08,
-      "htf_chop_bars": 48
+      "stop_buffer_atr": 0.75
     }
   }
 }

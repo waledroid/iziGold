@@ -71,15 +71,16 @@ STRATEGY_EA_NAMES = {
         "htf_chop_eff_max": "HtfChopEffMax",
         "htf_chop_bars": "HtfChopBars",
     },
+    # No HTF-confirm mapping here (owner 2026-08-22: the M15 lane's higher-
+    # timeframe module was removed entirely -- its only confirmation is its
+    # own EMA200, an EA input with no numeric knobs, so it needs no config
+    # mapping either). See STRATEGY_EA_NAMES["halftrend_ema_v1"] for the
+    # lane that still has one.
     "halftrend_m15_v1": {
         "confirm_closes": "M15ConfirmCloses",
         "ema_length": "M15EmaLength",
         "ht_amplitude": "M15Amplitude",
         "stop_buffer_atr": "M15StopBufferATR",
-        "htf_confirm_ema": "M15HtfConfirmEma",
-        "htf_confirm_buffer_atr": "M15HtfConfirmBufferATR",
-        "htf_chop_eff_max": "M15HtfChopEffMax",
-        "htf_chop_bars": "M15HtfChopBars",
     },
 }
 
