@@ -328,7 +328,16 @@ def _load_strategy_config(path=STRATEGY_CONFIG_PATH):
             "from the live EA's `input` defaults.") from exc
 
 
-_CFG = _load_strategy_config()
+_CFG_RAW = _load_strategy_config()
+# config/strategy.json now groups parameters into `shared` (TradeManager/
+# RiskManager inputs that apply no matter which registered strategy is
+# ActiveStrategy -- there is only one set of these EA inputs) and
+# `strategies` (per-instance HalfTrend inputs that DO differ between the M5
+# lane and the M15 lane added 2026-08-22). This replay is the M5 (`ht`) lane
+# only -- scripts/backtest.py does not gain an M15 lane -- so flatten the
+# shared block with just the halftrend_ema_v1 block, exactly the values that
+# were flat top-level keys before the restructure.
+_CFG = {**_CFG_RAW["shared"], **_CFG_RAW["strategies"]["halftrend_ema_v1"]}
 
 # --- current EA inputs (values loaded from config/strategy.json) ---
 RISK_PCT = _CFG["risk_per_trade_pct"]

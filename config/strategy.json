@@ -1,21 +1,37 @@
 {
-  "_meta": "Single source of truth for the halftrend_ema_v1 strategy parameters that used to be declared twice: once as an MQL5 `input` default in mt5/Experts/XauAssistant.mq5, once as a module constant in scripts/backtest.py. The EA inputs are the LIVE authority -- this file must match them, not the other way around. service/tests/test_strategy_config.py::test_strategy_config_matches_the_ea enforces that match on every run (numeric compare, so 50 and 50.0 agree). Do not add a key here without wiring it into both the EA input table above the test and the backtest loader in scripts/backtest.py -- an unmapped key fails the completeness check in the same test file.",
-  "confirm_closes": 2,
-  "ema_length": 55,
-  "ht_amplitude": 4,
-  "stop_buffer_atr": 0.75,
-  "risk_per_trade_pct": 1.0,
-  "profit_target_pct": 2.0,
-  "trail_lock_pct": 50,
-  "trail_activate_r": 1.0,
-  "add_trigger_atr": 1.0,
-  "max_positions": 3,
-  "adx_trend_threshold": 10.0,
-  "max_daily_exposure_min": 360,
-  "htf_confirm_ema": 55,
-  "htf_confirm_buffer_atr": 2.0,
-  "htf_chop_eff_max": 0.08,
-  "htf_chop_bars": 48,
-  "trading_window_start_hour": 4,
-  "trading_window_end_hour": 23
+  "_meta": "Single source of truth for strategy parameters that used to be declared twice: once as an MQL5 `input` default in mt5/Experts/XauAssistant.mq5, once as a module constant in scripts/backtest.py. The EA inputs are the LIVE authority -- this file must match them, not the other way around. service/tests/test_strategy_config.py::test_strategy_config_matches_the_ea enforces that match on every run (numeric compare, so 50 and 50.0 agree). `shared` holds the TradeManager/RiskManager parameters that apply no matter which registered strategy is ActiveStrategy (there is only one set of these EA inputs -- they are not duplicated per strategy). `strategies` holds the per-instance HalfTrend parameters that DO differ between the M5 lane (halftrend_ema_v1) and the M15 lane (halftrend_m15_v1); each block mirrors that lane's own EA inputs. Do not add a key here without wiring it into both the EA input table above the test and the backtest loader in scripts/backtest.py -- an unmapped key fails the completeness check in the same test file.",
+  "shared": {
+    "risk_per_trade_pct": 1.0,
+    "profit_target_pct": 2.0,
+    "trail_lock_pct": 50,
+    "trail_activate_r": 1.0,
+    "add_trigger_atr": 1.0,
+    "max_positions": 3,
+    "adx_trend_threshold": 10.0,
+    "max_daily_exposure_min": 360,
+    "trading_window_start_hour": 4,
+    "trading_window_end_hour": 23
+  },
+  "strategies": {
+    "halftrend_ema_v1": {
+      "confirm_closes": 2,
+      "ema_length": 55,
+      "ht_amplitude": 4,
+      "stop_buffer_atr": 0.75,
+      "htf_confirm_ema": 55,
+      "htf_confirm_buffer_atr": 2.0,
+      "htf_chop_eff_max": 0.08,
+      "htf_chop_bars": 48
+    },
+    "halftrend_m15_v1": {
+      "confirm_closes": 3,
+      "ema_length": 55,
+      "ht_amplitude": 4,
+      "stop_buffer_atr": 0.75,
+      "htf_confirm_ema": 55,
+      "htf_confirm_buffer_atr": 2.0,
+      "htf_chop_eff_max": 0.08,
+      "htf_chop_bars": 48
+    }
+  }
 }
