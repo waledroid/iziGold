@@ -75,10 +75,11 @@ def _replay():
     # Same again for the M15 agreement filter, which became a default on
     # 2026-08-20, after this pin was captured. Off here = like-for-like.
     bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF = 0, "tag", "M5"
-    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
-    # 2026-08-20, after this pin was captured. Lane selection is passed
-    # explicitly into run() now (not a mutated module global), so drive it
-    # the same way main() does: bt.lanes_for("ht") -> {"ht"}.
+    # The golden pins HalfTrend alone. Lane selection is passed explicitly
+    # into run() (not a mutated module global), so drive it the same way
+    # main() does: bt.lanes_for("ht") -> {"ht"} -- today the only lane
+    # LANES registers, but naming it here keeps the pin explicit about
+    # what it measures even if a second lane is ever added back.
     trades, bal, max_dd, _valley = bt.run(
         candles, 4000.0, False, bt.lanes_for("ht"))
     return _digest(trades), round(bal, 2), round(max_dd, 2)
@@ -92,8 +93,7 @@ def _replay_strict():
     assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
     assert (bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF) == (55, "skip", "M15"), \
         "M15 EMA-55 agreement is supposed to be the default"
-    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
-    # 2026-08-20, after this pin was captured.
+    # The golden pins HalfTrend alone -- see the note in _replay() above.
     trades, bal, max_dd, _valley = bt.run(
         candles, 4000.0, False, bt.lanes_for("ht"))
     return _digest(trades), round(bal, 2), round(max_dd, 2)
@@ -127,18 +127,3 @@ def test_the_two_pins_really_pin_different_runs():
         "strict can only ever refuse entries loose would take")
 
 
-GOLDEN_BOTH = DATA / "golden_trades_both.json"
-
-
-def _replay_both():
-    """Both lanes on one balance -- the configuration that ships."""
-    bt = _load_bt()
-    candles = json.loads(BARS.read_text())
-    assert bt.STRATEGY == "both", "both-lane is supposed to be the default"
-    trades, bal, max_dd, _valley = bt.run(
-        candles, 4000.0, False, bt.lanes_for(bt.STRATEGY))
-    return _digest(trades), round(bal, 2), round(max_dd, 2)
-
-
-def test_both_lane_replay_matches_golden():
-    _assert_matches(*_replay_both(), GOLDEN_BOTH)

@@ -74,9 +74,9 @@ def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
     bt.FIXED_LOTS = 0.05
     args = bt.build_parser().parse_args(
         ["--balance", "10000", "--entry-mode", "fixed"])
-    # ENTRY_MODE is a HalfTrend-only concept; the QuickFlip lane (default
-    # STRATEGY "both") always sets a tp and would otherwise sneak an
-    # unrelated trade into this assertion. Isolate the lane under test.
+    # ENTRY_MODE is a HalfTrend-only concept. bt.lanes_for("ht") -> {"ht"} is
+    # the only lane LANES registers today, but naming it keeps this explicit
+    # about which lane's trades the assertion below covers.
     trades, bal, dd, valley = bt.run(
         candles, 10000.0, False, bt.lanes_for("ht"))
     art = bt.build_run_json(candles, trades, args,

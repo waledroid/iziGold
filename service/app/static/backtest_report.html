@@ -59,12 +59,12 @@
   <div id="legend">
     <i style="color:#1e90ff">HalfTrend</i><i style="color:#e0e0e0">EMA9</i>
     <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5">EMA55</i>
-    <i style="color:#ab47bc">EMA200</i><i style="color:#00e5ff">QuickFlip trade</i>
+    <i style="color:#ab47bc">EMA200</i>
   </div>
 </div>
 
 <table>
-  <thead><tr><th>#</th><th>Lane</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
+  <thead><tr><th>#</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
   <th>Exit</th><th>Why</th><th>P/L</th><th>Balance</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -82,11 +82,6 @@ var BAR_SEC = (RUN.candles.t.length > 1 ? RUN.candles.t[1] - RUN.candles.t[0] : 
 var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
 var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
 var GREEN_L = "#26a69a", RED_L = "#ef5350";
-// QuickFlip is a second, independent strategy trading the same account. The
-// report defaults to --strategy both, so without a lane marking the page
-// blends two strategies into one undifferentiated list of trades.
-var QF_L = "#00e5ff";
-function lane(t) { return t.lane || "ht"; }
 
 function money(v) { return (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2); }
 function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " "); }
@@ -112,16 +107,6 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
     ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
     ["Risk taken", pct(s.risk_median) + " / p90 " + pct(s.risk_p90), ""]
   ];
-  // Two lanes on one balance: a blended net hides which strategy earned it.
-  if (s.lanes && s.lanes.ht.trades && s.lanes.qf.trades) {
-    [["ht", "HalfTrend lane"], ["qf", "QuickFlip lane"]].forEach(function (p) {
-      var d = s.lanes[p[0]];
-      cells.push([p[1], d.trades + " trades \u00b7 " + d.win_rate.toFixed(1) +
-                  "% \u00b7 " + money(d.net) + " \u00b7 dd $" +
-                  (d.max_dd == null ? "n/a" : d.max_dd.toFixed(2)),
-                  d.net >= 0 ? "pos" : "neg"]);
-    });
-  }
   document.getElementById("stats").innerHTML = cells.map(function (c) {
     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
   }).join("");
@@ -248,23 +233,20 @@ var candles = chart.addCandlestickSeries({
   var marks = [];
   RUN.trades.forEach(function (tr, i) {
     var up = tr.dir === "BUY";
-    var qf = lane(tr) === "qf";
     marks.push({ time: tr.legs[0].t, position: up ? "belowBar" : "aboveBar",
-                 color: qf ? QF_L : (up ? GREEN_L : RED_L),
+                 color: up ? GREEN_L : RED_L,
                  shape: up ? "arrowUp" : "arrowDown",
-                 text: (qf ? "QF#" : "#") + (i + 1) });
+                 text: "#" + (i + 1) });
     if (SHOW_ADDS) {
       tr.legs.slice(1).forEach(function (leg) {
         marks.push({ time: leg.t, position: up ? "belowBar" : "aboveBar",
                      color: "#f0c674", shape: "circle", text: "+" });
       });
     }
-    // exit keeps the win/loss colour -- that is what the eye reads first --
-    // and changes SHAPE for QuickFlip so the lane is still identifiable.
+    // exit keeps the win/loss colour -- that is what the eye reads first.
     marks.push({ time: tr.exit_t, position: up ? "aboveBar" : "belowBar",
                  color: tr.pl >= 0 ? GREEN_L : RED_L,
-                 shape: qf ? "circle" : "square",
-                 text: (qf ? "QF " : "") + money(tr.pl) });
+                 shape: "square", text: money(tr.pl) });
   });
   marks.sort(function (a, b) { return a.time - b.time; });
   candles.setMarkers(marks);
@@ -306,7 +288,7 @@ function drawBoxes() {
         ctx.fillRect(x0, Math.min(entry, tp), w, Math.abs(tp - entry));
       }
     }
-    ctx.strokeStyle = lane(tr) === "qf" ? QF_L : (tr.pl >= 0 ? GREEN_L : RED_L);
+    ctx.strokeStyle = tr.pl >= 0 ? GREEN_L : RED_L;
     ctx.lineWidth = 1;
     ctx.strokeRect(x0 + 0.5, Math.min(entry, stop0) + 0.5, w, Math.abs(stop0 - entry));
   });
@@ -341,10 +323,7 @@ showRange(RUN.trades.length ? "trade" : "all");
 
 // ---- trade table --------------------------------------------------------
 document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
-  var ln = lane(t);
-  return '<tr data-i="' + i + '"><td>' + (i + 1) + '</td><td' +
-    (ln === "qf" ? ' style="color:' + QF_L + '"' : "") + ">" + ln +
-    "</td><td>" + stamp(t.legs[0].t) +
+  return '<tr data-i="' + i + '"><td>' + (i + 1) + '</td><td>' + stamp(t.legs[0].t) +
     "</td><td>" + t.dir + "</td><td>" + t.legs.length + "</td><td>" +
     t.legs[0].px.toFixed(2) + "</td><td>" + t.exit.toFixed(2) + "</td><td>" +
     t.why + '</td><td class="' + (t.pl >= 0 ? "pos" : "neg") + '">' + money(t.pl) +

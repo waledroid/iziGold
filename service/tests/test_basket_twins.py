@@ -2,9 +2,7 @@
 `app/trade_report.py::_basket_legs` and `app/reports.py::_group_baskets`. Both answer
 the same question -- "which trade rows belong to this basket, in what
 order" -- from the same underlying `trades` table, but independently (see
-the TWIN WARNING comment on each function). This is the same treatment
-`tests/test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`
-gives `scripts/backtest.py::qf_signals` and `scripts/quickflip_probe.py`.
+the TWIN WARNING comment on each function).
 
 This stage deliberately does NOT unify the two functions -- pin first,
 merge later."""

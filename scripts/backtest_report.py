@@ -23,8 +23,11 @@ def write_report(artifact, out_path):
     html = TEMPLATE.read_text(encoding="utf-8")
     meta = artifact.get("meta", {})
     trades = artifact.get("trades", [])
-    # Name the lanes in the title: the report defaults to --strategy both, and
-    # a bare "N trades" reads as one strategy's record when it is two.
+    # Name the lanes in the title if more than one traded this run: a bare
+    # "N trades" reads as one strategy's record if it is actually more than
+    # one sharing the account. Only `ht` is registered in LANES today (see
+    # scripts/backtest.py), so this never fires in practice -- kept so a
+    # future second lane's report needs no change here.
     lanes = {}
     for t in trades:
         lanes[t.get("lane", "ht")] = lanes.get(t.get("lane", "ht"), 0) + 1

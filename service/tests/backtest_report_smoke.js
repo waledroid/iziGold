@@ -114,7 +114,6 @@ if (fs.existsSync(REAL_REPORT)) {
 const HT_UP = '#1e90ff', HT_DOWN = '#ff4500';
 const RED = 'rgba(239,83,80,0.18)', GREEN = 'rgba(38,166,154,0.18)';
 const GREEN_L = '#26a69a', RED_L = '#ef5350';
-const QF_L = '#00e5ff';   // the QuickFlip lane's marking on the page
 
 function makeCtxStub() {
   const ops = [];
@@ -398,52 +397,6 @@ function buildSmallFixture(bar) {
   close(rects[4].w, 20, 't2 stroke w'); close(rects[4].h, 10, 't2 stroke h');
 
   console.log('ok    trade-box geometry matches hand-computed coordinates; tp:null trade draws no reward zone');
-})();
-
-// ---------------------------------------------------------------------------
-// 2b. Lane labelling. The page defaults to --strategy both, so QuickFlip and
-//     HalfTrend trades land in one list; without a lane marking the report
-//     blends two independent strategies into an undifferentiated record.
-// ---------------------------------------------------------------------------
-(function laneLabellingChecks() {
-  const fixture = buildSmallFixture();
-  fixture.trades[0].lane = 'ht';
-  fixture.trades[1].lane = 'qf';
-  fixture.stats.lanes = {
-    ht: { trades: 1, wins: 1, losses: 0, win_rate: 100.0, net: 250.0, max_dd: 0.0 },
-    qf: { trades: 1, wins: 1, losses: 0, win_rate: 100.0, net: 100.0, max_dd: 0.0 },
-    qf_trades_overlapping_ht: 0,
-  };
-  const { candlestickStub, ctxStub, elements } =
-    runScenario(fixture, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
-
-  // -- the trade table names each trade's lane --------------------------
-  const rows = elements.rows.innerHTML;
-  assert.ok(/<td[^>]*>ht<\/td>/.test(rows), 'trade table does not label the HalfTrend lane');
-  assert.ok(/<td[^>]*>qf<\/td>/.test(rows), 'trade table does not label the QuickFlip lane');
-  console.log('ok    every trade row carries its lane');
-
-  // -- QuickFlip is visually distinct on the chart -----------------------
-  const qfMarks = candlestickStub.markers.filter((m) => /QF/.test(m.text || ''));
-  assert.strictEqual(qfMarks.length, 2, 'QuickFlip entry+exit markers are not marked "QF"');
-  assert.ok(qfMarks.some((m) => m.color === QF_L),
-    'the QuickFlip entry marker does not use the lane colour');
-  const htMarks = candlestickStub.markers.filter((m) => !/QF/.test(m.text || ''));
-  assert.ok(htMarks.every((m) => m.color !== QF_L),
-    'a HalfTrend marker was painted with the QuickFlip lane colour');
-  console.log('ok    QuickFlip markers carry the lane colour and a QF label');
-
-  // -- and its trade box is outlined in the lane colour ------------------
-  const strokes = ctxStub.__ops.filter((o) => o.op === 'strokeRect');
-  assert.ok(strokes.some((o) => o.style === QF_L),
-    'no trade box outlined in the QuickFlip lane colour');
-  console.log('ok    the QuickFlip trade box is outlined in the lane colour');
-
-  // -- the header breaks the two lanes out -------------------------------
-  assert.ok(/HalfTrend lane/.test(elements.stats.innerHTML)
-    && /QuickFlip lane/.test(elements.stats.innerHTML),
-    'header does not break the stats down per lane');
-  console.log('ok    header carries a per-lane breakdown (trades, win%, net, max dd)');
 })();
 
 // ---------------------------------------------------------------------------
