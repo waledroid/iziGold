@@ -2335,3 +2335,101 @@ recompiling.
   made `test_strategy_config_matches_the_ea` fail naming that exact
   parameter, then passed again after restoring it — proof the parity check
   actually watches the new block, not just the old one.
+
+## EMA-200 own-timeframe confirmation; HTF dropped from the M15 lane (owner request, 2026-08-22)
+
+Owner's rule, on the strategy's OWN trading timeframe: **BUY agrees when
+price is above EMA-200, SELL when price is below.** Same "verdict always
+computed, enforcement separately toggled, default OFF" shape as the
+HTF/M15 module above — this section only covers what differs.
+
+- **Where it lives**: `CHalfTrendEmaStrategy` reuses `m_ema200Handle`
+  (already built for painting — no second handle). `Ema200Agrees(dir)` is
+  the verdict, `Ema200Enforced()` the separate enforcement gate,
+  `SetEma200Override(v)` the `/agree`-style runtime override ("" follow the
+  EA input, "off" report-only, "on" enforce), `LastEma200Agree()` the
+  trade-log accessor — the exact same four-way split as
+  `HtfAgrees`/`HtfEnforced`/`SetHtfOverride`/`LastHtfAgree`.
+- **Not a higher timeframe, so simpler than HTF**: no ATR clearance buffer,
+  no chop-only gate — `Ema200Enforced()` is fully on or fully off, all day.
+  It reads `m_confirmEma200`/`m_confirmClose`, both captured at the SAME
+  bar/shift the strict-window confirmation decided on (inside
+  `ProcessClosedBar`, right where `m_confirmShift`/`m_confirmClose` are set)
+  — not a fresh "now" read, so a catch-up entry firing bars after the
+  confirm still judges the bar that actually confirmed, and the two
+  verdicts (M15 and EMA200) describe the same instant.
+- **EA inputs**: `Ema200Confirm` (M5, default `false`) and
+  `M15Ema200Confirm` (M15, default `false`) — both report-only by default,
+  per the owner: "switch off the confirmation ema200 by default for m5 and
+  m15 ... we get them in reporting". `CHalfTrendEmaStrategy`'s constructor
+  gained a trailing `bool ema200Confirm` parameter for this.
+- **The M15 lane's HTF module is REMOVED ENTIRELY** (owner: "for this m15
+  the only confirmation is the ema 200"). `halftrend_m15_v1`'s registration
+  in `OnInit` now passes `htfConfirm=false` with placeholder HTF ctor args
+  (`PERIOD_H1, 55, 0.0, false, 48, 0.08` — never read since the handle is
+  never built when `htfConfirm` is false) instead of the `M15Htf*` inputs,
+  which are GONE from the EA's input table — not left declared-and-unused.
+  `config/strategy.json`'s `halftrend_m15_v1` block and
+  `test_strategy_config.py`'s `STRATEGY_EA_NAMES["halftrend_m15_v1"]` lost
+  their `htf_confirm_*` keys to match (EMA200's own bool input has no
+  numeric knobs to sync, same reason `HtfConfirm`'s bool sibling never
+  needed a config entry). **The M5 lane's own HTF behaviour is completely
+  unchanged** — same inputs, same registration shape, only a new trailing
+  `Ema200Confirm` argument appended.
+- **Threaded through like `htf_agree`, alongside it, never replacing it**:
+  `trades.ema200_agree` (same migration style, same `-1`/`0`/`1` shape),
+  `TradeEventRequest.ema200_agree`, `HeartbeatResponse.ema200_enforce`
+  ("off"/"on", default "off"; `SignalDb.EMA200_CHOICES`/
+  `ema200_enforce()`/`set_ema200_enforce()` mirror `HTF_CHOICES`/
+  `htf_enforce()`/`set_htf_enforce()`). `reports.py`'s `_htf_flag` was
+  generalized into a shared `_flag(entries, key)` helper with an
+  `_ema200_flag` twin; `_group_baskets`/`_fetch_closed_baskets` carry
+  `ema200_agree` on every basket entry the same way they carry `htf_agree`
+  (the M15-column-dash bug from the section above is exactly the failure
+  mode a dropped field here would repeat — `test_basket_twins.py` now seeds
+  a basket where the two verdicts deliberately DISAGREE so one twin can't
+  hide the other silently dropping). Day report rows gain an `"e200"` field;
+  the mini app's Trades tab gets an **E200** column next to **M15**
+  (`miniapp.html`, same Yes/No/– rendering). `_trade_caption` gains an
+  `E200: agrees ✅` / `E200: DISAGREES ⚠️` line beside the `M15:` one.
+- **`/agree` is now the "what confirms a trade" menu**: the existing HTF
+  buttons (`agree:off`/`agree:M15`/`agree:M30`/`agree:H1`) are unchanged; new
+  `e200:off`/`e200:on` buttons (`_cb_e200`, registered in `CALLBACKS`) toggle
+  `ema200_enforce`. One command, two confirmation modules — a second command
+  for a second confirmation would have been worse.
+- **Found, not fixed**: `UiApi.mqh`'s `PostHeartbeat` has always declared an
+  `htfEnforce_out` reference parameter but never actually populated it from
+  the heartbeat response body (no `ExtractString(body, "htf_enforce")`
+  call ever existed) — so the M5 lane's `/agree` HTF enforcement toggle has
+  never reached the EA at runtime; `SetHtfOverride` is simply never called
+  from `OnTimer`, and the M5 lane has been running on its `HtfChopOnly`-
+  gated EA-input default this whole time regardless of what `/agree` shows
+  in Telegram. Left AS-IS here: fixing it would change the M5 lane's live
+  enforcement behaviour, which is explicitly out of scope ("the M5
+  strategy's own behaviour must not change at all"). `ema200_enforce_out`
+  (new code, new field) IS correctly parsed
+  (`ema200Enforce_out = ExtractString(body, "ema200_enforce");`) — the
+  EMA200 toggle actually works at runtime; the HTF one still doesn't. Worth
+  a deliberate follow-up fix + a live behaviour review, on its own.
+- **`scripts/backtest.py`**: `--ema200-confirm off|on` (default off, byte-
+  identical) applies the same plain side test on the TRADING timeframe
+  (respects `--tf`), tagging every basket with `ema200_agree` the way
+  `bias`/`bias_ema` are tagged. Verified against `bars_slice.json`:
+  `on` drops 60 trades to 52 (removes entries that opened against their own
+  EMA200, e.g. the `10-15 15:55 SELL` and `10-21 08:05 SELL`); `off` is
+  unchanged. All golden/characterization/help/json/web/strict-window/
+  records/balance/report-smoke suites pass unmoved.
+- **`scripts/backfill_ema200_agree.py`** (sibling to
+  `backfill_htf_agree.py`, not an extension of it — the rule is SAME-
+  timeframe, not a fixed M15/H1 higher one, and the trading timeframe
+  differs per `strategy_id`, so it resamples the M5 candle dump to M15 for
+  `halftrend_m15_v1` the same way `backtest.py --tf M15` does). Run against
+  the live `service/xau_assistant.db` with `bars_max.json`: 51 open events,
+  27 agree / 24 disagree, 0 uncovered.
+- **Verified**: EA compiled 0 errors/0 warnings; the newest `heartbeats` row
+  landed a few seconds after the hot-reload with `active_strategy` still
+  `halftrend_ema_v1` and `kill_switch` 0. Full Python suite green (530
+  passed, 1 deselected slow marker; was 529). All three backtest goldens
+  (loose/strict) and all 21 characterization combos pass unmoved — default
+  OFF on both new EA inputs and the new backtest flag means nothing was
+  supposed to move, and nothing did.
