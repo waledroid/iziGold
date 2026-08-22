@@ -2238,3 +2238,75 @@ pushes flow). NOTE: `wmic` was rejected for the probe (deprecated on
 current Windows, quoting-fragile). Manual stop: PowerShell
 `Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*mt5_feed.py*' }
 | % { Stop-Process -Id $_.ProcessId }`.
+
+## Second HalfTrend lane on M15 (owner request, 2026-08-22)
+
+The owner eyeballed live trades and prefers M15 over M5, but wants to
+**compare them one at a time, not run both live simultaneously** — so this
+is a second registered strategy, not a mode flag. Both are shadow-evaluated
+every bar; only `ActiveStrategy` trades/alerts. `ActiveStrategy` stays
+`halftrend_ema_v1` after this change (registering an instance does NOT
+activate it) — switch to `halftrend_m15_v1` the same way any strategy is
+switched: Telegram remote-switch (`g_pendingSwitch`, applied at the next bar
+boundary in `ProcessBar()`) or by changing the `ActiveStrategy` input and
+recompiling.
+
+- **`CHalfTrendEmaStrategy::Id()` is now a constructor argument**
+  (`mt5/Include/XauAssistant/Strategies/HalfTrendEma.mqh`) — `m_id` is the
+  first ctor parameter, stored, and returned by `Id()`. Every `Print`/
+  `PrintFormat` inside the class that used to hardcode `"halftrend_ema_v1: "`
+  now prefixes with `m_id` instead, so the Experts log tells the two
+  instances apart. The M5 registration in `OnInit` still passes literally
+  `"halftrend_ema_v1"` — **that id, and every M5 default, is unchanged** (the
+  three golden pins + 21 characterization pins all pass byte-identical).
+- **Second registration** (`mt5/Experts/XauAssistant.mq5` `OnInit`): id
+  `halftrend_m15_v1`, hardcoded `PERIOD_M15` (not `TradeTimeframe` — it
+  trades M15 regardless of what the M5 lane's chart/trade timeframe is
+  set to), with its own `M15…`-prefixed input block, grouped in the Inputs
+  dialog via `input group "HalfTrend M15 (halftrend_m15_v1) — second lane,
+  owner runs ONE at a time via ActiveStrategy"` (the M5 block and the
+  `boll_stochrsi` block got matching `input group` dividers so the dialog
+  reads as three sections; `input group` is a display-only pragma — the
+  regex `test_strategy_config_matches_the_ea` uses to parse EA defaults
+  doesn't match it, so it can't affect the parity check).
+  Every M15 input defaults to its M5 equivalent **except two, deliberately**:
+  - `M15ConfirmCloses = 3` (M5 uses 2). Measured: on M15, 3 waiting bars was
+    the only setting positive in BOTH halves of the 17-month history
+    (+1,477.65 full period) — see "Not taken, and worth remembering" above.
+  - `M15HtfConfirmTf = PERIOD_H1` (M5's default is `PERIOD_M15` — one step
+    up). A strategy TRADING M15 can't confirm against M15; H1 is the
+    equivalent one-step-up timeframe.
+  Shadow evaluation costs nothing extra to reason about: `Evaluate()` is
+  called on every registered strategy every M5-paced `ProcessBar()`, and
+  each instance's own `m_tf`-scoped `iTime(...) == m_lastProcessed` guard
+  means the M15 instance only actually processes on its own bar closes —
+  this is the same mechanism that already let `boll_stochrsi_v1` shadow on
+  `TradeTimeframe` safely; PERIOD_M15 shadowing while M5 is active is a new
+  timeframe combination but not a new mechanism.
+- **`config/strategy.json` restructured** into `shared` (the 10
+  TradeManager/RiskManager parameters — risk %, profit target, trail,
+  add-trigger, max positions, ADX threshold, daily exposure minutes, trading
+  window — that apply no matter which strategy is active; there is only ONE
+  set of these EA inputs, never duplicated per strategy) and `strategies`
+  (per-instance HalfTrend blocks: `halftrend_ema_v1` and `halftrend_m15_v1`,
+  each carrying its own `confirm_closes`/`ema_length`/`ht_amplitude`/
+  `stop_buffer_atr`/`htf_confirm_ema`/`htf_confirm_buffer_atr`/
+  `htf_chop_eff_max`/`htf_chop_bars`). `service/tests/test_strategy_config.py`
+  now parses BOTH strategies' `M15…`/plain EA input names and checks each
+  block against its own — `SHARED_MAPPING` + `STRATEGY_EA_NAMES` (per
+  strategy id) replace the old flat `MAPPING`. `scripts/backtest.py` flattens
+  `shared` + `strategies.halftrend_ema_v1` into the same `_CFG` shape it
+  always read (`_CFG = {**_CFG_RAW["shared"],
+  **_CFG_RAW["strategies"]["halftrend_ema_v1"]}`) — it does **not** gain an
+  M15 lane; `--tf M15` (pre-existing) is still how M15 is replayed, and
+  `STRATEGY_BT_ATTRS` only maps `halftrend_ema_v1` because that's the only
+  block backtest.py loads.
+- **Verified**: EA compiled 0 errors/0 warnings, hot-reloaded onto the live
+  chart with `ActiveStrategy` still `halftrend_ema_v1` (confirmed against the
+  newest `heartbeats` row post-compile), full Python suite green (569 vs the
+  561 baseline — the +8 is purely the expanded per-strategy parametrized
+  coverage in `test_strategy_config.py`, no test removed or weakened). A
+  live mutation test (`strategies.halftrend_m15_v1.ema_length` bumped to 99)
+  made `test_strategy_config_matches_the_ea` fail naming that exact
+  parameter, then passed again after restoring it — proof the parity check
+  actually watches the new block, not just the old one.

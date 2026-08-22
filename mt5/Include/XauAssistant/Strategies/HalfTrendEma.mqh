@@ -15,6 +15,9 @@
 class CHalfTrendEmaStrategy : public CStrategy
   {
 private:
+   string   m_id;             // registry id -- distinct per instance so two
+                               // HalfTrend lanes (e.g. M5 + M15) don't collide
+                               // and SQLite rows stay tagged correctly
    ENUM_TIMEFRAMES m_tf;
    int      m_amplitude;
    int      m_emaLen;
@@ -176,7 +179,7 @@ private:
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
          m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
-            Print("halftrend_ema_v1: HalfTrend flip to ",
+            Print(m_id + ": HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
                   " — strict window armed: the entry bar (", m_confirm,
                   " waiting bar(s) after the arrow) must OPEN ",
@@ -214,7 +217,7 @@ private:
               {
                m_signalDead = true;
                if(m_lastProcessed != 0)
-                  Print("halftrend_ema_v1: ", m_trend == 0 ? "BUY" : "SELL",
+                  Print(m_id + ": ", m_trend == 0 ? "BUY" : "SELL",
                         " arrow — entry bar would open on the wrong side of EMA",
                         m_emaLen, " (", DoubleToString(close, 2), " vs ",
                         DoubleToString(emaBuf[0], 2), "): signal ignored until next flip");
@@ -239,55 +242,55 @@ private:
    bool CatchupOk()
      {
       if(!m_catchupEnabled)
-        { Print("halftrend_ema_v1: catch-up disabled — stale entry suppressed"); return false; }
+        { Print(m_id + ": catch-up disabled — stale entry suppressed"); return false; }
       if(m_confirmShift == 0 || m_confirmClose <= 0)
-        { Print("halftrend_ema_v1: catch-up — no confirm bar recorded, suppressed"); return false; }
+        { Print(m_id + ": catch-up — no confirm bar recorded, suppressed"); return false; }
       string liveKey = LastLiveKey();
       if(!GlobalVariableCheck(liveKey))
-        { Print("halftrend_ema_v1: catch-up — no live-bar watermark yet, suppressed (first run)"); return false; }
+        { Print(m_id + ": catch-up — no live-bar watermark yet, suppressed (first run)"); return false; }
       datetime lastLive = (datetime)(long)GlobalVariableGet(liveKey);
       if(m_confirmTime <= lastLive)
-        { Print("halftrend_ema_v1: catch-up rejected — confirm happened while EA was live, not a missed signal"); return false; }
+        { Print(m_id + ": catch-up rejected — confirm happened while EA was live, not a missed signal"); return false; }
       int ageBars = m_confirmShift - 1;   // bars between confirm bar and newest closed bar
       if(ageBars > m_catchupMaxAge)
         {
-         PrintFormat("halftrend_ema_v1: catch-up rejected — signal %d bars old (max %d)",
-                     ageBars, m_catchupMaxAge);
+         PrintFormat("%s: catch-up rejected — signal %d bars old (max %d)",
+                     m_id, ageBars, m_catchupMaxAge);
          return false;
         }
       double emaBuf[];
       if(CopyBuffer(m_emaHandle, 0, 1, 1, emaBuf) != 1 || emaBuf[0] <= 0)
-        { Print("halftrend_ema_v1: catch-up — EMA unavailable, suppressed"); return false; }
+        { Print(m_id + ": catch-up — EMA unavailable, suppressed"); return false; }
       double atrBuf[];
       if(CopyBuffer(m_atrHandle, 0, 1, 1, atrBuf) != 1 || atrBuf[0] <= 0)
-        { Print("halftrend_ema_v1: catch-up — ATR unavailable, suppressed"); return false; }
+        { Print(m_id + ": catch-up — ATR unavailable, suppressed"); return false; }
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       if(m_trend == 1)   // SELL thesis
         {
          if(bid >= emaBuf[0])
-           { Print("halftrend_ema_v1: catch-up rejected — price back above EMA, thesis gone"); return false; }
+           { Print(m_id + ": catch-up rejected — price back above EMA, thesis gone"); return false; }
          if(m_confirmClose - bid > m_catchupMaxChaseAtr * atrBuf[0])
-           { Print("halftrend_ema_v1: catch-up rejected — price already ran, not chasing"); return false; }
+           { Print(m_id + ": catch-up rejected — price already ran, not chasing"); return false; }
         }
       else               // BUY thesis
         {
          if(bid <= emaBuf[0])
-           { Print("halftrend_ema_v1: catch-up rejected — price back below EMA, thesis gone"); return false; }
+           { Print(m_id + ": catch-up rejected — price back below EMA, thesis gone"); return false; }
          if(bid - m_confirmClose > m_catchupMaxChaseAtr * atrBuf[0])
-           { Print("halftrend_ema_v1: catch-up rejected — price already ran, not chasing"); return false; }
+           { Print(m_id + ": catch-up rejected — price already ran, not chasing"); return false; }
         }
-      PrintFormat("halftrend_ema_v1: catch-up entry — %s confirmed %d bars ago during downtime, guards passed",
-                  m_trend == 1 ? "SELL" : "BUY", ageBars);
+      PrintFormat("%s: catch-up entry — %s confirmed %d bars ago during downtime, guards passed",
+                  m_id, m_trend == 1 ? "SELL" : "BUY", ageBars);
       return true;
      }
 
 public:
-   CHalfTrendEmaStrategy(ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
+   CHalfTrendEmaStrategy(string id, ENUM_TIMEFRAMES tf, int amplitude, int emaLen, int confirmCloses, double stopBufferAtr,
                          bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
                          bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
                          double htfBufferAtr, bool chopOnly, int chopBars,
                          double chopEffMax)
-      : m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
+      : m_id(id), m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_barsSinceFlip(0), m_signalDead(false), m_fired(false), m_lastProcessed(0),
@@ -356,7 +359,7 @@ public:
       if(v == "off" || v == "M15" || v == "M30" || v == "H1" || v == "")
         {
          if(v != m_htfOverride && v != "")
-            Print("halftrend_ema_v1: higher-timeframe agreement -> ",
+            Print(m_id + ": higher-timeframe agreement -> ",
                   v == "off" ? "CHECK ONLY (will not block)" : "ENFORCING on " + v);
          m_htfOverride = v;
          // Enforcing on a different timeframe than the handle was built for
@@ -400,7 +403,7 @@ public:
       return true;
      }
 
-   virtual string Id() { return "halftrend_ema_v1"; }
+   virtual string Id() { return m_id; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
@@ -453,12 +456,12 @@ public:
          bool htfOk = HtfAgrees(wanted, m_confirmClose);
          m_lastHtfAgree = htfOk ? 1 : 0;
          if(!htfOk && !HtfEnforced())
-            Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "
                   "trending, so the check does not block; entering anyway");
          if(!htfOk && HtfEnforced())
            {
-            Print("halftrend_ema_v1: ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " refused — ", EnumToString(m_htfTf), " disagrees (price ",
                   DoubleToString(m_confirmClose, 2), " on the wrong side of its EMA",
                   m_htfEmaLen, ")");
@@ -466,11 +469,11 @@ public:
            }
          if(m_trend == 0)
            {
-            Print("halftrend_ema_v1: BUY confirmed — entry bar opens above EMA",
+            Print(m_id + ": BUY confirmed — entry bar opens above EMA",
                   m_emaLen, " (", DoubleToString(m_confirmClose, 2), ")");
             return SIGNAL_BUY;
            }
-         Print("halftrend_ema_v1: SELL confirmed — entry bar opens below EMA",
+         Print(m_id + ": SELL confirmed — entry bar opens below EMA",
                m_emaLen, " (", DoubleToString(m_confirmClose, 2), ")");
          return SIGNAL_SELL;
         }

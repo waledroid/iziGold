@@ -54,6 +54,8 @@ input ENUM_ENTRY_MODE EntryMode  = ENTRY_ADR;  // ADR = 1% risk + adds/targets; 
 input double          FixedLots  = 0.05;       // FIXED-mode entry size (broker-clamped)
 
 input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
+
+input group "HalfTrend M5 (halftrend_ema_v1)"
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
 input int    ConfirmCloses  = 2;                  // waiting bars after the HT arrow; entry bar (next) must OPEN beyond EMA, else signal dead until next flip (2 since 2026-08-20: 1 backtested worst in every window)
@@ -68,6 +70,24 @@ input bool   HtfChopOnly    = true;      // run the M15 check ONLY in choppy tap
 input int    HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (48 = 4h of M5)
 input double HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy; 0.06-0.10 measured as one plateau
 input double HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14); 0 = side-only (pre-2026-08-20). 2.0 = middle of the 1.0-5.0 plateau that is profitable in BOTH backtest halves
+
+input group "HalfTrend M15 (halftrend_m15_v1) — second lane, owner runs ONE at a time via ActiveStrategy"
+input int    M15Amplitude    = 4;                  // Half Trend amplitude (same as M5 default)
+input int    M15EmaLength    = 55;                 // confirmation EMA (same as M5 default)
+input int    M15ConfirmCloses = 3;                 // waiting bars after the HT arrow (M5 uses 2). 3 measured: the only setting positive in BOTH halves of the 17-month M15 history (+1,477.65 full period)
+input double M15StopBufferATR = 0.75;              // pad wick stop by k*ATR(14) (same as M5 default)
+input bool   M15CatchupEnabled     = true;  // take a missed entry after downtime if still valid (same as M5 default)
+input int    M15CatchupMaxAgeBars  = 12;    // signal at most this many trade-TF bars old (same as M5 default)
+input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal close, in ATR(14) (same as M5 default)
+input bool   M15HtfConfirm     = true;       // require higher-TF agreement before an entry (same as M5 default)
+input ENUM_TIMEFRAMES M15HtfConfirmTf = PERIOD_H1;  // the agreeing timeframe — one step up from M15 (M5's equivalent confirms against M15; H1 is the same step for a strategy TRADING M15). Deliberately NOT M15.
+input int    M15HtfConfirmEma  = 55;        // EMA length on M15HtfConfirmTf (same as M5 default)
+input bool   M15HtfChopOnly    = true;      // run the HTF check ONLY in choppy tape (same as M5 default)
+input int    M15HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (same as M5 default)
+input double M15HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy (same as M5 default)
+input double M15HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14) (same as M5 default)
+
+input group "BollStochRsi (boll_stochrsi)"
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
 input double BbDev           = 2.0;  // boll_stochrsi: Bollinger deviation
 input int    TrendCloses     = 2;    // boll_stochrsi: closes in trend zone
@@ -168,11 +188,23 @@ int OnInit()
    g_execMode = ExecutionMode;
    g_entryMode = EntryMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
-   g_registry.Register(new CHalfTrendEmaStrategy(TradeTimeframe, HtAmplitude, EmaLength,
+   g_registry.Register(new CHalfTrendEmaStrategy("halftrend_ema_v1", TradeTimeframe, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
                        CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
                        HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR,
                        HtfChopOnly, HtfChopBars, HtfChopEffMax));
+   // Second, independently-parameterised HalfTrend lane trading M15 (owner
+   // request 2026-08-22): same rules, own inputs, shadow-evaluated every bar
+   // like every other registered strategy. Only ActiveStrategy trades/alerts
+   // — registering this does NOT make it live. Two deliberate differences
+   // from the M5 defaults: M15ConfirmCloses=3 (measured positive in BOTH
+   // halves of the 17-month M15 history) and M15HtfConfirmTf=H1 (one step up
+   // from M15, mirroring how the M5 lane confirms against M15).
+   g_registry.Register(new CHalfTrendEmaStrategy("halftrend_m15_v1", PERIOD_M15, M15Amplitude, M15EmaLength,
+                       M15ConfirmCloses, M15StopBufferATR,
+                       M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
+                       M15HtfConfirm, M15HtfConfirmTf, M15HtfConfirmEma, M15HtfConfirmBufferATR,
+                       M15HtfChopOnly, M15HtfChopBars, M15HtfChopEffMax));
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));
