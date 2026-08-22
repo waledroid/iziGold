@@ -1,5 +1,15 @@
 # QuickFlip — Dual-Lane Replay (Phase 1 of 2)
 
+**STATUS: DROPPED 2026-08-22.** Measured on the current dataset, QuickFlip's
+MARGINAL contribution to the shared account was **+$118 over 17 months —
+about $7/month** on a $10,000 account: its standalone profit largely
+evaporated once it shared a balance with HalfTrend. The owner decided to
+drop it; it never traded live, only in the replay engine. The code this
+plan built (`scripts/quickflip_probe.py`, the `qf` lane and its tests) was
+removed from the `refactor/halftrend-lane` branch. This document is kept
+as the record of the decision and its evidence, not as a description of
+live code or an active implementation plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Teach the replay engine a second, independent strategy lane so a single run shows HalfTrend and QuickFlip trading the same account at the same time, without either closing the other's positions.

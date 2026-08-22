@@ -1,7 +1,19 @@
 # quickflip_ny_v1 — a second, independent trading strategy
 
+**STATUS: DROPPED 2026-08-22.** Measured on the current dataset, QuickFlip's
+MARGINAL contribution to the shared account was **+$118 over 17 months —
+about $7/month** on a $10,000 account: its standalone profit largely
+evaporated once it shared a balance with HalfTrend. The owner decided to
+drop it; it never traded live, only in the replay engine. The code
+(`scripts/quickflip_probe.py`, the `qf` lane and its tests in
+`scripts/backtest.py`/`service/tests/`) was removed from the
+`refactor/halftrend-lane` branch. This document and
+`docs/superpowers/plans/2026-08-20-quickflip-replay.md` are kept as the
+record of the decision and its evidence, not as a description of live code.
+
 Date: 2026-08-20
-Status: approved (brainstorm, this session)
+Status: approved (brainstorm, this session) — superseded by the DROPPED
+status above
 
 ## Problem
 
