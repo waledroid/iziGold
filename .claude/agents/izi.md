@@ -767,6 +767,35 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## /agree never reached the EA (fixed 2026-08-22)
+
+`UiApi::PostHeartbeat` declared and threaded `htfEnforce_out` but **never
+assigned it** from the response body — the one line that reads the field was
+missing from the day `/agree` was built (2026-08-21) until 2026-08-22. The
+service stored the setting, sent it on every heartbeat, and the EA never looked
+at it.
+
+Consequence: `m_htfOverride` stayed `""`, so `HtfEnforced()` fell through to the
+EA's own `HtfConfirm` input (default `true`) and **the M15 check went on
+enforcing in chop the whole time, while `/agree` reported "CHECK ONLY (off)"**.
+The system was not doing what its own control surface said. Trades were refused
+that the owner had been told were only being flagged.
+
+A toggle that reports success and changes nothing is worse than no toggle: it
+converts "I can turn this off" into a false belief, and every conclusion drawn
+from the reports while it was wrong inherits the error.
+
+Found by an implementer auditing the same plumbing while adding
+`ema200_enforce` — the new field was wired correctly, which is what made the
+missing one visible by contrast. Both are now read together in one place, with
+a comment saying why.
+
+**Watch for this shape.** The bug was invisible because every layer looked
+right in isolation: the service stored it, the response carried it, the
+signature threaded it, the strategy consumed it. Only the assignment was
+absent. A cross-process toggle needs an end-to-end check, not per-layer ones.
+
+
 ## The replay was NEVER trading in chop — a shadowed variable (fixed 2026-08-22)
 
 Inside `run()`'s entry block, the bias/M15 code assigned to a local called

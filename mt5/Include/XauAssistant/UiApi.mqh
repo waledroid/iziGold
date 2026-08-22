@@ -209,6 +209,14 @@ public:
 
       mode = ExtractString(body, "mode");
       entryMode_out = ExtractString(body, "entry_mode");
+      // Both confirmation toggles are read here. htf_enforce was MISSING
+      // from 2026-08-21 (when /agree was added) to 2026-08-22: the out
+      // parameter was declared and threaded but never assigned, so the
+      // EA never saw the service's setting and silently fell back to its
+      // own HtfConfirm input -- i.e. /agree appeared to work and changed
+      // nothing. A toggle that reports success and does nothing is worse
+      // than no toggle.
+      htfEnforce_out    = ExtractString(body, "htf_enforce");
       ema200Enforce_out = ExtractString(body, "ema200_enforce");
       cmd = ""; cmdId = 0; cmdDir = "";
       int cpos = StringFind(body, "\"command\":{");
