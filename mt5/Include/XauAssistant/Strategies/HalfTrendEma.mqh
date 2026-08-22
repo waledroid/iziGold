@@ -73,6 +73,20 @@ private:
    int      m_chopBars;
    double   m_chopEffMax;
 
+   // EMA-200 (OWN-timeframe) agreement (owner request 2026-08-22, after HTF
+   // was dropped from the M15 lane entirely): BUY needs price ABOVE the
+   // strategy's own EMA200, SELL below. Unlike HtfAgrees/HtfEnforced above,
+   // there is no higher timeframe and no chop-only buffer -- this is the
+   // plain side test, read at the SAME bar/close the strict-window
+   // confirmation used, so both verdicts describe the same instant. Same
+   // verdict/enforcement split, same /agree-style runtime override, reused
+   // on BOTH the M5 and M15 lanes (M5's own behaviour/handle is otherwise
+   // untouched -- m_ema200Handle already existed for painting).
+   bool     m_ema200Confirm;   // EA input: default false (report only)
+   int      m_lastEma200Agree; // 1 agreed / 0 refused / -1 not evaluated
+   double   m_confirmEma200;   // EMA-200 value at the confirm bar; 0 = none yet
+   string   m_ema200Override;  // "" follow EA input, "off" report-only, "on" enforce
+
    int      m_ema9Handle;
    int      m_ema21Handle;
    int      m_ema200Handle;
@@ -177,7 +191,7 @@ private:
          m_barsSinceFlip = 0;                   // this IS the arrow bar
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
-         m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0;
+         m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0; m_confirmEma200 = 0;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print(m_id + ": HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
@@ -212,7 +226,16 @@ private:
            {
             bool ok = (m_trend == 0) ? (close > emaBuf[0]) : (close < emaBuf[0]);
             if(ok)
-              { m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift); }
+              {
+               m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift);
+               // Same instant as m_confirmClose -- read the OWN-timeframe
+               // EMA200 (already built for painting) at this same shift, not
+               // "now", so a later Evaluate() call (or a catch-up entry
+               // firing bars after the confirm) still judges the bar that
+               // actually decided, not whatever the EMA reads today.
+               double e200Buf[];
+               m_confirmEma200 = (CopyBuffer(m_ema200Handle, 0, shift, 1, e200Buf) == 1) ? e200Buf[0] : 0.0;
+              }
             else
               {
                m_signalDead = true;
@@ -289,7 +312,7 @@ public:
                          bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
                          bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
                          double htfBufferAtr, bool chopOnly, int chopBars,
-                         double chopEffMax)
+                         double chopEffMax, bool ema200Confirm)
       : m_id(id), m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
@@ -300,6 +323,8 @@ public:
         m_htfBufferAtr(htfBufferAtr), m_lastHtfAgree(-1),
         m_htfOverride(""), m_chopOnly(chopOnly),
         m_chopBars(chopBars), m_chopEffMax(chopEffMax),
+        m_ema200Confirm(ema200Confirm), m_lastEma200Agree(-1),
+        m_confirmEma200(0), m_ema200Override(""),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -403,6 +428,49 @@ public:
       return true;
      }
 
+   // Does price agree with the strategy's OWN EMA200 at `dir`? ALWAYS
+   // evaluated -- reported on the entry alert/trade log whether or not it is
+   // allowed to block (owner 2026-08-22, same "always check and report"
+   // rule as HtfAgrees above). Reads m_confirmEma200/m_confirmClose -- the
+   // SAME instant the strict-window confirmation decided on -- not a fresh
+   // "now" read, so a catch-up entry firing bars later still judges the bar
+   // that actually confirmed. FAIL-OPEN: no confirm EMA200 recorded yet
+   // (warm-up too short) lets the strategy's own signal stand.
+   bool Ema200Agrees(int dir)
+     {
+      if(m_confirmEma200 <= 0) return true;
+      if(dir == SIGNAL_BUY)  return m_confirmClose > m_confirmEma200;
+      if(dir == SIGNAL_SELL) return m_confirmClose < m_confirmEma200;
+      return true;
+     }
+
+   // May the EMA200 verdict BLOCK an entry? Same override shape as
+   // HtfEnforced -- "off"/"on" from the service (/agree) wins over the EA
+   // input; "" follows the EA input, which defaults to false (report only).
+   // Unlike HtfEnforced there is no chop-only gate: this check is either
+   // fully on or fully off, all day, whenever it's enforcing.
+   bool Ema200Enforced()
+     {
+      if(m_ema200Override == "off") return false;
+      if(m_ema200Override == "on")  return true;
+      return m_ema200Confirm;
+     }
+
+   // Called from the heartbeat, same shape as SetHtfOverride. An empty
+   // string leaves the EA input in charge.
+   void SetEma200Override(string v)
+     {
+      if(v == "off" || v == "on" || v == "")
+        {
+         if(v != m_ema200Override && v != "")
+            Print(m_id + ": EMA-200 agreement -> ",
+                  v == "off" ? "CHECK ONLY (will not block)" : "ENFORCING");
+         m_ema200Override = v;
+        }
+     }
+
+   virtual int LastEma200Agree() const override { return m_lastEma200Agree; }
+
    virtual string Id() { return m_id; }
 
    virtual ENUM_SIGNAL Evaluate()
@@ -455,16 +523,32 @@ public:
          // allowed to act. Enforcement is separate and chop-only.
          bool htfOk = HtfAgrees(wanted, m_confirmClose);
          m_lastHtfAgree = htfOk ? 1 : 0;
+         // EMA200 (own-timeframe) verdict -- same "always evaluated" rule,
+         // computed alongside the HTF verdict so both describe this same
+         // confirm event even if HTF ends up refusing the entry below.
+         bool e200Ok = Ema200Agrees(wanted);
+         m_lastEma200Agree = e200Ok ? 1 : 0;
          if(!htfOk && !HtfEnforced())
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "
                   "trending, so the check does not block; entering anyway");
+         if(!e200Ok && !Ema200Enforced())
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " — EMA200 DISAGREES but the check is report-only; entering anyway");
          if(!htfOk && HtfEnforced())
            {
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " refused — ", EnumToString(m_htfTf), " disagrees (price ",
                   DoubleToString(m_confirmClose, 2), " on the wrong side of its EMA",
                   m_htfEmaLen, ")");
+            return SIGNAL_NONE;
+           }
+         if(!e200Ok && Ema200Enforced())
+           {
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " refused — EMA200 disagrees (price ",
+                  DoubleToString(m_confirmClose, 2), " on the wrong side of EMA200 ",
+                  DoubleToString(m_confirmEma200, 2), ")");
             return SIGNAL_NONE;
            }
          if(m_trend == 0)

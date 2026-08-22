@@ -34,6 +34,16 @@ public:
    // Runtime toggle for a strategy's higher-timeframe agreement module.
    // No-op for strategies that have none.
    virtual void SetHtfOverride(string v) {}
+
+   // The EMA-200 (own-timeframe) verdict behind the current signal (owner
+   // 2026-08-22): BUY agrees when price is above EMA-200, SELL below --
+   // same split as LastHtfAgree/SetHtfOverride above (1 agreed, 0 refused,
+   // -1 not evaluated / strategy has no EMA-200 gate).
+   virtual int LastEma200Agree() const { return -1; }
+
+   // Runtime toggle for a strategy's EMA-200 agreement module. No-op for
+   // strategies that have none.
+   virtual void SetEma200Override(string v) {}
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }

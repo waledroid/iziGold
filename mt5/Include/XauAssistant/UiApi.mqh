@@ -149,6 +149,7 @@ public:
                         bool algo_trading, string entryMode,
                         string &mode, string &entryMode_out, string &cmd,
                         long &cmdId, string &cmdDir, string &htfEnforce_out,
+                        string &ema200Enforce_out,
                         double daily_loss_pct = 0.0, bool brake_reset = false)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
@@ -208,6 +209,7 @@ public:
 
       mode = ExtractString(body, "mode");
       entryMode_out = ExtractString(body, "entry_mode");
+      ema200Enforce_out = ExtractString(body, "ema200_enforce");
       cmd = ""; cmdId = 0; cmdDir = "";
       int cpos = StringFind(body, "\"command\":{");
       if(cpos >= 0)
@@ -258,7 +260,7 @@ public:
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
                        double price, double sl, string reason, long ticket,
                        double profit = 0.0, double tp = 0.0, bool isFinal = true,
-                       string entryMode = "", int htfAgree = -1)
+                       string entryMode = "", int htfAgree = -1, int ema200Agree = -1)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -272,7 +274,8 @@ public:
                     ",\"tp\":" + DoubleToString(tp, _Digits) +
                     ",\"final\":" + (isFinal ? "true" : "false") +
                     ",\"entry_mode\":\"" + entryMode + "\"" +
-                    ",\"htf_agree\":" + (string)htfAgree + "}";
+                    ",\"htf_agree\":" + (string)htfAgree +
+                    ",\"ema200_agree\":" + (string)ema200Agree + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

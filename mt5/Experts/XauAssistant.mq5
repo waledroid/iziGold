@@ -70,6 +70,7 @@ input bool   HtfChopOnly    = true;      // run the M15 check ONLY in choppy tap
 input int    HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (48 = 4h of M5)
 input double HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy; 0.06-0.10 measured as one plateau
 input double HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14); 0 = side-only (pre-2026-08-20). 2.0 = middle of the 1.0-5.0 plateau that is profitable in BOTH backtest halves
+input bool   Ema200Confirm  = false;     // EMA-200 (own timeframe) agreement: BUY needs price above EMA200, SELL below (2026-08-22). ALWAYS evaluated/reported (M15 column's E200); this only controls whether it may BLOCK an entry -- default off, per owner "switch off by default ... we get them in reporting"
 
 input group "HalfTrend M15 (halftrend_m15_v1) — second lane, owner runs ONE at a time via ActiveStrategy"
 input int    M15Amplitude    = 4;                  // Half Trend amplitude (same as M5 default)
@@ -79,13 +80,10 @@ input double M15StopBufferATR = 0.75;              // pad wick stop by k*ATR(14)
 input bool   M15CatchupEnabled     = true;  // take a missed entry after downtime if still valid (same as M5 default)
 input int    M15CatchupMaxAgeBars  = 12;    // signal at most this many trade-TF bars old (same as M5 default)
 input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal close, in ATR(14) (same as M5 default)
-input bool   M15HtfConfirm     = true;       // require higher-TF agreement before an entry (same as M5 default)
-input ENUM_TIMEFRAMES M15HtfConfirmTf = PERIOD_H1;  // the agreeing timeframe — one step up from M15 (M5's equivalent confirms against M15; H1 is the same step for a strategy TRADING M15). Deliberately NOT M15.
-input int    M15HtfConfirmEma  = 55;        // EMA length on M15HtfConfirmTf (same as M5 default)
-input bool   M15HtfChopOnly    = true;      // run the HTF check ONLY in choppy tape (same as M5 default)
-input int    M15HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (same as M5 default)
-input double M15HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy (same as M5 default)
-input double M15HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14) (same as M5 default)
+// No higher-timeframe agreement on this lane (owner 2026-08-22): the M15
+// lane's only confirmation is its own EMA200 below -- the M15Htf* inputs
+// that used to sit here are gone rather than left wired to nothing.
+input bool   M15Ema200Confirm = false;   // EMA-200 (own timeframe) agreement, same rule as M5's Ema200Confirm above; default off
 
 input group "BollStochRsi (boll_stochrsi)"
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
@@ -192,19 +190,19 @@ int OnInit()
                        ConfirmCloses, StopBufferATR,
                        CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
                        HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR,
-                       HtfChopOnly, HtfChopBars, HtfChopEffMax));
+                       HtfChopOnly, HtfChopBars, HtfChopEffMax, Ema200Confirm));
    // Second, independently-parameterised HalfTrend lane trading M15 (owner
    // request 2026-08-22): same rules, own inputs, shadow-evaluated every bar
    // like every other registered strategy. Only ActiveStrategy trades/alerts
-   // — registering this does NOT make it live. Two deliberate differences
-   // from the M5 defaults: M15ConfirmCloses=3 (measured positive in BOTH
-   // halves of the 17-month M15 history) and M15HtfConfirmTf=H1 (one step up
-   // from M15, mirroring how the M5 lane confirms against M15).
+   // — registering this does NOT make it live. M15ConfirmCloses=3 (measured
+   // positive in BOTH halves of the 17-month M15 history). No HTF module on
+   // this lane (owner 2026-08-22: "for this m15 the only confirmation is the
+   // ema 200") -- htfConfirm=false with placeholder HTF args that are never
+   // used (no M15Htf* inputs exist to source them from any more).
    g_registry.Register(new CHalfTrendEmaStrategy("halftrend_m15_v1", PERIOD_M15, M15Amplitude, M15EmaLength,
                        M15ConfirmCloses, M15StopBufferATR,
                        M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
-                       M15HtfConfirm, M15HtfConfirmTf, M15HtfConfirmEma, M15HtfConfirmBufferATR,
-                       M15HtfChopOnly, M15HtfChopBars, M15HtfChopEffMax));
+                       false, PERIOD_H1, 55, 0.0, false, 48, 0.08, M15Ema200Confirm));
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));
@@ -301,7 +299,7 @@ void OnTimer()
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    SampleSpread(spreadPts);
 
-   string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "";
+   string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "", ema200Enforce = "";
    long cmdId = 0;
    bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
    string entryModeStr = (g_entryMode == ENTRY_FIXED) ? "fixed" : "adr";
@@ -309,15 +307,21 @@ void OnTimer()
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
-                                  mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce,
+                                  mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce, ema200Enforce,
                                   g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday());
-   // Push the /agree setting to every strategy (shadows included, so their
+   // Push the /agree settings to every strategy (shadows included, so their
    // logged verdicts match what the active one would do).
    if(htfEnforce != "")
       for(int si = 0; si < g_registry.Count(); si++)
         {
          CStrategy *st = g_registry.Get(si);
          if(st != NULL) st.SetHtfOverride(htfEnforce);
+        }
+   if(ema200Enforce != "")
+      for(int si2 = 0; si2 < g_registry.Count(); si2++)
+        {
+         CStrategy *st2 = g_registry.Get(si2);
+         if(st2 != NULL) st2.SetEma200Override(ema200Enforce);
         }
    if(sw != "") g_pendingSwitch = sw;
 
