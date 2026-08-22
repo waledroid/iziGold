@@ -1429,14 +1429,26 @@ def run(candles, start_balance, verbose, active_lanes=None):
                         bias = "with"
                     else:
                         buf = BIAS_BUFFER_ATR * (a or 0.0)
-                        trending = False
+                        # NAME THIS SEPARATELY. It was called `trending`, which
+                        # SHADOWED the ADX entry gate set ~30 lines above and
+                        # still read by the final `if in_window and trending
+                        # and expo_ok and signal:`. Effect: in choppy tape this
+                        # went False and blocked the entry OUTRIGHT, whatever
+                        # M15 said -- so the replay was really doing "never
+                        # trade in chop", not "require M15 clearance in chop".
+                        # Found 2026-08-22 by the characterization suite built
+                        # before the HalfTrend lane extraction. The live EA
+                        # never had this: HalfTrendEma.mqh keeps the verdict
+                        # (HtfAgrees) and the enforcement (HtfEnforced)
+                        # separate, so the replay was UNDERSTATING the EA.
+                        tape_trending = False
                         if CHOP_EFF_MAX > 0:
                             seg = candles[max(0, i - CHOP_EFF_BARS):i + 1]
                             path = sum(abs(seg[q]["c"] - seg[q - 1]["c"])
                                        for q in range(1, len(seg)))
                             eff = (abs(seg[-1]["c"] - seg[0]["c"]) / path) if path else 1.0
-                            trending = eff > CHOP_EFF_MAX
-                        if trending:
+                            tape_trending = eff > CHOP_EFF_MAX
+                        if tape_trending:
                             # Trending tape: the higher-timeframe check does
                             # NOT run at all. It is a chop tool; letting even
                             # its side test gate a trend costs entries the

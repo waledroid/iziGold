@@ -767,6 +767,46 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## The replay was NEVER trading in chop — a shadowed variable (fixed 2026-08-22)
+
+Inside `run()`'s entry block, the bias/M15 code assigned to a local called
+`trending`, **shadowing the ADX entry gate set ~30 lines above** and still read
+by the final `if in_window and trending and expo_ok and signal:`.
+
+Effect: whenever the M15 filter was active and the tape was CHOPPY, `trending`
+went `False` and the entry was blocked **outright, regardless of what M15
+said**. So every "M15 agreement in chop" figure produced on 2026-08-20/21 was
+really measuring **"never trade in chop"** — a different rule, and not the one
+that was described, shipped or documented.
+
+**The live EA never had this.** `HalfTrendEma.mqh` keeps the verdict
+(`HtfAgrees`) and the enforcement (`HtfEnforced`) in separate functions with no
+shared local, so it does what the docs say. The replay was UNDERSTATING the EA,
+which is the safer direction to be wrong, but it means the replay and the EA
+were not the same system while those studies were run.
+
+Cost of the bug, 17 months, M5, $10k, ht lane:
+
+| | net | trades/day |
+|---|---|---|
+| shadowed (as shipped 08-20..22) | +7,625.63 | 2.50 |
+| fixed | **+9,008.50** | 3.22 |
+| M15 filter off (`--bias-ema 0`) | -2,267.09 | 4.54 |
+
+With the filter off the two are byte-identical, which is what proves the bug
+only ever fired through the bias path.
+
+Found by the characterization suite built BEFORE the HalfTrend lane extraction —
+the suite's whole purpose. The three original goldens were blind to it: only
+`strict` and `both` moved, `loose` (filter off) did not. **20 of 21 new
+characterization combos moved**, which is the measure of how much of the
+feature surface those three pins were not covering.
+
+**Re-read every M15/chop figure dated 2026-08-20 or 08-21 with this in mind.**
+Their RANKINGS mostly survive (each comparison ran against one build), but the
+absolute numbers described a rule the system was not running.
+
+
 ## Exposure counted the WHOLE account, not our own trades (fixed 2026-08-21)
 
 `CRiskManager::OnBarUpdate()` accumulated `MaxDailyExposureMin` whenever

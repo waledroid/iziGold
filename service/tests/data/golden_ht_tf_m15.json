@@ -111,6 +111,15 @@
   {
    "lane": "ht",
    "dir": "SELL",
+   "entry": 3984.65,
+   "legs": 1,
+   "exit": 3998.28,
+   "why": "stop",
+   "pl": -27.67
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
    "entry": 3957.39,
    "legs": 2,
    "exit": 3931.9,
@@ -143,8 +152,17 @@
    "exit": 4009.19,
    "why": "profit target",
    "pl": 90.24
+  },
+  {
+   "lane": "ht",
+   "dir": "SELL",
+   "entry": 3978.32,
+   "legs": 2,
+   "exit": 3989.04,
+   "why": "stop",
+   "pl": -30.31
   }
  ],
- "final_balance": 4025.37,
- "max_dd": 103.22
+ "final_balance": 3967.39,
+ "max_dd": 127.86
 }
