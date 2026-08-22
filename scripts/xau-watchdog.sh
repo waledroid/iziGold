@@ -25,11 +25,19 @@ FEED_STALE_S="${WATCHDOG_FEED_STALE_S:-90}"
 MAX_FAILS=3
 COOLDOWN_S=600
 LOG="/tmp/xau-watchdog.log"
+source "$REPO/scripts/lib/stale-code.sh"
 # Singleton. setup.sh guards with pgrep, which loses a race: on 2026-08-19 two
 # runs seconds apart left TWO supervisors alive, each restarting the same link
 # and each alarming. flock is race-free -- a second instance exits quietly, so
 # "run the launcher twice" can never fan out into duplicate supervisors.
-LOCK="/tmp/xau-watchdog.lock"
+# The lock lives IN THE REPO (not /tmp): on 2026-08-2x a /tmp sweep deleted
+# the old /tmp/xau-watchdog.lock, the next open() recreated it with a fresh
+# inode, and a second watchdog acquired that new file's flock while the
+# first still held the original inode -- two supervisors running at once.
+# .run/ is gitignored and never cleaned by anything but the owner.
+LOCK_DIR="$REPO/.run"
+mkdir -p "$LOCK_DIR"
+LOCK="$LOCK_DIR/xau-watchdog.lock"
 exec 9>"$LOCK"
 if ! flock -n 9; then
   echo "$(date '+%F %T') another watchdog holds $LOCK -- exiting" >> "$LOG"
@@ -64,21 +72,24 @@ feed_ok()    { # bridge alive = the miniapp saw a /feed/push recently. /healthz 
                up=$(grep -oP '"uptime_s":\s*\K[0-9.]+' <<<"$hz")
                if [[ -z "$age" ]]; then (( ${up%.*} < FEED_STALE_S )); return; fi
                (( ${age%.*} < FEED_STALE_S )); }
-# stale-code: newest mtime of the code the process runs vs its start time
-proc_started() { local pid; pid=$(pgrep -f "$1" | head -1); [[ -n "$pid" ]] && stat -c %Y "/proc/$pid" 2>/dev/null; }
-newest_mtime()  { find "$@" -type f \( -name '*.py' -o -name '*.html' \) -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1; }
+# stale-code: proc_started/newest_mtime/stale_code come from
+# scripts/lib/stale-code.sh (sourced above), shared with setup.sh's Service
+# phase so there is exactly one implementation of "process predates its code".
 # Restart at most ONCE per distinct code mtime: the guard compares process
 # start time to file mtime, but the main service takes ~25 s to boot (torch),
 # and a file touched inside that window (a commit landing, an editor save)
 # would otherwise read as "newer than the process" forever -> restart LOOP
 # (seen live 2026-08-18: three restarts in three cycles). Remembering the
-# mtime we already acted on makes each code change cost exactly one restart.
+# mtime we already acted on (via stale_code's LAST_CODE_MTIME side effect)
+# makes each code change cost exactly one restart.
 declare -A acted_mtime
-stale_code()    { local started; started=$(proc_started "$1") || return 1
-                  local code; code=$(newest_mtime "${@:2}"); [[ -n "$code" && -n "$started" ]] || return 1
-                  (( code > started )) || return 1
-                  [[ "${acted_mtime[$1]:-}" == "$code" ]] && return 1   # already restarted for this exact code
-                  acted_mtime[$1]="$code"; return 0; }
+stale_code_once() {   # $1 = key into acted_mtime, $2 = pgrep pattern, $3.. = code paths
+  local key="$1"; shift
+  stale_code "$@" || return 1
+  [[ "${acted_mtime[$key]:-}" == "$LAST_CODE_MTIME" ]] && return 1   # already restarted for this exact code
+  acted_mtime[$key]="$LAST_CODE_MTIME"
+  return 0
+}
 
 # ---- restarts ---------------------------------------------------------
 restart_main()    { pkill -f "uvicorn app.main:app" || true; sleep 2
@@ -124,9 +135,9 @@ supervise() {   # $1 name  $2 check-fn  $3 restart-fn
 log "watchdog start (interval ${INTERVAL}s, miniapp port=${MINIAPP_PORT}, tunnel=${TUNNEL_DOMAIN:-none})"
 while true; do
   # stale-code guard first (a restart here also clears any transient DOWN)
-  if stale_code "uvicorn app.miniapp:app" "$SVC/app/miniapp.py" "$SVC/app/miniapp_auth.py" "$SVC/app/static/miniapp.html"; then
+  if stale_code_once miniapp "uvicorn app.miniapp:app" "$SVC/app/miniapp.py" "$SVC/app/miniapp_auth.py" "$SVC/app/static/miniapp.html"; then
      log "miniapp running code older than disk — restarting"; restart_miniapp; sleep 6; fi   # silent redeploy
-  if stale_code "uvicorn app.main:app" "$SVC/app"; then
+  if stale_code_once main "uvicorn app.main:app" "$SVC/app"; then
      log "main service running code older than disk — restarting"; restart_main; sleep 25; fi   # silent redeploy
   supervise main    main_ok    restart_main
   supervise miniapp miniapp_ok restart_miniapp

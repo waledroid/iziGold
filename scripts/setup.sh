@@ -25,6 +25,10 @@ done
 C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
 CURRENT_PHASE="startup"
 
+# Shared "process predates its code on disk" guard — also used by the
+# watchdog (scripts/xau-watchdog.sh) so there's exactly one implementation.
+source "$REPO_ROOT/scripts/lib/stale-code.sh"
+
 # ---- phase bookkeeping (for the end-of-run summary) ------------------------
 # Every phase gets a status: OK (something was done / verified), SKIP
 # (already in place — the idempotent re-run case) or FAILED (soft_fail).
@@ -155,6 +159,16 @@ fi
 ok "MT5 data folder: $MT5_DIR"
 ok "MetaEditor:      $METAEDITOR"
 
+# config/strategy.json is the single source of truth for the parameters
+# mirrored between the EA and scripts/backtest.py (both registered
+# strategies, halftrend_ema_v1 and halftrend_m15_v1, read their block from
+# it). backtest.py raises at import time when it's missing, which otherwise
+# surfaces many phases later as an opaque pytest collection error in the
+# Test gate — catch it here instead, plainly, while it's still cheap to fix.
+[[ -f "$REPO_ROOT/config/strategy.json" ]] \
+  || fail "config/strategy.json is missing — required by the backtest and the EA/replay parameter mirror. Restore it (git checkout -- config/strategy.json) and re-run."
+ok "config/strategy.json present"
+
 # ------------------------------------------------------- 2. Python environment
 phase 2 "Python environment"
 if [[ -x "$VENV/bin/python" ]]; then
@@ -191,9 +205,7 @@ fi
 # -------------------------------------------------------- 4. Service up + smoke
 phase 4 "Service"
 health() { curl -sf -m 3 "$BASE_URL/health" 2>/dev/null; }
-if health >/dev/null; then
-  skip "already running at $BASE_URL"
-else
+start_service() {
   (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.main:app --host 127.0.0.1 --port 9000 \
       >>"$SERVICE_DIR/service.log" 2>&1 &)
   up=""
@@ -201,11 +213,36 @@ else
     if health >/dev/null; then up=yes; break; fi
     sleep 1
   done
-  if [[ -z "$up" ]]; then
+  [[ -n "$up" ]]
+}
+if health >/dev/null; then
+  # stale-code guard (incident 2026-08-2x): the service was started 13
+  # minutes before a commit added a DB field and ran a full day silently
+  # dropping it from every trade while /health stayed green. The watchdog
+  # already catches this every 30s once it's running, but this phase runs
+  # BEFORE the watchdog starts (phase 8) and on every manual re-run, so it
+  # must not wait for the watchdog to notice. Same check the watchdog uses
+  # (scripts/lib/stale-code.sh) — one implementation, no second copy to drift.
+  if stale_code "uvicorn app.main:app" "$SERVICE_DIR/app"; then
+    echo "  running service predates its code on disk — restarting"
+    pkill -f "uvicorn app.main:app" || true
+    for _ in $(seq 1 10); do health >/dev/null || break; sleep 1; done
+    if start_service; then
+      ok "restarted (was running stale code; logs: service/service.log)"
+    else
+      tail -25 "$SERVICE_DIR/service.log" >&2
+      fail "service did not come back up after the stale-code restart — see service/service.log"
+    fi
+  else
+    skip "already running at $BASE_URL (code up to date)"
+  fi
+else
+  if start_service; then
+    ok "started in background (logs: service/service.log)"
+  else
     tail -25 "$SERVICE_DIR/service.log" >&2
     fail "service did not come up in 60s — see service/service.log"
   fi
-  ok "started in background (logs: service/service.log)"
 fi
 
 smoke_payload="$("$VENV/bin/python" - <<'PY'
