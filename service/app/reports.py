@@ -41,8 +41,8 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
     agreement is pinned by `tests/test_basket_twins.py::
     test_basket_legs_and_group_baskets_agree_on_the_same_legs`. They
     deliberately return different SHAPES: this function's entries carry
-    `ts`/`htf_agree` (needed for the report) and no `sl`/`tp` (the mini-app's
-    SQL never selects them), plus basket-level `entry_mode`/`strategy_id`/
+    `ts`/`htf_agree`/`ema200_agree` (needed for the report) and no `sl`/`tp`
+    (the mini-app's SQL never selects them), plus basket-level `entry_mode`/`strategy_id`/
     `reason`/`direction` that `_basket_legs` has no reason to carry (it feeds
     a single render/Telegram call, not a report table). If you change the
     boundary rule here, change it there too, and vice versa."""
@@ -57,7 +57,8 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
                            "strategy_id": r.get("strategy_id"), "reason": None}
             current["entries"].append(
                 {"ts": r.get("ts"), "price": r.get("price"),
-                 "lots": r.get("lots"), "htf_agree": r.get("htf_agree")})
+                 "lots": r.get("lots"), "htf_agree": r.get("htf_agree"),
+                 "ema200_agree": r.get("ema200_agree")})
         elif event == "close":
             if current is None:
                 # a close with no open basket in the fetched window is a
@@ -129,15 +130,28 @@ def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
-def _htf_flag(entries):
-    """The higher-timeframe verdict recorded on a basket's FIRST leg.
-    None when unknown (-1, or no entry row carried the column)."""
+def _flag(entries, key):
+    """The verdict (`key`, e.g. "htf_agree"/"ema200_agree") recorded on a
+    basket's FIRST leg. None when unknown (-1, or no entry row carried the
+    column)."""
     for e in sorted(entries, key=lambda x: x.get("ts") or 0):
-        v = e.get("htf_agree")
+        v = e.get(key)
         if v is None or int(v) < 0:
             continue
         return bool(int(v))
     return None
+
+
+def _htf_flag(entries):
+    """The higher-timeframe verdict recorded on a basket's FIRST leg.
+    None when unknown (-1, or no entry row carried the column)."""
+    return _flag(entries, "htf_agree")
+
+
+def _ema200_flag(entries):
+    """The EMA-200 (own-timeframe) verdict recorded on a basket's FIRST leg.
+    None when unknown (-1, or no entry row carried the column)."""
+    return _flag(entries, "ema200_agree")
 
 
 def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int) -> list[dict]:
@@ -151,16 +165,19 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     has_reason = "reason" in cols
     has_strat = "strategy_id" in cols
     has_htf = "htf_agree" in cols
+    has_e200 = "ema200_agree" in cols
     sel = ("SELECT id, ts, event, direction, lots, price, profit, final, "
            + ("entry_mode" if has_mode else "''") + ", "
            + ("reason" if has_reason else "''") + ", "
            + ("strategy_id" if has_strat else "''") + ", "
-           + ("htf_agree" if has_htf else "-1")
+           + ("htf_agree" if has_htf else "-1") + ", "
+           + ("ema200_agree" if has_e200 else "-1")
            + " FROM trades WHERE ts >= ? AND ts < ? ORDER BY id ASC")
     raw = conn.execute(sel, (start_utc - REPORT_LOOKBACK_S, end_utc)).fetchall()
     rows = [{"id": r[0], "ts": r[1], "event": r[2], "direction": r[3], "lots": r[4],
              "price": r[5], "profit": r[6], "final": r[7], "entry_mode": r[8],
-             "reason": r[9], "strategy_id": r[10], "htf_agree": r[11]}
+             "reason": r[9], "strategy_id": r[10], "htf_agree": r[11],
+             "ema200_agree": r[12]}
             for r in raw]
     baskets = [b for b in _group_baskets(rows, cap=None)
                if b.get("exit") and isinstance(b["exit"].get("ts"), (int, float))
@@ -272,6 +289,9 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             # True / False / None when unknown. Older rows are backfilled by
             # scripts/backfill_htf_agree.py.
             "m15": _htf_flag(entries),
+            # EMA-200 (own-timeframe) agreement, same shape, backfilled by
+            # scripts/backfill_ema200_agree.py.
+            "e200": _ema200_flag(entries),
             # Which market session the trade was OPENED in -- entry time is
             # what the session describes, not the exit.
             "session": market_session_short(

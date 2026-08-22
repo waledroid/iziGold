@@ -149,6 +149,17 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN htf_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+        if "ema200_agree" not in trade_cols:
+            # Same shape as htf_agree, for the EMA-200 (own-timeframe)
+            # confirmation added 2026-08-22: 1 = price agreed with the
+            # strategy's own EMA200 at entry, 0 = it did not, -1 = unknown
+            # (older rows, or an EA build that does not send it). Older rows
+            # are filled in by scripts/backfill_ema200_agree.py.
+            try:
+                self.conn.execute(
+                    "ALTER TABLE trades ADD COLUMN ema200_agree INTEGER DEFAULT -1")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
@@ -271,13 +282,14 @@ class SignalDb:
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(
             "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-            " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree, ema200_agree)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
              ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
              ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
              ev.get("tp", 0.0), int(ev.get("final", True)),
-             ev.get("entry_mode", ""), int(ev.get("htf_agree", -1))))
+             ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
+             int(ev.get("ema200_agree", -1))))
         self.conn.commit()
         return cur.lastrowid
 
@@ -430,6 +442,20 @@ class SignalDb:
 
     def set_htf_enforce(self, value: str) -> None:
         self.set_choice("htf_enforce", value, self.HTF_CHOICES)
+
+    # --- EMA-200 (own-timeframe) agreement: same idea, simpler shape ------
+    # No timeframe choice here (there IS no higher timeframe -- BUY/SELL vs
+    # the strategy's own EMA200): "off" (report only) or "on" (enforce).
+    # Default "off" for BOTH strategies (owner 2026-08-22): "switch off the
+    # confirmation ema200 by default for m5 and m15 ... we get them in
+    # reporting".
+    EMA200_CHOICES = ("off", "on")
+
+    def ema200_enforce(self) -> str:
+        return self.get_choice("ema200_enforce", self.EMA200_CHOICES, "off")
+
+    def set_ema200_enforce(self, value: str) -> None:
+        self.set_choice("ema200_enforce", value, self.EMA200_CHOICES)
 
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:

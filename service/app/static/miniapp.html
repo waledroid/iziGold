@@ -1152,7 +1152,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
     thead.innerHTML = ""; tbody.innerHTML = "";
     var hr = el("tr");
-    ["Time", "Session", "Dir", "M15", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    ["Time", "Session", "Dir", "M15", "E200", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
     thead.appendChild(hr);
     var rows = Array.isArray(data.rows) ? data.rows : [];
     rows.forEach(function (r) {
@@ -1169,6 +1169,14 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
                     : (r.m15 === false ? "M15 disagreed — this trade would be refused today"
                                        : "not recorded for this trade");
       tr.appendChild(m15cell);
+      // EMA-200 (own-timeframe) agreement at entry: Yes / No / – when the
+      // row predates the field. Same rendering as the M15 cell above.
+      var e200cell = el("td", r.e200 === true ? "dir-buy" : (r.e200 === false ? "dir-sell" : "muted"),
+                        r.e200 === true ? "Yes" : (r.e200 === false ? "No" : "–"));
+      e200cell.title = r.e200 === true ? "EMA-200 agreed with this entry"
+                    : (r.e200 === false ? "EMA-200 disagreed — this trade would be refused if enforcing"
+                                       : "not recorded for this trade");
+      tr.appendChild(e200cell);
       tr.appendChild(el("td", "muted", (r.mode || "adr").toString().toUpperCase()));
       var ent = fmtPx(r.entry) + (isNumeric(r.entries) && r.entries > 1 ? " (" + r.entries + ")" : "");
       tr.appendChild(el("td", null, ent + " → " + fmtPx(r.exit)));

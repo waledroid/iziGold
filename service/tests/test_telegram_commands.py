@@ -971,3 +971,44 @@ def test_heartbeat_carries_the_agree_setting(client):
     body = client.post("/heartbeat", json={
         "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
     assert body["htf_enforce"] == "off"
+
+
+def test_agree_command_offers_the_ema200_toggle_too(client):
+    """/agree is the single 'what confirms a trade' menu -- it must expose
+    the EMA200 module alongside the (unchanged) HTF one, default off."""
+    from app.telegram import handle_command
+    app = client.app
+    app.state.db.set_htf_enforce("off")
+    app.state.db.set_ema200_enforce("off")
+    text, markup = handle_command("/agree", app)
+    assert "EMA-200" in text and "CHECK ONLY" in text
+    labels = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert "e200:off" in labels and "e200:on" in labels
+    # the existing HTF buttons are unchanged
+    for choice in ("agree:off", "agree:M15", "agree:M30", "agree:H1"):
+        assert choice in labels
+
+
+def test_e200_callback_sets_and_clears_enforcement(client):
+    from app.telegram import handle_callback
+    app = client.app
+    reply, toast = handle_callback("e200:on", app)
+    assert app.state.db.ema200_enforce() == "on"
+    assert "ENFORCING" in reply
+    reply, toast = handle_callback("e200:off", app)
+    assert app.state.db.ema200_enforce() == "off"
+    assert "CHECK ONLY" in reply
+    assert "reported" in reply, "off must still promise the check is reported"
+    # unrelated to the HTF toggle
+    assert app.state.db.htf_enforce() == "off"
+
+
+def test_heartbeat_carries_the_ema200_agree_setting(client):
+    client.app.state.db.set_ema200_enforce("on")
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["ema200_enforce"] == "on"
+    client.app.state.db.set_ema200_enforce("off")
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["ema200_enforce"] == "off"

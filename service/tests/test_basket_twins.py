@@ -28,7 +28,7 @@ def _trade(**overrides):
     ev = {"event": "open", "strategy_id": "halftrend_ema_v1", "direction": "BUY",
           "lots": 0.1, "price": 2400.0, "sl": 2390.0, "tp": 0.0,
           "reason": "signal confirmed", "ticket": 12345, "entry_mode": "adr",
-          "htf_agree": 1}
+          "htf_agree": 1, "ema200_agree": 1}
     ev.update(overrides)
     return ev
 
@@ -37,7 +37,8 @@ def _rows_for_group_baskets(db):
     """The same row shape `/api/trades` and the Trades report build for
     `_group_baskets` -- see `_fetch_closed_baskets` in app/reports.py."""
     cols = ["id", "ts", "event", "direction", "lots", "price", "profit",
-            "final", "entry_mode", "reason", "strategy_id", "htf_agree"]
+            "final", "entry_mode", "reason", "strategy_id", "htf_agree",
+            "ema200_agree"]
     raw = db.conn.execute(
         f"SELECT {', '.join(cols)} FROM trades ORDER BY id ASC").fetchall()
     return [dict(zip(cols, r)) for r in raw]
@@ -61,8 +62,11 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     # in later baskets' legs too. Mirror that call pattern here.
 
     # --- basket 1: single leg, opened and closed cleanly ---
+    # htf_agree and ema200_agree deliberately DISAGREE with each other here
+    # (1 vs 0) so a test that only checked one of them couldn't hide the
+    # other silently dropping.
     b1_open = client.post("/trade-event", json=_trade(
-        price=2300.0, lots=0.1, sl=2290.0, htf_agree=1,
+        price=2300.0, lots=0.1, sl=2290.0, htf_agree=1, ema200_agree=0,
         reason="signal confirmed")).json()["id"]
     b1_close = client.post("/trade-event", json=_trade(
         event="close", price=2310.0, profit=10.0, ticket=101,
@@ -127,7 +131,7 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     # reason to. This is the explicit assertion the shared-contract test
     # must make so the difference is a choice, not silent drift. ---
     leg_keys = {"price", "lots", "event", "sl", "tp"}
-    entry_keys = {"ts", "price", "lots", "htf_agree"}
+    entry_keys = {"ts", "price", "lots", "htf_agree", "ema200_agree"}
     for legs in (legs1, legs2, legs3):
         for leg in legs:
             assert set(leg.keys()) == leg_keys
@@ -140,7 +144,16 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
             "direction", "entries", "exit", "pl", "entry_mode",
             "strategy_id", "reason"}
     # _basket_legs' legs carry sl/tp (chart-render backfill); _group_baskets'
-    # entries carry ts/htf_agree (report display) instead -- neither field
-    # crosses over, on purpose (see the TWIN WARNING comments).
+    # entries carry ts/htf_agree/ema200_agree (report display) instead --
+    # neither field crosses over, on purpose (see the TWIN WARNING comments).
     assert leg_keys - entry_keys == {"event", "sl", "tp"}
-    assert entry_keys - leg_keys == {"ts", "htf_agree"}
+    assert entry_keys - leg_keys == {"ts", "htf_agree", "ema200_agree"}
+
+    # --- ema200_agree survives grouping just like htf_agree, and the two
+    # verdicts are independent (basket 1 deliberately disagrees between
+    # them) -- this is the regression _group_baskets once had for htf_agree
+    # (dropping a field silently made every M15 cell render a dash); prove
+    # the new field doesn't repeat it.
+    from app.reports import _htf_flag, _ema200_flag
+    assert _htf_flag(b1["entries"]) is True
+    assert _ema200_flag(b1["entries"]) is False

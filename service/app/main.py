@@ -574,6 +574,7 @@ async def heartbeat(hb: HeartbeatRequest):
         mode=app.state.db.exec_mode(),
         entry_mode=app.state.db.entry_mode(),
         htf_enforce=app.state.db.htf_enforce(),
+        ema200_enforce=app.state.db.ema200_enforce(),
         command=command
     )
 
@@ -946,7 +947,7 @@ async def screenshot(event: int, request: Request):
         try:
             row = app.state.db.conn.execute(
                 "SELECT event, direction, lots, price, reason, profit,"
-                " COALESCE(htf_agree, -1)"
+                " COALESCE(htf_agree, -1), COALESCE(ema200_agree, -1)"
                 " FROM trades WHERE id=?", (event,)).fetchone()
             if row is not None:
                 caption = _trade_caption(*row)

@@ -439,19 +439,34 @@ def _format_mode(app) -> tuple:
 
 
 def _format_agree(app) -> tuple:
-    cur = app.state.db.htf_enforce()
+    db = app.state.db
+    cur = db.htf_enforce()
     on = cur != "off"
+    e200 = db.ema200_enforce()
+    e200_on = e200 == "on"
     body = (
-        "Higher-timeframe agreement\n"
-        f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n\n"
-        "The check runs on EVERY entry either way and is reported on the "
-        "trade and in the M15 column.\n"
+        "What confirms a trade\n\n"
+        "Higher-timeframe agreement (M5 only)\n"
+        f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n"
+        "Runs on EVERY M5 entry either way and is reported on the trade "
+        "and in the M15 column.\n"
         "Enforcing means it may also BLOCK an entry — and only while the "
         "tape is choppy; in a trend it never blocks.\n"
+        "Off = report only, the trade decision is untouched.\n\n"
+        "EMA-200 agreement (M5 and M15)\n"
+        f"Currently: {'ENFORCING' if e200_on else 'CHECK ONLY (off)'}\n"
+        "BUY agrees when price is above its own EMA-200, SELL when below. "
+        "Runs on EVERY entry on BOTH strategies either way and is reported "
+        "in the E200 column.\n"
+        "Enforcing means it may also BLOCK an entry — no chop exception, "
+        "it's on or off all day.\n"
         "Off = report only, the trade decision is untouched.")
     row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
-            f"agree:{c}") for c in app.state.db.HTF_CHOICES]
-    return (body, kb([row[:2], row[2:]]))
+            f"agree:{c}") for c in db.HTF_CHOICES]
+    e200_row = [(("● " if e200 == c else "")
+                + ("Off (report only)" if c == "off" else "Enforcing"),
+                f"e200:{c}") for c in db.EMA200_CHOICES]
+    return (body, kb([row[:2], row[2:], e200_row]))
 
 
 def _format_strategy(app) -> tuple:
@@ -571,7 +586,8 @@ COMMANDS: dict[str, CommandSpec] = {
     "/bal": CommandSpec(_cmd_bal, "balance, equity, floating P/L"),
     "/mode": CommandSpec(_cmd_mode, "execution (AUTO/MANUAL) + entry mode (ADR/FIXED)"),
     "/agree": CommandSpec(_cmd_agree,
-                          "higher-timeframe agreement: enforce on M15/M30/H1, or check only"),
+                          "what confirms a trade: higher-timeframe (M5) enforce on M15/M30/H1, "
+                          "and EMA-200 (M5+M15) enforce or check only"),
     "/strategy": CommandSpec(_cmd_strategy, "switch active strategy"),
     "/config": CommandSpec(_cmd_config, "current settings"),
     "/stats": CommandSpec(_cmd_stats, "per-strategy signal hit-rates"),
@@ -737,6 +753,19 @@ def _cb_agree(parts, app, db, message_id):
     return (None, "unknown")
 
 
+def _cb_e200(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in db.EMA200_CHOICES:
+        db.set_ema200_enforce(parts[1])
+        if parts[1] == "off":
+            return ("EMA-200 agreement → CHECK ONLY. It is still evaluated "
+                    "and reported on every entry (both strategies), but "
+                    "will not block one.", "ema200: off")
+        return ("EMA-200 agreement → ENFORCING. A disagreeing entry is now "
+                "blocked on both strategies (no chop exception).",
+                "ema200: on")
+    return (None, "unknown")
+
+
 def _cb_strat(parts, app, db, message_id):
     if len(parts) > 1:
         sid = parts[1]
@@ -832,6 +861,7 @@ CALLBACKS = {
     "mode": _cb_mode,
     "tmode": _cb_tmode,
     "agree": _cb_agree,
+    "e200": _cb_e200,
     "strat": _cb_strat,
     "prop": _cb_prop,
     "exitnow": _cb_exitnow,

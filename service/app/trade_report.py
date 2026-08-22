@@ -40,9 +40,9 @@ def _basket_legs(db: SignalDb, trade_id: int) -> list:
     `tests/test_basket_twins.py::test_basket_legs_and_group_baskets_agree_
     on_the_same_legs`. They deliberately return different SHAPES: this
     function's legs carry `sl`/`tp` (needed to backfill/redraw the chart
-    render) and no `ts`/`htf_agree`; `_group_baskets`' entries carry
-    `ts`/`htf_agree` (needed for the report) and no `sl`/`tp` (the mini-app
-    query never selects them). If you change the boundary rule here, change
+    render) and no `ts`/`htf_agree`/`ema200_agree`; `_group_baskets`' entries
+    carry `ts`/`htf_agree`/`ema200_agree` (needed for the report) and no
+    `sl`/`tp` (the mini-app query never selects them). If you change the boundary rule here, change
     it there too, and vice versa."""
     last_close = db.conn.execute(
         "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
@@ -135,16 +135,22 @@ def _pl_message(profit: float, direction: str = "", legs: list | None = None,
 
 
 def _trade_caption(event, direction, lots, price, reason, profit,
-                   htf_agree: int = -1) -> str:
+                   htf_agree: int = -1, ema200_agree: int = -1) -> str:
     caption = f"{event} {direction} {lots}@{price} — {reason}"
     if event == "close":
         caption += f"; P/L {profit}"
-    elif htf_agree in (0, 1):
-        # The M15 verdict is evaluated on EVERY entry, in every session, and
-        # reported here even when the tape was trending and it was not
-        # allowed to block (owner 2026-08-21). "no" on a live entry therefore
-        # means: taken in a trend, against M15.
-        caption += f"\nM15: {'agrees ✅' if htf_agree == 1 else 'DISAGREES ⚠️'}"
+    else:
+        if htf_agree in (0, 1):
+            # The M15 verdict is evaluated on EVERY entry, in every session,
+            # and reported here even when the tape was trending and it was
+            # not allowed to block (owner 2026-08-21). "no" on a live entry
+            # therefore means: taken in a trend, against M15.
+            caption += f"\nM15: {'agrees ✅' if htf_agree == 1 else 'DISAGREES ⚠️'}"
+        if ema200_agree in (0, 1):
+            # Same "always evaluated" rule as M15 above (owner 2026-08-22):
+            # reported on every entry, both strategies, even when the
+            # enforcement toggle is off and it could not have blocked.
+            caption += (f"\nE200: {'agrees ✅' if ema200_agree == 1 else 'DISAGREES ⚠️'}")
     return caption
 
 

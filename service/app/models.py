@@ -86,6 +86,9 @@ class HeartbeatResponse(BaseModel):
     # "off" to check and report without blocking. The EA obeys this over its
     # own input, so the module can be toggled from Telegram at runtime.
     htf_enforce: str = "off"
+    # EMA-200 (own-timeframe) agreement module, same idea, simpler shape --
+    # no timeframe choice, just "off" (report only) or "on" (enforce).
+    ema200_enforce: str = "off"
     command: dict | None = None
 
 
@@ -105,6 +108,8 @@ class TradeEventRequest(BaseModel):
     # Higher-timeframe agreement at entry, as the EA judged it:
     # 1 = agreed, 0 = disagreed, -1 = unknown (older EA builds).
     htf_agree: int = -1
+    # EMA-200 (own-timeframe) agreement at entry, same shape.
+    ema200_agree: int = -1
 
 
 class ProposalResultRequest(BaseModel):

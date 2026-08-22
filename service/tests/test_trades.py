@@ -408,6 +408,24 @@ def test_trade_event_carries_and_stores_the_m15_verdict(tmp_path):
     assert got[legacy] == -1, "an EA that does not send it must read as unknown"
 
 
+def test_trade_event_carries_and_stores_the_ema200_verdict(tmp_path):
+    """Same idea as the M15 verdict above, for the EMA-200 (own-timeframe)
+    check -- independent column, independent value."""
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "t2.db"))
+    agreed = db.insert_trade({"event": "open", "direction": "BUY", "lots": 0.1,
+                              "price": 4500.0, "ema200_agree": 1})
+    refused = db.insert_trade({"event": "open", "direction": "SELL", "lots": 0.1,
+                               "price": 4500.0, "ema200_agree": 0})
+    legacy = db.insert_trade({"event": "open", "direction": "BUY", "lots": 0.1,
+                              "price": 4500.0})
+    got = {r[0]: r[1] for r in
+           db.conn.execute("SELECT id, ema200_agree FROM trades")}
+    assert got[agreed] == 1
+    assert got[refused] == 0
+    assert got[legacy] == -1, "an EA that does not send it must read as unknown"
+
+
 def test_report_rows_carry_m15_and_session():
     """Both new report columns come off the same row the table renders."""
     import datetime as dt
@@ -458,3 +476,24 @@ def test_entry_caption_reports_the_m15_verdict():
     assert "M15: DISAGREES" in refuse
     assert "M15" not in unknown, "an unknown verdict must not be asserted"
     assert "M15" not in closed, "the verdict belongs to the entry, not the close"
+
+
+def test_entry_caption_reports_the_ema200_verdict():
+    """Same 'always evaluated, always reported' rule as M15, on its own
+    E200 line, independent of the M15 verdict."""
+    from app.trade_report import _trade_caption
+    agree = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0,
+                           -1, 1)
+    refuse = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0,
+                            -1, 0)
+    unknown = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0,
+                             -1, -1)
+    closed = _trade_caption("close", "BUY", 0.1, 4500.0, "stop-loss", -20.0,
+                            -1, 1)
+    both = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, 1, 0)
+    assert "E200: agrees" in agree
+    assert "E200: DISAGREES" in refuse
+    assert "E200" not in unknown, "an unknown verdict must not be asserted"
+    assert "E200" not in closed, "the verdict belongs to the entry, not the close"
+    assert "M15: agrees" in both and "E200: DISAGREES" in both, (
+        "the two verdicts are independent and both must render")
