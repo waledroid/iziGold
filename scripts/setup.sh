@@ -788,25 +788,66 @@ cat <<'EOF'
 
     1. Tools > Options > Expert Advisors:
          tick "Allow WebRequest for listed URL" and add exactly:  http://127.0.0.1:9000
-    2. Drag XauAssistant (Navigator > Expert Advisors) onto a XAUUSD M5 chart,
+    2. Drag XauAssistant (Navigator > Expert Advisors) onto a XAUUSD chart,
          tick "Allow Algo Trading" in the dialog, press OK.
        (If the EA was already on the chart, remove and re-attach it.)
+
+  Two strategies are registered and BOTH are evaluated on every bar; only the
+  active one places trades, the other shadow-logs its signals so the two can be
+  compared on the same live market:
+
+    halftrend_ema_v1   M5   <- active by default
+    halftrend_m15_v1   M15  shadow (3 waiting bars, EMA-200 confirmation)
+
+  Switch with /strategy in Telegram — it applies on the next bar, no recompile.
+  The chart's own timeframe is display only; each strategy trades its own.
 
   Waiting up to 5 minutes for the EA heartbeat (fires every 5s, even with markets closed)...
 EOF
 deadline=$((SECONDS + 300))
 beat=""
 while (( SECONDS < deadline )); do
+  # A heartbeat only proves the EA is RUNNING. It can run perfectly while
+  # unable to place a single trade -- the AutoTrading button off, the kill
+  # switch latched, or the service holding it in MANUAL. Reporting "setup
+  # complete" in that state is the failure that costs money quietly, so the
+  # verify reads the trading-capability fields the heartbeat already carries
+  # (nested under "heartbeat"; no service change was needed for this).
   beat="$(curl -sf -m 3 "$BASE_URL/ui/state" | "$VENV/bin/python" -c '
 import json, sys
 d = json.load(sys.stdin)
 a = d.get("age_s")
-print("yes" if a is not None and a < 30 else "")' || true)"
+if a is None or a >= 30:
+    print("")
+else:
+    hb = d.get("heartbeat") or {}
+    print("|".join([
+        "yes",
+        "on"   if hb.get("algo_trading") else "OFF",
+        "clear" if not hb.get("kill_switch") else "TRIPPED",
+        str(hb.get("active_strategy") or "?"),
+        str(d.get("mode") or "?"),
+    ]))' || true)"
   [[ -n "$beat" ]] && break
   sleep 5
 done
 if [[ -n "$beat" ]]; then
+  IFS='|' read -r _b algo kill active exmode <<<"$beat"
   ok "EA heartbeat received — end-to-end wiring confirmed"
+  echo "     active strategy : $active   (execution mode: $exmode)"
+  # Each of these is a state where the EA is alive and CANNOT trade. They are
+  # reported separately because the fix differs for each.
+  if [[ "$algo" != "on" ]]; then
+    soft_fail "EA is running but Algo Trading is OFF" \
+              "MT5 — the EA cannot trade: switch the toolbar Algo Trading button ON (green)"
+  fi
+  if [[ "$kill" != "clear" ]]; then
+    soft_fail "EA is running but the kill switch is TRIPPED" \
+              "Risk — the kill switch is latched: no new trades until it is reset (see /status)"
+  fi
+  if [[ "$exmode" != "auto" ]]; then
+    echo "     note: execution mode is $exmode — signals raise Telegram proposals instead of trading."
+  fi
   cat <<EOF
 
   ✅ Setup complete.

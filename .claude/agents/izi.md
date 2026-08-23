@@ -767,6 +767,34 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
 
+## setup.sh verifies the EA can TRADE, not just that it is alive (2026-08-24)
+
+Phase 11 used to stop at "a heartbeat arrived". An EA can heartbeat perfectly
+while unable to place a single trade — the AutoTrading button off, the kill
+switch latched, or the service holding it in MANUAL. Printing "Setup complete"
+in that state is the failure mode that costs money silently: everything looks
+green and no trade ever appears.
+
+It now reads the capability fields the heartbeat ALREADY carries (nested under
+`heartbeat` in `/ui/state` — no service change was needed) and reports each
+separately, because the fix differs for each:
+
+- `algo_trading` false  -> soft_fail "the EA cannot trade: switch Algo Trading ON"
+- `kill_switch` true    -> soft_fail "the kill switch is latched"
+- execution mode not auto -> a note that signals raise proposals, not trades
+
+The active strategy and execution mode are printed on success either way, so a
+clean run says WHICH strategy is trading rather than leaving it assumed.
+
+Phase 11's handoff text also now names both registered strategies
+(`halftrend_ema_v1` M5 active, `halftrend_m15_v1` M15 shadow), says the chart's
+own timeframe is display-only, and points at `/strategy` to switch. A fresh
+install previously gave no hint the second strategy existed.
+
+Verified against the live system and driven through every failure branch:
+healthy, algo-off, kill-tripped, and manual-mode-with-M15-active.
+
+
 ## /agree never reached the EA (fixed 2026-08-22)
 
 `UiApi::PostHeartbeat` declared and threaded `htfEnforce_out` but **never
