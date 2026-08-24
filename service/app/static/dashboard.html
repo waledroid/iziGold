@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;500;600;700&family=Playfair+Display:ital,wght@1,500;1,600&display=swap" rel="stylesheet">
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <style>
 :root {
@@ -250,19 +250,58 @@ body {
   gap: 20px;
 }
 
-.control-groups {
+/* Greeting (left) — big display serif, gold gradient; the live status line
+   sits underneath it as a subtitle. Name comes from the onboarding profile. */
+.greeting {
+  flex: 1 1 260px;
+  min-width: 220px;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 18px;
+  flex-direction: column;
+  gap: 8px;
 }
+
+.greeting-text {
+  font-family: 'Playfair Display', 'Plus Jakarta Sans', serif;
+  font-style: italic;
+  font-weight: 600;
+  font-size: clamp(30px, 4.2vw, 46px);
+  line-height: 1.12;
+  background: var(--gold-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.01em;
+}
+
+/* Controls (right) — the old row of clusters squashed into a compact grid:
+   Mode | Entry | HTF on top, EMA200 | Close All (2 cells wide) below. */
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(96px, auto));
+  gap: 8px;
+  justify-content: end;
+}
+
+.control-grid .cell-span2 { grid-column: span 2; }
+
+.control-grid button,
+.control-grid .custom-select {
+  padding: 7px 10px;
+  font-size: 12px;
+  width: 100%;
+}
+
+.control-grid .custom-select { padding-right: 30px; }
+.control-grid .btn-group { width: 100%; }
+.control-grid .btn-group button { flex: 1; }
 
 .ctrl-cluster {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
   background: rgba(8, 11, 18, 0.7);
-  padding: 6px 10px;
+  padding: 8px 10px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
@@ -814,8 +853,8 @@ tr:hover td {
   .wrap { padding: 16px 12px 48px; }
   .header { flex-direction: column; gap: 16px; align-items: flex-start; }
   .control-deck-row { flex-direction: column; align-items: stretch; }
-  .control-groups { flex-direction: column; align-items: stretch; }
-  .ctrl-cluster { justify-content: space-between; }
+  .control-grid { justify-content: stretch; grid-template-columns: repeat(2, 1fr); }
+  .control-grid .cell-span2 { grid-column: span 2; }
 }
 </style>
 </head>
@@ -860,8 +899,17 @@ tr:hover td {
   <!-- Big Buttons Control Bar -->
   <div class="control-bar">
     <div class="control-deck-row">
-      <div class="control-groups">
-        <!-- Mode Group -->
+      <!-- Greeting (name from the onboarding profile; plain "Bonjour !" until it loads) -->
+      <div class="greeting">
+        <div id="bonjour" class="greeting-text">Bonjour&nbsp;!</div>
+        <!-- Execution Status Subtitle -->
+        <div class="ctrl-status-text">
+          <span id="ctlsub">Initializing live feed...</span>
+        </div>
+      </div>
+
+      <!-- Compact control grid: Mode | Entry | HTF Gate / EMA200 | Close All -->
+      <div class="control-grid">
         <div class="ctrl-cluster">
           <span class="ctrl-label">Mode</span>
           <div class="btn-group">
@@ -870,10 +918,6 @@ tr:hover td {
           </div>
         </div>
 
-        <!-- Emergency Action -->
-        <button id="closeAll" class="btn-danger" onclick="closeAllPos()">✖ Close All</button>
-
-        <!-- Entry Mode -->
         <div class="ctrl-cluster">
           <span class="ctrl-label">Entry</span>
           <div class="btn-group">
@@ -882,7 +926,6 @@ tr:hover td {
           </div>
         </div>
 
-        <!-- M15 HTF Gate -->
         <div class="ctrl-cluster">
           <span class="ctrl-label">HTF Gate</span>
           <select id="rHtf" class="custom-select" onchange="setRule('htf_enforce',this.value)">
@@ -893,16 +936,15 @@ tr:hover td {
           </select>
         </div>
 
-        <!-- EMA200 Gate -->
         <div class="ctrl-cluster">
           <span class="ctrl-label">EMA200</span>
           <button id="rE200" onclick="toggleE200()">off</button>
         </div>
-      </div>
 
-      <!-- Execution Status Subtitle -->
-      <div class="ctrl-status-text">
-        <span id="ctlsub">Initializing live feed...</span>
+        <div class="ctrl-cluster cell-span2">
+          <span class="ctrl-label">Emergency</span>
+          <button id="closeAll" class="btn-danger" onclick="closeAllPos()">✖ Close All</button>
+        </div>
       </div>
     </div>
 
@@ -1079,6 +1121,13 @@ async function loadProfile(){
   try {
     const {profile,completion_pct}=await j('/api/profile');
     svcOk();
+    // Greeting: first name from the onboarding profile; plain "Bonjour !"
+    // when no name was saved. textContent only — never markup.
+    const g=$('bonjour');
+    if(g){
+      const first=(profile&&profile.name)?String(profile.name).trim().split(/\s+/)[0]:'';
+      g.textContent=first?`Bonjour ${first} !`:'Bonjour !';
+    }
     const prof=$('prof');
     prof.textContent='';
     if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));

@@ -469,6 +469,16 @@ serves them their only external asset, the vendored
 `--web` backtest reports inline; the mount is what lets the dashboard
 `<script src=>` it instead).
 
+**Control bar layout (owner 2026-08-24)**: the dashboard's control bar is a
+single row — LEFT: a big italic gold-gradient greeting (`Playfair Display`)
+"Bonjour <first name> !" (first word of the onboarding profile's `name`,
+set by `loadProfile()` via textContent; plain "Bonjour !" when no name),
+with the live status line ("EA automatically executes signals · Spread …")
+as its subtitle; RIGHT: the controls squashed into a compact `.control-grid`
+(3 columns desktop / 2 on mobile): Mode | Entry | HTF Gate on top, EMA200 |
+Close All (spans 2) below — each cluster is label-over-control. The old
+`.control-groups` flex row is gone.
+
 **Clean URLs (2026-08-24)**: pages live at `/`, `/backtest`, `/onboarding`;
 every JSON endpoint moved from `/ui/...` to `/api/...`. The OLD `/ui/*`
 addresses (bookmarks, Telegram links, and — crucially — `scripts/backtest.py`'s
