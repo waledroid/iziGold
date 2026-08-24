@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <style>
 :root {
   --bg-dark: #090d14;
@@ -463,8 +464,8 @@ button.btn-cancel:hover {
         <button type="button" class="tab-btn" data-tab="boll_stochrsi_v1" onclick="setTab('boll_stochrsi_v1')">boll_stochrsi</button>
       </div>
     </div>
-    <div class="canvas-wrap" id="eqWrap">
-      <canvas id="eq"></canvas>
+    <div class="canvas-wrap" id="chartWrap">
+      <div id="chartEl" style="width:100%;height:100%"></div>
     </div>
     <button type="button" id="expandBtn" class="expand-btn" onclick="toggleExpand()" title="Expand/collapse chart">⛶</button>
   </div>
@@ -587,264 +588,107 @@ async function state(){
  });
 }
 
-let _pcTrades = [];   // click hit-testing: {x1,x2,tradeId}
-let _tip=null, _tipLastIdx=-1;
-let _activeTab='halftrend_ema_v1', _expanded=false;
-let _panBars=0;        // bars back from the latest candle; 0 = live edge
-let _pcData=null;      // last-fetched {candles,ov,tr}, reused for pan/wheel/resize redraws
-let _pcDrag=null;      // in-progress drag state: {startX,startPan,moved,cw}
-let _pcLastMoved=0;    // drag distance at mouseup, consulted by cv.onclick
-let _liveBtn=null;     // {x1,y1,x2,y2} of the "back to live" affordance, or null
+let chart=null,candleSeries=null,S={};        // S: overlay line series by key
+let _activeTab='halftrend_ema_v1',_expanded=false,_pcData=null;
 
-function _clampPan(bars, len){
- const maxPan=Math.max(0, len-150);
- return Math.max(0, Math.min(maxPan, bars));
+function initChart(){
+ chart=LightweightCharts.createChart($('chartEl'),{
+  layout:{background:{type:'solid',color:'rgba(9,13,20,0)'},textColor:'#94a3b8',
+          fontFamily:'"Plus Jakarta Sans", system-ui, sans-serif'},
+  grid:{vertLines:{color:'rgba(255,255,255,0.05)'},horzLines:{color:'rgba(255,255,255,0.05)'}},
+  rightPriceScale:{borderColor:'rgba(255,255,255,0.08)'},
+  timeScale:{borderColor:'rgba(255,255,255,0.08)',timeVisible:true,secondsVisible:false},
+  crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+  autoSize:true});
+ // overlays first: later-added series paint on top, so candles stay above
+ const noLbl={priceLineVisible:false,lastValueVisible:false};
+ S.ema9=chart.addLineSeries(Object.assign({color:'#666',lineWidth:1},noLbl));
+ S.ema21=chart.addLineSeries(Object.assign({color:'#666',lineWidth:1},noLbl));
+ S.ema55=chart.addLineSeries(Object.assign({color:'#f5c542',lineWidth:2},noLbl));
+ S.ema200=chart.addLineSeries(Object.assign({color:'mediumpurple',lineWidth:2},noLbl));
+ S.ht=chart.addLineSeries(Object.assign({color:'dodgerblue',lineWidth:2},noLbl));
+ S.bb_upper=chart.addLineSeries(Object.assign({color:'#7f8c9a',lineWidth:1},noLbl));
+ S.bb_mid=chart.addLineSeries(Object.assign({color:'#7f8c9a',lineWidth:1,
+   lineStyle:LightweightCharts.LineStyle.Dashed},noLbl));
+ S.bb_lower=chart.addLineSeries(Object.assign({color:'#7f8c9a',lineWidth:1},noLbl));
+ candleSeries=chart.addCandlestickSeries({upColor:'#2ecc71',downColor:'#e74c3c',
+  borderUpColor:'#2ecc71',borderDownColor:'#e74c3c',
+  wickUpColor:'#2ecc71',wickDownColor:'#e74c3c'});
+}
+
+function setLine(s,arr){
+ if(!arr||!_pcData){s.setData([]);return;}
+ s.setData(_pcData.candles.map((c,i)=>arr[i]==null?null:{time:c.t,value:arr[i]})
+   .filter(Boolean));
+}
+function setHt(arr){
+ if(!arr||!_pcData){S.ht.setData([]);return;}
+ S.ht.setData(_pcData.candles.map((c,i)=>{
+  const e=arr[i]; if(e==null) return null;
+  return {time:c.t,value:e[0],color:e[1]===0?'dodgerblue':'orangered'};
+ }).filter(Boolean));
+}
+function barSec(){const c=_pcData&&_pcData.candles;return c&&c.length>1?c[1].t-c[0].t:300;}
+function barTime(candles,ts){
+ // trade ts is service wall-clock; candle t is broker server time -- same
+ // snap rule the old canvas chart used: first bar at/after ts, else last.
+ const hit=candles.find(c=>c.t>=ts);
+ return (hit||candles[candles.length-1]).t;
+}
+function buildMarkers(candles,tr){
+ if(!candles.length) return [];
+ const m=[];
+ for(const t of tr){
+  if(t.event==='open'||t.event==='add'){
+   m.push({time:barTime(candles,t.ts),
+    position:t.direction==='BUY'?'belowBar':'aboveBar',
+    color:t.direction==='BUY'?'#2ecc71':'#e74c3c',
+    shape:t.direction==='BUY'?'arrowUp':'arrowDown',
+    text:(t.event==='add'?'add ':'')+fmt(t.lots,2)});
+  }else if(t.event==='close'){
+   m.push({time:barTime(candles,t.ts),position:'aboveBar',
+    color:t.profit>=0?'#2ecc71':'#e74c3c',shape:'circle',
+    text:(t.profit>=0?'+':'')+fmt(t.profit)});
+  }
+ }
+ return m.sort((a,b)=>a.time-b.time);
+}
+
+async function priceChart(){
+ if(!window.LightweightCharts){
+  $('chartWrap').innerHTML='<div style="padding:20px;color:var(--text-muted)">chart library failed to load — the rest of the dashboard still works</div>';
+  return;
+ }
+ if(!chart) initChart();
+ const cd=await j('/ui/candles');
+ let ov={},tr=[];
+ try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
+ try{ tr=(await j('/ui/trades?limit=100')).trades||[]; }catch(e){}
+ _pcData={candles:cd.candles,ov,tr};
+ candleSeries.setData(cd.candles.map(c=>({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c})));
+ setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
+ setLine(S.ema55,ov.ema55); setLine(S.ema200,ov.ema200);
+ setHt(ov.halftrend);
+ setLine(S.bb_upper,ov.bb_upper); setLine(S.bb_mid,ov.bb_mid);
+ setLine(S.bb_lower,ov.bb_lower);
+ candleSeries.setMarkers(buildMarkers(cd.candles,tr));
 }
 
 function setTab(t){
  _activeTab=t;
- document.querySelectorAll('#stratTabs .tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+ document.querySelectorAll('#stratTabs .tab-btn').forEach(b=>
+   b.classList.toggle('active', b.dataset.tab===t));
  priceChart();
 }
 function toggleExpand(){
  _expanded=!_expanded;
- $('pricePanel').classList.toggle('expanded', _expanded);
- priceChart();
+ $('pricePanel').classList.toggle('expanded', _expanded);   // autoSize refits
 }
-function tipEl(){
- if(!_tip){
-   _tip=document.createElement('div');
-   _tip.style.cssText='position:absolute;display:none;pointer-events:none;z-index:20;'
-    +'background:rgba(9,13,20,0.95);border:1px solid rgba(255,255,255,0.15);border-radius:6px;'
-    +'padding:6px 10px;font-size:11px;line-height:1.4;color:var(--text-main);white-space:nowrap;'
-    +'box-shadow:0 4px 12px rgba(0,0,0,0.4);';
-   document.body.appendChild(_tip);
- }
- return _tip;
-}
-async function priceChart(){
- const candles=(await j('/ui/candles')).candles;
- let ov={};
- try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
- let tr=[];
- try{ tr=(await j('/ui/trades?limit=50')).trades||[]; }catch(e){}
- _pcData={candles,ov,tr};
- _drawChart();
-}
-
-// Synchronous redraw from the last-fetched _pcData -- used for pan (drag/
-// wheel/double-click/live-affordance) and resize so those interactions
-// don't refetch candles/overlays/trades over the network on every frame.
-function _drawChart(){
- if(!_pcData) return;
- const {candles,ov,tr}=_pcData;
- const cv=$('eq');
- const rect=cv.getBoundingClientRect();
- const dpr=window.devicePixelRatio||1;
- cv.width=rect.width*dpr;
- cv.height=rect.height*dpr;
- const ctx=cv.getContext('2d');
- ctx.scale(dpr,dpr);
- const w=rect.width, h=rect.height||220;
- ctx.font='11px "Plus Jakarta Sans", system-ui, sans-serif';
- ctx.clearRect(0,0,w,h);
- if(!candles.length){ctx.fillStyle='#888';ctx.fillText('waiting for first bar…',10,20);cv.onclick=null;cv.onmousedown=null;cv.onwheel=null;cv.ondblclick=null;return;}
- _panBars=_clampPan(_panBars,candles.length);
- const end=candles.length-_panBars;
- const win=candles.slice(Math.max(0,end-150),end);
- const offset=Math.max(0,end-150);   // overlay arrays are aligned to the FULL candle list
- const padX=8,padY=14,cw=(w-2*padX)/win.length;
- let lo=Math.min(...win.map(c=>c.l)), hi=Math.max(...win.map(c=>c.h));
- const span=(hi-lo)||1; lo-=span*0.05; hi+=span*0.05;
- const X=i=>padX+i*cw+cw/2, Y=p=>padY+(hi-p)/(hi-lo)*(h-2*padY);
- // strategy overlays (halftrend/EMA or bollinger bands) are indexed with
- // the same `offset` as the candle window since the endpoint aligns its
- // series 1:1 with the full /ui/candles list.
- // Candles are positioned by array INDEX, not by linear time -- the live
- // window can contain a multi-hour weekend gap, so a trade timestamp must be
- // mapped to the index of the nearest candle at/after it (not interpolated
- // linearly from t0/barS, which overshoots past any gap and clamps every
- // post-gap trade onto the last candle).
- const idxOf=ts=>{let i=win.findIndex(c=>c.t>=ts); if(i<0) i=win.length-1; return Math.max(0,Math.min(win.length-1,i));};
- const lastClose=win[win.length-1].c;
- _pcTrades=[];
- const opens=tr.filter(t=>t.event==='open').reverse();
- const closes=tr.filter(t=>t.event==='close').reverse();
- for(const o of opens){
-   const c=closes.find(cl=>cl.ts>=o.ts);           // first close at/after open
-   const x1=X(idxOf(o.ts)), x2=c?X(idxOf(c.ts)):X(win.length-1);
-   if(x2<padX||x1>w-padX) continue;
-   const boxW=Math.max(x2-x1,3);
-   const entryY=Y(o.price);
-   // red risk box: entry <-> stop-loss span; skipped when sl missing/0
-   if(o.sl>0){
-     const slY=Y(o.sl);
-     ctx.fillStyle='rgba(231,76,60,.14)';
-     ctx.fillRect(x1,Math.min(entryY,slY),boxW,Math.max(Math.abs(slY-entryY),1));
-   }
-   // green profit box: entry <-> exit (closed) or entry <-> last close (open,
-   // recomputed every refresh) -- drawn only when the exit/current price is
-   // on the favorable side of entry (BUY exit>entry, SELL exit<entry).
-   const exitPrice=c?c.price:lastClose;
-   const favorable=o.direction==='BUY'?exitPrice>o.price:exitPrice<o.price;
-   if(favorable){
-     const exitY=Y(exitPrice);
-     ctx.fillStyle='rgba(46,204,113,.14)';
-     ctx.fillRect(x1,Math.min(entryY,exitY),boxW,Math.max(Math.abs(exitY-entryY),1));
-   }
-   _pcTrades.push({x1,x2,tradeId:o.id});
-   ctx.fillStyle=o.direction==='BUY'?'#2ecc71':'#e74c3c';
-   const ey=entryY;
-   ctx.beginPath();ctx.moveTo(x1,ey-6);ctx.lineTo(x1-4,ey+3);ctx.lineTo(x1+4,ey+3);ctx.closePath();ctx.fill();
-   if(c){const cy=Y(c.price);ctx.fillStyle='#aaa';
-     ctx.beginPath();ctx.moveTo(x2,cy+6);ctx.lineTo(x2-4,cy-3);ctx.lineTo(x2+4,cy-3);ctx.closePath();ctx.fill();}
-   else if(o.sl>0){                                 // open trade: dashed SL line across its band
-     const slY=Y(o.sl);
-     ctx.setLineDash([4,3]);
-     ctx.strokeStyle='rgba(245,197,66,.7)';
-     ctx.beginPath();ctx.moveTo(x1,slY);ctx.lineTo(x2,slY);ctx.stroke();
-     ctx.setLineDash([]);
-   }
- }
- // strategy overlay lines, drawn under the candles (matches the render.py
- // painting order: overlays first, opaque candle bodies on top).
- const drawSeries=(arr,color,lw,alpha)=>{
-   if(!arr) return;
-   ctx.lineWidth=lw; ctx.strokeStyle=color; ctx.globalAlpha=alpha==null?1:alpha;
-   let px=null,py=null;
-   for(let i=0;i<win.length;i++){
-     const v=arr[offset+i];
-     if(v==null){px=null;py=null;continue;}
-     const x=X(i),y=Y(v);
-     if(px!=null){ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x,y);ctx.stroke();}
-     px=x;py=y;
-   }
-   ctx.globalAlpha=1; ctx.lineWidth=1;
- };
- const drawDashedSeries=(arr,color,lw)=>{
-   if(!arr) return;
-   ctx.setLineDash([4,3]);
-   drawSeries(arr,color,lw);
-   ctx.setLineDash([]);
- };
- const drawHalftrend=(arr)=>{
-   if(!arr) return;
-   ctx.lineWidth=1.6;
-   let px=null,py=null;
-   for(let i=0;i<win.length;i++){
-     const entry=arr[offset+i];
-     if(entry==null){px=null;py=null;continue;}
-     const[val,trend]=entry;
-     const x=X(i),y=Y(val);
-     const color=trend===0?'dodgerblue':'orangered';
-     if(px!=null){ctx.strokeStyle=color;ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(x,y);ctx.stroke();}
-     px=x;py=y;
-   }
-   ctx.lineWidth=1;
- };
- if(_activeTab==='halftrend_ema_v1'){
-   drawHalftrend(ov.halftrend);
-   drawSeries(ov.ema9,'#888888',0.8,0.35);
-   drawSeries(ov.ema21,'#888888',0.8,0.35);
-   drawSeries(ov.ema55,'gold',1.2);
-   drawSeries(ov.ema200,'mediumpurple',1.2);
- } else if(_activeTab==='boll_stochrsi_v1'){
-   drawSeries(ov.bb_upper,'#7f8c9a',1);
-   drawSeries(ov.bb_lower,'#7f8c9a',1);
-   drawDashedSeries(ov.bb_mid,'#7f8c9a',1);
- }
- // candles
- for(let i=0;i<win.length;i++){const c=win[i];
-   const up=c.c>=c.o; ctx.strokeStyle=ctx.fillStyle=up?'#2ecc71':'#e74c3c';
-   ctx.beginPath();ctx.moveTo(X(i),Y(c.h));ctx.lineTo(X(i),Y(c.l));ctx.stroke();
-   const bh=Math.max(1,Math.abs(Y(c.o)-Y(c.c)));
-   ctx.fillRect(X(i)-Math.max(1,cw*0.35),Math.min(Y(c.o),Y(c.c)),Math.max(2,cw*0.7),bh);}
- // dashed last-close price line spanning the chart, both tabs
- ctx.setLineDash([4,3]);
- ctx.strokeStyle='rgba(245,197,66,.6)';
- ctx.lineWidth=1;
- ctx.beginPath();ctx.moveTo(padX,Y(lastClose));ctx.lineTo(w-padX,Y(lastClose));ctx.stroke();
- ctx.setLineDash([]);
- // last-price label
- const last=win[win.length-1];
- ctx.fillStyle='#ddd';ctx.fillText(last.c.toFixed(2), w-58, Y(last.c)-4);
- // "back to live" affordance -- only while panned into history, subtle,
- // top-right corner; also acts as a click target that resets _panBars.
- _liveBtn=null;
- if(_panBars>0){
-   const label='◂ live';
-   ctx.font='11px "Plus Jakarta Sans", system-ui, sans-serif';
-   const tw=ctx.measureText(label).width;
-   const bx2=w-padX, bx1=bx2-tw-10, by1=padY-2, by2=by1+16;
-   ctx.fillStyle='rgba(255,255,255,0.08)';
-   ctx.fillRect(bx1,by1,bx2-bx1,by2-by1);
-   ctx.fillStyle='rgba(255,255,255,0.55)';
-   ctx.fillText(label, bx1+5, by1+12);
-   _liveBtn={x1:bx1,y1:by1,x2:bx2,y2:by2};
- }
- cv.onclick=e=>{
-   const r=cv.getBoundingClientRect();const x=e.clientX-r.left,y=e.clientY-r.top;
-   // A drag (mousedown->mousemove->mouseup) also fires a native click on
-   // mouseup -- only treat it as an actual click when the drag barely moved.
-   if(_pcLastMoved>=4){_pcLastMoved=0;return;}
-   _pcLastMoved=0;
-   if(_liveBtn && x>=_liveBtn.x1 && x<=_liveBtn.x2 && y>=_liveBtn.y1 && y<=_liveBtn.y2){
-     _panBars=0; _drawChart(); return;
-   }
-   const hit=_pcTrades.find(t=>x>=t.x1-5&&x<=t.x2+5);
-   if(hit) openLightbox('/ui/render/'+hit.tradeId);
- };
- cv.ondblclick=()=>{ if(_panBars!==0){_panBars=0;_drawChart();} };
- cv.onmousedown=e=>{
-   _pcDrag={startX:e.clientX,startPan:_panBars,moved:0,cw};
-   document.addEventListener('mousemove',_onPcDragMove);
-   document.addEventListener('mouseup',_onPcDragEnd);
- };
- // Drag right reveals older bars (panBars increases); the sign is chosen so
- // the chart content appears to move with the mouse, like grabbing it.
- cv.onwheel=e=>{
-   let dx=e.deltaX;
-   if(dx===0 && e.shiftKey) dx=e.deltaY;
-   if(!dx) return;                       // plain vertical wheel: let the page scroll
-   const bars=Math.round(dx/cw)||(dx>0?1:-1);
-   const next=_clampPan(_panBars+bars,candles.length);
-   if(next===_panBars) return;           // already at the pan edge: release the
-                                          // gesture so trackpad back/forward swipes
-                                          // at the boundary aren't swallowed
-   e.preventDefault();
-   _panBars=next;_drawChart();
- };
- cv.onmousemove=e=>{
-   const r=cv.getBoundingClientRect();const x=e.clientX-r.left;
-   let idx=Math.round((x-padX-cw/2)/cw);
-   idx=Math.max(0,Math.min(win.length-1,idx));
-   const tip=tipEl();
-   tip.style.left=(e.pageX+12)+'px';
-   tip.style.top=(e.pageY+12)+'px';
-   tip.style.display='block';
-   if(idx!==_tipLastIdx){                  // throttle: only rebuild content when the hovered candle changes
-     _tipLastIdx=idx;
-     const c=win[idx], d=new Date(c.t*1000);
-     const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0');
-     tip.innerHTML=`${hh}:${mm}<br>O ${fmt(c.o)} H ${fmt(c.h)}<br>L ${fmt(c.l)} C ${fmt(c.c)}`;
-   }
- };
- cv.onmouseleave=()=>{tipEl().style.display='none';_tipLastIdx=-1;};
-}
-
-function _onPcDragMove(e){
- if(!_pcDrag || !_pcData) return;
- const dx=e.clientX-_pcDrag.startX;
- _pcDrag.moved=Math.max(_pcDrag.moved,Math.abs(dx));
- const bars=Math.round(dx/_pcDrag.cw);
- const next=_clampPan(_pcDrag.startPan+bars,_pcData.candles.length);
- if(next!==_panBars){_panBars=next;_drawChart();}
-}
-function _onPcDragEnd(){
- document.removeEventListener('mousemove',_onPcDragMove);
- document.removeEventListener('mouseup',_onPcDragEnd);
- _pcLastMoved=_pcDrag?_pcDrag.moved:0;
- _pcDrag=null;
+function zoomToTrade(ts){
+ if(!chart||!_pcData||!_pcData.candles.length) return;
+ const t=barTime(_pcData.candles,ts), span=90*barSec();
+ chart.timeScale().setVisibleRange({from:t-span,to:t+span});
+ $('pricePanel').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 async function stats(){
@@ -885,10 +729,11 @@ async function signals(){
 
 async function trades(){
  const {trades}=await j('/ui/trades');
- $('tr').innerHTML='<thead><tr><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
+ $('tr').innerHTML='<thead><tr><th></th><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
   trades.map(t=>{
    const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${t.profit>=0?'+':''}${fmt(t.profit)}</span>`:'';
-   return `<tr><td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${esc(t.event)}</span></td><td><b>${esc(t.strategy_id||'—')}</b></td><td>${esc(t.direction||'—')}</td>`+
+   return `<tr><td><button class="btn-sm" onclick="zoomToTrade(${Number(t.ts)})" title="show on chart">📍</button></td>`+
+    `<td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${esc(t.event)}</span></td><td><b>${esc(t.strategy_id||'—')}</b></td><td>${esc(t.direction||'—')}</td>`+
     `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${esc(t.reason||'—')}</span></td>`+
     `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
     `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
@@ -944,7 +789,6 @@ async function sw(id){
 
 state();priceChart();stats();signals();trades();
 setInterval(state,5000);setInterval(priceChart,30000);setInterval(stats,30000);setInterval(signals,30000);setInterval(trades,30000);
-window.addEventListener('resize', ()=>{ _pcData?_drawChart():priceChart(); });
 </script>
 </body>
 </html>
