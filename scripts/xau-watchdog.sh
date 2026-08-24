@@ -13,6 +13,11 @@
 #         ngrok tunnel  (agent API domain match + public /healthz)
 #         Windows bridge (feed freshness: /feed/push seen in the miniapp log
 #                        within FEED_STALE_S)
+#         MT5 EA        (heartbeat age via /api/state; a detached/silent EA
+#                        while MT5 runs -> restart MT5, whose start config
+#                        [StartUp] re-attaches the EA — 2026-08-24, born from
+#                        the 17:44 silent-detach that left the EA off every
+#                        chart for hours)
 # Stale-code guard: a service whose process is OLDER than its code files on
 #         disk is restarted (the exact 08-17 failure).
 # Backoff: a link that fails MAX_FAILS restarts in a row is left alone for
@@ -22,6 +27,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SVC="$REPO/service"
 INTERVAL="${WATCHDOG_INTERVAL:-30}"
 FEED_STALE_S="${WATCHDOG_FEED_STALE_S:-90}"
+EA_STALE_S="${WATCHDOG_EA_STALE_S:-180}"
 MAX_FAILS=3
 COOLDOWN_S=600
 LOG="/tmp/xau-watchdog.log"
@@ -72,6 +78,18 @@ feed_ok()    { # bridge alive = the miniapp saw a /feed/push recently. /healthz 
                up=$(grep -oP '"uptime_s":\s*\K[0-9.]+' <<<"$hz")
                if [[ -z "$age" ]]; then (( ${up%.*} < FEED_STALE_S )); return; fi
                (( ${age%.*} < FEED_STALE_S )); }
+mt5_running() { tasklist.exe 2>/dev/null | grep -qi "terminal64.exe"; }
+hb_age()      { curl -sf -m 4 http://127.0.0.1:9000/api/state 2>/dev/null \
+                | grep -oP '"age_s":\s*\K[0-9.]+'; }
+ea_ok()      { # EA heartbeat freshness, judged only when it can be judged:
+               # service down -> main's problem, not the EA's; MT5 not running
+               # -> the owner closed it (or the launcher hasn't started it) —
+               # reopening the terminal on our own is NOT this watchdog's call.
+               main_ok || return 0
+               mt5_running || return 0
+               local age; age="$(hb_age)"
+               [[ -z "$age" ]] && return 1   # age_s null = no heartbeat since service start
+               (( ${age%.*} < EA_STALE_S )); }
 # stale-code: proc_started/newest_mtime/stale_code come from
 # scripts/lib/stale-code.sh (sourced above), shared with setup.sh's Service
 # phase so there is exactly one implementation of "process predates its code".
@@ -132,6 +150,31 @@ restart_bridge()  { # Kill any old bridge, then launch a DETACHED hidden pythonw
                     [[ -n "$py" ]] || { log "bridge: no Windows pythonw found"; return 0; }
                     timeout 25 cmd.exe /c start "" /B "$py" "$win_repo\\bridge\\mt5_feed.py" >/dev/null 2>&1 || true; }
 
+restart_mt5()     { # Gentle close -> wait -> force kill -> relaunch with the
+                    # start config whose [StartUp] section re-attaches the EA.
+                    # Then BLOCK (up to 4 min) until the heartbeat is fresh:
+                    # supervise's immediate recheck must see the truth, not a
+                    # terminal that is still booting — a fake early "ok" here
+                    # would reset the fail counter and turn a truly broken MT5
+                    # into a silent restart loop instead of an alarm.
+                    log "EA heartbeat stale — restarting MT5"
+                    timeout 20 taskkill.exe /IM terminal64.exe >/dev/null 2>&1 || true
+                    local _t; for _t in {1..15}; do mt5_running || break; sleep 2; done
+                    if mt5_running; then
+                      timeout 20 taskkill.exe /F /IM terminal64.exe >/dev/null 2>&1 || true
+                      sleep 3
+                    fi
+                    local ini; ini="$(wslpath -w "$REPO/scripts/mt5-start.ini")"
+                    timeout 25 cmd.exe /c start "" "C:\\Program Files\\MetaTrader 5\\terminal64.exe" "/config:$ini" >/dev/null 2>&1 || true
+                    for _t in {1..48}; do
+                      sleep 5
+                      local age; age="$(hb_age)"
+                      if [[ -n "$age" ]] && (( ${age%.*} < 60 )); then
+                        log "EA heartbeat back (age ${age}s)"; return 0
+                      fi
+                    done
+                    log "EA heartbeat still absent 4 min after MT5 restart"; }
+
 # ---- supervise one link ---------------------------------------------------
 supervise() {   # $1 name  $2 check-fn  $3 restart-fn
   local name="$1" now; now=$(date +%s)
@@ -159,5 +202,6 @@ while true; do
   supervise miniapp miniapp_ok restart_miniapp
   supervise tunnel  tunnel_ok  restart_tunnel
   supervise bridge  feed_ok    restart_bridge
+  supervise ea      ea_ok      restart_mt5
   sleep "$INTERVAL"
 done

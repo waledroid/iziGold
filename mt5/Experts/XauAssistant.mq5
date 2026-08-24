@@ -154,6 +154,32 @@ void RollSpreadBar()
 CUiSink     g_uiSink;
 CReconciler g_recon;
 
+// --- Single-instance guard (2026-08-24) ------------------------------------
+// mt5-start.ini [StartUp] auto-attaches this EA to a fresh XAUUSD M5 chart on
+// EVERY terminal boot, while the restored profile may still carry its own
+// copy — without a guard both would trade the same magic. Rule: the NEWEST
+// attachment wins. Every instance writes a random token into a per-symbol
+// terminal global at init; an instance whose token no longer matches knows it
+// was superseded and removes itself (ExpertRemove) on its next timer tick,
+// and OnTick refuses to trade in the ≤5 s window before that tick lands.
+// Tokens, not chart IDs: globals hold doubles, and chart IDs (~1.3e17) exceed
+// double's exact-integer range, so two near-consecutive IDs could round to
+// the same value. The global is never deleted — a stale token after a crash
+// or manual removal is simply overwritten by the next attachment's claim.
+// Side effect the owner relies on: attaching the EA to ANY chart "moves" it
+// there — the previous instance steps down by itself.
+double g_instToken = 0.0;
+string OwnerKey()  { return "XAU_OWNER_" + _Symbol; }
+bool   IsOwner()   { return GlobalVariableGet(OwnerKey()) == g_instToken; }
+void ClaimOwnership()
+  {
+   MathSrand((int)GetMicrosecondCount() + (int)ChartID());
+   // integer-valued, < 2^45 — exactly representable in the global's double
+   g_instToken = (double)((long)GetMicrosecondCount() % 1000000000) * 32768.0
+                 + (double)MathRand() + 1.0;
+   GlobalVariableSet(OwnerKey(), g_instToken);
+  }
+
 void ApplyDarkTheme()
   {
    ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
@@ -183,6 +209,7 @@ int OnInit()
       g_alerts.Notify("XauAssistant: AUTO on LIVE account blocked (AllowLiveTrading=false)");
       return INIT_FAILED;
      }
+   ClaimOwnership();   // newest attachment wins; any older instance steps down
    g_execMode = ExecutionMode;
    g_entryMode = EntryMode;
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
@@ -243,6 +270,7 @@ int OnInit()
 
 void OnTick()
   {
+   if(!IsOwner()) return;   // superseded — OnTimer will remove this instance
    datetime bar = iTime(_Symbol, TradeTimeframe, 0);
    if(bar == 0 || bar == g_lastBar) return;   // 0 = transient resync (non-chart-TF series); act once per new bar
    g_lastBar = bar;
@@ -282,6 +310,33 @@ void FlattenBeforeBreak()
 
 void OnTimer()
   {
+   // Single-instance guard: a newer attachment claimed ownership — step down.
+   if(!IsOwner())
+     {
+      PrintFormat("XauAssistant: superseded by a newer instance on %s — removing this one (chart %I64d)",
+                  _Symbol, ChartID());
+      ExpertRemove();
+      return;
+     }
+   // One-shot housekeeping ~15 s after attach (3rd tick — after any takeover
+   // has settled): close leftover expert-less charts on OUR symbol+trade TF.
+   // These are exactly the charts previous [StartUp] boots opened (or a
+   // superseded instance vacated); without this they accumulate one per boot.
+   // Charts on other timeframes (the owner's viewing charts) are never touched.
+   static int  g_guardTicks = 0;
+   static bool g_chartsCleaned = false;
+   if(!g_chartsCleaned && ++g_guardTicks >= 3)
+     {
+      g_chartsCleaned = true;
+      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+        {
+         if(cid == ChartID()) continue;
+         if(ChartSymbol(cid) != _Symbol || ChartPeriod(cid) != TradeTimeframe) continue;
+         if(ChartGetString(cid, CHART_EXPERT_NAME) != "") continue;
+         PrintFormat("XauAssistant: closing leftover %s chart without an EA (id %I64d)", _Symbol, cid);
+         ChartClose(cid);
+        }
+     }
    // At most once per 60s: back-fill any close reports missed while MT5 or
    // the service was down (fail-open, throttled — see ReconcileOfflineCloses).
    static datetime g_lastRecon = 0;

@@ -813,6 +813,36 @@ wiring.
   (symbol, timeframe, bar_time), so re-loading replaces and never
   duplicates. It prints the resulting row count and date range. Do this
   once after a fresh install, then let `/analyze` keep the table current.
+- **EA attachment self-heals (2026-08-24)** — nobody drags the EA onto a
+  chart any more; three cooperating pieces (born from the 08-24 silent
+  detach, §7):
+  - `scripts/mt5-start.ini` gained a `[StartUp]` section: every MT5 boot
+    opens a fresh XAUUSD **M5** chart and auto-attaches XauAssistant with
+    its SOURCE-DEFAULT inputs (deliberately no `.set` preset — the source
+    defaults are the owner-approved canon, and the service overrides
+    mode/rules on the first heartbeat). Consequence: chart-side input
+    tweaks DO NOT survive a restart — a changed value belongs in the
+    source defaults (recompile) or it will be silently reverted.
+  - **Single-instance guard** in `XauAssistant.mq5`: every attachment
+    writes a random token to the per-symbol terminal global `XAU_OWNER_<sym>`;
+    NEWEST attachment wins. A superseded instance stops trading immediately
+    (OnTick checks `IsOwner()`) and `ExpertRemove()`s itself on its next 5 s
+    timer tick. So boot-attach + profile-restored copy can briefly coexist,
+    and attaching the EA to any chart by hand "moves" it there. The global
+    is never deleted; a stale token is just overwritten by the next claim.
+    Tokens, not chart IDs, because globals are doubles and chart IDs
+    (~1.3e17) exceed exact-double range. ~15 s after attach the owner also
+    closes leftover expert-less XAUUSD charts on the TRADE timeframe
+    (exactly the charts old boots opened); other-TF viewing charts are
+    never touched.
+  - **Watchdog `ea` link** (`xau-watchdog.sh`): when the main service is UP,
+    MT5 IS running, and `/api/state.age_s` says no heartbeat for
+    `WATCHDOG_EA_STALE_S` (180 s default) → restart MT5 with the start
+    config (gentle `taskkill`, force after 30 s, relaunch, then block up to
+    4 min for the heartbeat so the fail counter stays honest → MAX_FAILS
+    still alarms via Telegram). Deliberate non-goals: MT5 not running →
+    do nothing (owner may have closed it on purpose — only the launcher
+    starts MT5 from cold); service down → main link's problem.
 - **Service restart**: `pkill -f "uvicorn app.main:app"` in its OWN command
   (exit 144 = normal; NEVER combine with the restart — pkill kills the chain),
   then from `service/`: `nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1
@@ -1098,6 +1128,29 @@ wiring.
   observed live on 2026-08-19) — most likely the daily-loss brake, kill
   switch and news blackout this replay still does not model (hypothesis, not
   confirmed; see §3 above and re-check once more live days accumulate).
+
+## The EA silently vanished from its chart — attach is now self-healing (2026-08-24)
+
+At 17:44 the EA's heartbeats stopped with NO "expert removed" line in the
+terminal journal — the chart state saved at the evening shutdowns contained
+no `<expert>` block, so every subsequent MT5 boot faithfully restored an
+EA-less chart and the whole stack sat "healthy" (service, tunnel, watchdog
+all green) while nothing could trade. Lessons that became mechanisms:
+
+- An EA can detach WITHOUT a journal trace; profile restore then propagates
+  the loss forever. Attachment is now code, not a hand step: `[StartUp]`
+  auto-attach + single-instance guard + watchdog `ea` link (see §6 "EA
+  attachment self-heals" for how the three fit).
+- Verification lesson (cost: a false "all up" report): old `POST /analyze`
+  lines in `service.log` prove NOTHING after a restart — the log is
+  append-only across restarts and `/heartbeat` is not access-logged at all.
+  EA liveness = `heartbeats` table freshness (or `/api/state.age_s`), plus
+  "expert ... loaded successfully" after the boot's `Startup` line in the
+  terminal journal.
+- EA-side `err=5203` WebRequest failures mean the service was UNREACHABLE
+  (down/restarting), not a missing allowlist entry (that is 4014) — the
+  EA's log hint suggests whitelisting either way; don't chase the wrong
+  checklist item.
 
 ## setup.sh verifies the EA can TRADE, not just that it is alive (2026-08-24)
 
