@@ -78,6 +78,15 @@ _PROPOSALS_SCHEMA = """CREATE TABLE IF NOT EXISTS proposals (
   executed_ts INTEGER
 )"""
 
+_CANDLES_SCHEMA = """CREATE TABLE IF NOT EXISTS candles (
+  symbol    TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  bar_time  INTEGER NOT NULL,
+  o REAL NOT NULL, h REAL NOT NULL, l REAL NOT NULL, c REAL NOT NULL,
+  v REAL DEFAULT 0,
+  PRIMARY KEY (symbol, timeframe, bar_time)
+)"""
+
 PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
                   "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
                   "profit_target_pct", "broker_name", "account_login",
@@ -103,6 +112,7 @@ class SignalDb:
         self.conn.execute(_PROFILE_SCHEMA)
         self.conn.execute(_SPREAD_SCHEMA)
         self.conn.execute(_PROPOSALS_SCHEMA)
+        self.conn.execute(_CANDLES_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -278,6 +288,57 @@ class SignalDb:
             f"SELECT {', '.join(cols)} FROM signals ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
         return [dict(zip(cols, r)) for r in rows]
+
+    def upsert_candles(self, symbol: str, timeframe: str, candles) -> int:
+        """Persist bars; a re-sent bar_time (the EA re-posts the forming bar
+        until it closes) replaces the stored row, so the final close wins."""
+        rows = []
+        for c in candles:
+            if isinstance(c, dict):
+                rows.append((symbol, timeframe, int(c["t"]), c["o"], c["h"],
+                             c["l"], c["c"], c.get("v", 0.0)))
+            else:
+                rows.append((symbol, timeframe, int(c.t), c.o, c.h,
+                             c.l, c.c, getattr(c, "v", 0.0)))
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO candles (symbol, timeframe, bar_time,"
+            " o, h, l, c, v) VALUES (?,?,?,?,?,?,?,?)", rows)
+        self.conn.commit()
+        return len(rows)
+
+    def get_candles(self, symbol: str, timeframe: str, start_ts=None,
+                    end_ts=None, limit=None) -> list:
+        q = ("SELECT bar_time, o, h, l, c, v FROM candles"
+             " WHERE symbol=? AND timeframe=?")
+        args = [symbol, timeframe]
+        if start_ts is not None:
+            q += " AND bar_time >= ?"; args.append(int(start_ts))
+        if end_ts is not None:
+            q += " AND bar_time <= ?"; args.append(int(end_ts))
+        if limit is not None:
+            # newest N, returned ascending like every other path
+            q = (f"SELECT * FROM ({q} ORDER BY bar_time DESC LIMIT ?)"
+                 " ORDER BY bar_time ASC")
+            args.append(int(limit))
+        else:
+            q += " ORDER BY bar_time ASC"
+        rows = self.conn.execute(q, args).fetchall()
+        return [{"t": t, "o": o, "h": h, "l": l, "c": c, "v": v or 0.0}
+                for t, o, h, l, c, v in rows]
+
+    def candles_range(self, symbol: str, timeframe: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT MIN(bar_time), MAX(bar_time), COUNT(*) FROM candles"
+            " WHERE symbol=? AND timeframe=?", (symbol, timeframe)).fetchone()
+        if not row or not row[2]:
+            return None
+        return {"start": row[0], "end": row[1], "count": row[2]}
+
+    def latest_candle_series(self) -> tuple | None:
+        row = self.conn.execute(
+            "SELECT symbol, timeframe FROM candles"
+            " ORDER BY bar_time DESC LIMIT 1").fetchone()
+        return (row[0], row[1]) if row else None
 
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(
