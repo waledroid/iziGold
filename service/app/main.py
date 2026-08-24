@@ -976,8 +976,12 @@ def ui_overlays(strategy: str = ""):
     # Only the current key's entries are kept (one per strategy the
     # dashboard asks for) -- a new bar drops the whole previous generation
     # rather than letting the dict grow without bound.
+    # pop(..., None), not del: this is a sync def, so FastAPI runs it in the
+    # threadpool and two overlay requests (the dashboard asks for one
+    # strategy per chart) can build the same stale-key list and race the
+    # eviction -- the second del would raise KeyError and 500.
     for stale in [k for k in cache if k[0] != key]:
-        del cache[stale]
+        cache.pop(stale, None)
     cache[(key, strategy)] = payload
     return payload
 

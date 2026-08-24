@@ -252,6 +252,28 @@ def test_overlays_payload_cached_until_accumulator_changes(client):
     assert main.ui_overlays("halftrend_ema_v1") is not first
 
 
+class _RacingCache(dict):
+    """A cache that reports one stale key it no longer holds -- exactly what
+    the eviction loop sees when a concurrent request pops that key between
+    the stale-key list being built and this request deleting it."""
+
+    def __iter__(self):
+        return iter([("gone-key", "halftrend_ema_v1"), *self.keys()])
+
+
+def test_overlays_eviction_tolerates_a_concurrently_removed_key(client):
+    """/api/overlays is a sync def, so FastAPI runs it in the threadpool and
+    two requests can build the same stale-key list and race the eviction.
+    The loser used to hit an unhandled KeyError -> 500."""
+    from app import main
+    assert client.post("/analyze", json=_payload(_candles(120))).status_code == 200
+    stale = (("old-key",), "halftrend_ema_v1")
+    cache = main.app.state.overlays_cache = _RacingCache()
+    cache[stale] = {}
+    assert client.get("/api/overlays?strategy=halftrend_ema_v1").status_code == 200
+    assert stale not in cache          # the genuinely-present stale entry went
+
+
 def test_candles_endpoint_still_serves_over_http(client):
     assert client.post("/analyze", json=_payload(_candles())).status_code == 200
     body = client.get("/api/candles").json()
