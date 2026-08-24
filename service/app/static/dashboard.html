@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>iziGold — XAU Assistant</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -848,6 +849,14 @@ tr:hover td {
     </div>
   </div>
 
+  <!-- Service Unreachable Alert -->
+  <div id="svcdown" class="stale">
+    <span style="font-size:20px;">⚠️</span>
+    <div>
+      <span style="font-weight:800;">⚠️ service unreachable</span> — retrying…
+    </div>
+  </div>
+
   <!-- Big Buttons Control Bar -->
   <div class="control-bar">
     <div class="control-deck-row">
@@ -978,10 +987,22 @@ function closeLightbox(e){
   }
 }
 
+let _svcFailStreak=0;
+function svcOk(){
+  _svcFailStreak=0;
+  const el=$('svcdown'); if(el) el.style.display='none';
+}
+function svcFailed(e){
+  console.error('Poll error:', e);
+  _svcFailStreak++;
+  if(_svcFailStreak>=2){ const el=$('svcdown'); if(el) el.style.display='flex'; }
+}
+
 let _rules=null;
 async function state(){
   try {
     const s=await j('/api/state');
+    svcOk();
     $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
 
     // Highlight active control buttons with luxury gold styling
@@ -1049,20 +1070,32 @@ async function state(){
         <div class="stat-sub">${h.exposure_min}m exposure used</div>
       </div>
     `;
-
-    fetch('/api/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
-      const prof=$('prof');
-      prof.textContent='';
-      if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
-      const a=document.createElement('a');
-      a.href='/onboarding';
-      a.textContent=`Profile ${completion_pct}%`;
-      prof.appendChild(a);
-    }).catch(()=>{});
   } catch(e) {
-    console.error('State poll error:', e);
+    svcFailed(e);
   }
 }
+
+async function loadProfile(){
+  try {
+    const {profile,completion_pct}=await j('/api/profile');
+    svcOk();
+    const prof=$('prof');
+    prof.textContent='';
+    if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
+    const a=document.createElement('a');
+    a.href='/onboarding';
+    a.textContent=`Profile ${completion_pct}%`;
+    prof.appendChild(a);
+  } catch(e) {
+    svcFailed(e);
+  }
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible') loadProfile();
+});
+window.addEventListener('pageshow', e=>{
+  if(e.persisted) loadProfile();
+});
 
 let chart=null,candleSeries=null,S={};        // S: overlay line series by key
 let _activeTab='halftrend_ema_v1',_expanded=false,_pcData=null;
@@ -1160,7 +1193,13 @@ function buildMarkers(candles,tr){
   return m.sort((a,b)=>a.time-b.time);
 }
 
-async function priceChart(){
+// Cache keys from the last rendered cycle — lets a 30s tick skip all chart
+// work (setData/overlay setData/setMarkers) when nothing actually changed
+// (bars close every ~5min, so most 30s cycles are no-ops).
+let _lastCandleKey=null,_lastCandleCount=null,_lastTradeId=null,_lastTradeCount=null,_lastTab=null;
+let _trades=[];   // shared trades array — fetched once per cycle, feeds chart markers + table
+
+async function refreshChartAndTrades(){
   if(!window.LightweightCharts){
     $('chartWrap').innerHTML='<div style="padding:30px;text-align:center;color:var(--text-muted)">Chart library failed to load — the rest of the dashboard still works</div>';
     return;
@@ -1168,19 +1207,40 @@ async function priceChart(){
   if(!chart) initChart();
   try {
     const cd=await j('/api/candles');
-    let ov={},tr=[];
+    svcOk();
+    let ov={};
     try{ ov=await j('/api/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
-    try{ tr=(await j('/api/trades?limit=100')).trades||[]; }catch(e){}
-    _pcData={candles:cd.candles,ov,tr};
-    candleSeries.setData(cd.candles.map(c=>({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c})));
-    setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
-    setLine(S.ema55,ov.ema55); setLine(S.ema200,ov.ema200);
-    setHt(ov.halftrend);
-    setLine(S.bb_upper,ov.bb_upper); setLine(S.bb_mid,ov.bb_mid);
-    setLine(S.bb_lower,ov.bb_lower);
-    candleSeries.setMarkers(buildMarkers(cd.candles,tr));
+    let trades=_trades;
+    try{ trades=(await j('/api/trades?limit=100')).trades||[]; }catch(e){}
+    _trades=trades;
+
+    const candles=cd.candles||[];
+    const last=candles[candles.length-1];
+    const candleKey=last?(last.t+'_'+last.c):null;
+    const newestTradeId=trades.length?trades[0].id:null;
+
+    const unchanged = candleKey===_lastCandleKey && candles.length===_lastCandleCount
+      && newestTradeId===_lastTradeId && trades.length===_lastTradeCount
+      && _activeTab===_lastTab;
+
+    if(!unchanged){
+      _pcData={candles,ov,tr:trades};
+      candleSeries.setData(candles.map(c=>({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c})));
+      setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
+      setLine(S.ema55,ov.ema55); setLine(S.ema200,ov.ema200);
+      setHt(ov.halftrend);
+      setLine(S.bb_upper,ov.bb_upper); setLine(S.bb_mid,ov.bb_mid);
+      setLine(S.bb_lower,ov.bb_lower);
+      candleSeries.setMarkers(buildMarkers(candles,trades));
+
+      _lastCandleKey=candleKey; _lastCandleCount=candles.length;
+      _lastTradeId=newestTradeId; _lastTradeCount=trades.length;
+      _lastTab=_activeTab;
+    }
+
+    renderTradesTable(trades.slice(0,50));
   } catch(e) {
-    console.error('Price chart error:', e);
+    svcFailed(e);
   }
 }
 
@@ -1188,7 +1248,7 @@ function setTab(t){
   _activeTab=t;
   document.querySelectorAll('#stratTabs .tab-btn').forEach(b=>
     b.classList.toggle('active', b.dataset.tab===t));
-  priceChart();
+  refreshChartAndTrades();
 }
 
 function toggleExpand(){
@@ -1206,6 +1266,7 @@ function zoomToTrade(ts){
 async function stats(){
   try {
     const s=await j('/api/stats');
+    svcOk();
     const rows=Object.entries(s.by_strategy||{});
     const ids=[...new Set(rows.map(([k])=>k.split(' @')[0]))].filter(id=>id!=='pre-framework'&&id!=='stub');
     if(ids.length&&!ids.includes(_activeTab)) _activeTab=ids[0];
@@ -1223,7 +1284,7 @@ async function stats(){
           +`<td class="mono">${fmt(v.avg_move)}</td><td>${btn}</td></tr>`;
       }).join('')+'</tbody>';
   } catch(e) {
-    console.error('Stats error:', e);
+    svcFailed(e);
   }
 }
 
@@ -1240,6 +1301,7 @@ $('cmp').addEventListener('click', e=>{
 async function signals(){
   try {
     const {signals}=await j('/api/signals');
+    svcOk();
     const flt=$('sigFilter').value;
     const list=signals.filter(s=>flt==='all'||(flt==='active'?s.is_active:!s.is_active));
     $('sig').innerHTML='<thead><tr><th>Time</th><th>Strategy</th><th>Signal</th><th>AI Forecast</th><th>Verdict</th><th>Outcome</th></tr></thead><tbody>'+
@@ -1253,16 +1315,14 @@ async function signals(){
         `<td class="mono">${s.outcome_move==null?'<span style="color:var(--text-dim)">pending</span>':fmt(s.outcome_move)}</td></tr>`;
       }).join('')+'</tbody>';
   } catch(e) {
-    console.error('Signals error:', e);
+    svcFailed(e);
   }
 }
 
 const agree=v=>v===1?'<span class="badge badge-pos">✓</span>'
   :(v===0?'<span class="badge badge-neg">✗</span>':'—');
 
-async function trades(){
-  try {
-    const {trades}=await j('/api/trades');
+function renderTradesTable(trades){
     $('tr').innerHTML='<thead><tr><th>Locate</th><th>Time</th><th>Event</th><th>Strategy</th><th>Direction</th><th>Lots @ Price</th><th>Realized P/L</th><th>Reason</th><th>M15 Gate</th><th>EMA200 Gate</th><th>MT5 Screen</th><th>Render</th></tr></thead><tbody>'+
       trades.map(t=>{
         const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'} mono" style="font-weight:700;">${t.profit>=0?'+':''}$${fmt(t.profit)}</span>`:'';
@@ -1274,9 +1334,6 @@ async function trades(){
           `<td><img src="/api/screenshot/${t.id}" class="thumb-img" height="42" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
           `<td><img src="/api/render/${t.id}" class="thumb-img" height="42" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
       }).join('')+'</tbody>';
-  } catch(e) {
-    console.error('Trades error:', e);
-  }
 }
 
 function renderProposal(p){
@@ -1362,12 +1419,11 @@ async function sw(id){
   state();
 }
 
-state();priceChart();stats();signals();trades();
+state();loadProfile();refreshChartAndTrades();stats();signals();
 setInterval(state,5000);
-setInterval(priceChart,30000);
+setInterval(refreshChartAndTrades,30000);
 setInterval(stats,30000);
 setInterval(signals,30000);
-setInterval(trades,30000);
 </script>
 </body>
 </html>

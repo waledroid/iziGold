@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>iziGold — Backtest</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
@@ -383,6 +384,7 @@ $('runs').addEventListener('click', e=>{
 });
 
 async function runs(){
+ if(document.visibilityState!=='visible') return;
  const {runs}=await j('/api/backtest/runs');
  $('runs').innerHTML='<thead><tr><th>#</th><th>when</th><th>strategy</th><th>range</th>'+
   '<th>equity</th><th>net</th><th>trades</th><th>win %</th><th>max DD</th><th>status</th><th></th></tr></thead><tbody>'+
@@ -410,6 +412,9 @@ async function runs(){
 }
 
 loadRange();runs();setInterval(runs,15000);
+document.addEventListener('visibilitychange', ()=>{
+ if(document.visibilityState==='visible') runs();
+});
 </script>
 </body>
 </html>

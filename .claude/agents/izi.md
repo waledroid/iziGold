@@ -2907,3 +2907,27 @@ and §6/§7b (ops). The through-line worth remembering:
   both golden pins unmoved (`test_backtest_golden.py`, 3 tests),
   `bash -n` clean on both scripts. New coverage:
   `service/tests/test_lightweight.py` (17 tests).
+- **Frontend half** (same audit, JS-behavior-only — no CSS/markup touched
+  beyond a favicon `<link>` and one new banner element): the dashboard's
+  chart refresh and its trade-table refresh used to each fetch
+  `/api/trades` on the same 30 s cadence — now `refreshChartAndTrades()`
+  fetches trades once per cycle into a shared `_trades` array feeding both
+  the chart markers (up to 100) and the table (`renderTradesTable()`,
+  sliced to 50). The profile badge moved off the 5 s `state()` poll to a
+  one-shot `loadProfile()` on load, refreshed on `visibilitychange`→visible
+  and `pageshow` (bfcache restore). Each 30 s cycle now tracks the last
+  candle's `t_c` key + candle count and the newest trade id + trade count
+  (plus the active strategy tab) and skips `setData`/overlay
+  `setData`/`setMarkers` entirely when none of those changed — bars close
+  every ~5 min, so most cycles render nothing; a tab switch always forces a
+  render because it changes `_activeTab`. Every poller (`state`, `stats`,
+  `signals`, `refreshChartAndTrades`, `loadProfile`) now routes failures
+  through `svcFailed()`/`svcOk()`: 2+ consecutive failures across *any*
+  poller show a `#svcdown` banner ("⚠️ service unreachable — retrying…",
+  same `.stale` styling class as the EA-disconnected banner but a distinct
+  element/id — the two must never be conflated), cleared on the next
+  success from any poller. `/backtest`'s 15 s `runs()` poll now skips its
+  fetch when `document.visibilityState !== 'visible'` and refreshes
+  immediately on becoming visible again, so a background tab stops
+  polling. All three pages got `<link rel="icon" href="data:,">` to kill
+  the favicon 404 per load.
