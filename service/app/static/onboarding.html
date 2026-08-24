@@ -65,6 +65,18 @@ h1 {
   line-height: 1.5;
 }
 
+.nav-links { display: flex; gap: 6px; margin-left: 28px; }
+.nav-links a {
+  color: var(--text-muted); text-decoration: none; font-size: 13px;
+  font-weight: 600; padding: 6px 14px; border-radius: 8px;
+  border: 1px solid transparent; transition: all 0.2s ease;
+}
+.nav-links a:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+.nav-links a.active {
+  color: var(--gold-primary); background: rgba(245,197,66,0.1);
+  border-color: rgba(245,197,66,0.3);
+}
+
 fieldset {
   border: 1px solid var(--border-card);
   border-radius: 12px;
@@ -173,12 +185,17 @@ button {
 <body>
 
 <div class="wrap">
+  <nav class="nav-links" style="justify-content:center;margin-bottom:18px;">
+    <a href="/ui">Dashboard</a>
+    <a href="/ui/backtest">Backtest</a>
+    <a href="/ui/onboarding" class="active">Settings</a>
+  </nav>
   <div class="header">
     <div class="header-logo">🥇</div>
-    <h1>Welcome to iziGold</h1>
-    <p class="note">Everything below is optional — save what you have, skip the rest,
-    and finish anytime from the dashboard's profile badge. Nothing here blocks or
-    alters trading.</p>
+    <h1>iziGold setup</h1>
+    <p class="note">Everything below is optional and editable any time from
+    the <strong>Settings</strong> menu. Save what you have, skip the rest —
+    nothing here blocks or alters trading.</p>
   </div>
 
   <form id="f" novalidate>
