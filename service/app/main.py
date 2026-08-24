@@ -1,4 +1,6 @@
 import asyncio
+import datetime as dt
+import json
 import re
 import time
 from contextlib import asynccontextmanager
@@ -8,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import backtest_runner
 from app.analysis import analyze_forecast
 from app.chart_cmd import merge_forming_bar
 from app.config import settings
@@ -1074,3 +1077,119 @@ def ui_render(trade_id: int):
     if not path.exists():
         return JSONResponse(status_code=404, content={"detail": "render not found"})
     return FileResponse(path, media_type="image/png")
+
+
+def _day_ts(s: str, end: bool = False) -> int:
+    """Date-picker day -> epoch seconds, midnight (or end-of-day) UTC --
+    the same convention the CLI's --start/--end use. Candle bar_time is
+    broker server time; a day boundary being ~3 h off is acceptable for a
+    date-range filter and matches every existing replay."""
+    d = dt.date.fromisoformat(s)
+    t = dt.datetime.combine(d, dt.time(23, 59, 59) if end else dt.time.min,
+                            tzinfo=dt.timezone.utc)
+    return int(t.timestamp())
+
+
+@app.get("/ui/backtest")
+def ui_backtest_page():
+    return FileResponse(Path(__file__).parent / "static" / "backtest.html",
+                        media_type="text/html")
+
+
+@app.get("/ui/backtest/range")
+def ui_backtest_range():
+    series = app.state.db.latest_candle_series()
+    symbol = series[0] if series else "XAUUSD"
+    strategies = [{"id": sid, "label": s["label"], "supported": True}
+                  for sid, s in backtest_runner.STRATEGIES.items()]
+    strategies.append({"id": "boll_stochrsi", "label": "BollStochRsi",
+                       "supported": False})
+    return {"symbol": symbol,
+            "range": app.state.db.candles_range(symbol, "M5"),
+            "strategies": strategies}
+
+
+@app.get("/ui/backtest/runs")
+def ui_backtest_runs(limit: int = 20):
+    runs = []
+    for row in app.state.db.recent_backtest_runs(limit):
+        row = dict(row)
+        row["params"] = json.loads(row.pop("params_json") or "{}")
+        row["stats"] = json.loads(row.pop("stats_json") or "null")
+        runs.append(row)
+    return {"runs": runs}
+
+
+@app.post("/ui/backtest")
+def ui_backtest_start(body: dict):
+    strategy = str(body.get("strategy", "")).strip()
+    if strategy == "boll_stochrsi":
+        raise HTTPException(status_code=400,
+                            detail="boll_stochrsi is not yet supported by the replay engine")
+    if strategy not in backtest_runner.STRATEGIES:
+        raise HTTPException(status_code=400, detail="unknown strategy")
+    try:
+        start_ts = _day_ts(str(body.get("start", "")))
+        end_ts = _day_ts(str(body.get("end", "")), end=True)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start/end must be YYYY-MM-DD")
+    if start_ts >= end_ts:
+        raise HTTPException(status_code=400, detail="start must be before end")
+    try:
+        balance = float(body.get("balance", 10000))
+        risk_pct = float(body.get("risk_pct", 1.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="balance/risk_pct must be numbers")
+    if balance <= 0:
+        raise HTTPException(status_code=400, detail="balance must be > 0")
+    if not 0 < risk_pct <= 10:
+        raise HTTPException(status_code=400, detail="risk_pct must be in (0, 10]")
+    entry_mode = str(body.get("entry_mode", "adr"))
+    exit_scheme = str(body.get("exit_scheme", "target-exit"))
+    ema200_confirm = str(body.get("ema200_confirm", "off"))
+    m15_bias = str(body.get("m15_bias", "off"))
+    if entry_mode not in ("adr", "fixed"):
+        raise HTTPException(status_code=400, detail="entry_mode must be adr|fixed")
+    if exit_scheme not in ("target-exit", "floor-a", "floor-b", "floor-a-adds"):
+        raise HTTPException(status_code=400, detail="bad exit_scheme")
+    if ema200_confirm not in ("off", "on") or m15_bias not in ("off", "on"):
+        raise HTTPException(status_code=400,
+                            detail="ema200_confirm/m15_bias must be off|on")
+    series = app.state.db.latest_candle_series()
+    symbol = series[0] if series else "XAUUSD"
+    rng = app.state.db.candles_range(symbol, "M5")
+    if rng is None or end_ts < rng["start"] or start_ts > rng["end"]:
+        avail = (f"{dt.datetime.utcfromtimestamp(rng['start']):%Y-%m-%d} .. "
+                 f"{dt.datetime.utcfromtimestamp(rng['end']):%Y-%m-%d}"
+                 if rng else "none -- run the backfill first")
+        raise HTTPException(status_code=400,
+                            detail=f"no candles in that range (available: {avail})")
+    params = {"strategy": strategy, "symbol": symbol,
+              "start_ts": start_ts, "end_ts": end_ts,
+              "balance": balance, "risk_pct": risk_pct,
+              "entry_mode": entry_mode, "exit_scheme": exit_scheme,
+              "ema200_confirm": ema200_confirm, "m15_bias": m15_bias}
+    try:
+        run_id = backtest_runner.start_run(app.state.db, params)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"run_id": run_id}
+
+
+@app.get("/ui/backtest/{run_id}")
+def ui_backtest_status(run_id: int):
+    row = app.state.db.get_backtest_run(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such run")
+    row = dict(row)
+    row["params"] = json.loads(row.pop("params_json") or "{}")
+    row["stats"] = json.loads(row.pop("stats_json") or "null")
+    return row
+
+
+@app.get("/ui/backtest/{run_id}/report")
+def ui_backtest_report(run_id: int):
+    row = app.state.db.get_backtest_run(run_id)
+    if not row or not row["report_path"] or not Path(row["report_path"]).exists():
+        raise HTTPException(status_code=404, detail="report not found")
+    return FileResponse(row["report_path"], media_type="text/html")
