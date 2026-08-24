@@ -489,7 +489,8 @@ serves them their only external asset, the vendored
 `<script src=>` it instead).
 
 **Control bar layout (owner 2026-08-24)**: the dashboard's control bar is a
-single row — LEFT: a big italic gold-gradient greeting (`Playfair Display`)
+single row — LEFT: a big gold-gradient greeting (bold `Outfit`/`Syne`; was
+italic Playfair Display for a few hours until the owner's same-day restyle)
 "Bonjour <first name> !" (first word of the onboarding profile's `name`,
 set by `loadProfile()` via textContent; plain "Bonjour !" when no name),
 with the live status line ("EA automatically executes signals · Spread …")
