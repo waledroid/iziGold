@@ -25,7 +25,7 @@ def test_m15_overlays_align_with_m5_list():
     out = _OVERLAY_BUILDERS["halftrend_m15_v1"](candles, closes)
     assert set(out) == {"halftrend", "ema55", "ema200"}
     for arr in out.values():
-        assert len(arr) == len(candles)          # 1:1 with /ui/candles
+        assert len(arr) == len(candles)          # 1:1 with /api/candles
     # three consecutive M5 bars share their M15 bucket's value
     i = 450
     j = i - (i % 3)

@@ -186,9 +186,9 @@ button {
 
 <div class="wrap">
   <nav class="nav-links" style="justify-content:center;margin-bottom:18px;">
-    <a href="/ui">Dashboard</a>
-    <a href="/ui/backtest">Backtest</a>
-    <a href="/ui/onboarding" class="active">Settings</a>
+    <a href="/">Dashboard</a>
+    <a href="/backtest">Backtest</a>
+    <a href="/onboarding" class="active">Settings</a>
   </nav>
   <div class="header">
     <div class="header-logo">🥇</div>
@@ -279,7 +279,7 @@ button {
 
 <script>
 const f=document.getElementById('f');
-fetch('/ui/profile').then(r=>r.json()).then(({profile})=>{
+fetch('/api/profile').then(r=>r.json()).then(({profile})=>{
  if(!profile)return;
  for(const el of f.elements){ if(!el.name) continue;
   if(el.type==='checkbox') el.checked=!!profile[el.name];
@@ -292,11 +292,11 @@ f.onsubmit=async e=>{e.preventDefault();
   else if(el.value!=='') body[el.name]=el.type==='number'?Number(el.value):el.value; }
  if(typeof body.telegram_bot_token==='string' && body.telegram_bot_token.startsWith('•')) delete body.telegram_bot_token;
  if(typeof body.ngrok_authtoken==='string' && body.ngrok_authtoken.startsWith('•')) delete body.ngrok_authtoken;
- await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- location.href='/ui';};
+ await fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ location.href='/';};
 document.getElementById('skip').onclick=async()=>{
- await fetch('/ui/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
- location.href='/ui';};
+ await fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ location.href='/';};
 </script>
 </body>
 </html>

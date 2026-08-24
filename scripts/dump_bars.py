@@ -1,5 +1,5 @@
 """Dump M5 XAUUSD bars from the RUNNING MT5 terminal to JSON in the
-/ui/candles format consumed by scripts/backtest.py.
+/api/candles format consumed by scripts/backtest.py.
 Run with WINDOWS python: python.exe scripts/dump_bars.py [bars] [out.json]
 """
 import json

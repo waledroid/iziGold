@@ -1,4 +1,4 @@
-"""Task 7: /ui/backtest run lifecycle endpoints (range, start, status,
+"""Task 7: /api/backtest run lifecycle endpoints (range, start, status,
 runs, report)."""
 import importlib
 import json
@@ -26,7 +26,7 @@ def seed_candles(client, n=500):
 
 def test_range_lists_strategies(client):
     seed_candles(client)
-    r = client.get("/ui/backtest/range").json()
+    r = client.get("/api/backtest/range").json()
     assert r["symbol"] == "XAUUSD"
     assert r["range"]["count"] == 500
     ids = {s["id"]: s["supported"] for s in r["strategies"]}
@@ -51,7 +51,7 @@ def test_start_validates(client, monkeypatch):
          "unknown strategy"),
     ]
     for body, frag in bad:
-        r = client.post("/ui/backtest", json=body)
+        r = client.post("/api/backtest", json=body)
         assert r.status_code == 400, body
         assert frag in r.json()["detail"]
 
@@ -60,7 +60,7 @@ def test_start_rejects_nan_balance(client):
     seed_candles(client)
     raw = json.dumps({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
                       "end": "2023-11-16", "balance": float("nan")}, allow_nan=True)
-    r = client.post("/ui/backtest", content=raw,
+    r = client.post("/api/backtest", content=raw,
                     headers={"content-type": "application/json"})
     assert r.status_code == 400
     assert "balance" in r.json()["detail"] or "finite" in r.json()["detail"]
@@ -72,7 +72,7 @@ def test_start_rejects_sparse_range(client):
     client.app.state.db.upsert_candles("XAUUSD", "M5", [
         {"t": 1704067200 + 300 * i, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 0}
         for i in range(50)])
-    r = client.post("/ui/backtest", json={
+    r = client.post("/api/backtest", json={
         "strategy": "halftrend_ema_v1", "start": "2024-01-01", "end": "2024-01-01"})
     assert r.status_code == 400
     detail = r.json()["detail"]
@@ -89,7 +89,7 @@ def test_start_and_status_roundtrip(client, monkeypatch):
 
     from app import backtest_runner
     monkeypatch.setattr(backtest_runner, "start_run", fake_start)
-    r = client.post("/ui/backtest", json={
+    r = client.post("/api/backtest", json={
         "strategy": "halftrend_m15_v1", "start": "2023-11-14",
         "end": "2023-11-16", "balance": 5000, "risk_pct": 2.0})
     assert r.status_code == 200
@@ -97,10 +97,10 @@ def test_start_and_status_roundtrip(client, monkeypatch):
     assert captured["strategy"] == "halftrend_m15_v1"
     assert captured["entry_mode"] == "adr"            # default applied
     assert captured["start_ts"] < captured["end_ts"]
-    row = client.get(f"/ui/backtest/{rid}").json()
+    row = client.get(f"/api/backtest/{rid}").json()
     assert row["status"] == "running"
     assert row["params"]["balance"] == 5000
-    runs = client.get("/ui/backtest/runs").json()["runs"]
+    runs = client.get("/api/backtest/runs").json()["runs"]
     assert runs[0]["id"] == rid
 
 
@@ -112,14 +112,14 @@ def test_busy_returns_409(client, monkeypatch):
         raise RuntimeError("a backtest is already running")
 
     monkeypatch.setattr(backtest_runner, "start_run", busy)
-    r = client.post("/ui/backtest", json={
+    r = client.post("/api/backtest", json={
         "strategy": "halftrend_ema_v1", "start": "2023-11-14", "end": "2023-11-16"})
     assert r.status_code == 409
 
 
 def test_report_404s(client):
-    assert client.get("/ui/backtest/12345").status_code == 404
-    assert client.get("/ui/backtest/12345/report").status_code == 404
+    assert client.get("/api/backtest/12345").status_code == 404
+    assert client.get("/api/backtest/12345/report").status_code == 404
 
 
 def make_client(db_path, monkeypatch):

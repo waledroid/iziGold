@@ -16,7 +16,7 @@ operate, extend, and debug the system safely.
 - **`service/` — FastAPI** (WSL2, `127.0.0.1:9000`): AI grading
   (Chronos-Bolt behind the `Forecaster` ABC in `app/forecaster.py` — the only
   file a model swap touches), SQLite logging (`xau_assistant.db`), Telegram
-  bot (poller + commands + proposals), dashboard (`/ui`), chart renders
+  bot (poller + commands + proposals), dashboard (`/`), chart renders
   (`app/render.py` + `app/indicators.py`).
 
 **Per closed bar** (`TradeTimeframe` input, M5 default — the chart's own
@@ -437,7 +437,7 @@ Quiet by default: only proposals, executions, failures, command replies.
   "exit" | "reset_brake") generalizes the older `exit_button` bool, which is
   kept for compatibility (the EA sends both for "exit").
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
-  (`exitnow:` callback); dashboard `/ui/close-all`. All create pre-approved
+  (`exitnow:` callback); dashboard `/api/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
   report honestly ("N of M legs still open"); messageless failures send a
   fresh message.
@@ -456,10 +456,10 @@ Quiet by default: only proposals, executions, failures, command replies.
 - Single-chat security on messages AND callbacks; bot credentials live in
   the service profile (onboarding page), overriding `.env`.
 
-# 5. Dashboard (`/ui`), Backtest page & renders
+# 5. Dashboard (`/`), Backtest page & renders
 
 Three pages, one nav bar (`Dashboard · Backtest · Settings`, the active one
-highlighted): `/ui` (dashboard), `/ui/backtest`, `/ui/onboarding` — the
+highlighted): `/` (dashboard), `/backtest`, `/onboarding` — the
 onboarding page IS the Settings page since 2026-08-24, same styling and the
 same nav, so there is no dead-end "finish onboarding then never come back"
 route any more. All three are static HTML under `service/app/static/` with
@@ -469,15 +469,28 @@ serves them their only external asset, the vendored
 `--web` backtest reports inline; the mount is what lets the dashboard
 `<script src=>` it instead).
 
-**Price chart (`/ui`)** — TradingView Lightweight Charts since 2026-08-24,
+**Clean URLs (2026-08-24)**: pages live at `/`, `/backtest`, `/onboarding`;
+every JSON endpoint moved from `/ui/...` to `/api/...`. The OLD `/ui/*`
+addresses (bookmarks, Telegram links, and — crucially — `scripts/backtest.py`'s
+`--web`/`--source` default of `http://127.0.0.1:9000/ui/candles`, which is
+**read-only in this repo and was deliberately left pointed at `/ui/candles`**)
+still work: a catch-all `@app.api_route("/ui{path:path}", methods=["GET",
+"POST"])` registered AFTER every real route 307-redirects `/ui` → `/`,
+`/ui/backtest` → `/backtest`, `/ui/onboarding` → `/onboarding`, and anything
+else `/ui/<tail>` → `/api/<tail>` (query string preserved, 307 preserves
+method+body so a `POST /ui/rules` still works through the redirect). Route
+registration order matters here — the catch-all must stay last so it can
+never shadow a real route.
+
+**Price chart (`/`)** — TradingView Lightweight Charts since 2026-08-24,
 replacing the hand-drawn canvas (which also retires its "◂ live" pan
 control, dashed last-price line and canvas risk/reward boxes; the library
 gives panning/zoom/crosshair for free). Candles + overlays from
-`/ui/candles` + `/ui/overlays?strategy=<active tab>` (the arrays are 1:1 by
+`/api/candles` + `/api/overlays?strategy=<active tab>` (the arrays are 1:1 by
 construction), redrawn every 30 s. Facts worth knowing:
 - **Overlay series are added BEFORE the candle series** — later-added
   series paint on top in this library, so this keeps candles above the EMAs.
-- **Past trades are markers** from `/ui/trades?limit=100`: arrowUp/arrowDown
+- **Past trades are markers** from `/api/trades?limit=100`: arrowUp/arrowDown
   below/above the bar for `open`/`add` (labelled with lots, `add` prefixed),
   a circle at `close` labelled with the P/L. Lightweight Charts markers have
   no hover, so the P/L rides on the label and the trade table stays the
@@ -498,13 +511,13 @@ construction), redrawn every 30 s. Facts worth knowing:
 
 **Dashboard controls & tables** (2026-08-24): rule toggles in the control
 bar — Entry `ADR`/`FIXED`, `M15 gate` (off/M15/M30/H1), `EMA200 gate`
-(off/ON) — read from `/ui/state`'s `rules{entry_mode, htf_enforce,
-ema200_enforce}` and written with `POST /ui/rules`. These are the SAME kv
+(off/ON) — read from `/api/state`'s `rules{entry_mode, htf_enforce,
+ema200_enforce}` and written with `POST /api/rules`. These are the SAME kv
 keys the Telegram `/agree`-family commands write and the EA reads back on
 each heartbeat, so **dashboard and Telegram are two front-ends over one
 state: last writer wins**, and neither invalidates the other. Strategy tabs
 are **dynamic** — built from whatever strategy ids have actually signalled
-(`/ui/stats`' `by_strategy` keys, `" @<tf>"` suffix stripped because
+(`/api/stats`' `by_strategy` keys, `" @<tf>"` suffix stripped because
 overlays are keyed by bare id; `pre-framework`/`stub` filtered out), so
 `halftrend_m15_v1` appears on its own without a code change. Raw ids are
 the labels on purpose (no prettifier to keep in sync). The trades table
@@ -517,9 +530,21 @@ buttons carry their target in `data-sid` (never spliced into an `onclick`
 string) because `strategy_id` is unconstrained on `/analyze` — XSS was
 found and fixed on this page once.
 
-**Backtest page (`/ui/backtest`)** — see §5c.
+**Backtest page (`/backtest`)** — see §5c for the run lifecycle/endpoints.
+Since 2026-08-24 a run's result surfaces inline instead of forcing a new
+tab: an indeterminate gold "loadbar" (`#loadbar`, CSS `@keyframes
+loadsweep`) appears under the header the moment a run is submitted (and
+during every `watch()` poll while `status==='running'`), the Run button
+disables for the same window, and on `status==='done'` a `showReport(rid)`
+helper points a `#resultCard` `<iframe>` at `/api/backtest/{rid}/report` and
+scrolls it into view — no new tab needed, though the per-row "report" link
+in the Runs table still opens `showReport` inline plus a small "↗" anchor
+for the old open-in-new-tab behavior when wanted. **Resume on reload**: on
+first load, if the newest row from `/api/backtest/runs` is `status==='running'`
+(a page refresh mid-run, or a second tab), `watch()` is started against it
+immediately so the loadbar and polling resume without the user re-submitting.
 
-**Renders** (Telegram + `/ui/render/{id}`): candles + HalfTrend/EMA
+**Renders** (Telegram + `/api/render/{id}`): candles + HalfTrend/EMA
 9/21/55/200 overlays + E/A/SL/TP/X labeled lines; close renders inherit
 SL/TP from persisted legs (EA sends 0 on closes). MT5 chart itself: dark
 theme + HalfTrend/EMA painting (`EnablePaint`, active strategy only) +
@@ -529,21 +554,22 @@ trade boxes (`TradeBoxes.mqh`, recovers open-basket state after reload).
 
 | endpoint | what it does |
 |---|---|
-| `GET /ui`, `/ui/backtest`, `/ui/onboarding` | the three pages (FileResponse from `static/`) |
+| `GET /`, `/backtest`, `/onboarding` | the three pages (FileResponse from `static/`); `/` 307s to `/onboarding` when no profile row exists yet |
 | `/static/*` | StaticFiles mount — vendored Lightweight Charts lives here |
-| `GET /ui/state` | heartbeat + age, exec mode, pending switch, proposal, stats, **`rules{entry_mode, htf_enforce, ema200_enforce}`** |
-| `POST /ui/rules` | `{key, value}` mirror of the Telegram rule toggles; 400 on an unknown key or a value the db setter rejects |
-| `GET /ui/candles`, `/ui/overlays?strategy=` | chart data; overlays 1:1 with candles, unknown strategy → `{}` |
-| `GET /ui/trades` | now includes `entry_mode`, `htf_agree`, `ema200_agree` |
-| `GET /ui/stats`, `/ui/signals`, `/ui/equity` | tables |
-| `POST /ui/switch`, `/ui/mode`, `/ui/close-all`, `/ui/proposal/{pid}` | controls |
-| `GET/POST /ui/profile` | Settings; secrets masked on read |
-| `GET /ui/screenshot/{id}`, `/ui/render/{id}` | trade images |
-| `GET /ui/backtest/range` | stored candle range + the strategy list the form offers |
-| `POST /ui/backtest` | start a run → `{run_id}`; **400** on bad params/empty range/balance < 500/non-finite balance-risk/fewer than 300 M5 bars in range, **409** when one is already running |
-| `GET /ui/backtest/runs?limit=20` | recent runs with parsed `params`/`stats` |
-| `GET /ui/backtest/{id}` | one run row (`running`/`done`/`failed` + `error`) |
-| `GET /ui/backtest/{id}/report` | the run's self-contained HTML report; 404 if the file is gone |
+| `GET /api/state` | heartbeat + age, exec mode, pending switch, proposal, stats, **`rules{entry_mode, htf_enforce, ema200_enforce}`** |
+| `POST /api/rules` | `{key, value}` mirror of the Telegram rule toggles; 400 on an unknown key or a value the db setter rejects |
+| `GET /api/candles`, `/api/overlays?strategy=` | chart data; overlays 1:1 with candles, unknown strategy → `{}` |
+| `GET /api/trades` | now includes `entry_mode`, `htf_agree`, `ema200_agree` |
+| `GET /api/stats`, `/api/signals`, `/api/equity` | tables |
+| `POST /api/switch`, `/api/mode`, `/api/close-all`, `/api/proposal/{pid}` | controls |
+| `GET/POST /api/profile` | Settings; secrets masked on read |
+| `GET /api/screenshot/{id}`, `/api/render/{id}` | trade images |
+| `GET /api/backtest/range` | stored candle range + the strategy list the form offers |
+| `POST /api/backtest` | start a run → `{run_id}`; **400** on bad params/empty range/balance < 500/non-finite balance-risk/fewer than 300 M5 bars in range, **409** when one is already running |
+| `GET /api/backtest/runs?limit=20` | recent runs with parsed `params`/`stats` |
+| `GET /api/backtest/{id}` | one run row (`running`/`done`/`failed` + `error`) |
+| `GET /api/backtest/{id}/report` | the run's self-contained HTML report; 404 if the file is gone |
+| `GET/POST /ui{path:path}` | legacy 307 redirect to the routes above (registered last, after every real route) — `""`/`backtest`/`onboarding` map to the three pages, anything else `/ui/<tail>` → `/api/<tail>` with the query string preserved |
 
 ## 5b. The `candles` table (2026-08-24) — history that survives restarts
 
@@ -587,7 +613,7 @@ wiring.
   `halftrend_ema_v1` → `--tf M5 --confirm 2`;
   `halftrend_m15_v1` → `--tf M15 --confirm 3`. No new engine lane was
   needed. `boll_stochrsi` is listed `supported: false` and rejected with
-  400 by `POST /ui/backtest`.
+  400 by `POST /api/backtest`.
 - **M15-bias flags only for the M5 lane**: `m15_bias=on` adds
   `--bias-ema 200 --bias-tf M15 --bias-mode target`, and only for
   `halftrend_ema_v1` — the M15 lane has no HTF module at all ("the only
@@ -612,7 +638,7 @@ wiring.
   starts serving, fail-open (`try/except: pass`) like every other startup
   step.
 - **Guards before launching (2026-08-24: fail fast, not fail into a doomed
-  run)**: `POST /ui/backtest` now pre-checks up front and returns 400
+  run)**: `POST /api/backtest` now pre-checks up front and returns 400
   instead of creating a run that would only fail once the subprocess runs:
   unknown strategy / bad dates / non-finite balance-or-risk (`math.isfinite`,
   catches a NaN slipped past a naive `float()`) / `balance < 500` ("balance
@@ -728,7 +754,7 @@ wiring.
   [--verbose]` replays halftrend + the full current money rulebook over the
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
   on service restart). **Since 2026-08-24 there is also a browser front door**
-  — `/ui/backtest` drives this exact CLI as a subprocess over the persistent
+  — `/backtest` drives this exact CLI as a subprocess over the persistent
   `candles` table (§5c), so a UI run and a `--source` CLI run are the same
   engine and the same caveats; the CLI stays the power surface (every flag,
   no one-run-at-a-time lock). Validated against reality (reproduced the +$94.81
@@ -972,7 +998,7 @@ in that state is the failure mode that costs money silently: everything looks
 green and no trade ever appears.
 
 It now reads the capability fields the heartbeat ALREADY carries (nested under
-`heartbeat` in `/ui/state` — no service change was needed) and reports each
+`heartbeat` in `/api/state` — no service change was needed) and reports each
 separately, because the fix differs for each:
 
 - `algo_trading` false  -> soft_fail "the EA cannot trade: switch Algo Trading ON"
@@ -2289,7 +2315,7 @@ section already relies on gained the three columns, added to
 `PROFILE_FIELDS` (completion % denominator moved 12 → 15) via a guarded
 `ALTER TABLE` migration (same try/except `OperationalError` pattern as the
 `trades`-table migrations, so opening a pre-existing db just gains the
-columns in place). `ngrok_authtoken` is masked on `GET /ui/profile`
+columns in place). `ngrok_authtoken` is masked on `GET /api/profile`
 (`_mask_secret`, identical treatment to `telegram_bot_token`) and the same
 "a masked value round-tripped back in a POST must never overwrite the
 real stored secret" guard in `ui_profile_save` now covers it too.
@@ -2304,7 +2330,7 @@ address bar) normalizes down to just `x.ngrok-free.dev`.
 `scripts/setup.sh` gained a new phase, "Live chart config (profile →
 .env)" (now phase 6/10, right after "Mini-app feed service" and BEFORE
 the ngrok phase below — the renumbering below reflects it), that reads
-the profile via `curl $BASE_URL/ui/profile` for `ngrok_domain` /
+the profile via `curl $BASE_URL/api/profile` for `ngrok_domain` /
 `miniapp_direct_link` (plain, unmasked) but reads `ngrok_authtoken`
 **directly from the sqlite `profile` row** via a read-only URI connection
 (`file:<path>?mode=ro`) — the GET's masking means the raw token can never
@@ -2325,7 +2351,7 @@ BotFather deep link with `?startapp=...&x=y`) would silently corrupt the
 to the Python snippet sidesteps that whole class of bug rather than
 trying to escape it. If neither the
 profile nor `.env` has a value, that field SKIPs with a hint pointing at
-`$BASE_URL/ui/onboarding`. The raw token is never echoed anywhere — only
+`$BASE_URL/onboarding`. The raw token is never echoed anywhere — only
 a `••••last4` form reaches stdout on a successful sync. Because
 `app/config.py`'s `Settings` are read once at process startup, a value
 that actually changed prints an "OK restart the service to apply" line —

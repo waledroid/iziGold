@@ -435,9 +435,9 @@ button.btn-cancel:hover {
       </div>
     </div>
     <nav class="nav-links">
-      <a href="/ui" class="active">Dashboard</a>
-      <a href="/ui/backtest">Backtest</a>
-      <a href="/ui/onboarding">Settings</a>
+      <a href="/" class="active">Dashboard</a>
+      <a href="/backtest">Backtest</a>
+      <a href="/onboarding">Settings</a>
     </nav>
     <div class="header-right">
       <span id="prof" class="prof-badge"></span>
@@ -559,7 +559,7 @@ function closeLightbox(e){
 
 let _rules=null;
 async function state(){
- const s=await j('/ui/state');
+ const s=await j('/api/state');
  $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
  // controls render even before the first heartbeat (mode/proposal are
  // service-side state, not EA state)
@@ -621,12 +621,12 @@ async function state(){
   </div>
  `;
 
- fetch('/ui/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
+ fetch('/api/profile').then(r=>r.json()).then(({profile,completion_pct})=>{
   const prof=$('prof');
   prof.textContent='';
   if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
   const a=document.createElement('a');
-  a.href='/ui/onboarding';
+  a.href='/onboarding';
   a.textContent=`profile ${completion_pct}%`;
   prof.appendChild(a);
  });
@@ -705,10 +705,10 @@ async function priceChart(){
   return;
  }
  if(!chart) initChart();
- const cd=await j('/ui/candles');
+ const cd=await j('/api/candles');
  let ov={},tr=[];
- try{ ov=await j('/ui/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
- try{ tr=(await j('/ui/trades?limit=100')).trades||[]; }catch(e){}
+ try{ ov=await j('/api/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
+ try{ tr=(await j('/api/trades?limit=100')).trades||[]; }catch(e){}
  _pcData={candles:cd.candles,ov,tr};
  candleSeries.setData(cd.candles.map(c=>({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c})));
  setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
@@ -737,7 +737,7 @@ function zoomToTrade(ts){
 }
 
 async function stats(){
- const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
+ const s=await j('/api/stats');const rows=Object.entries(s.by_strategy||{});
  // tabs follow whatever strategies have actually signalled (per-tf keys
  // collapse to bare ids -- overlays are keyed by bare strategy_id)
  const ids=[...new Set(rows.map(([k])=>k.split(' @')[0]))]
@@ -747,7 +747,7 @@ async function stats(){
   `<button type="button" class="tab-btn${id===_activeTab?' active':''}" data-tab="${esc(id)}">${esc(id)}</button>`).join('');
  $('cmp').innerHTML='<thead><tr><th>strategy</th><th>tf</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr></thead><tbody>'+
   rows.map(([key,v])=>{
-    // key is "<strategy_id> @<timeframe>" (display only) -- /ui/switch takes the
+    // key is "<strategy_id> @<timeframe>" (display only) -- /api/switch takes the
     // bare strategy_id, so strip the " @<tf>" suffix for the button's payload.
     const [sid, tf] = key.split(' @');
     const btn=key==='pre-framework'?''
@@ -773,7 +773,7 @@ $('cmp').addEventListener('click', e=>{
 });
 
 async function signals(){
- const {signals}=await j('/ui/signals');
+ const {signals}=await j('/api/signals');
  const flt=$('sigFilter').value;
  const list=signals.filter(s=>flt==='all'||(flt==='active'?s.is_active:!s.is_active));
  $('sig').innerHTML='<thead><tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr></thead><tbody>'+
@@ -792,7 +792,7 @@ const agree=v=>v===1?'<span class="badge badge-pos">✓</span>'
   :(v===0?'<span class="badge badge-neg">✗</span>':'—');
 
 async function trades(){
- const {trades}=await j('/ui/trades');
+ const {trades}=await j('/api/trades');
  $('tr').innerHTML='<thead><tr><th></th><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>M15</th><th>E200</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
   trades.map(t=>{
    const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${t.profit>=0?'+':''}${fmt(t.profit)}</span>`:'';
@@ -800,8 +800,8 @@ async function trades(){
     `<td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${esc(t.event)}</span></td><td><b>${esc(t.strategy_id||'—')}</b></td><td>${esc(t.direction||'—')}</td>`+
     `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${esc(t.reason||'—')}</span></td>`+
     `<td>${agree(t.htf_agree)}</td><td>${agree(t.ema200_agree)}</td>`+
-    `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
-    `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
+    `<td><img src="/api/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
+    `<td><img src="/api/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
   }).join('')+'</tbody>';
 }
 
@@ -820,13 +820,13 @@ function renderProposal(p){
 }
 
 async function setMode(m){
- const r=await fetch('/ui/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
+ const r=await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
  if(!r.ok) alert('Mode change failed ('+r.status+')');
  state();
 }
 
 async function setRule(key,value){
- const r=await fetch('/ui/rules',{method:'POST',
+ const r=await fetch('/api/rules',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})});
  if(!r.ok) alert('Rule change failed ('+r.status+')');
  state();
@@ -836,7 +836,7 @@ function toggleE200(){
 }
 
 async function decide(pid,action){
- const r=await fetch('/ui/proposal/'+pid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+ const r=await fetch('/api/proposal/'+pid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
  if(r.ok){const d=await r.json(); if(!d.ok) alert('Already decided elsewhere: '+d.status);}
  else alert('Decision failed ('+r.status+')');
  state();
@@ -844,14 +844,14 @@ async function decide(pid,action){
 
 async function closeAllPos(){
  if(!confirm('Close ALL open positions?')) return;
- const r=await fetch('/ui/close-all',{method:'POST'});
+ const r=await fetch('/api/close-all',{method:'POST'});
  if(!r.ok){const d=await r.json().catch(()=>({})); alert('Close-all failed: '+(d.detail||r.status));}
  state();
 }
 
 async function sw(id){
  try{
-   const r=await fetch('/ui/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});
+   const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});
    if(!r.ok){
      const detail=await r.text().catch(()=>'');
      alert(`Switch request failed (${r.status}): ${detail||'see server log'}`);

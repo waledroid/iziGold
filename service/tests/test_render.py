@@ -230,7 +230,7 @@ def test_trade_event_close_renders_chart_after_analyze(client):
     with open(row[0], "rb") as f:
         assert f.read().startswith(b"\x89PNG")
 
-    r = client.get(f"/ui/render/{trade_id}")
+    r = client.get(f"/api/render/{trade_id}")
     assert r.status_code == 200
     assert r.content.startswith(b"\x89PNG")
 
@@ -246,7 +246,7 @@ def test_trade_event_open_renders_chart_after_analyze(client):
         "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
     assert row[0] is not None
 
-    r = client.get(f"/ui/render/{trade_id}")
+    r = client.get(f"/api/render/{trade_id}")
     assert r.status_code == 200
 
 
@@ -259,7 +259,7 @@ def test_trade_event_without_prior_candles_still_200_no_render(client):
         "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
     assert row[0] is None
 
-    r = client.get(f"/ui/render/{trade_id}")
+    r = client.get(f"/api/render/{trade_id}")
     assert r.status_code == 404
 
 
@@ -291,7 +291,7 @@ def test_trade_event_render_prunes_to_retention_cap(client, tmp_path):
 
 def test_ui_render_404_when_missing(client):
     trade_id = client.post("/trade-event", json=_trade()).json()["id"]
-    r = client.get(f"/ui/render/{trade_id}")
+    r = client.get(f"/api/render/{trade_id}")
     assert r.status_code == 404
     assert r.json()["detail"]
 

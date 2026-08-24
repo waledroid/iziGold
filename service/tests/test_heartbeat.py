@@ -46,7 +46,7 @@ def test_heartbeat_downsampled_to_one_per_minute(client):
 
 
 def test_switch_queue_delivers_until_confirmed(client):
-    r = client.post("/ui/switch", json={"strategy_id": "boll_stochrsi_v1"})
+    r = client.post("/api/switch", json={"strategy_id": "boll_stochrsi_v1"})
     assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
     # delivered while the EA still reports the old strategy
     r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
@@ -69,9 +69,9 @@ def test_switch_queue_delivers_until_confirmed(client):
 
 
 def test_switch_queue_cancel_clears_pending(client):
-    r = client.post("/ui/switch", json={"strategy_id": "boll_stochrsi_v1"})
+    r = client.post("/api/switch", json={"strategy_id": "boll_stochrsi_v1"})
     assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
-    r = client.post("/ui/switch", json={"strategy_id": ""})
+    r = client.post("/api/switch", json={"strategy_id": ""})
     assert r.status_code == 200 and r.json() == {"pending": None}
     r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
     body = r.json()

@@ -62,7 +62,7 @@ def test_screenshot_upload_saves_file_and_records_path(client):
 def test_ui_trades_returns_recent_rows(client):
     client.post("/trade-event", json=_trade(event="open"))
     client.post("/trade-event", json=_trade(event="close"))
-    body = client.get("/ui/trades").json()
+    body = client.get("/api/trades").json()
     assert len(body["trades"]) == 2
     assert body["trades"][0]["event"] == "close"   # newest first
 
@@ -70,14 +70,14 @@ def test_ui_trades_returns_recent_rows(client):
 def test_ui_screenshot_serves_bytes(client):
     trade_id = client.post("/trade-event", json=_trade()).json()["id"]
     client.post(f"/screenshot?event={trade_id}", content=b"\x89PNG fake")
-    r = client.get(f"/ui/screenshot/{trade_id}")
+    r = client.get(f"/api/screenshot/{trade_id}")
     assert r.status_code == 200
     assert r.content == b"\x89PNG fake"
 
 
 def test_ui_screenshot_404_when_missing(client):
     trade_id = client.post("/trade-event", json=_trade()).json()["id"]
-    r = client.get(f"/ui/screenshot/{trade_id}")
+    r = client.get(f"/api/screenshot/{trade_id}")
     assert r.status_code == 404
     assert r.json()["detail"]
 
@@ -178,7 +178,7 @@ def test_trade_event_profit_persists_and_returned_by_ui_trades(client):
         "SELECT profit FROM trades WHERE id=?", (trade_id,)).fetchone()
     assert row[0] == 42.5
 
-    body = client.get("/ui/trades").json()
+    body = client.get("/api/trades").json()
     trade = next(t for t in body["trades"] if t["id"] == trade_id)
     assert trade["profit"] == 42.5
 
@@ -192,7 +192,7 @@ def test_trade_event_sl_persists_and_returned_by_ui_trades(client):
         "SELECT sl FROM trades WHERE id=?", (trade_id,)).fetchone()
     assert row[0] == 2385.5
 
-    body = client.get("/ui/trades").json()
+    body = client.get("/api/trades").json()
     trade = next(t for t in body["trades"] if t["id"] == trade_id)
     assert trade["sl"] == 2385.5
 

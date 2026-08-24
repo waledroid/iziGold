@@ -113,7 +113,7 @@ def heartbeat_payload():
 
 
 def test_ui_candles_empty_before_analyze(client):
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     assert r.status_code == 200
     body = r.json()
     assert body == {"symbol": "", "timeframe": "", "candles": []}
@@ -122,7 +122,7 @@ def test_ui_candles_empty_before_analyze(client):
 def test_ui_candles_returns_last_analyze_window(client, analyze_payload):
     # analyze_payload: reuse/extend the file's existing valid /analyze payload
     client.post("/analyze", json=analyze_payload)
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     body = r.json()
     assert body["symbol"] == analyze_payload["symbol"]
     assert body["timeframe"] == analyze_payload["timeframe"]
@@ -140,7 +140,7 @@ def test_ui_candles_accumulates_overlapping_posts(client, analyze_payload):
     second = [{**base, "t": base["t"] + i * 300} for i in range(150, 250)]
     client.post("/analyze", json={**analyze_payload, "candles": first})
     client.post("/analyze", json={**analyze_payload, "candles": second})
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     ts = [c["t"] for c in r.json()["candles"]]
     assert ts == sorted(ts)
     assert len(ts) == len(set(ts))
@@ -156,7 +156,7 @@ def test_ui_candles_window_capped_at_2000(client, analyze_payload):
     second = [{**base, "t": base["t"] + i * 300} for i in range(1200, 2400)]
     client.post("/analyze", json={**analyze_payload, "candles": first})
     client.post("/analyze", json={**analyze_payload, "candles": second})
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     body = r.json()["candles"]
     assert len(body) == 2000
     # newest kept: the oldest 400 bars (t indices 0..399) were dropped
@@ -168,7 +168,7 @@ def test_ui_candles_resets_accumulator_on_symbol_change(client, analyze_payload)
     client.post("/analyze", json=analyze_payload)
     other = {**analyze_payload, "symbol": "EURUSD"}
     client.post("/analyze", json=other)
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     body = r.json()
     assert body["symbol"] == "EURUSD"
     assert len(body["candles"]) == len(other["candles"])
@@ -178,7 +178,7 @@ def test_ui_candles_resets_accumulator_on_timeframe_change(client, analyze_paylo
     client.post("/analyze", json=analyze_payload)
     other = {**analyze_payload, "timeframe": "H1"}
     client.post("/analyze", json=other)
-    r = client.get("/ui/candles")
+    r = client.get("/api/candles")
     body = r.json()
     assert body["timeframe"] == "H1"
     assert len(body["candles"]) == len(other["candles"])

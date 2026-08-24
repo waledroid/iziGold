@@ -24,7 +24,7 @@ def one(q, default=0):
 lines = ["📊 XAU calibration status"]
 
 try:
-    state = json.load(urllib.request.urlopen(base + "/ui/state", timeout=5))
+    state = json.load(urllib.request.urlopen(base + "/api/state", timeout=5))
     age = state.get("age_s")
     hb = state.get("heartbeat") or {}
     ea = f"EA: live ({age:.0f}s ago)" if age is not None and age < 60 else "EA: ⚠️ NO HEARTBEAT"

@@ -94,6 +94,8 @@ body {
   color: var(--gold-primary); background: rgba(245,197,66,0.1);
   border-color: rgba(245,197,66,0.3);
 }
+.loadbar-fill{height:100%;width:30%;background:linear-gradient(90deg,#f5c542,#d4af37);border-radius:2px;animation:loadsweep 1.2s ease-in-out infinite;}
+@keyframes loadsweep{0%{margin-left:-30%}100%{margin-left:100%}}
 
 /* Section Cards */
 .card-section {
@@ -249,11 +251,13 @@ input:focus, select:focus {
       </div>
     </div>
     <nav class="nav-links">
-      <a href="/ui">Dashboard</a>
-      <a href="/ui/backtest" class="active">Backtest</a>
-      <a href="/ui/onboarding">Settings</a>
+      <a href="/">Dashboard</a>
+      <a href="/backtest" class="active">Backtest</a>
+      <a href="/onboarding">Settings</a>
     </nav>
   </header>
+
+  <div id="loadbar" style="display:none;height:4px;border-radius:2px;overflow:hidden;background:rgba(245,197,66,0.15);margin-bottom:16px;"><div class="loadbar-fill"></div></div>
 
   <div class="card-section">
     <div class="section-header"><h2>New run</h2>
@@ -281,6 +285,12 @@ input:focus, select:focus {
     </form>
   </div>
 
+  <div class="card-section" id="resultCard" style="display:none;">
+    <div class="section-header"><h2>Result</h2>
+      <a id="fullLink" href="#" target="_blank" style="color:var(--gold-primary);font-size:13px;">open full page ↗</a></div>
+    <iframe id="reportFrame" title="backtest report" style="width:100%;height:70vh;border:1px solid var(--border-card);border-radius:12px;background:rgba(9,13,20,0.6);"></iframe>
+  </div>
+
   <div class="card-section">
     <div class="section-header"><h2>Runs</h2></div>
     <div class="table-wrap"><table id="runs"></table></div>
@@ -294,9 +304,18 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 async function j(u){const r=await fetch(u);return r.json()}
 const day=ts=>new Date(ts*1000).toISOString().slice(0,10);
 
-let _watch=null;
+let _watch=null, _firstLoad=true;
+
+function showReport(rid){
+ const url='/api/backtest/'+rid+'/report';
+ $('reportFrame').src=url;
+ $('fullLink').href=url;
+ $('resultCard').style.display='';
+ $('resultCard').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
 async function loadRange(){
- const r=await j('/ui/backtest/range');
+ const r=await j('/api/backtest/range');
  $('strat').innerHTML=r.strategies.map(s=>
   `<option value="${esc(s.id)}" ${s.supported?'':'disabled'}>${esc(s.label)}${s.supported?'':' — not yet supported'}</option>`).join('');
  const f=document.getElementById('f');
@@ -318,37 +337,64 @@ document.getElementById('f').onsubmit=async e=>{
  for(const el of f.elements) if(el.name&&el.value!=='')
   body[el.name]=el.type==='number'?Number(el.value):el.value;
  $('status').textContent='starting…';
- const r=await fetch('/ui/backtest',{method:'POST',
+ $('loadbar').style.display='';
+ $('runBtn').disabled=true;
+ const r=await fetch('/api/backtest',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const d=await r.json().catch(()=>({}));
- if(!r.ok){$('status').textContent='✗ '+(d.detail||r.status);return;}
+ if(!r.ok){
+  $('status').textContent='✗ '+(d.detail||r.status);
+  $('loadbar').style.display='none';
+  $('runBtn').disabled=false;
+  return;
+ }
  watch(d.run_id, Date.now());
  runs();
 };
 
 function watch(rid,t0){
  clearInterval(_watch);
+ $('loadbar').style.display='';
+ $('runBtn').disabled=true;
  _watch=setInterval(async()=>{
-  const row=await j('/ui/backtest/'+rid);
+  const row=await j('/api/backtest/'+rid);
   const secs=Math.round((Date.now()-t0)/1000);
-  if(row.status==='running'){$('status').textContent=`⏳ running… ${secs}s`;return;}
+  if(row.status==='running'){
+   $('status').textContent=`⏳ running… ${secs}s`;
+   $('loadbar').style.display='';
+   return;
+  }
   clearInterval(_watch);
+  $('loadbar').style.display='none';
+  $('runBtn').disabled=false;
   $('status').innerHTML=row.status==='done'
-   ?`✅ done in ${secs}s — <a href="/ui/backtest/${rid}/report" target="_blank" style="color:var(--gold-primary)">open report</a>`
+   ?`✅ done in ${secs}s`
    :`✗ failed: ${esc(row.error||'unknown')}`;
+  if(row.status==='done') showReport(rid);
   runs();
  },2000);
 }
 
+$('runs').addEventListener('click', e=>{
+ const a=e.target.closest('a.rep-link');
+ if(!a) return;
+ e.preventDefault();
+ showReport(Number(a.dataset.rid));
+});
+
 async function runs(){
- const {runs}=await j('/ui/backtest/runs');
+ const {runs}=await j('/api/backtest/runs');
  $('runs').innerHTML='<thead><tr><th>#</th><th>when</th><th>strategy</th><th>range</th>'+
   '<th>equity</th><th>net</th><th>trades</th><th>win %</th><th>max DD</th><th>status</th><th></th></tr></thead><tbody>'+
   runs.map(r=>{
    const p=r.params||{}, s=r.stats||{};
+   const rid=Number(r.id);
    const net=s.net==null?'—':`<span class="${s.net>=0?'pos':'neg'}">${s.net>=0?'+':''}${fmt(s.net)}</span>`;
    const badge=r.status==='done'?'badge-pos':(r.status==='failed'?'badge-neg':'badge-gold');
-   const rep=r.status==='done'?`<a href="/ui/backtest/${r.id}/report" target="_blank" style="color:var(--gold-primary)">report</a>`:'';
+   const rep=r.status==='done'
+    ?`<a href="#" data-rid="${rid}" class="rep-link" style="color:var(--gold-primary)">report</a> `+
+     `<a href="/api/backtest/${rid}/report" target="_blank" style="color:var(--text-muted);font-size:11px;" title="open full page">↗</a>`
+    :'';
    return `<tr><td>${r.id}</td><td>${new Date(r.created_ts*1000).toLocaleString()}</td>`+
     `<td><b>${esc(p.strategy||'—')}</b></td><td>${p.start_ts?day(p.start_ts)+' → '+day(p.end_ts):'—'}</td>`+
     `<td>$${fmt(p.balance,0)} @ ${fmt(p.risk_pct,1)}%</td><td>${net}</td>`+
@@ -357,6 +403,10 @@ async function runs(){
     `<td><span class="badge ${badge}">${esc(r.status)}${r.error?': '+esc(r.error.slice(0,60)):''}</span></td>`+
     `<td>${rep}</td></tr>`;
   }).join('')+'</tbody>';
+ if(_firstLoad){
+  _firstLoad=false;
+  if(runs.length && runs[0].status==='running') watch(runs[0].id, Date.now());
+ }
 }
 
 loadRange();runs();setInterval(runs,15000);

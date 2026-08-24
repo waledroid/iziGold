@@ -18,20 +18,20 @@ def client(tmp_path, monkeypatch):
 
 
 def test_state_empty_then_populated(client):
-    r = client.get("/ui/state")
+    r = client.get("/api/state")
     assert r.status_code == 200
     assert r.json()["heartbeat"] is None and r.json()["age_s"] is None
     client.post("/heartbeat", json={"equity": 1.0, "balance": 1.0, "floating_pl": 0.0})
-    body = client.get("/ui/state").json()
+    body = client.get("/api/state").json()
     assert body["heartbeat"]["equity"] == 1.0
     assert body["age_s"] is not None and body["age_s"] < 5
 
 
 def test_equity_and_stats_endpoints(client):
     client.post("/heartbeat", json={"equity": 5.0, "balance": 5.0, "floating_pl": 0.0})
-    eq = client.get("/ui/equity").json()
+    eq = client.get("/api/equity").json()
     assert eq["series"][-1]["equity"] == 5.0
-    st = client.get("/ui/stats").json()
+    st = client.get("/api/stats").json()
     assert "by_strategy" in st
 
 
@@ -40,24 +40,24 @@ def test_signals_endpoint(client):
                "strategy_id": "halftrend_ema_v1",
                "candles": [c.model_dump() for c in trend_candles(200)]}
     client.post("/analyze", json=payload)
-    body = client.get("/ui/signals").json()
+    body = client.get("/api/signals").json()
     assert body["signals"][0]["strategy_id"] == "halftrend_ema_v1"
     assert body["signals"][0]["signal"] == "BUY"
 
 
 def test_switch_rejects_invalid_strategy_id(client):
-    r = client.post("/ui/switch", json={"strategy_id": "<script>x</script>"})
+    r = client.post("/api/switch", json={"strategy_id": "<script>x</script>"})
     assert r.status_code == 400
 
 
 def test_switch_accepts_valid_strategy_id(client):
-    r = client.post("/ui/switch", json={"strategy_id": "halftrend_ema_v1"})
+    r = client.post("/api/switch", json={"strategy_id": "halftrend_ema_v1"})
     assert r.status_code == 200
     assert r.json()["pending"] == "halftrend_ema_v1"
 
 
 def test_overlays_empty_when_no_candles(client):
-    r = client.get("/ui/overlays?strategy=halftrend_ema_v1")
+    r = client.get("/api/overlays?strategy=halftrend_ema_v1")
     assert r.status_code == 200
     assert r.json() == {}
 
@@ -67,7 +67,7 @@ def test_overlays_empty_for_unknown_strategy(client):
                "strategy_id": "halftrend_ema_v1",
                "candles": [c.model_dump() for c in trend_candles(200)]}
     client.post("/analyze", json=payload)
-    r = client.get("/ui/overlays?strategy=nope")
+    r = client.get("/api/overlays?strategy=nope")
     assert r.status_code == 200
     assert r.json() == {}
 
@@ -78,7 +78,7 @@ def test_overlays_halftrend_ema_v1(client):
                "strategy_id": "halftrend_ema_v1",
                "candles": [c.model_dump() for c in candles]}
     client.post("/analyze", json=payload)
-    r = client.get("/ui/overlays?strategy=halftrend_ema_v1")
+    r = client.get("/api/overlays?strategy=halftrend_ema_v1")
     assert r.status_code == 200
     body = r.json()
     n = len(candles)
@@ -98,7 +98,7 @@ def test_overlays_boll_stochrsi_v1(client):
                "strategy_id": "boll_stochrsi_v1",
                "candles": [c.model_dump() for c in candles]}
     client.post("/analyze", json=payload)
-    r = client.get("/ui/overlays?strategy=boll_stochrsi_v1")
+    r = client.get("/api/overlays?strategy=boll_stochrsi_v1")
     assert r.status_code == 200
     body = r.json()
     n = len(candles)
@@ -109,10 +109,10 @@ def test_overlays_boll_stochrsi_v1(client):
 
 
 def test_dashboard_served(client):
-    client.post("/ui/profile", json={})  # Skip: profile row must exist for /ui to serve the dashboard
-    r = client.get("/ui")
+    client.post("/api/profile", json={})  # Skip: profile row must exist for / to serve the dashboard
+    r = client.get("/")
     assert r.status_code == 200
     assert "XAU Assistant" in r.text
-    for needle in ("/ui/state", "/ui/candles", "/ui/stats", "/ui/signals", "/ui/switch",
-                   "/ui/trades", "/ui/overlays"):
+    for needle in ("/api/state", "/api/candles", "/api/stats", "/api/signals", "/api/switch",
+                   "/api/trades", "/api/overlays"):
         assert needle in r.text

@@ -32,7 +32,7 @@ from app.trade_report import (_basket_legs, _prune_screenshots,
                               _report_trade_event, _trade_caption)
 from app.verdict import combine
 
-# /ui/candles and /ui/overlays serve from an accumulator, not the latest
+# /api/candles and /api/overlays serve from an accumulator, not the latest
 # /analyze payload alone -- the EA only resends its own rolling window each
 # post, so without merging, the dashboard chart could never scroll past what
 # fit in a single post. Capped so memory/response size stay bounded.
@@ -245,7 +245,7 @@ def _mirror_command_text(text: str, app) -> str | None:
 def _effective_telegram(app: FastAPI) -> tuple[str, str]:
     """Profile credentials when non-empty, else settings (.env) values, both
     stripped. Profile is only consulted once the row exists (get_profile can
-    be None before any /ui/profile POST -- Save or Skip -- has happened)."""
+    be None before any /api/profile POST -- Save or Skip -- has happened)."""
     profile = app.state.db.get_profile() or {}
     token = str(profile.get("telegram_bot_token") or "").strip()
     chat_id = str(profile.get("telegram_chat_id") or "").strip()
@@ -259,10 +259,10 @@ async def _apply_telegram(app: FastAPI) -> None:
     """Single owner of the Telegram client/task lifecycle: cancels whatever
     tasks currently exist, then rebuilds app.state.telegram (and its two
     background tasks) from the effective credentials. Called at lifespan
-    startup and live from POST /ui/profile. Never raises -- fail-open.
+    startup and live from POST /api/profile. Never raises -- fail-open.
 
     Serialized on app.state.telegram_lock: two overlapping callers (e.g. two
-    rapid POST /ui/profile requests) must not both read the old task, both
+    rapid POST /api/profile requests) must not both read the old task, both
     decide it needs replacing, and each spawn a fresh pair -- that would
     leak a poller/pinned-editor task that nothing ever cancels again."""
     async with app.state.telegram_lock:
@@ -705,7 +705,7 @@ async def notify(req: NotifyRequest):
 _STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
-@app.post("/ui/switch")
+@app.post("/api/switch")
 def ui_switch(body: dict):
     sid = str(body.get("strategy_id", "")).strip()
     if not sid:
@@ -731,7 +731,7 @@ def _edit_proposal_message(row, suffix):
         pass
 
 
-@app.post("/ui/mode")
+@app.post("/api/mode")
 def ui_mode(body: dict):
     mode = str(body.get("mode", "")).strip().lower()
     if mode not in ("auto", "manual"):
@@ -740,7 +740,7 @@ def ui_mode(body: dict):
     return {"mode": mode}
 
 
-@app.post("/ui/rules")
+@app.post("/api/rules")
 def ui_rules(body: dict):
     """Dashboard mirror of the Telegram rule commands (/agree etc.). Writes
     the same kv keys the EA reads back on every heartbeat -- last writer
@@ -760,7 +760,7 @@ def ui_rules(body: dict):
     return {key: value}
 
 
-@app.post("/ui/proposal/{pid}")
+@app.post("/api/proposal/{pid}")
 def ui_proposal_decide(pid: int, body: dict):
     action = str(body.get("action", "")).strip().lower()
     if action not in ("take", "skip"):
@@ -780,7 +780,7 @@ def ui_proposal_decide(pid: int, body: dict):
     return {"ok": True, "status": status}
 
 
-@app.post("/ui/close-all")
+@app.post("/api/close-all")
 def ui_close_all():
     db = app.state.db
     for st in ("pending", "approved", "dispatched"):
@@ -797,7 +797,7 @@ def ui_close_all():
     return {"ok": True, "proposal_id": pid}
 
 
-@app.get("/ui/state")
+@app.get("/api/state")
 def ui_state():
     latest = app.state.latest_heartbeat
     hb, age = None, None
@@ -819,22 +819,22 @@ def ui_state():
             "stats": app.state.db.stats()}
 
 
-@app.get("/ui/equity")
+@app.get("/api/equity")
 def ui_equity():
     return {"series": app.state.db.equity_series()}
 
 
-@app.get("/ui/stats")
+@app.get("/api/stats")
 def ui_stats():
     return app.state.db.stats()
 
 
-@app.get("/ui/signals")
+@app.get("/api/signals")
 def ui_signals(limit: int = 50):
     return {"signals": app.state.db.recent_signals(limit)}
 
 
-@app.get("/ui/candles")
+@app.get("/api/candles")
 def ui_candles():
     rc = app.state.recent_candles
     if not rc:
@@ -879,7 +879,7 @@ def _resample_m15(candles: list) -> list:
 def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
     """halftrend_m15_v1's indicators computed on M15 bars, expanded back to
     the M5 candle list (each M5 bar takes its M15 bucket's value) so the
-    arrays stay 1:1 with /ui/candles like every other overlay."""
+    arrays stay 1:1 with /api/candles like every other overlay."""
     m15 = _resample_m15(candles)
     if len(m15) < 3:
         return {}
@@ -901,7 +901,7 @@ def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
 # strategy_id -> overlay builder(candles, closes) -> dict. Everywhere else,
 # strategies are handled by tag rather than by per-strategy branching (see
 # db.stats() in db.py) -- this registry is that pattern applied to
-# /ui/overlays. A new strategy adds an entry here instead of another
+# /api/overlays. A new strategy adds an entry here instead of another
 # if/elif; an unrecognised strategy_id (or none registered) falls through
 # to ui_overlays' existing {} fallback.
 _OVERLAY_BUILDERS = {
@@ -912,10 +912,10 @@ _OVERLAY_BUILDERS = {
 }
 
 
-@app.get("/ui/overlays")
+@app.get("/api/overlays")
 def ui_overlays(strategy: str = ""):
     """Chart-overlay series for the dashboard's price chart, aligned 1:1
-    (same length, None for warmup) with the candle list /ui/candles
+    (same length, None for warmup) with the candle list /api/candles
     returns from the same app.state.recent_candles snapshot. Unknown
     strategy or no candles yet -> {} (nothing to draw)."""
     rc = app.state.recent_candles
@@ -936,7 +936,7 @@ def _mask_secret(value: str) -> str:
     return "••••" + tail
 
 
-@app.get("/ui/profile")
+@app.get("/api/profile")
 def ui_profile_get():
     row = app.state.db.get_profile()
     completion_pct = profile_completion(row)
@@ -951,7 +951,7 @@ def ui_profile_get():
     return {"profile": row, "completion_pct": completion_pct}
 
 
-@app.post("/ui/profile")
+@app.post("/api/profile")
 async def ui_profile_save(body: dict):
     body = dict(body) if isinstance(body, dict) else {}
     # Belt and braces: the onboarding page never sends a masked value back,
@@ -971,19 +971,19 @@ async def ui_profile_save(body: dict):
     return {"profile": row, "completion_pct": profile_completion(row)}
 
 
-@app.get("/ui")
+@app.get("/")
 def ui_page():
     try:
         has_profile = app.state.db.get_profile() is not None
     except Exception:
         has_profile = True  # fail open to the dashboard, not a redirect/500
     if not has_profile:
-        return RedirectResponse("/ui/onboarding", status_code=307)
+        return RedirectResponse("/onboarding", status_code=307)
     return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
                         media_type="text/html")
 
 
-@app.get("/ui/onboarding")
+@app.get("/onboarding")
 def ui_onboarding():
     return FileResponse(Path(__file__).parent / "static" / "onboarding.html",
                         media_type="text/html")
@@ -1061,12 +1061,12 @@ async def screenshot(event: int, request: Request):
     return {"saved": str(file_path)}
 
 
-@app.get("/ui/trades")
+@app.get("/api/trades")
 def ui_trades(limit: int = 50):
     return {"trades": app.state.db.recent_trades(limit)}
 
 
-@app.get("/ui/screenshot/{trade_id}")
+@app.get("/api/screenshot/{trade_id}")
 def ui_screenshot(trade_id: int):
     row = app.state.db.conn.execute(
         "SELECT screenshot_path FROM trades WHERE id=?", (trade_id,)).fetchone()
@@ -1078,7 +1078,7 @@ def ui_screenshot(trade_id: int):
     return FileResponse(path, media_type="image/png")
 
 
-@app.get("/ui/render/{trade_id}")
+@app.get("/api/render/{trade_id}")
 def ui_render(trade_id: int):
     row = app.state.db.conn.execute(
         "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
@@ -1101,13 +1101,13 @@ def _day_ts(s: str, end: bool = False) -> int:
     return int(t.timestamp())
 
 
-@app.get("/ui/backtest")
+@app.get("/backtest")
 def ui_backtest_page():
     return FileResponse(Path(__file__).parent / "static" / "backtest.html",
                         media_type="text/html")
 
 
-@app.get("/ui/backtest/range")
+@app.get("/api/backtest/range")
 def ui_backtest_range():
     series = app.state.db.latest_candle_series()
     symbol = series[0] if series else "XAUUSD"
@@ -1120,7 +1120,7 @@ def ui_backtest_range():
             "strategies": strategies}
 
 
-@app.get("/ui/backtest/runs")
+@app.get("/api/backtest/runs")
 def ui_backtest_runs(limit: int = 20):
     runs = []
     for row in app.state.db.recent_backtest_runs(limit):
@@ -1131,7 +1131,7 @@ def ui_backtest_runs(limit: int = 20):
     return {"runs": runs}
 
 
-@app.post("/ui/backtest")
+@app.post("/api/backtest")
 def ui_backtest_start(body: dict):
     strategy = str(body.get("strategy", "")).strip()
     if strategy == "boll_stochrsi":
@@ -1194,7 +1194,7 @@ def ui_backtest_start(body: dict):
     return {"run_id": run_id}
 
 
-@app.get("/ui/backtest/{run_id}")
+@app.get("/api/backtest/{run_id}")
 def ui_backtest_status(run_id: int):
     row = app.state.db.get_backtest_run(run_id)
     if row is None:
@@ -1205,9 +1205,23 @@ def ui_backtest_status(run_id: int):
     return row
 
 
-@app.get("/ui/backtest/{run_id}/report")
+@app.get("/api/backtest/{run_id}/report")
 def ui_backtest_report(run_id: int):
     row = app.state.db.get_backtest_run(run_id)
     if not row or not row["report_path"] or not Path(row["report_path"]).exists():
         raise HTTPException(status_code=404, detail="report not found")
     return FileResponse(row["report_path"], media_type="text/html")
+
+
+_LEGACY_PAGES = {"": "/", "backtest": "/backtest", "onboarding": "/onboarding"}
+
+
+@app.api_route("/ui{path:path}", methods=["GET", "POST"])
+def ui_legacy_redirect(path: str, request: Request):
+    """Old /ui/* addresses (bookmarks, Telegram links, the backtest CLI's
+    default --source) 307 to the new homes. 307 preserves method and body."""
+    tail = path.lstrip("/")
+    target = _LEGACY_PAGES.get(tail, "/api/" + tail)
+    if request.url.query:
+        target += "?" + request.url.query
+    return RedirectResponse(target, status_code=307)

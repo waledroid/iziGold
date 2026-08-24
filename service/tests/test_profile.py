@@ -57,15 +57,15 @@ def client(tmp_path, monkeypatch):
 
 
 def test_ui_redirects_once(client):
-    r = client.get("/ui", follow_redirects=False)
-    assert r.status_code == 307 and r.headers["location"] == "/ui/onboarding"
-    client.post("/ui/profile", json={})          # Skip creates the row
-    assert client.get("/ui", follow_redirects=False).status_code == 200
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/onboarding"
+    client.post("/api/profile", json={})          # Skip creates the row
+    assert client.get("/", follow_redirects=False).status_code == 200
 
 
 def test_profile_roundtrip_and_completion(client):
-    assert client.get("/ui/profile").json() == {"profile": None, "completion_pct": 0}
-    body = client.post("/ui/profile", json={"name": "Wale", "risk_ack": 1}).json()
+    assert client.get("/api/profile").json() == {"profile": None, "completion_pct": 0}
+    body = client.post("/api/profile", json={"name": "Wale", "risk_ack": 1}).json()
     assert body["profile"]["name"] == "Wale"
     assert body["completion_pct"] == 13          # 2 of 15
 
@@ -80,10 +80,10 @@ def test_telegram_live_apply(client, monkeypatch):
     monkeypatch.setattr(telegram, "_default_transport",
                         lambda token: (lambda *a, **k: None))
     assert main.app.state.telegram is None       # test env has no credentials
-    client.post("/ui/profile", json={"telegram_bot_token": "T", "telegram_chat_id": "C"})
+    client.post("/api/profile", json={"telegram_bot_token": "T", "telegram_chat_id": "C"})
     assert main.app.state.telegram is not None
     assert main.app.state.telegram_task is not None
-    client.post("/ui/profile", json={"telegram_bot_token": "", "telegram_chat_id": ""})
+    client.post("/api/profile", json={"telegram_bot_token": "", "telegram_chat_id": ""})
     assert main.app.state.telegram is None       # cleared back to .env fallback (empty)
 
 
@@ -91,9 +91,9 @@ def test_telegram_token_masked_on_get(client, monkeypatch):
     from app import telegram
     monkeypatch.setattr(telegram, "_default_transport",
                         lambda token: (lambda *a, **k: None))
-    client.post("/ui/profile",
+    client.post("/api/profile",
                json={"telegram_bot_token": "123456:ABC-DEF7890", "telegram_chat_id": "42"})
-    profile = client.get("/ui/profile").json()["profile"]
+    profile = client.get("/api/profile").json()["profile"]
     token = profile["telegram_bot_token"]
     assert "123456:ABC-DEF7890" not in token
     assert token.endswith("7890") and token.startswith("•")
@@ -104,14 +104,14 @@ def test_masked_token_post_does_not_overwrite_stored_token(client, monkeypatch):
     from app import main, telegram
     monkeypatch.setattr(telegram, "_default_transport",
                         lambda token: (lambda *a, **k: None))
-    client.post("/ui/profile",
+    client.post("/api/profile",
                json={"telegram_bot_token": "SECRETTOKEN1", "telegram_chat_id": "C"})
-    masked = client.get("/ui/profile").json()["profile"]["telegram_bot_token"]
+    masked = client.get("/api/profile").json()["profile"]["telegram_bot_token"]
     assert masked.startswith("•")
     # Simulate the onboarding page re-submitting the form unchanged: the
     # masked placeholder round-trips back in the POST body. The server-side
     # guard must ignore it rather than clobbering the real stored token.
-    client.post("/ui/profile", json={"telegram_bot_token": masked, "name": "Wale"})
+    client.post("/api/profile", json={"telegram_bot_token": masked, "name": "Wale"})
     stored = main.app.state.db.get_profile()["telegram_bot_token"]
     assert stored == "SECRETTOKEN1"
 
@@ -119,7 +119,7 @@ def test_masked_token_post_does_not_overwrite_stored_token(client, monkeypatch):
 @pytest.mark.anyio
 async def test_apply_telegram_concurrent_calls_leave_no_orphan_tasks(monkeypatch, tmp_path):
     """Two overlapping _apply_telegram calls (e.g. two rapid POST
-    /ui/profile requests) must be serialized by app.state.telegram_lock:
+    /api/profile requests) must be serialized by app.state.telegram_lock:
     only one telegram_task/pinned_task pair should be live afterwards, and
     whichever pair got superseded must be actually cancelled -- not leaked
     as an orphan background task."""
@@ -160,9 +160,9 @@ async def test_apply_telegram_concurrent_calls_leave_no_orphan_tasks(monkeypatch
 
 
 def test_onboarding_page_served(client):
-    r = client.get("/ui/onboarding")
+    r = client.get("/onboarding")
     assert r.status_code == 200
-    for needle in ("Identity", "Telegram", "Risk profile", "Account", "/ui/profile",
+    for needle in ("Identity", "Telegram", "Risk profile", "Account", "/api/profile",
                   "Live Chart", "ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"):
         assert needle in r.text
 
@@ -170,7 +170,7 @@ def test_onboarding_page_served(client):
 def test_onboarding_secret_inputs_are_password_type(client):
     """telegram_bot_token and ngrok_authtoken are secrets -- neither should
     render as plain text in the browser."""
-    r = client.get("/ui/onboarding")
+    r = client.get("/onboarding")
     assert r.status_code == 200
     assert 'name="telegram_bot_token" type="password"' in r.text
     assert 'name="ngrok_authtoken" type="password"' in r.text
@@ -203,8 +203,8 @@ def test_livechart_fields_roundtrip(tmp_path):
 
 
 def test_ngrok_authtoken_masked_on_get(client):
-    client.post("/ui/profile", json={"ngrok_authtoken": "2abcXYZLONGTOKEN7890"})
-    profile = client.get("/ui/profile").json()["profile"]
+    client.post("/api/profile", json={"ngrok_authtoken": "2abcXYZLONGTOKEN7890"})
+    profile = client.get("/api/profile").json()["profile"]
     token = profile["ngrok_authtoken"]
     assert "2abcXYZLONGTOKEN7890" not in token
     assert token.endswith("7890") and token.startswith("•")
@@ -212,10 +212,10 @@ def test_ngrok_authtoken_masked_on_get(client):
 
 def test_masked_ngrok_authtoken_post_does_not_overwrite_stored_token(client):
     from app import main
-    client.post("/ui/profile", json={"ngrok_authtoken": "REALTOKEN123"})
-    masked = client.get("/ui/profile").json()["profile"]["ngrok_authtoken"]
+    client.post("/api/profile", json={"ngrok_authtoken": "REALTOKEN123"})
+    masked = client.get("/api/profile").json()["profile"]["ngrok_authtoken"]
     assert masked.startswith("•")
-    client.post("/ui/profile", json={"ngrok_authtoken": masked, "name": "Wale"})
+    client.post("/api/profile", json={"ngrok_authtoken": masked, "name": "Wale"})
     stored = main.app.state.db.get_profile()["ngrok_authtoken"]
     assert stored == "REALTOKEN123"
 

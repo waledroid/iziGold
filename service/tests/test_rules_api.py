@@ -1,5 +1,5 @@
-"""Task 4: trade agree-flags in recent_trades; rule state in /ui/state;
-new POST /ui/rules."""
+"""Task 4: trade agree-flags in recent_trades; rule state in /api/state;
+new POST /api/rules."""
 import importlib
 
 import pytest
@@ -30,24 +30,24 @@ def test_recent_trades_carries_agree_flags(tmp_path):
 
 
 def test_state_exposes_rules(client):
-    s = client.get("/ui/state").json()
+    s = client.get("/api/state").json()
     assert s["rules"] == {"entry_mode": "adr", "htf_enforce": "off",
                           "ema200_enforce": "off"}
 
 
 def test_post_rules_roundtrip(client):
-    r = client.post("/ui/rules", json={"key": "htf_enforce", "value": "M15"})
+    r = client.post("/api/rules", json={"key": "htf_enforce", "value": "M15"})
     assert r.status_code == 200 and r.json() == {"htf_enforce": "M15"}
-    assert client.get("/ui/state").json()["rules"]["htf_enforce"] == "M15"
-    assert client.post("/ui/rules",
+    assert client.get("/api/state").json()["rules"]["htf_enforce"] == "M15"
+    assert client.post("/api/rules",
                        json={"key": "ema200_enforce", "value": "on"}).status_code == 200
-    assert client.post("/ui/rules",
+    assert client.post("/api/rules",
                        json={"key": "entry_mode", "value": "fixed"}).status_code == 200
 
 
 def test_post_rules_rejects_bad_input(client):
-    assert client.post("/ui/rules",
+    assert client.post("/api/rules",
                        json={"key": "htf_enforce", "value": "H4"}).status_code == 400
-    assert client.post("/ui/rules",
+    assert client.post("/api/rules",
                        json={"key": "exec_mode", "value": "auto"}).status_code == 400
-    assert client.post("/ui/rules", json={}).status_code == 400
+    assert client.post("/api/rules", json={}).status_code == 400

@@ -378,11 +378,11 @@ phase5_miniapp
 
 # -------------------------------------- 6. Live chart config (profile -> .env)
 phase 6 "Live chart config (profile -> .env)"
-# The onboarding page (/ui/onboarding) collects ngrok_authtoken, ngrok_domain
+# The onboarding page (/onboarding) collects ngrok_authtoken, ngrok_domain
 # and miniapp_direct_link into the service profile alongside the Telegram
 # fields. This phase syncs whatever's in the profile into service/.env
 # BEFORE the ngrok phase below runs, mirroring the Telegram phase's
-# profile-first-then-.env precedence. GET /ui/profile masks ngrok_authtoken
+# profile-first-then-.env precedence. GET /api/profile masks ngrok_authtoken
 # the same way it masks telegram_bot_token (see app/main.py's
 # _mask_secret) -- "****" + last 4 chars -- so the raw token cannot come
 # from that endpoint. It's read directly from the sqlite profile row
@@ -391,7 +391,7 @@ db_path="$(grep -oP '^DB_PATH=\K.+' "$SERVICE_DIR/.env" || true)"
 [[ -n "$db_path" ]] || db_path="xau_assistant.db"
 [[ "$db_path" = /* ]] || db_path="$SERVICE_DIR/$db_path"
 
-profile_json="$(curl -sf "$BASE_URL/ui/profile" || true)"
+profile_json="$(curl -sf "$BASE_URL/api/profile" || true)"
 raw_ngrok_token=""
 if [[ -f "$db_path" ]]; then
   raw_ngrok_token="$("$VENV/bin/python" - "$db_path" <<'PY' || true
@@ -474,7 +474,7 @@ if [[ -n "$raw_ngrok_token" ]]; then
 elif grep -q '^NGROK_AUTHTOKEN=.\+' "$SERVICE_DIR/.env"; then
   skip "NGROK_AUTHTOKEN already set in .env"
 else
-  skip "no ngrok authtoken in profile or .env -- add it at $BASE_URL/ui/onboarding"
+  skip "no ngrok authtoken in profile or .env -- add it at $BASE_URL/onboarding"
 fi
 
 if [[ -n "$profile_domain" ]]; then
@@ -488,7 +488,7 @@ if [[ -n "$profile_domain" ]]; then
 elif grep -q '^MINIAPP_PUBLIC_URL=.\+' "$SERVICE_DIR/.env"; then
   skip "MINIAPP_PUBLIC_URL already set in .env"
 else
-  skip "no ngrok domain in profile or .env -- add it at $BASE_URL/ui/onboarding"
+  skip "no ngrok domain in profile or .env -- add it at $BASE_URL/onboarding"
 fi
 
 if [[ -n "$profile_link" ]]; then
@@ -501,7 +501,7 @@ if [[ -n "$profile_link" ]]; then
 elif grep -q '^MINIAPP_DIRECT_LINK=.\+' "$SERVICE_DIR/.env"; then
   skip "MINIAPP_DIRECT_LINK already set in .env"
 else
-  skip "no mini-app direct link in profile or .env yet (set it after the BotFather /newapp step) -- add it at $BASE_URL/ui/onboarding"
+  skip "no mini-app direct link in profile or .env yet (set it after the BotFather /newapp step) -- add it at $BASE_URL/onboarding"
 fi
 
 # Settings are read once at process startup (app/config.py's Settings()).
@@ -647,7 +647,7 @@ phase 9 "Telegram"
 phase9_telegram() {
 # Wait for the main service before reading the profile. The watchdog started
 # in phase 8 deploys any newer code by restarting app.main — a ~25 s window
-# (torch cold start) in which /ui/profile answers nothing. Reading an empty
+# (torch cold start) in which /api/profile answers nothing. Reading an empty
 # body used to kill the whole run right here (live, 2026-08-19), taking the
 # MT5 compile and the handoff with it.
 svc_up=""
@@ -660,10 +660,10 @@ if [[ -z "$svc_up" ]]; then
             "Telegram — service unreachable at $BASE_URL (log: service/service.log)"
   return 0
 fi
-profile_json="$(curl -sf -m 10 "$BASE_URL/ui/profile" || true)"
+profile_json="$(curl -sf -m 10 "$BASE_URL/api/profile" || true)"
 if [[ -z "$profile_json" ]]; then
-  soft_fail "could not read the service profile (empty /ui/profile response)" \
-            "Telegram — profile unreadable; check $BASE_URL/ui/onboarding"
+  soft_fail "could not read the service profile (empty /api/profile response)" \
+            "Telegram — profile unreadable; check $BASE_URL/onboarding"
   return 0
 fi
 profile_has_tg="$(printf '%s' "$profile_json" | "$VENV/bin/python" -c '
@@ -718,10 +718,10 @@ for u in reversed(json.load(sys.stdin).get("result", [])):
               "Telegram — message your bot once, then re-run scripts/setup.sh (earlier phases SKIP)"
     return 0
   fi
-  if ! curl -sf -X POST "$BASE_URL/ui/profile" -H 'Content-Type: application/json' \
+  if ! curl -sf -X POST "$BASE_URL/api/profile" -H 'Content-Type: application/json' \
       -d "{\"telegram_bot_token\":\"$token\",\"telegram_chat_id\":\"$chat_id\"}" >/dev/null; then
     soft_fail "saving credentials to the service profile failed" \
-              "Telegram — credentials not saved; add them at $BASE_URL/ui/onboarding"
+              "Telegram — credentials not saved; add them at $BASE_URL/onboarding"
     return 0
   fi
   if ! curl -sf -m 10 -X POST "https://api.telegram.org/bot$token/sendMessage" \
@@ -813,7 +813,7 @@ while (( SECONDS < deadline )); do
   # complete" in that state is the failure that costs money quietly, so the
   # verify reads the trading-capability fields the heartbeat already carries
   # (nested under "heartbeat"; no service change was needed for this).
-  beat="$(curl -sf -m 3 "$BASE_URL/ui/state" | "$VENV/bin/python" -c '
+  beat="$(curl -sf -m 3 "$BASE_URL/api/state" | "$VENV/bin/python" -c '
 import json, sys
 d = json.load(sys.stdin)
 a = d.get("age_s")
@@ -851,7 +851,7 @@ if [[ -n "$beat" ]]; then
   cat <<EOF
 
   ✅ Setup complete.
-     Dashboard:   $BASE_URL/ui
+     Dashboard:   $BASE_URL/
      Service log: service/service.log
      Stop:        pkill -f 'uvicorn app.main:app'
      Restart:     re-run scripts/setup.sh (completed phases SKIP)
