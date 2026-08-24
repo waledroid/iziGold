@@ -26,7 +26,10 @@ others are logged shadows) → AUTO executes FIRST → POSTs `/analyze` with
 signal (incl. NONE) + 300 candles → service grades (direction/confidence),
 classifies regime classically (ADX+ATR in `regime.py`, not the AI), logs,
 alerts. NONE posts drive lazy outcome resolution (16-bar horizon) — never
-"optimize them away". **Every 5 s** the EA heartbeats (`/heartbeat`) carrying
+"optimize them away". Each `/analyze` ALSO upserts its candles into the
+persistent `candles` table (2026-08-24, §5b) inside a swallow-everything
+`try` — the dashboard chart and the Backtest page read history from there,
+so a service restart no longer starts the chart empty. **Every 5 s** the EA heartbeats (`/heartbeat`) carrying
 account state + `algo_trading` + the forming bar's OHLC (`bar_t`, `bar_o/h/l/c`;
 zeros = absent or CopyRates failure, fail-open); the response carries runtime `mode`
 (auto/manual), pending strategy switch, and at most ONE command.
@@ -453,19 +456,167 @@ Quiet by default: only proposals, executions, failures, command replies.
 - Single-chat security on messages AND callbacks; bot credentials live in
   the service profile (onboarding page), overriding `.env`.
 
-# 5. Dashboard (`/ui`) & renders
+# 5. Dashboard (`/ui`), Backtest page & renders
 
-Live candlestick chart (accumulates up to 2000 bars (~one trading week) in memory — resets on
-service restart), per-strategy tabs (halftrend overlays / bollinger via
-`/ui/overlays`), dashed last-price line, drag/wheel panning with "◂ live",
-⛶ expand, risk/reward trade boxes (red entry↔SL, green entry↔exit), 8-row
-scroll-capped tables, `esc()` for anything entering innerHTML (`/ui/switch`
-validates strategy ids server-side — XSS was found & fixed here once).
-Renders (Telegram + `/ui/render/{id}`): candles + HalfTrend/EMA 9/21/55/200
-overlays + E/A/SL/TP/X labeled lines; close renders inherit SL/TP from
-persisted legs (EA sends 0 on closes). MT5 chart itself: dark theme +
-HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
-(`TradeBoxes.mqh`, recovers open-basket state after reload).
+Three pages, one nav bar (`Dashboard · Backtest · Settings`, the active one
+highlighted): `/ui` (dashboard), `/ui/backtest`, `/ui/onboarding` — the
+onboarding page IS the Settings page since 2026-08-24, same styling and the
+same nav, so there is no dead-end "finish onboarding then never come back"
+route any more. All three are static HTML under `service/app/static/` with
+inline JS/CSS: no build step, no npm, no CDN. `app.mount("/static", ...)`
+serves them their only external asset, the vendored
+`static/vendor/lightweight-charts.standalone.production.js` (the same file
+`--web` backtest reports inline; the mount is what lets the dashboard
+`<script src=>` it instead).
+
+**Price chart (`/ui`)** — TradingView Lightweight Charts since 2026-08-24,
+replacing the hand-drawn canvas (which also retires its "◂ live" pan
+control, dashed last-price line and canvas risk/reward boxes; the library
+gives panning/zoom/crosshair for free). Candles + overlays from
+`/ui/candles` + `/ui/overlays?strategy=<active tab>` (the arrays are 1:1 by
+construction), redrawn every 30 s. Facts worth knowing:
+- **Overlay series are added BEFORE the candle series** — later-added
+  series paint on top in this library, so this keeps candles above the EMAs.
+- **Past trades are markers** from `/ui/trades?limit=100`: arrowUp/arrowDown
+  below/above the bar for `open`/`add` (labelled with lots, `add` prefixed),
+  a circle at `close` labelled with the P/L. Lightweight Charts markers have
+  no hover, so the P/L rides on the label and the trade table stays the
+  detail view.
+- **`barTime()`** snaps a trade's service wall-clock `ts` to the first bar
+  at/after it (else the last bar) — the same snap rule the canvas chart
+  used; broker server time vs UTC (§6) is exactly why a snap is needed.
+- **📍 per trade row** (`zoomToTrade`) sets a ±90-bar visible range around
+  that trade and scrolls the chart into view. `barSec()` derives the bar
+  width from the candle series, so it is right on M5 or M15.
+- **Clicking the chart band no longer opens the render lightbox** — the
+  lightbox is now reachable only from the table thumbnails
+  (screenshot/render), because a click on a live chart means "interact with
+  the chart".
+- **Fail-soft**: if the library file didn't load, the panel prints "chart
+  library failed to load — the rest of the dashboard still works" and every
+  other panel is untouched.
+
+**Dashboard controls & tables** (2026-08-24): rule toggles in the control
+bar — Entry `ADR`/`FIXED`, `M15 gate` (off/M15/M30/H1), `EMA200 gate`
+(off/ON) — read from `/ui/state`'s `rules{entry_mode, htf_enforce,
+ema200_enforce}` and written with `POST /ui/rules`. These are the SAME kv
+keys the Telegram `/agree`-family commands write and the EA reads back on
+each heartbeat, so **dashboard and Telegram are two front-ends over one
+state: last writer wins**, and neither invalidates the other. Strategy tabs
+are **dynamic** — built from whatever strategy ids have actually signalled
+(`/ui/stats`' `by_strategy` keys, `" @<tf>"` suffix stripped because
+overlays are keyed by bare id; `pre-framework`/`stub` filtered out), so
+`halftrend_m15_v1` appears on its own without a code change. Raw ids are
+the labels on purpose (no prettifier to keep in sync). The trades table
+carries **M15** and **E200** agree columns (`htf_agree`/`ema200_agree` from
+`db.recent_trades()`: ✓ agreed / ✗ disagreed / — not recorded), the
+comparison table has a **tf** column, and the signal log has an
+all/active-only/shadows-only filter. Still 8-row scroll-capped tables,
+still `esc()` on everything entering innerHTML, and the "switch to this"
+buttons carry their target in `data-sid` (never spliced into an `onclick`
+string) because `strategy_id` is unconstrained on `/analyze` — XSS was
+found and fixed on this page once.
+
+**Backtest page (`/ui/backtest`)** — see §5c.
+
+**Renders** (Telegram + `/ui/render/{id}`): candles + HalfTrend/EMA
+9/21/55/200 overlays + E/A/SL/TP/X labeled lines; close renders inherit
+SL/TP from persisted legs (EA sends 0 on closes). MT5 chart itself: dark
+theme + HalfTrend/EMA painting (`EnablePaint`, active strategy only) +
+trade boxes (`TradeBoxes.mqh`, recovers open-basket state after reload).
+
+## 5a. UI endpoints (`app/main.py`)
+
+| endpoint | what it does |
+|---|---|
+| `GET /ui`, `/ui/backtest`, `/ui/onboarding` | the three pages (FileResponse from `static/`) |
+| `/static/*` | StaticFiles mount — vendored Lightweight Charts lives here |
+| `GET /ui/state` | heartbeat + age, exec mode, pending switch, proposal, stats, **`rules{entry_mode, htf_enforce, ema200_enforce}`** |
+| `POST /ui/rules` | `{key, value}` mirror of the Telegram rule toggles; 400 on an unknown key or a value the db setter rejects |
+| `GET /ui/candles`, `/ui/overlays?strategy=` | chart data; overlays 1:1 with candles, unknown strategy → `{}` |
+| `GET /ui/trades` | now includes `entry_mode`, `htf_agree`, `ema200_agree` |
+| `GET /ui/stats`, `/ui/signals`, `/ui/equity` | tables |
+| `POST /ui/switch`, `/ui/mode`, `/ui/close-all`, `/ui/proposal/{pid}` | controls |
+| `GET/POST /ui/profile` | Settings; secrets masked on read |
+| `GET /ui/screenshot/{id}`, `/ui/render/{id}` | trade images |
+| `GET /ui/backtest/range` | stored candle range + the strategy list the form offers |
+| `POST /ui/backtest` | start a run → `{run_id}`; **400** on bad params/empty range, **409** when one is already running |
+| `GET /ui/backtest/runs?limit=20` | recent runs with parsed `params`/`stats` |
+| `GET /ui/backtest/{id}` | one run row (`running`/`done`/`failed` + `error`) |
+| `GET /ui/backtest/{id}/report` | the run's self-contained HTML report; 404 if the file is gone |
+
+## 5b. The `candles` table (2026-08-24) — history that survives restarts
+
+```sql
+CREATE TABLE candles (symbol TEXT, timeframe TEXT, bar_time INTEGER,
+                      o,h,l,c REAL, v REAL DEFAULT 0,
+                      PRIMARY KEY (symbol, timeframe, bar_time))
+```
+
+- **Fed by `/analyze`** (`upsert_candles`, INSERT OR REPLACE) inside a bare
+  `try/except: pass` — persistence must never break grading. The forming
+  bar's repeated posts overwrite the same `bar_time` until it closes, so
+  the PK makes the whole thing idempotent, including re-running a backfill.
+- **Seeds the chart at startup**: the lifespan reads
+  `latest_candle_series()` → `get_candles(..., limit=2000)` into
+  `app.state.recent_candles`, so the dashboard opens with the last ~week
+  instead of blank. (`get_candles(limit=N)` keeps the NEWEST N and still
+  returns them ascending.) The in-memory accumulator cap is unchanged at
+  `_CANDLE_WINDOW_CAP = 2000`; the TABLE is uncapped — that's what the
+  backtest page replays.
+- Accessors: `upsert_candles`, `get_candles(symbol, tf, start_ts, end_ts,
+  limit)`, `candles_range` (`{start,end,count}`), `latest_candle_series()`.
+- `backtest_runs` (`id, created_ts, params_json, status, error, stats_json,
+  report_path`) is the run log behind the Backtest page.
+
+## 5c. Backtest page — the CLI engine, driven from the browser
+
+`service/app/backtest_runner.py` runs `scripts/backtest.py` **as a
+subprocess** over candles exported from SQLite. The engine file is
+**untouched** (its golden pins in §6 are the reason) — everything here is
+wiring.
+
+- **Why subprocess, not import**: the engine configures itself through
+  module globals in `main()` and is not safe to re-enter from a threaded
+  service; isolation also means an engine crash can never take the service
+  down. Cost: no progress percent — status is `running/done/failed` and the
+  page shows elapsed seconds instead.
+- **Strategy → flags** (`STRATEGIES`, mirroring the EA's registrations —
+  only ConfirmCloses differs between the lanes; amplitude 4 / EMA 55 /
+  stop buffer 0.75 are identical):
+  `halftrend_ema_v1` → `--tf M5 --confirm 2`;
+  `halftrend_m15_v1` → `--tf M15 --confirm 3`. No new engine lane was
+  needed. `boll_stochrsi` is listed `supported: false` and rejected with
+  400 by `POST /ui/backtest`.
+- **M15-bias flags only for the M5 lane**: `m15_bias=on` adds
+  `--bias-ema 200 --bias-tf M15 --bias-mode target`, and only for
+  `halftrend_ema_v1` — the M15 lane has no HTF module at all ("the only
+  confirmation is the ema 200", §7).
+- **INVARIANT — `_execute` always exports M5 rows.** It calls
+  `db.get_candles(symbol, "M5", ...)` unconditionally; `--tf M15` makes the
+  ENGINE resample. That is correct for both current lanes and would
+  silently misbehave for a future strategy whose source isn't M5 — if you
+  add one, the export timeframe must become a property of the strategy
+  entry, not a hard-coded `"M5"`.
+- **One run at a time** (`_busy`, a non-blocking `threading.Lock`): the
+  engine is CPU-bound. A second start → `RuntimeError` → **409**.
+  `start_run` releases the lock on any launch failure; `_execute` catches
+  everything and lands failures in a `failed` row with the engine's stderr
+  tail, so the service never sees an exception from the thread.
+- **Guards before launching**: fewer than 300 M5 bars in the range → the
+  run fails with "run the backfill"; unknown strategy / bad dates /
+  `balance <= 0` / `risk_pct` outside `(0, 10]` / a range outside the
+  stored candles → 400 with the available range spelled out.
+- **Artifacts**: `service/data/backtests/{run_id}/` holding `bars.json`
+  (the exported source), `result.json` (`--json`) and `report.html`
+  (`--web`, self-contained). Gitignored; 30-minute subprocess timeout; no
+  delete button in v1 — the list caps at 20 runs and cleanup is `rm -r`.
+- **Engine caveats travel with the report, and they matter here too**: the
+  replay models NEITHER the daily loss brake NOR the news blackout NOR the
+  drawdown kill switch (`scripts/backtest.py` module docstring, `--help`,
+  `meta.caveats`, every report page). Browser-launched runs are just as
+  optimistic around losing days, deep drawdowns and high-impact events as
+  CLI runs — the page is a faster front door, not a better model.
 
 # 6. Operations runbook (verified on this machine)
 
@@ -485,6 +636,30 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
   phase (`set -euo pipefail` + `fail`) aborted everything after it — see
   §7's 2026-08-19 entry. The watchdog phase is deliberately reached in
   every run, because it is what brings the optional links back later.
+- **setup.sh candle-history notice (2026-08-24)**: after phase 11, setup.sh
+  counts `candles` rows (venv python, READ-ONLY uri connection — the
+  `sqlite3` CLI is not installed on this machine, so a `command -v sqlite3`
+  guard would silently never fire) and, when the table is empty or
+  unreadable, prints a NOTE with the two backfill commands. It is purely
+  informational: no phase status, no `soft_fail`, no effect on the exit
+  code. setup.sh deliberately does NOT run the backfill itself — the pull
+  needs Windows python plus a live terminal, which the script cannot assume.
+- **Candle backfill (two steps, 2026-08-24)** — the MT5 python package runs
+  only under WINDOWS python, so the pull and the load are separate:
+
+  ```bash
+  # 1) Windows python, from the repo root — ~12 months of M5
+  python.exe scripts/dump_bars.py 75000 bars_max.json
+  # 2) WSL, FROM service/ so the default db path matches
+  cd service && python3 ../scripts/backfill_candles.py ../bars_max.json
+  ```
+
+  Running step 2 from anywhere else silently creates/loads a DIFFERENT
+  `xau_assistant.db` in that directory (the `--db` default is relative);
+  pass `--db` explicitly if you must. Idempotent — rows are keyed
+  (symbol, timeframe, bar_time), so re-loading replaces and never
+  duplicates. It prints the resulting row count and date range. Do this
+  once after a fresh install, then let `/analyze` keep the table current.
 - **Service restart**: `pkill -f "uvicorn app.main:app"` in its OWN command
   (exit 144 = normal; NEVER combine with the restart — pkill kills the chain),
   then from `service/`: `nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1
@@ -535,7 +710,11 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
 - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
   [--verbose]` replays halftrend + the full current money rulebook over the
   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
-  on service restart). Validated against reality (reproduced the +$94.81
+  on service restart). **Since 2026-08-24 there is also a browser front door**
+  — `/ui/backtest` drives this exact CLI as a subprocess over the persistent
+  `candles` table (§5c), so a UI run and a `--source` CLI run are the same
+  engine and the same caveats; the CLI stays the power surface (every flag,
+  no one-run-at-a-time lock). Validated against reality (reproduced the +$94.81
   live basket within $0.35). Simplifications: bar-close granularity, own
   Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates — **THREE**
   rails, not two: the daily loss brake (MaxDailyLossPct), the drawdown kill
@@ -2490,3 +2669,46 @@ HTF/M15 module above — this section only covers what differs.
   (loose/strict) and all 21 characterization combos pass unmoved — default
   OFF on both new EA inputs and the new backtest flag means nothing was
   supposed to move, and nothing did.
+
+## UI + backtest revamp (2026-08-24)
+
+Spec `docs/superpowers/specs/2026-08-24-ui-backtest-revamp-design.md`
+(status: Implemented), plan
+`docs/superpowers/plans/2026-08-24-ui-backtest-revamp.md`. **Zero MQL5
+changes** — nothing in `mt5/` was touched, so no MetaEditor compile is part
+of this. The what-and-how lives in §5/§5a/§5b/§5c; this entry is the why.
+
+- **Candles became durable** because everything else wanted them: the
+  dashboard chart used to start empty after every restart, and the replay
+  engine had nothing but the in-memory 2000-bar window (≈ one trading week)
+  unless you hand-fed it a `--source` dump. One table fixes both, fed for
+  free by the `/analyze` posts the system already makes every bar.
+- **The chart moved to Lightweight Charts** rather than growing the
+  hand-drawn canvas further — the canvas could draw candles and boxes, but
+  panning/zoom/crosshair/markers were all bespoke, and "show me this trade
+  on the chart" (the 📍 button) is trivial with a real time scale and
+  impossible to keep correct by hand.
+- **Rule toggles on the dashboard are a second front-end, not a second
+  source of truth.** They write the same kv keys `/agree` writes; last
+  writer wins. Anything that adds a THIRD writer must keep that property —
+  the EA re-reads on every heartbeat and has no idea who wrote.
+- **The replay engine is read-only in this work.** Everything went into
+  `backtest_runner.py` around it, precisely so the golden pins
+  (`test_backtest_golden.py`, LOOSE + STRICT) could stay byte-identical.
+  They did. If a future UI feature seems to need an engine edit, that is
+  the moment to stop and re-read §6's golden-pin paragraph.
+- **The plan records EIGHT deliberate deviations from the spec** (top of
+  the plan file) — subprocess instead of import, no progress percent, no
+  new engine lane, M5-only storage, no chop filter in the v1 form, marker
+  labels instead of hover tooltips, a setup.sh hint instead of an
+  auto-backfill, no per-run delete. All simplifications; none changes the
+  user-visible result. Read them before "fixing" any of those as omissions.
+- **Trap to remember**: `_execute` exports **M5** rows for every strategy
+  and lets the engine resample for `--tf M15`. Right for both lanes today,
+  wrong the moment a strategy's source isn't M5 — and it would fail
+  quietly, with plausible-looking numbers.
+- **Verified**: full Python suite green (557 passed, 1 deselected slow
+  marker; was 530 before this plan), both golden pins unmoved
+  (`test_backtest_golden.py`, 3 tests), and the headless report smoke
+  test (`service/tests/backtest_report_smoke.js`, run inside pytest via
+  `test_backtest_report_smoke.py`) still pins the report's initial range.

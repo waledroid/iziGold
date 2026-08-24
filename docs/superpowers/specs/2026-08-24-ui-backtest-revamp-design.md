@@ -1,7 +1,11 @@
 # UI + Backtest Revamp — Design
 
 **Date:** 2026-08-24
-**Status:** Approved in brainstorming; awaiting implementation plan.
+**Status:** Implemented (plan `docs/superpowers/plans/2026-08-24-ui-backtest-revamp.md`)
+
+That plan's "Deliberate deviations from the spec" section records eight
+implementation deviations from this design — all simplifications, none of
+which change the user-visible result; read it alongside this document.
 
 ## Goal
 

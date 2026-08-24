@@ -874,6 +874,30 @@ fi
 }
 phase11_handoff
 
+# Candle-history notice (non-fatal, no phase status, no effect on the exit
+# code). The `candles` table is what the Backtest page replays; /analyze
+# fills it one closed bar at a time, so a fresh install has nothing to
+# replay for months. setup.sh cannot run the backfill itself — the pull
+# needs WINDOWS python plus a running terminal (MetaTrader5 package) — so
+# it prints the two-step runbook instead. Read through the venv python on a
+# READ-ONLY uri connection rather than the sqlite3 CLI (not installed on
+# this machine, and a `command -v` guard would silently never fire here);
+# any error (no db, no table) counts as empty and prints the hint.
+candle_rows="$("$VENV/bin/python" - "$db_path" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    print(conn.execute("SELECT COUNT(*) FROM candles").fetchone()[0])
+except Exception:
+    print(0)
+PY
+)"
+if [[ -z "$candle_rows" || "$candle_rows" == "0" ]]; then
+  echo "  NOTE: the candles table is empty — the Backtest page has no history to replay."
+  echo "        1) Windows: python.exe scripts/dump_bars.py 75000 bars_max.json"
+  echo "        2) WSL:     cd service && python3 ../scripts/backfill_candles.py ../bars_max.json"
+fi
+
 # Exit code contract: non-zero ONLY when a CRITICAL phase failed (those call
 # `fail`, which exits immediately). Soft failures are reported by the summary
 # that the EXIT trap prints, and leave the exit status 0 so a launcher does
