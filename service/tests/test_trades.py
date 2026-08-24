@@ -497,3 +497,34 @@ def test_entry_caption_reports_the_ema200_verdict():
     assert "E200" not in closed, "the verdict belongs to the entry, not the close"
     assert "M15: agrees" in both and "E200: DISAGREES" in both, (
         "the two verdicts are independent and both must render")
+
+
+def test_realized_pnl_sums_only_closes_since_ts(tmp_path):
+    """realized_pnl(since_ts): closes at/after since_ts count (profit summed,
+    rows counted); opens and older closes do not."""
+    db = SignalDb(str(tmp_path / "pnl.db"))
+    db.insert_trade(_trade(event="open"))                       # never counted
+    new_close = db.insert_trade(_trade(event="close", profit=10.0))
+    db.insert_trade(_trade(event="close", profit=-4.0))
+    old_close = db.insert_trade(_trade(event="close", profit=99.0))
+    now = int(time.time())
+    db.conn.execute("UPDATE trades SET ts=? WHERE id=?", (now - 1000, old_close))
+    db.conn.commit()
+    total, count = db.realized_pnl(now - 100)
+    assert count == 2
+    assert total == pytest.approx(6.0)
+    # sanity: widening the window picks the old close back up
+    total_all, count_all = db.realized_pnl(now - 5000)
+    assert count_all == 3
+    assert total_all == pytest.approx(105.0)
+
+
+def test_strategy_pnl_groups_closes_by_strategy(tmp_path):
+    db = SignalDb(str(tmp_path / "spnl.db"))
+    db.insert_trade(_trade(event="close", profit=10.0, strategy_id="a"))
+    db.insert_trade(_trade(event="close", profit=2.5, strategy_id="a"))
+    db.insert_trade(_trade(event="close", profit=-1.0, strategy_id="b"))
+    db.insert_trade(_trade(event="open", strategy_id="a"))       # not counted
+    out = db.strategy_pnl()
+    assert out["a"] == (pytest.approx(12.5), 2)
+    assert out["b"] == (pytest.approx(-1.0), 1)

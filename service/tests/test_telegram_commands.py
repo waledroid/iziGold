@@ -49,16 +49,45 @@ def _hb(active="halftrend_ema_v1", equity=10250.5, ts=1234567890.0, algo_trading
 
 
 class FakeDb:
-    def __init__(self, stats=None, trades=None):
+    def __init__(self, stats=None, trades=None, pnl=None, strat_pnl=None,
+                 mode="auto", entry="adr", htf="off", e200="off", strategies=None):
         self._stats = stats or {"total": 0, "resolved": 0, "ai_correct_pct": 0.0,
                                 "by_strategy": {}}
         self._trades = trades or []
+        # realized_pnl() returns this fixed (total, count) for ANY since_ts —
+        # tests assert the same figure appears for both Today and Week.
+        self._pnl = pnl
+        self._strat_pnl = strat_pnl or {}
+        self._mode, self._entry = mode, entry
+        self._htf, self._e200 = htf, e200
+        self._strategies = strategies or []
 
     def stats(self):
         return self._stats
 
     def recent_trades(self, limit=10):
         return self._trades[:limit]
+
+    def realized_pnl(self, since_ts):
+        return self._pnl if self._pnl is not None else (0.0, 0)
+
+    def strategy_pnl(self):
+        return self._strat_pnl
+
+    def exec_mode(self):
+        return self._mode
+
+    def entry_mode(self):
+        return self._entry
+
+    def htf_enforce(self):
+        return self._htf
+
+    def ema200_enforce(self):
+        return self._e200
+
+    def strategy_ids(self):
+        return self._strategies
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +317,92 @@ def test_bal_negative_floating_shows_minus_sign():
     app = _app(latest_heartbeat=(time.time(), hb))
     reply = handle_command("/bal", app)
     assert reply == "💰 Balance: $4302.24 | Equity: $4331.90 | Floating: -$29.66"
+
+
+def test_status_includes_today_and_week_pnl_when_db_supports_it():
+    app = _app(latest_heartbeat=_hb(), db=FakeDb(pnl=(12.5, 3)))
+    reply = handle_command("/status", app)
+    assert "Today: +$12.50 (3 trades)" in reply
+    assert "Week: +$12.50" in reply
+
+
+def test_status_redacted_hides_pnl():
+    app = _app(latest_heartbeat=_hb(), db=FakeDb(pnl=(12.5, 3)))
+    reply = handle_command("/status", app, redacted=True)
+    assert "Today:" not in reply
+
+
+def test_bal_includes_today_and_week_pnl():
+    app = _app(latest_heartbeat=_hb(), db=FakeDb(pnl=(-5.0, 2)))
+    reply = handle_command("/bal", app)
+    assert "Today: -$5.00 (2 trades)" in reply
+    assert "Week: -$5.00" in reply
+
+
+def test_bal_without_db_keeps_single_line():
+    app = _app(latest_heartbeat=_hb())
+    reply = handle_command("/bal", app)
+    assert "Today" not in reply
+
+
+def test_stats_includes_per_strategy_realized_pnl():
+    db = FakeDb(stats={"total": 3, "resolved": 2, "ai_correct_pct": 50.0,
+                       "by_strategy": {"halftrend_ema_v1": {
+                           "signals": 3, "resolved": 2, "hit_pct": 66.7,
+                           "avg_move": 1.2}}},
+                strat_pnl={"halftrend_ema_v1": (102.0, 4)})
+    app = _app(db=db)
+    reply = handle_command("/stats", app)
+    assert "+$102.00" in reply
+    assert "4 trades" in reply
+
+
+def test_config_shows_confirmation_gates():
+    app = _app(latest_heartbeat=_hb(), db=FakeDb(htf="M15", e200="on"))
+    reply = handle_command("/config", app)
+    assert "HTF: M15" in reply
+    assert "EMA200: on" in reply
+
+
+def test_mode_marks_active_buttons():
+    app = _app(db=FakeDb(mode="auto", entry="fixed"))
+    text, keyboard = handle_command("/mode", app)
+    rows = keyboard["inline_keyboard"]
+    labels = {b["text"] for row in rows for b in row}
+    assert any(l.startswith("● ") and "AUTO" in l for l in labels)
+    assert any(l.startswith("● ") and "FIXED" in l for l in labels)
+    assert not any(l.startswith("● ") and "MANUAL" in l for l in labels)
+
+
+def test_strategy_lists_pending_switch():
+    app = _app(latest_heartbeat=_hb(), pending_switch="boll_stochrsi",
+               db=FakeDb(strategies=["halftrend_ema_v1", "boll_stochrsi"]))
+    text, _ = handle_command("/strategy", app)
+    assert "pending: boll_stochrsi" in text
+
+
+def test_history_close_rows_get_direction_emoji_and_sum_line():
+    db = FakeDb(trades=[
+        {"id": 3, "ts": 1234567890, "event": "close", "strategy_id": "s",
+         "direction": "BUY", "lots": 0.1, "price": 2400.0, "sl": 0,
+         "reason": "tp", "ticket": 1, "screenshot_path": None,
+         "profit": 10.5, "render_path": None},
+        {"id": 2, "ts": 1234567890, "event": "close", "strategy_id": "s",
+         "direction": "SELL", "lots": 0.1, "price": 2400.0, "sl": 0,
+         "reason": "sl hit", "ticket": 2, "screenshot_path": None,
+         "profit": -3.2, "render_path": None}])
+    app = _app(db=db)
+    reply = handle_command("/history", app)
+    assert "🟢" in reply and "🔴" in reply
+    assert "closed shown: +$7.30" in reply
+
+
+def test_help_replies_with_pinned_reference():
+    app = _app()
+    reply = handle_command("/help", app)
+    assert reply is not None
+    assert "Command reference" in reply
+    assert "/status" in reply
 
 
 def test_switch_with_id_sets_pending_and_names_it_in_reply():

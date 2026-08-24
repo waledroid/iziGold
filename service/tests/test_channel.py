@@ -73,6 +73,12 @@ class _KvDb:
     def entry_mode(self):
         return self.kv.get("entry_mode") or "adr"
 
+    def htf_enforce(self):
+        return self.kv.get("htf_enforce") or "off"
+
+    def ema200_enforce(self):
+        return self.kv.get("ema200_enforce") or "off"
+
     def get_kv(self, key):
         return self.kv.get(key)
 

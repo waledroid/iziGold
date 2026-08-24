@@ -492,6 +492,24 @@ class SignalDb:
             (limit,)).fetchall()
         return [dict(zip(cols, r)) for r in rows]
 
+    def realized_pnl(self, since_ts: int) -> tuple:
+        """(summed profit, close count) over close events at/after since_ts.
+        Only 'close' rows carry a real P/L (opens store the 0.0 default)."""
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(profit), 0), COUNT(*) FROM trades"
+            " WHERE event='close' AND ts >= ?", (int(since_ts),)).fetchone()
+        return (row[0] or 0.0, row[1] or 0)
+
+    def strategy_pnl(self) -> dict:
+        """{strategy_id: (summed profit, close count)} over ALL close events —
+        the money companion to stats()'s signal hit-rates."""
+        out = {}
+        for sid, total, count in self.conn.execute(
+                "SELECT strategy_id, COALESCE(SUM(profit), 0), COUNT(*)"
+                " FROM trades WHERE event='close' GROUP BY strategy_id"):
+            out[sid or "unknown"] = (total or 0.0, count)
+        return out
+
     def set_screenshot(self, trade_id: int, path: str) -> None:
         with self._lock:
             self.conn.execute(

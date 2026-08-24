@@ -353,6 +353,9 @@ def _format_status(app, redacted=False) -> str:
     if not redacted:
         lines.append(f"💰 {hb.equity} equity · {hb.balance} balance "
                      f"· {hb.floating_pl:+g} floating")
+        money = _money_line(app)
+        if money:
+            lines.append(money)
     lines += [
         protection,
         f"🎯 {strategy} · {mode}",
@@ -373,11 +376,49 @@ def _format_stats(app) -> str:
     by_strategy = stats.get("by_strategy") or {}
     if not by_strategy:
         return "no stats yet"
+    # Money companion to the signal hit-rates: realized P/L per strategy
+    # from actual close events (empty dict when none / db can't answer).
+    pnl = (app.state.db.strategy_pnl()
+           if hasattr(app.state.db, "strategy_pnl") else {})
     lines = ["📈 Stats by strategy:"]
     for sid, s in by_strategy.items():
-        lines.append(f"{sid}: {s['signals']} signals, {s['resolved']} resolved, "
-                     f"{s['hit_pct']}% hit, avg move {s['avg_move']}")
+        line = (f"{sid}: {s['signals']} signals, {s['resolved']} resolved, "
+                f"{s['hit_pct']}% hit, avg move {s['avg_move']}")
+        if sid in pnl:
+            total, n = pnl[sid]
+            line += f", P/L {_fmt_money(total)} over {n} trades"
+        lines.append(line)
     return "\n".join(lines)
+
+
+def _fmt_money(amount: float) -> str:
+    """-3.2 -> '-$3.20', 12.5 -> '+$12.50' — signed, dollar, 2 decimals."""
+    sign = "+" if amount >= 0 else "-"
+    return f"{sign}${abs(amount):.2f}"
+
+
+def _period_starts() -> tuple:
+    """(today_start, week_start) as epoch seconds, LOCAL time: today =
+    local midnight, week = the most recent local Monday midnight."""
+    now = time.localtime()
+    today = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0,
+                         0, 0, -1))
+    return today, today - now.tm_wday * 86400
+
+
+def _money_line(app) -> str | None:
+    """'📅 Today: +$X (N trades) · Week: +$Y' from close events in the
+    trades table, or None when the db can't answer (tests with a bare
+    namespace, no db). Account figures — callers must skip it when
+    redacted."""
+    db = getattr(app.state, "db", None)
+    if db is None or not hasattr(db, "realized_pnl"):
+        return None
+    today_start, week_start = _period_starts()
+    today, n = db.realized_pnl(today_start)
+    week, _ = db.realized_pnl(week_start)
+    return (f"📅 Today: {_fmt_money(today)} ({n} trade{'s' if n != 1 else ''})"
+            f" · Week: {_fmt_money(week)}")
 
 
 def _format_history(app) -> str:
@@ -385,16 +426,23 @@ def _format_history(app) -> str:
     if not trades:
         return "no trade history yet"
     lines = ["🕘 Last trades:"]
+    closed_total, closed_n = 0.0, 0
     for t in trades:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t["ts"]))
-        line = (f"{when} {t['event']} {t.get('strategy_id')} {t.get('direction')} "
-                f"{t.get('lots')}@{t.get('price')}")
+        dot = {"BUY": "🟢", "SELL": "🔴"}.get(t.get("direction"), "▫️")
+        line = (f"{dot} {when} {t['event']} {t.get('strategy_id')} "
+                f"{t.get('direction')} {t.get('lots')}@{t.get('price')}")
         reason = t.get("reason")
         if reason:
             line += f" ({reason})"
         if t.get("event") == "close":
-            line += f" P/L {t.get('profit')}"
+            profit = t.get("profit") or 0.0
+            line += f" P/L {profit:+.2f}"
+            closed_total += profit
+            closed_n += 1
         lines.append(line)
+    if closed_n:
+        lines.append(f"Σ closed shown: {_fmt_money(closed_total)} ({closed_n})")
     return "\n".join(lines)
 
 
@@ -409,8 +457,10 @@ def _format_balance(app, redacted=False) -> str:
     floating = f"{sign}${abs(hb.floating_pl):.2f}"
     if redacted:
         return f"💰 Balance: {REDACTED} | Equity: {REDACTED} | Floating: {floating}"
-    return (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
+    text = (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
             f"Floating: {floating}")
+    money = _money_line(app)
+    return f"{text}\n{money}" if money else text
 
 
 def _format_switch(app, args: list) -> str:
@@ -429,13 +479,20 @@ def _format_switch(app, args: list) -> str:
 def _format_mode(app) -> tuple:
     mode = app.state.db.exec_mode()
     emode = app.state.db.entry_mode()
+
+    # ● marks the currently-active choice, same convention as /agree.
+    def mark(label, active):
+        return ("● " + label) if active else label
+
     return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
             f"immediately; MANUAL sends proposals with buttons.\n"
             f"Entry mode: {emode.upper()}\nADR sizes by 1% risk with "
             f"pyramid adds and targets; FIXED rides a fixed lot until "
             f"the trend confirms a change.",
-            kb([[("🤖 AUTO", "mode:auto"), ("👤 MANUAL", "mode:manual")],
-                [("📊 ADR", "tmode:adr"), ("🎯 FIXED", "tmode:fixed")]]))
+            kb([[(mark("🤖 AUTO", mode == "auto"), "mode:auto"),
+                 (mark("👤 MANUAL", mode == "manual"), "mode:manual")],
+                [(mark("📊 ADR", emode == "adr"), "tmode:adr"),
+                 (mark("🎯 FIXED", emode == "fixed"), "tmode:fixed")]]))
 
 
 def _format_agree(app) -> tuple:
@@ -474,8 +531,11 @@ def _format_strategy(app) -> tuple:
     latest = app.state.latest_heartbeat
     active = latest[1].active_strategy if latest else ""
     buttons = [[(("● " if s == active else "") + s, f"strat:{s}")] for s in rows]
-    return ("Switch active strategy (applies at next bar):",
-            kb(buttons) if buttons else None)
+    text = "Switch active strategy (applies at next bar):"
+    pending = getattr(app.state, "pending_switch", None)
+    if pending and pending != active:
+        text += f"\npending: {pending} (applies on the next heartbeat)"
+    return (text, kb(buttons) if buttons else None)
 
 
 def _format_config(app, redacted=False) -> str:
@@ -494,7 +554,9 @@ def _format_config(app, redacted=False) -> str:
         f"equity: {REDACTED if redacted else (hb.equity if hb else '?')}\n"
         f"kill switch: {hb.kill_switch if hb else '?'} | "
         f"window open: {hb.window_open if hb else '?'}\n"
-        f"spread: {hb.spread_points if hb else '?'}pt")
+        f"spread: {hb.spread_points if hb else '?'}pt\n"
+        f"confirms — HTF: {db.htf_enforce()} | EMA200: {db.ema200_enforce()}"
+        f" (/agree to change)")
 
 
 def _format_channel(app, args: list) -> str:
@@ -564,6 +626,13 @@ def _cmd_switch(app, parts, redacted):
     return _format_switch(app, parts[1:])
 
 
+def _cmd_help(app, parts, redacted):
+    # Typing /help used to be silently ignored (unknown command -> None);
+    # replying with the same reference the pinned message carries costs
+    # nothing and never goes stale (both render from COMMANDS).
+    return format_pinned_help()
+
+
 def _cmd_channel(app, parts, redacted):
     return _format_channel(app, parts[1:])
 
@@ -595,6 +664,7 @@ COMMANDS: dict[str, CommandSpec] = {
     "/switch": CommandSpec(_cmd_switch, "queue a strategy switch (/switch cancel)",
                            arg_hint=" <id>"),
     "/channel": CommandSpec(_cmd_channel, "link/unlink the broadcast channel"),
+    "/help": CommandSpec(_cmd_help, "show this reference"),
 }
 
 # Pinned-help-only lines inserted after a given registered command's line.
@@ -609,7 +679,7 @@ _PINNED_EXTRA: dict[str, list[str]] = {
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "8"
+PINNED_HELP_VERSION = "9"
 
 
 def format_pinned_help() -> str:

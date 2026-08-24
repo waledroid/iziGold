@@ -372,6 +372,25 @@ Data collection only; no UI yet.
 
 **Privacy filter invariant:** channel text never contains balance, equity, drawdown %, or HWM (masked as `•••`); trade-level figures (prices, lots, per-leg/basket floating, realized per-trade P/L) pass through. Owner commands are mirrored as `👤 /cmd` + redacted reply via `_mirror_command_text(text, app)`, which re-runs `handle_command(text, app, redacted=True)`.
 
+**Command upgrades (owner review, 2026-08-25)** — one pass over every
+command, four changes (PINNED_HELP_VERSION bumped 8→9):
+- **Money visibility**: `/status` and `/bal` append `📅 Today: +$X (N
+  trades) · Week: +$Y` (realized P/L from `trades` close events;
+  `SignalDb.realized_pnl(since_ts)`; "today" = LOCAL midnight, week =
+  local Monday). Account figures → OMITTED when redacted (channel
+  mirror). `/stats` appends per-strategy `P/L +$X over N trades`
+  (`SignalDb.strategy_pnl()`) next to the signal hit-rates — hit-rate
+  measures the SIGNAL, P/L measures the money; they can disagree.
+- `/config` now shows the confirmation gates (`confirms — HTF: … |
+  EMA200: …`) so the settings command lists every toggleable setting.
+- Consistency: `/mode` buttons mark the active choice with ● (same
+  convention as `/agree`); `/strategy` shows a queued switch as
+  `pending: <id>`.
+- `/history`: 🟢/🔴 direction dots, closes print `P/L +x.xx`, and a
+  final `Σ closed shown: +$X (N)` line sums the closes displayed.
+- `/help` is now a registered command returning `format_pinned_help()`
+  (it used to be silently ignored — unknown commands return None).
+
 **Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker message ids + last text are PERSISTED in the db kv (`ticker_owner_msg_id`, `ticker_owner_text`, `ticker_channel_msg_id`, `ticker_channel_text`; loaded by `load_ticker_state` at startup, cleared on the CLOSED freeze) so a service restart mid-trade RESUMES editing the same LIVE message — 2026-08-17 three deploys during one BUY had produced three LIVE messages ("should be once and updates itself"). If the persisted message was deleted server-side (edit fails "message to edit not found"), the state is forgotten and the next tick posts a fresh LIVE. Persistence writes go through a SHORT-LIVED PRIVATE sqlite connection (`_kv_write`, path captured once at startup as `app.state.ticker_db_path`) — NOT `app.state.db.conn`: ticker_tick runs in a worker thread and the sqlite3 module forbids simultaneous calls on one connection (`InterfaceError: bad parameter or other API misuse` — bitten by the first cut, caught by the full suite). General rule this reaffirms: any NEW cross-thread db writer must not share `SignalDb.conn` **raw**. (Since the 2026-08-24 lightweight pass the `SignalDb` WRITE METHODS are serialized by an internal `RLock` — see §5d — so calling those from a worker thread is fine, and `/heartbeat` now does. Bare `db.conn.execute(...)` from another thread still is not.) Only the ≥5 s edit-throttle clock is per-process. Authoritative P/L remains the close report.
 
 **Ops note:** mirroring and ticker are fail-open — channel send failures never touch owner delivery or the heartbeat path.
