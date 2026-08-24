@@ -87,6 +87,16 @@ _CANDLES_SCHEMA = """CREATE TABLE IF NOT EXISTS candles (
   PRIMARY KEY (symbol, timeframe, bar_time)
 )"""
 
+_BACKTEST_SCHEMA = """CREATE TABLE IF NOT EXISTS backtest_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_ts INTEGER NOT NULL,
+  params_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  error TEXT,
+  stats_json TEXT,
+  report_path TEXT
+)"""
+
 PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
                   "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
                   "profit_target_pct", "broker_name", "account_login",
@@ -113,6 +123,7 @@ class SignalDb:
         self.conn.execute(_SPREAD_SCHEMA)
         self.conn.execute(_PROPOSALS_SCHEMA)
         self.conn.execute(_CANDLES_SCHEMA)
+        self.conn.execute(_BACKTEST_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -339,6 +350,33 @@ class SignalDb:
             "SELECT symbol, timeframe FROM candles"
             " ORDER BY bar_time DESC LIMIT 1").fetchone()
         return (row[0], row[1]) if row else None
+
+    # --- backtest runs -------------------------------------------------
+    def insert_backtest_run(self, params_json: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO backtest_runs (created_ts, params_json, status)"
+            " VALUES (?,?, 'running')", (int(time.time()), params_json))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def finish_backtest_run(self, run_id: int, *, status: str, error=None,
+                            stats_json=None, report_path=None) -> None:
+        self.conn.execute(
+            "UPDATE backtest_runs SET status=?, error=?, stats_json=?,"
+            " report_path=? WHERE id=?",
+            (status, error, stats_json, report_path, run_id))
+        self.conn.commit()
+
+    def get_backtest_run(self, run_id: int) -> dict | None:
+        cur = self.conn.execute(
+            "SELECT * FROM backtest_runs WHERE id=?", (run_id,))
+        return self._row_to_dict(cur, cur.fetchone())
+
+    def recent_backtest_runs(self, limit: int = 20) -> list:
+        cur = self.conn.execute(
+            "SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
     def insert_trade(self, ev: dict) -> int:
         cur = self.conn.execute(

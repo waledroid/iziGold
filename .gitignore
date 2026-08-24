@@ -13,3 +13,4 @@ mt5/**/*.ex5
 week.json
 bars_max.json
 .run/
+service/data/backtests/
