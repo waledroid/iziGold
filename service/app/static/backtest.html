@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iziGold — Backtest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-dark: #090d14;
+  --bg-card: rgba(18, 24, 38, 0.75);
+  --bg-card-hover: rgba(26, 35, 54, 0.85);
+  --border-card: rgba(255, 255, 255, 0.08);
+  --gold-primary: #f5c542;
+  --gold-glow: rgba(245, 197, 66, 0.15);
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --pos-green: #10b981;
+  --pos-bg: rgba(16, 185, 129, 0.12);
+  --neg-red: #ef4444;
+  --neg-bg: rgba(239, 68, 68, 0.12);
+  --accent-blue: #3b82f6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-dark);
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(245, 197, 66, 0.04) 0%, transparent 40%),
+    radial-gradient(circle at 85% 85%, rgba(59, 130, 246, 0.03) 0%, transparent 40%);
+  color: var(--text-main);
+  min-height: 100vh;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-card);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #f5c542 0%, #b48811 100%);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 0 20px rgba(245, 197, 66, 0.25);
+}
+.brand-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.brand-subtitle {
+  font-size: 12px;
+  color: var(--gold-primary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.nav-links { display: flex; gap: 6px; margin-left: 28px; }
+.nav-links a {
+  color: var(--text-muted); text-decoration: none; font-size: 13px;
+  font-weight: 600; padding: 6px 14px; border-radius: 8px;
+  border: 1px solid transparent; transition: all 0.2s ease;
+}
+.nav-links a:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+.nav-links a.active {
+  color: var(--gold-primary); background: rgba(245,197,66,0.1);
+  border-color: rgba(245,197,66,0.3);
+}
+
+/* Section Cards */
+.card-section {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+  border-radius: 16px;
+  padding: 20px 24px;
+  margin-bottom: 28px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+h2::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 16px;
+  background: var(--gold-primary);
+  border-radius: 2px;
+}
+
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+/* Custom Table Design */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+}
+th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  vertical-align: middle;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Badges & Buttons */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-pos { background: var(--pos-bg); color: var(--pos-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+.badge-neg { background: var(--neg-bg); color: var(--neg-red); border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-gold { background: rgba(245, 197, 66, 0.15); color: var(--gold-primary); border: 1px solid rgba(245, 197, 66, 0.3); }
+.badge-muted { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid rgba(255, 255, 255, 0.1); }
+
+button {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+button.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+button.btn-cancel {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  box-shadow: none;
+}
+button.btn-cancel:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.pos { color: var(--pos-green); font-weight: 600; }
+.neg { color: var(--neg-red); font-weight: 600; }
+
+/* Form inputs (onboarding.html pattern) */
+input, select {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(9, 13, 20, 0.7);
+  color: var(--text-main);
+  border: 1px solid var(--border-card);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--gold-primary);
+  box-shadow: 0 0 10px rgba(245, 197, 66, 0.2);
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="header">
+    <div class="brand">
+      <div class="brand-logo">🥇</div>
+      <div>
+        <h1 class="brand-title">Backtest</h1>
+        <div class="brand-subtitle">iziGold Replay Lab</div>
+      </div>
+    </div>
+    <nav class="nav-links">
+      <a href="/ui">Dashboard</a>
+      <a href="/ui/backtest" class="active">Backtest</a>
+      <a href="/ui/onboarding">Settings</a>
+    </nav>
+  </header>
+
+  <div class="card-section">
+    <div class="section-header"><h2>New run</h2>
+      <span id="range" class="stat-label">loading data range…</span></div>
+    <form id="f" novalidate>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;">
+        <div><label class="stat-label">Strategy</label><select name="strategy" id="strat"></select></div>
+        <div><label class="stat-label">From</label><input type="date" name="start" required></div>
+        <div><label class="stat-label">To</label><input type="date" name="end" required></div>
+        <div><label class="stat-label">Starting equity $</label><input type="number" name="balance" value="10000" min="1" step="100"></div>
+        <div><label class="stat-label">Risk % / trade</label><input type="number" name="risk_pct" value="1.0" min="0.1" max="10" step="0.1"></div>
+        <div><label class="stat-label">Entry mode</label>
+          <select name="entry_mode"><option value="adr">adr (live)</option><option value="fixed">fixed lots</option></select></div>
+        <div><label class="stat-label">Exit scheme</label>
+          <select name="exit_scheme"><option>target-exit</option><option>floor-a</option><option>floor-b</option><option>floor-a-adds</option></select></div>
+        <div><label class="stat-label">EMA-200 confirm</label>
+          <select name="ema200_confirm"><option>off</option><option>on</option></select></div>
+        <div><label class="stat-label">M15 bias (M5 lane)</label>
+          <select name="m15_bias"><option>off</option><option>on</option></select></div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:12px;align-items:center;">
+        <button type="submit" class="btn-sm" id="runBtn">▶ Run backtest</button>
+        <span id="status" class="stat-label"></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="card-section">
+    <div class="section-header"><h2>Runs</h2></div>
+    <div class="table-wrap"><table id="runs"></table></div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const fmt=(v,d=2)=>v==null?'—':Number(v).toFixed(d);
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function j(u){const r=await fetch(u);return r.json()}
+const day=ts=>new Date(ts*1000).toISOString().slice(0,10);
+
+let _watch=null;
+async function loadRange(){
+ const r=await j('/ui/backtest/range');
+ $('strat').innerHTML=r.strategies.map(s=>
+  `<option value="${esc(s.id)}" ${s.supported?'':'disabled'}>${esc(s.label)}${s.supported?'':' — not yet supported'}</option>`).join('');
+ const f=document.getElementById('f');
+ if(r.range){
+  $('range').textContent=`data: ${day(r.range.start)} → ${day(r.range.end)} (${r.range.count.toLocaleString()} M5 bars)`;
+  f.start.value=day(Math.max(r.range.start,r.range.end-30*86400));
+  f.end.value=day(r.range.end);
+  f.start.min=f.end.min=day(r.range.start);
+  f.start.max=f.end.max=day(r.range.end);
+ } else {
+  $('range').textContent='no candles stored yet — run scripts/backfill_candles.py first';
+  $('runBtn').disabled=true;
+ }
+}
+
+document.getElementById('f').onsubmit=async e=>{
+ e.preventDefault();
+ const f=e.target, body={};
+ for(const el of f.elements) if(el.name&&el.value!=='')
+  body[el.name]=el.type==='number'?Number(el.value):el.value;
+ $('status').textContent='starting…';
+ const r=await fetch('/ui/backtest',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const d=await r.json().catch(()=>({}));
+ if(!r.ok){$('status').textContent='✗ '+(d.detail||r.status);return;}
+ watch(d.run_id, Date.now());
+ runs();
+};
+
+function watch(rid,t0){
+ clearInterval(_watch);
+ _watch=setInterval(async()=>{
+  const row=await j('/ui/backtest/'+rid);
+  const secs=Math.round((Date.now()-t0)/1000);
+  if(row.status==='running'){$('status').textContent=`⏳ running… ${secs}s`;return;}
+  clearInterval(_watch);
+  $('status').innerHTML=row.status==='done'
+   ?`✅ done in ${secs}s — <a href="/ui/backtest/${rid}/report" target="_blank" style="color:var(--gold-primary)">open report</a>`
+   :`✗ failed: ${esc(row.error||'unknown')}`;
+  runs();
+ },2000);
+}
+
+async function runs(){
+ const {runs}=await j('/ui/backtest/runs');
+ $('runs').innerHTML='<thead><tr><th>#</th><th>when</th><th>strategy</th><th>range</th>'+
+  '<th>equity</th><th>net</th><th>trades</th><th>win %</th><th>max DD</th><th>status</th><th></th></tr></thead><tbody>'+
+  runs.map(r=>{
+   const p=r.params||{}, s=r.stats||{};
+   const net=s.net==null?'—':`<span class="${s.net>=0?'pos':'neg'}">${s.net>=0?'+':''}${fmt(s.net)}</span>`;
+   const badge=r.status==='done'?'badge-pos':(r.status==='failed'?'badge-neg':'badge-gold');
+   const rep=r.status==='done'?`<a href="/ui/backtest/${r.id}/report" target="_blank" style="color:var(--gold-primary)">report</a>`:'';
+   return `<tr><td>${r.id}</td><td>${new Date(r.created_ts*1000).toLocaleString()}</td>`+
+    `<td><b>${esc(p.strategy||'—')}</b></td><td>${p.start_ts?day(p.start_ts)+' → '+day(p.end_ts):'—'}</td>`+
+    `<td>$${fmt(p.balance,0)} @ ${fmt(p.risk_pct,1)}%</td><td>${net}</td>`+
+    `<td>${s.trades==null?'—':s.trades}</td><td>${s.win_rate==null?'—':fmt(s.win_rate,1)+'%'}</td>`+
+    `<td>${s.max_dd==null?'—':fmt(s.max_dd)}</td>`+
+    `<td><span class="badge ${badge}">${esc(r.status)}${r.error?': '+esc(r.error.slice(0,60)):''}</span></td>`+
+    `<td>${rep}</td></tr>`;
+  }).join('')+'</tbody>';
+}
+
+loadRange();runs();setInterval(runs,15000);
+</script>
+</body>
+</html>
