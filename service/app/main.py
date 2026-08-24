@@ -845,6 +845,45 @@ def _overlays_boll_stochrsi_v1(candles: list, closes: list) -> dict:
     return {"bb_upper": upper, "bb_mid": mid, "bb_lower": lower}
 
 
+def _resample_m15(candles: list) -> list:
+    """3xM5 -> 1xM15 dict bars aligned to 900 s boundaries. The trailing
+    (possibly incomplete) bucket is kept -- on a live chart the forming M15
+    bar is real information, and the EA's own M15 lane sees the same thing."""
+    out = []
+    for c in candles:
+        bucket = c.t - (c.t % 900)
+        if out and out[-1]["t"] == bucket:
+            b = out[-1]
+            b["h"] = max(b["h"], c.h)
+            b["l"] = min(b["l"], c.l)
+            b["c"] = c.c
+        else:
+            out.append({"t": bucket, "o": c.o, "h": c.h, "l": c.l, "c": c.c})
+    return out
+
+
+def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
+    """halftrend_m15_v1's indicators computed on M15 bars, expanded back to
+    the M5 candle list (each M5 bar takes its M15 bucket's value) so the
+    arrays stay 1:1 with /ui/candles like every other overlay."""
+    m15 = _resample_m15(candles)
+    if len(m15) < 3:
+        return {}
+    m15_objs = [type("C", (), b)() for b in m15]
+    closes15 = [b["c"] for b in m15]
+    ht15 = halftrend(m15_objs, amplitude=4)
+    e55, e200 = ema(closes15, 55), ema(closes15, 200)
+    idx = {b["t"]: i for i, b in enumerate(m15)}
+    out_ht, out55, out200 = [], [], []
+    for c in candles:
+        i = idx[c.t - (c.t % 900)]
+        v = ht15[i]
+        out_ht.append(list(v) if v is not None else None)
+        out55.append(e55[i])
+        out200.append(e200[i])
+    return {"halftrend": out_ht, "ema55": out55, "ema200": out200}
+
+
 # strategy_id -> overlay builder(candles, closes) -> dict. Everywhere else,
 # strategies are handled by tag rather than by per-strategy branching (see
 # db.stats() in db.py) -- this registry is that pattern applied to
@@ -853,7 +892,9 @@ def _overlays_boll_stochrsi_v1(candles: list, closes: list) -> dict:
 # to ui_overlays' existing {} fallback.
 _OVERLAY_BUILDERS = {
     "halftrend_ema_v1": _overlays_halftrend_ema_v1,
+    "halftrend_m15_v1": _overlays_halftrend_m15_v1,
     "boll_stochrsi_v1": _overlays_boll_stochrsi_v1,
+    "boll_stochrsi": _overlays_boll_stochrsi_v1,     # EA-side id alias
 }
 
 
