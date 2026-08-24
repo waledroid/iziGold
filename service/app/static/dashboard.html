@@ -84,6 +84,17 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.nav-links { display: flex; gap: 6px; margin-left: 28px; }
+.nav-links a {
+  color: var(--text-muted); text-decoration: none; font-size: 13px;
+  font-weight: 600; padding: 6px 14px; border-radius: 8px;
+  border: 1px solid transparent; transition: all 0.2s ease;
+}
+.nav-links a:hover { color: var(--text-main); background: rgba(255,255,255,0.05); }
+.nav-links a.active {
+  color: var(--gold-primary); background: rgba(245,197,66,0.1);
+  border-color: rgba(245,197,66,0.3);
+}
 .header-right {
   display: flex;
   align-items: center;
@@ -423,6 +434,11 @@ button.btn-cancel:hover {
         <div class="brand-subtitle">iziGold Trading Console</div>
       </div>
     </div>
+    <nav class="nav-links">
+      <a href="/ui" class="active">Dashboard</a>
+      <a href="/ui/backtest">Backtest</a>
+      <a href="/ui/onboarding">Settings</a>
+    </nav>
     <div class="header-right">
       <span id="prof" class="prof-badge"></span>
     </div>
@@ -442,6 +458,22 @@ button.btn-cancel:hover {
         <button id="mManual" class="btn-sm" onclick="setMode('manual')">👤 MANUAL</button>
       </div>
       <button id="closeAll" class="btn-sm btn-cancel" onclick="closeAllPos()">✖ Close all</button>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span class="stat-label" style="margin-right:4px;">Entry</span>
+        <button id="rAdr" class="btn-sm" onclick="setRule('entry_mode','adr')">ADR</button>
+        <button id="rFixed" class="btn-sm" onclick="setRule('entry_mode','fixed')">FIXED</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span class="stat-label" style="margin-right:4px;">M15 gate</span>
+        <select id="rHtf" onchange="setRule('htf_enforce',this.value)"
+                style="background:rgba(9,13,20,0.7);color:var(--text-main);border:1px solid var(--border-card);border-radius:6px;padding:4px 8px;font-size:12px;">
+          <option>off</option><option>M15</option><option>M30</option><option>H1</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span class="stat-label" style="margin-right:4px;">EMA200 gate</span>
+        <button id="rE200" class="btn-sm" onclick="toggleE200()">off</button>
+      </div>
       <span id="ctlsub" class="stat-label"></span>
     </div>
     <div id="propcard"></div>
@@ -459,10 +491,7 @@ button.btn-cancel:hover {
   <div class="card-section chart-panel" id="pricePanel">
     <div class="section-header">
       <h2>XAUUSD — live</h2>
-      <div class="tabs" id="stratTabs">
-        <button type="button" class="tab-btn active" data-tab="halftrend_ema_v1" onclick="setTab('halftrend_ema_v1')">halftrend</button>
-        <button type="button" class="tab-btn" data-tab="boll_stochrsi_v1" onclick="setTab('boll_stochrsi_v1')">boll_stochrsi</button>
-      </div>
+      <div class="tabs" id="stratTabs"></div>
     </div>
     <div class="canvas-wrap" id="chartWrap">
       <div id="chartEl" style="width:100%;height:100%"></div>
@@ -494,6 +523,12 @@ button.btn-cancel:hover {
   <div class="card-section">
     <div class="section-header">
       <h2>Signal log</h2>
+      <select id="sigFilter" onchange="signals()"
+              style="background:rgba(9,13,20,0.7);color:var(--text-main);border:1px solid var(--border-card);border-radius:6px;padding:4px 8px;font-size:12px;">
+        <option value="all">all</option>
+        <option value="active">active only</option>
+        <option value="shadow">shadows only</option>
+      </select>
     </div>
     <div class="table-wrap scroll-cap">
       <table id="sig"></table>
@@ -522,6 +557,7 @@ function closeLightbox(e){
   }
 }
 
+let _rules=null;
 async function state(){
  const s=await j('/ui/state');
  $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
@@ -530,6 +566,14 @@ async function state(){
  const onCss='background:var(--gold-primary);color:#000;font-weight:600;';
  $('mAuto').style.cssText = s.mode==='auto'?onCss:'';
  $('mManual').style.cssText = s.mode==='manual'?onCss:'';
+ _rules=s.rules||null;
+ if(_rules){
+  $('rAdr').style.cssText=_rules.entry_mode==='adr'?onCss:'';
+  $('rFixed').style.cssText=_rules.entry_mode==='fixed'?onCss:'';
+  if(document.activeElement!==$('rHtf')) $('rHtf').value=_rules.htf_enforce;
+  $('rE200').textContent=_rules.ema200_enforce==='on'?'ON':'off';
+  $('rE200').style.cssText=_rules.ema200_enforce==='on'?onCss:'';
+ }
  renderProposal(s.proposal);
  const h=s.heartbeat;
  $('closeAll').disabled = !(h&&h.positions&&h.positions.length);
@@ -693,18 +737,31 @@ function zoomToTrade(ts){
 
 async function stats(){
  const s=await j('/ui/stats');const rows=Object.entries(s.by_strategy||{});
- $('cmp').innerHTML='<thead><tr><th>strategy</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr></thead><tbody>'+
+ // tabs follow whatever strategies have actually signalled (per-tf keys
+ // collapse to bare ids -- overlays are keyed by bare strategy_id)
+ const ids=[...new Set(rows.map(([k])=>k.split(' @')[0]))]
+   .filter(id=>id!=='pre-framework'&&id!=='stub');
+ if(ids.length&&!ids.includes(_activeTab)) _activeTab=ids[0];
+ $('stratTabs').innerHTML=ids.map(id=>
+  `<button type="button" class="tab-btn${id===_activeTab?' active':''}" data-tab="${esc(id)}">${esc(id)}</button>`).join('');
+ $('cmp').innerHTML='<thead><tr><th>strategy</th><th>tf</th><th>signals</th><th>resolved</th><th>hit %</th><th>avg move</th><th></th></tr></thead><tbody>'+
   rows.map(([key,v])=>{
     // key is "<strategy_id> @<timeframe>" (display only) -- /ui/switch takes the
     // bare strategy_id, so strip the " @<tf>" suffix for the button's payload.
-    const bareId=key.split(' @')[0];
+    const [sid, tf] = key.split(' @');
     const btn=key==='pre-framework'?''
-     :`<button class="btn-sm" data-sid="${esc(bareId)}">switch to this</button>`;
-    return `<tr><td><b>${esc(key)}</b></td><td>${v.signals}</td><td>${v.resolved}</td>`
+     :`<button class="btn-sm" data-sid="${esc(sid)}">switch to this</button>`;
+    return `<tr><td><b>${esc(sid)}</b></td><td>${esc(tf||'—')}</td><td>${v.signals}</td><td>${v.resolved}</td>`
      +`<td><span class="badge ${v.hit_pct>=50?'badge-pos':'badge-neg'}">${fmt(v.hit_pct,1)}%</span></td>`
      +`<td>${fmt(v.avg_move)}</td><td>${btn}</td></tr>`;
   }).join('')+'</tbody>';
 }
+// Delegated tab listener: tabs are rebuilt by stats() on each poll, so the
+// handler lives on the (stable) container rather than on each button.
+$('stratTabs').addEventListener('click', e=>{
+ const b=e.target.closest('[data-tab]');
+ if(b) setTab(b.dataset.tab);
+});
 // Delegated listener: the "switch to this" buttons carry their target id in a
 // data-attribute (never spliced into an onclick string) so a strategy_id
 // containing HTML/JS-meaningful characters (strategy_id is unconstrained on
@@ -716,8 +773,10 @@ $('cmp').addEventListener('click', e=>{
 
 async function signals(){
  const {signals}=await j('/ui/signals');
+ const flt=$('sigFilter').value;
+ const list=signals.filter(s=>flt==='all'||(flt==='active'?s.is_active:!s.is_active));
  $('sig').innerHTML='<thead><tr><th>time</th><th>strategy</th><th>signal</th><th>AI</th><th>verdict</th><th>outcome</th></tr></thead><tbody>'+
-  signals.map(s=>{
+  list.map(s=>{
     const vBadge = s.verdict === 'CONFIRMED' ? 'badge-pos' : (s.verdict === 'VETO' ? 'badge-neg' : 'badge-gold');
     return `<tr><td>${new Date(s.created_ts*1000).toLocaleString()}</td><td><b>${esc(s.strategy_id||'—')}</b>${s.timeframe?' @'+esc(s.timeframe):''}${s.is_active?'':' <span class="badge badge-muted">(shadow)</span>'}</td>`+
     `<td><span class="badge ${s.signal==='BUY'?'badge-pos':(s.signal==='SELL'?'badge-neg':'badge-muted')}">${s.signal}</span></td>`+
@@ -727,14 +786,19 @@ async function signals(){
   }).join('')+'</tbody>';
 }
 
+// 1 = the gate agreed with the trade, 0 = it disagreed, null/-1 = not recorded
+const agree=v=>v===1?'<span class="badge badge-pos">✓</span>'
+  :(v===0?'<span class="badge badge-neg">✗</span>':'—');
+
 async function trades(){
  const {trades}=await j('/ui/trades');
- $('tr').innerHTML='<thead><tr><th></th><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
+ $('tr').innerHTML='<thead><tr><th></th><th>time</th><th>event</th><th>strategy</th><th>direction</th><th>lots@price</th><th>P/L</th><th>reason</th><th>M15</th><th>E200</th><th>screenshot</th><th>render</th></tr></thead><tbody>'+
   trades.map(t=>{
    const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'}">${t.profit>=0?'+':''}${fmt(t.profit)}</span>`:'';
    return `<tr><td><button class="btn-sm" onclick="zoomToTrade(${Number(t.ts)})" title="show on chart">📍</button></td>`+
     `<td>${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted')}">${esc(t.event)}</span></td><td><b>${esc(t.strategy_id||'—')}</b></td><td>${esc(t.direction||'—')}</td>`+
     `<td>${fmt(t.lots,2)}@${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${esc(t.reason||'—')}</span></td>`+
+    `<td>${agree(t.htf_agree)}</td><td>${agree(t.ema200_agree)}</td>`+
     `<td><img src="/ui/screenshot/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
     `<td><img src="/ui/render/${t.id}" class="thumb-img" height="40" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
   }).join('')+'</tbody>';
@@ -758,6 +822,16 @@ async function setMode(m){
  const r=await fetch('/ui/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
  if(!r.ok) alert('Mode change failed ('+r.status+')');
  state();
+}
+
+async function setRule(key,value){
+ const r=await fetch('/ui/rules',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})});
+ if(!r.ok) alert('Rule change failed ('+r.status+')');
+ state();
+}
+function toggleE200(){
+ setRule('ema200_enforce', _rules&&_rules.ema200_enforce==='on'?'off':'on');
 }
 
 async function decide(pid,action){
