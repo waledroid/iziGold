@@ -467,14 +467,6 @@ persisted legs (EA sends 0 on closes). MT5 chart itself: dark theme +
 HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
 (`TradeBoxes.mqh`, recovers open-basket state after reload).
 
-**Settings page** (`GET/POST /ui/onboarding`, 2026-08-24): the onboarding page
-now doubles as Settings, with a top nav bar (Dashboard / Backtest / Settings
-links, Settings active) centered above the form card. Header changed from "Welcome
-to iziGold" to "iziGold setup"; note changed to emphasize "editable any time
-from the Settings menu" — reinforcing that the page serves both first-run
-setup and ongoing profile editing. No endpoint changes: contract untouched,
-form structure unchanged, form behavior unchanged.
-
 # 6. Operations runbook (verified on this machine)
 
 - **Spawn everything**: Desktop `XAU-Launch.bat` (repo: `scripts/xau-launch.bat`)
