@@ -726,6 +726,26 @@ def ui_mode(body: dict):
     return {"mode": mode}
 
 
+@app.post("/ui/rules")
+def ui_rules(body: dict):
+    """Dashboard mirror of the Telegram rule commands (/agree etc.). Writes
+    the same kv keys the EA reads back on every heartbeat -- last writer
+    (dashboard or Telegram) wins, both stay live."""
+    key = str(body.get("key", "")).strip()
+    value = str(body.get("value", "")).strip()
+    db = app.state.db
+    setters = {"entry_mode": db.set_entry_mode,
+               "htf_enforce": db.set_htf_enforce,
+               "ema200_enforce": db.set_ema200_enforce}
+    if key not in setters:
+        raise HTTPException(status_code=400, detail="unknown rule key")
+    try:
+        setters[key](value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {key: value}
+
+
 @app.post("/ui/proposal/{pid}")
 def ui_proposal_decide(pid: int, body: dict):
     action = str(body.get("action", "")).strip().lower()
@@ -778,6 +798,9 @@ def ui_state():
     return {"age_s": age, "heartbeat": hb,
             "pending_switch": app.state.pending_switch,
             "mode": app.state.db.exec_mode(),
+            "rules": {"entry_mode": app.state.db.entry_mode(),
+                      "htf_enforce": app.state.db.htf_enforce(),
+                      "ema200_enforce": app.state.db.ema200_enforce()},
             "proposal": proposal,
             "stats": app.state.db.stats()}
 

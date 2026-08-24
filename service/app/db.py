@@ -357,7 +357,7 @@ class SignalDb:
     def recent_trades(self, limit: int = 50) -> list:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
                 "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
-                "tp", "final"]
+                "tp", "final", "entry_mode", "htf_agree", "ema200_agree"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
