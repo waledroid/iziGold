@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import json
+import logging
 import math
 import re
 import time
@@ -32,6 +33,12 @@ from app.trade_report import (_basket_legs, _prune_screenshots,
                               _report_trade_event, _trade_caption)
 from app.verdict import combine
 
+# Fail-open swallows exceptions everywhere in this file, which is correct for
+# trading but used to make several of them invisible. The ones that indicate a
+# real defect (rather than a routine Telegram hiccup) are logged here instead
+# of vanishing -- uvicorn's own logger so they land in service/service.log.
+log = logging.getLogger("uvicorn.error")
+
 # /api/candles and /api/overlays serve from an accumulator, not the latest
 # /analyze payload alone -- the EA only resends its own rolling window each
 # post, so without merging, the dashboard chart could never scroll past what
@@ -48,6 +55,12 @@ def _merge_candle_window(existing: list, incoming: list) -> list:
     for c in incoming:
         merged[c.t] = c
     return [merged[t] for t in sorted(merged)][-_CANDLE_WINDOW_CAP:]
+
+
+def _rc_key(rc):
+    c = rc["candles"][-1]
+    # last bar's (t, c) changes when the forming bar updates; len covers appends
+    return (rc["symbol"], rc["timeframe"], len(rc["candles"]), c.t, c.c)
 
 
 # An approved-but-not-yet-dispatched proposal older than this is expired
@@ -294,7 +307,7 @@ async def _apply_telegram(app: FastAPI) -> None:
             app.state.pinned_task = (
                 asyncio.create_task(pinned_editor(app)) if app.state.telegram else None)
         except Exception:
-            pass
+            log.exception("rebuilding the Telegram client/tasks failed")
 
 
 @asynccontextmanager
@@ -310,6 +323,13 @@ async def lifespan(app: FastAPI):
     app.state.pending_channel = None
     app.state.last_candles = None
     app.state.recent_candles = None
+    # Response caches for the two hot read endpoints. The dashboard polls
+    # every 30 s but a bar closes every ~5 min, so ~90 % of polls hit an
+    # accumulator that has not changed at all -- serve the already-built
+    # payload instead of re-serializing 2000 candles (and, for overlays,
+    # recomputing HalfTrend + four EMAs) each time. Keyed on _rc_key.
+    app.state.candles_cache = None            # (key, payload)
+    app.state.overlays_cache = {}             # {(key, strategy): payload}
     # Seed the chart accumulator from the persistent candles table so the
     # dashboard survives a service restart instead of starting empty.
     try:
@@ -323,7 +343,7 @@ async def lifespan(app: FastAPI):
                     "symbol": sym, "timeframe": tf,
                     "candles": [Candle(**r) for r in rows]}
     except Exception:
-        pass
+        log.exception("chart accumulator seeding from the candles table failed")
     # A service restart kills any in-flight backtest thread; its row would
     # otherwise show 'running' forever (the _busy lock is process-local).
     try:
@@ -332,7 +352,7 @@ async def lifespan(app: FastAPI):
             " error='interrupted by service restart' WHERE status='running'")
         app.state.db.conn.commit()
     except Exception:
-        pass
+        log.exception("reconciling interrupted backtest runs failed")
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     app.state.telegram = None
@@ -477,7 +497,8 @@ def analyze(req: AnalyzeRequest):
     try:
         app.state.db.upsert_candles(req.symbol, req.timeframe, req.candles)
     except Exception:
-        pass
+        log.exception("persisting candles for %s %s failed",
+                      req.symbol, req.timeframe)
     regime = classify_regime(req.candles)
     atr_value = last_atr(req.candles)
     closes = [x.c for x in req.candles]
@@ -493,7 +514,16 @@ def analyze(req: AnalyzeRequest):
         verdict=combine(req.signal, direction, confidence, settings.confirm_threshold),
         mode=settings.mode, ai_available=ai_available)
 
-    app.state.db.resolve_outcomes(req.candles, settings.horizon)
+    # Lazy outcome resolution needs at least two bars to infer the bar
+    # interval (candles[1].t - candles[0].t). Guarded + fail-open: a short
+    # payload used to raise straight out of /analyze, and grading must never
+    # fail because the accuracy log could not be updated.
+    if len(req.candles) >= 2:
+        try:
+            app.state.db.resolve_outcomes(req.candles, settings.horizon)
+        except Exception:
+            log.exception("resolve_outcomes failed for %s %s",
+                          req.symbol, req.timeframe)
     # Spread telemetry (ea-scope spec §3): archive the closed bar's spread
     # aggregates. An all-zero triple means "no samples / old EA" -- skip it
     # rather than store a meaningless row.
@@ -593,11 +623,18 @@ async def heartbeat(hb: HeartbeatRequest):
             await _mirror(app, text=text)
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
-    try:
-        _sweep_stale_proposals(app)
-    except Exception:
-        pass  # fail-open: a sweep bug must never block command delivery
-    cmd_row = app.state.db.pop_approved_command()
+    # The sweep and the pop are SQLite writes on the slow /mnt/c mount; run
+    # them in a worker thread so a stalled disk cannot block the event loop
+    # for every other request. Safe to move off-loop now that db.py
+    # serializes writes with its own lock.
+    def _hb_commands():
+        try:
+            _sweep_stale_proposals(app)
+        except Exception:
+            pass  # fail-open: a sweep bug must never block command delivery
+        return app.state.db.pop_approved_command()
+
+    cmd_row = await asyncio.to_thread(_hb_commands)
     command = None
     if cmd_row is not None:
         if cmd_row["kind"] == "entry":
@@ -804,11 +841,7 @@ def ui_state():
     if latest is not None:
         age = round(time.time() - latest[0], 1)
         hb = latest[1].model_dump()
-    proposal = None
-    for st in ("pending", "approved", "dispatched"):
-        proposal = app.state.db.pending_proposal(status=st)
-        if proposal is not None:
-            break
+    proposal = app.state.db.active_proposal()
     return {"age_s": age, "heartbeat": hb,
             "pending_switch": app.state.pending_switch,
             "mode": app.state.db.exec_mode(),
@@ -837,10 +870,16 @@ def ui_signals(limit: int = 50):
 @app.get("/api/candles")
 def ui_candles():
     rc = app.state.recent_candles
-    if not rc:
+    if not rc or not rc["candles"]:
         return {"symbol": "", "timeframe": "", "candles": []}
-    return {"symbol": rc["symbol"], "timeframe": rc["timeframe"],
-            "candles": [c.model_dump() for c in rc["candles"]]}
+    key = _rc_key(rc)
+    cached = getattr(app.state, "candles_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    payload = {"symbol": rc["symbol"], "timeframe": rc["timeframe"],
+               "candles": [c.model_dump() for c in rc["candles"]]}
+    app.state.candles_cache = (key, payload)
+    return payload
 
 
 def _overlays_halftrend_ema_v1(candles: list, closes: list) -> dict:
@@ -924,9 +963,23 @@ def ui_overlays(strategy: str = ""):
     builder = _OVERLAY_BUILDERS.get(strategy)
     if builder is None:
         return {}
+    key = _rc_key(rc)
+    cache = getattr(app.state, "overlays_cache", None)
+    if cache is None:
+        cache = app.state.overlays_cache = {}
+    hit = cache.get((key, strategy))
+    if hit is not None:
+        return hit
     candles = rc["candles"]
     closes = [c.c for c in candles]
-    return builder(candles, closes)
+    payload = builder(candles, closes)
+    # Only the current key's entries are kept (one per strategy the
+    # dashboard asks for) -- a new bar drops the whole previous generation
+    # rather than letting the dict grow without bound.
+    for stale in [k for k in cache if k[0] != key]:
+        del cache[stale]
+    cache[(key, strategy)] = payload
+    return payload
 
 
 def _mask_secret(value: str) -> str:

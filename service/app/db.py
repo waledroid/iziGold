@@ -1,4 +1,6 @@
+import copy
 import sqlite3
+import threading
 import time
 
 _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
@@ -115,6 +117,22 @@ def profile_completion(profile) -> int:
 class SignalDb:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path, check_same_thread=False)
+        # Lighter, safer writes on the slow /mnt/c mount (audit 2026-08-24):
+        # WAL avoids the per-commit journal create/fsync/delete round trip;
+        # drvfs/9p can refuse WAL, so fall back silently (synchronous=NORMAL
+        # and the busy_timeout still apply either way).
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.OperationalError:
+            pass
+        # check_same_thread=False means FastAPI's threadpool, the heartbeat's
+        # to_thread hop and the backtest thread can all write concurrently.
+        # One reentrant lock serializes the WRITE methods (reads stay
+        # unlocked -- SQLite readers don't need it, and WAL lets them run
+        # alongside a writer).
+        self._lock = threading.RLock()
         self.conn.execute(_SCHEMA)
         self.conn.execute(_HB_SCHEMA)
         self.conn.execute(_TRADES_SCHEMA)
@@ -181,46 +199,99 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN ema200_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+        # resolve_outcomes runs on EVERY /analyze and scans for unresolved
+        # rows; a partial index keeps that scan proportional to the handful
+        # of open signals instead of the whole (ever-growing) table.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signals_unresolved"
+            " ON signals(outcome_price) WHERE outcome_price IS NULL")
         self.conn.commit()
+        self._retain()
+        # Heartbeat de-dup window without a per-call SELECT MAX(ts) full
+        # scan (audit 2026-08-24). Seeded once here; a service restart can
+        # therefore insert one extra row inside the 60 s window when the
+        # table was written by a previous process -- harmless.
+        self._last_hb_ts = self.conn.execute(
+            "SELECT MAX(ts) FROM heartbeats").fetchone()[0]
+        # stats() is the dashboard's most-polled aggregate and only changes
+        # when a signal is written or resolved; bump the version there and
+        # serve a cached copy in between.
+        self._signals_version = 0
+        self._stats_cache = None
+        self._stats_cache_version = -1
+
+    _RETENTION_S = 90 * 86400
+
+    def _retain(self) -> None:
+        """Startup-only pruning of the two unbounded append-only tables
+        (retention chosen 2026-08-24: heartbeats grow ~1.1k rows/day and
+        were never trimmed). Heartbeats are cut on wall-clock ts; spread
+        rows are cut relative to MAX(bar_time) because bar_time is broker
+        server time, not UTC (see spread_stats). Fail-open -- a pruning
+        problem must never stop the service from opening its db."""
+        try:
+            cutoff = int(time.time()) - self._RETENTION_S
+            self.conn.execute("DELETE FROM heartbeats WHERE ts < ?", (cutoff,))
+            self.conn.execute(
+                "DELETE FROM spread_history WHERE bar_time <"
+                " (SELECT MAX(bar_time) FROM spread_history) - ?",
+                (self._RETENTION_S,))
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
 
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
                       confidence, regime, verdict, mode, ai_available,
                       strategy_id="unknown", is_active=True, timeframe="") -> int:
-        cur = self.conn.execute(
-            "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
-            " confidence, regime, verdict, mode, ai_available, strategy_id, is_active,"
-            " timeframe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (int(time.time()), bar_time, symbol, signal, price, direction,
-             confidence, regime, verdict, mode, int(ai_available),
-             strategy_id, int(is_active), timeframe))
-        self.conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
+                " confidence, regime, verdict, mode, ai_available, strategy_id, is_active,"
+                " timeframe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (int(time.time()), bar_time, symbol, signal, price, direction,
+                 confidence, regime, verdict, mode, int(ai_available),
+                 strategy_id, int(is_active), timeframe))
+            self.conn.commit()
+            self._signals_version += 1
+            return cur.lastrowid
 
     def resolve_outcomes(self, candles, horizon_bars: int = 16) -> int:
-        bar_seconds = candles[1].t - candles[0].t
-        resolved = 0
-        rows = self.conn.execute(
-            "SELECT id, bar_time, price, direction FROM signals"
-            " WHERE outcome_price IS NULL").fetchall()
-        for rid, bar_time, price, direction in rows:
-            target = bar_time + horizon_bars * bar_seconds
-            hit = next((x for x in candles if x.t >= target), None)
-            if hit is None:
-                continue
-            move = hit.c - price
-            correct = None
-            if direction == "bullish":
-                correct = int(move > 0)
-            elif direction == "bearish":
-                correct = int(move < 0)
-            self.conn.execute(
-                "UPDATE signals SET outcome_price=?, outcome_move=?, ai_correct=? WHERE id=?",
-                (hit.c, move, correct, rid))
-            resolved += 1
-        self.conn.commit()
-        return resolved
+        with self._lock:
+            bar_seconds = candles[1].t - candles[0].t
+            resolved = 0
+            rows = self.conn.execute(
+                "SELECT id, bar_time, price, direction FROM signals"
+                " WHERE outcome_price IS NULL").fetchall()
+            for rid, bar_time, price, direction in rows:
+                target = bar_time + horizon_bars * bar_seconds
+                hit = next((x for x in candles if x.t >= target), None)
+                if hit is None:
+                    continue
+                move = hit.c - price
+                correct = None
+                if direction == "bullish":
+                    correct = int(move > 0)
+                elif direction == "bearish":
+                    correct = int(move < 0)
+                self.conn.execute(
+                    "UPDATE signals SET outcome_price=?, outcome_move=?, ai_correct=? WHERE id=?",
+                    (hit.c, move, correct, rid))
+                resolved += 1
+            self.conn.commit()
+            if resolved:
+                self._signals_version += 1
+            return resolved
 
     def stats(self) -> dict:
+        if self._stats_cache is not None \
+           and self._stats_cache_version == self._signals_version:
+            return copy.deepcopy(self._stats_cache)
+        stats = self._stats_uncached()
+        self._stats_cache = stats
+        self._stats_cache_version = self._signals_version
+        return copy.deepcopy(stats)
+
+    def _stats_uncached(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
         done = self.conn.execute(
             "SELECT COUNT(*), COALESCE(AVG(ai_correct) * 100, 0) FROM signals"
@@ -247,26 +318,32 @@ class SignalDb:
                 "ai_correct_pct": round(done[1], 1), "by_strategy": by_strategy}
 
     def insert_heartbeat(self, hb: dict) -> bool:
-        now = int(time.time())
-        last = self.conn.execute("SELECT MAX(ts) FROM heartbeats").fetchone()[0]
-        if last is not None and now - last < 60:
-            return False
-        self.conn.execute(
-            "INSERT INTO heartbeats (ts, equity, balance, floating_pl, open_count,"
-            " kill_switch, exposure_min, active_strategy) VALUES (?,?,?,?,?,?,?,?)",
-            (now, hb["equity"], hb["balance"], hb["floating_pl"], hb["open_count"],
-             int(hb["kill_switch"]), hb["exposure_min"], hb["active_strategy"]))
-        self.conn.commit()
-        return True
+        with self._lock:
+            now = int(time.time())
+            # In-memory last-ts instead of a per-call SELECT MAX(ts) scan
+            # (audit 2026-08-24). The EA heartbeats every ~5 s, so this ran
+            # ~17k times a day over an unbounded table.
+            last = self._last_hb_ts
+            if last is not None and now - last < 60:
+                return False
+            self.conn.execute(
+                "INSERT INTO heartbeats (ts, equity, balance, floating_pl, open_count,"
+                " kill_switch, exposure_min, active_strategy) VALUES (?,?,?,?,?,?,?,?)",
+                (now, hb["equity"], hb["balance"], hb["floating_pl"], hb["open_count"],
+                 int(hb["kill_switch"]), hb["exposure_min"], hb["active_strategy"]))
+            self.conn.commit()
+            self._last_hb_ts = now
+            return True
 
     def upsert_spread(self, *, bar_time: int, spread_min: float,
                       spread_avg: float, spread_max: float) -> None:
         """One row per closed bar; a re-post for the same bar replaces it."""
-        self.conn.execute(
-            "INSERT OR REPLACE INTO spread_history"
-            " (bar_time, spread_min, spread_avg, spread_max) VALUES (?,?,?,?)",
-            (bar_time, spread_min, spread_avg, spread_max))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO spread_history"
+                " (bar_time, spread_min, spread_avg, spread_max) VALUES (?,?,?,?)",
+                (bar_time, spread_min, spread_avg, spread_max))
+            self.conn.commit()
 
     def spread_stats(self, hours: int = 24) -> dict:
         """Aggregate spread over the most recent window. The window is
@@ -311,10 +388,11 @@ class SignalDb:
             else:
                 rows.append((symbol, timeframe, int(c.t), c.o, c.h,
                              c.l, c.c, getattr(c, "v", 0.0)))
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO candles (symbol, timeframe, bar_time,"
-            " o, h, l, c, v) VALUES (?,?,?,?,?,?,?,?)", rows)
-        self.conn.commit()
+        with self._lock:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO candles (symbol, timeframe, bar_time,"
+                " o, h, l, c, v) VALUES (?,?,?,?,?,?,?,?)", rows)
+            self.conn.commit()
         return len(rows)
 
     def get_candles(self, symbol: str, timeframe: str, start_ts=None,
@@ -363,19 +441,21 @@ class SignalDb:
 
     # --- backtest runs -------------------------------------------------
     def insert_backtest_run(self, params_json: str) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO backtest_runs (created_ts, params_json, status)"
-            " VALUES (?,?, 'running')", (int(time.time()), params_json))
-        self.conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO backtest_runs (created_ts, params_json, status)"
+                " VALUES (?,?, 'running')", (int(time.time()), params_json))
+            self.conn.commit()
+            return cur.lastrowid
 
     def finish_backtest_run(self, run_id: int, *, status: str, error=None,
                             stats_json=None, report_path=None) -> None:
-        self.conn.execute(
-            "UPDATE backtest_runs SET status=?, error=?, stats_json=?,"
-            " report_path=? WHERE id=?",
-            (status, error, stats_json, report_path, run_id))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE backtest_runs SET status=?, error=?, stats_json=?,"
+                " report_path=? WHERE id=?",
+                (status, error, stats_json, report_path, run_id))
+            self.conn.commit()
 
     def get_backtest_run(self, run_id: int) -> dict | None:
         cur = self.conn.execute(
@@ -389,18 +469,19 @@ class SignalDb:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
     def insert_trade(self, ev: dict) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-            " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree, ema200_agree)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
-             ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
-             ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
-             ev.get("tp", 0.0), int(ev.get("final", True)),
-             ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
-             int(ev.get("ema200_agree", -1))))
-        self.conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
+                " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree, ema200_agree)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
+                 ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
+                 ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
+                 ev.get("tp", 0.0), int(ev.get("final", True)),
+                 ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
+                 int(ev.get("ema200_agree", -1))))
+            self.conn.commit()
+            return cur.lastrowid
 
     def recent_trades(self, limit: int = 50) -> list:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
@@ -412,14 +493,16 @@ class SignalDb:
         return [dict(zip(cols, r)) for r in rows]
 
     def set_screenshot(self, trade_id: int, path: str) -> None:
-        self.conn.execute(
-            "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
+            self.conn.commit()
 
     def set_render(self, trade_id: int, path: str) -> None:
-        self.conn.execute(
-            "UPDATE trades SET render_path=? WHERE id=?", (path, trade_id))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE trades SET render_path=? WHERE id=?", (path, trade_id))
+            self.conn.commit()
 
     def get_kv(self, key: str) -> str | None:
         row = self.conn.execute(
@@ -427,10 +510,11 @@ class SignalDb:
         return row[0] if row else None
 
     def set_kv(self, key: str, value: str) -> None:
-        self.conn.execute(
-            "INSERT INTO kv (key, value) VALUES (?,?)"
-            " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO kv (key, value) VALUES (?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+            self.conn.commit()
 
     def get_profile(self):
         row = self.conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
@@ -441,35 +525,36 @@ class SignalDb:
         return dict(zip(cols, row))
 
     def save_profile(self, partial: dict) -> dict:
-        now = int(time.time())
-        if self.get_profile() is None:
-            self.conn.execute(
-                "INSERT INTO profile (id, created_ts, updated_ts) VALUES (1, ?, ?)",
-                (now, now))
-        updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
-        if isinstance(updates.get("ngrok_domain"), str):
-            # Store the bare hostname only: strip whitespace, a leading
-            # scheme, and anything after the host (path and/or query) --
-            # the ngrok phase in setup.sh and every consumer of
-            # MINIAPP_PUBLIC_URL build "https://<domain>" themselves, so a
-            # scheme, path, or query here would double up or corrupt the
-            # built URL. A pasted full tunnel URL (e.g. copied straight out
-            # of a browser's address bar with a path/query still attached)
-            # normalizes down to just the host.
-            domain = updates["ngrok_domain"].strip()
-            # scheme is case-insensitive ("HTTPS://x" pastes happen); host is
-            # case-insensitive too, so lowercase the whole thing
-            domain = domain.lower().removeprefix("https://").removeprefix("http://")
-            domain = domain.split("/", 1)[0].split("?", 1)[0]
-            updates["ngrok_domain"] = domain
-        if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
-            updates["risk_ack_ts"] = now
-        updates["updated_ts"] = now
-        sets = ", ".join(f"{k} = ?" for k in updates)
-        self.conn.execute(f"UPDATE profile SET {sets} WHERE id = 1",
-                          tuple(updates.values()))
-        self.conn.commit()
-        return self.get_profile()
+        with self._lock:
+            now = int(time.time())
+            if self.get_profile() is None:
+                self.conn.execute(
+                    "INSERT INTO profile (id, created_ts, updated_ts) VALUES (1, ?, ?)",
+                    (now, now))
+            updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
+            if isinstance(updates.get("ngrok_domain"), str):
+                # Store the bare hostname only: strip whitespace, a leading
+                # scheme, and anything after the host (path and/or query) --
+                # the ngrok phase in setup.sh and every consumer of
+                # MINIAPP_PUBLIC_URL build "https://<domain>" themselves, so a
+                # scheme, path, or query here would double up or corrupt the
+                # built URL. A pasted full tunnel URL (e.g. copied straight out
+                # of a browser's address bar with a path/query still attached)
+                # normalizes down to just the host.
+                domain = updates["ngrok_domain"].strip()
+                # scheme is case-insensitive ("HTTPS://x" pastes happen); host is
+                # case-insensitive too, so lowercase the whole thing
+                domain = domain.lower().removeprefix("https://").removeprefix("http://")
+                domain = domain.split("/", 1)[0].split("?", 1)[0]
+                updates["ngrok_domain"] = domain
+            if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
+                updates["risk_ack_ts"] = now
+            updates["updated_ts"] = now
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            self.conn.execute(f"UPDATE profile SET {sets} WHERE id = 1",
+                              tuple(updates.values()))
+            self.conn.commit()
+            return self.get_profile()
 
     def _row_to_dict(self, cur, row):
         """Convert sqlite3 tuple row to dict using cursor description."""
@@ -568,12 +653,13 @@ class SignalDb:
 
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO proposals(created_ts, kind, direction, strategy_id,"
-            " price, signal_id) VALUES(?,?,?,?,?,?)",
-            (int(time.time()), kind, direction, strategy_id, price, signal_id))
-        self.conn.commit()
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO proposals(created_ts, kind, direction, strategy_id,"
+                " price, signal_id) VALUES(?,?,?,?,?,?)",
+                (int(time.time()), kind, direction, strategy_id, price, signal_id))
+            self.conn.commit()
+            return cur.lastrowid
 
     def get_proposal(self, pid: int) -> dict | None:
         cur = self.conn.execute(
@@ -591,6 +677,15 @@ class SignalDb:
         row = cur.fetchone()
         return self._row_to_dict(cur, row)
 
+    def active_proposal(self) -> dict | None:
+        """Newest live proposal, preferring pending over approved over
+        dispatched -- one query instead of the old three-status loop."""
+        cur = self.conn.execute(
+            "SELECT * FROM proposals WHERE status IN ('pending','approved','dispatched')"
+            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1"
+            " ELSE 2 END, id DESC LIMIT 1")
+        return self._row_to_dict(cur, cur.fetchone())
+
     def set_proposal_status(self, pid: int, status: str, expected: str | None = None) -> bool:
         """Unconditional UPDATE when `expected` is None (default) -- existing
         callers keep their old semantics unchanged. When `expected` is
@@ -601,7 +696,7 @@ class SignalDb:
         Returns whether the transition actually applied (always True when
         expected is None, since that path is unconditional by design)."""
         now = int(time.time())
-        with self.conn:
+        with self._lock, self.conn:
             if expected is not None:
                 cur = self.conn.execute(
                     "UPDATE proposals SET status=? WHERE id=? AND status=?",
@@ -620,9 +715,10 @@ class SignalDb:
         return True
 
     def set_proposal_message(self, pid: int, tg_message_id: int) -> None:
-        self.conn.execute(
-            "UPDATE proposals SET tg_message_id=? WHERE id=?", (tg_message_id, pid))
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE proposals SET tg_message_id=? WHERE id=?", (tg_message_id, pid))
+            self.conn.commit()
 
     def last_executed_entry(self) -> dict | None:
         """Newest executed entry proposal -- used to resolve an exit
@@ -637,19 +733,20 @@ class SignalDb:
         # UPDATE...RETURNING atomically updates the oldest approved row and returns it.
         # Explicit commit() ensures durability under concurrent access (check_same_thread=False).
         # Without commit, the transaction remains open and a crash/restart could revert to 'approved'.
-        cur = self.conn.execute(
-            "UPDATE proposals SET status='dispatched' "
-            "WHERE id = (SELECT id FROM proposals WHERE status='approved' ORDER BY id ASC LIMIT 1) "
-            "RETURNING *")
-        row = cur.fetchone()
-        row_dict = self._row_to_dict(cur, row) if row else None
-        # Commit to persist. sqlite3 may auto-commit UPDATE...RETURNING that finds 0 rows,
-        # so wrap in try/except; if already committed, error is benign.
-        try:
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass  # "no transaction is active" means UPDATE found 0 rows and auto-committed
-        return row_dict
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE proposals SET status='dispatched' "
+                "WHERE id = (SELECT id FROM proposals WHERE status='approved' ORDER BY id ASC LIMIT 1) "
+                "RETURNING *")
+            row = cur.fetchone()
+            row_dict = self._row_to_dict(cur, row) if row else None
+            # Commit to persist. sqlite3 may auto-commit UPDATE...RETURNING that finds 0 rows,
+            # so wrap in try/except; if already committed, error is benign.
+            try:
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # "no transaction is active" means UPDATE found 0 rows and auto-committed
+            return row_dict
 
     def _rows_older_than(self, status: str, older_than_s: int) -> list:
         """Rows in `status` whose decided_ts is more than `older_than_s`

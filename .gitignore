@@ -2,7 +2,11 @@
 __pycache__/
 *.pyc
 *.db
+# WAL sidecars (SignalDb sets journal_mode=WAL, 2026-08-24)
+*.db-wal
+*.db-shm
 *.log
+*.log.1
 .env
 .pytest_cache/
 mt5/**/*.ex5

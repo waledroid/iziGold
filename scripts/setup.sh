@@ -113,6 +113,19 @@ soft_fail() {
   (( PHASE_IDX >= 0 )) && { PROGRESS_RED=1; progress_draw "$PHASE_IDX" "$CURRENT_PHASE"; }
   return 0
 }
+# Service logs are appended to forever (nohup >> …), and service.log passed
+# 100 MB on this machine before anyone looked (audit 2026-08-24). One
+# generation is plenty: at 20 MB the current file becomes <name>.log.1
+# (replacing any previous .1) and the process starts a fresh one.
+LOG_MAX_BYTES=$((20 * 1024 * 1024))
+rotate_log() {   # $1 = log path
+  local f="$1" size
+  [[ -f "$f" ]] || return 0
+  size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+  (( size > LOG_MAX_BYTES )) || return 0
+  mv -f "$f" "$f.1" 2>/dev/null || return 0
+  echo "  rotated $(basename "$f") (was $((size / 1024 / 1024)) MB) -> $(basename "$f").1"
+}
 print_summary() {
   printf '\n%s\n' "──────────────── Setup summary ────────────────"
   local i st colour
@@ -221,8 +234,18 @@ else
   python3 -m venv "$VENV"
   ok "created service/.venv"
 fi
-"$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements.txt"
-ok "core requirements installed"
+# pip re-resolves every dependency on every run (~20 s on /mnt/c) even when
+# nothing changed. Skip when requirements.txt still hashes to what the venv
+# was last installed from; delete service/.venv/.reqs-sha to force a full
+# install.
+reqs_sha="$(sha256sum "$SERVICE_DIR/requirements.txt" | cut -d' ' -f1)"
+if [[ -f "$VENV/.reqs-sha" && "$(cat "$VENV/.reqs-sha")" == "$reqs_sha" ]]; then
+  skip "core requirements unchanged (${reqs_sha:0:12})"
+else
+  "$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements.txt"
+  printf '%s' "$reqs_sha" > "$VENV/.reqs-sha"
+  ok "core requirements installed"
+fi
 if [[ -f "$SERVICE_DIR/.env" ]]; then
   skip ".env exists"
 else
@@ -238,18 +261,37 @@ fi
 
 # ------------------------------------------------------------------ 3. Test gate
 phase 3 "Test gate (fast pytest suite)"
-pytest_log="$(mktemp)"
-if (cd "$SERVICE_DIR" && FORECASTER=fake "$VENV/bin/pytest" -q >"$pytest_log" 2>&1); then
-  ok "$(tail -1 "$pytest_log")"
+# The suite costs ~60 s on /mnt/c and is re-run on every launch, including
+# the many launches that change nothing at all. Skip only when BOTH hold:
+#   * HEAD + the two requirements files hash to the last green run's
+#     signature, and
+#   * `git status --porcelain -- service mt5` is EMPTY, i.e. there is no
+#     uncommitted work in the two directories the tests actually cover.
+# Any dirty file under service/ or mt5/ therefore runs the full suite --
+# the marker is a commit-level cache, never a substitute for testing edits.
+# Delete .run/last-green-tests to force a full run.
+test_sig="$(git -C "$REPO_ROOT" rev-parse HEAD):$(sha256sum "$SERVICE_DIR/requirements.txt" "$SERVICE_DIR/requirements-model.txt" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+test_marker="$REPO_ROOT/.run/last-green-tests"
+tree_dirty="$(git -C "$REPO_ROOT" status --porcelain -- service mt5 2>/dev/null)"
+if [[ -z "$tree_dirty" && -f "$test_marker" \
+      && "$(cat "$test_marker")" == "$test_sig" ]]; then
+  skip "tests unchanged since last green run (${test_sig:0:12})"
 else
-  tail -25 "$pytest_log" >&2
-  fail "tests failed — nothing was installed into MT5. Fix and re-run."
+  pytest_log="$(mktemp)"
+  if (cd "$SERVICE_DIR" && FORECASTER=fake "$VENV/bin/pytest" -q >"$pytest_log" 2>&1); then
+    ok "$(tail -1 "$pytest_log")"
+    mkdir -p "$REPO_ROOT/.run" && printf '%s' "$test_sig" > "$test_marker"
+  else
+    tail -25 "$pytest_log" >&2
+    fail "tests failed — nothing was installed into MT5. Fix and re-run."
+  fi
 fi
 
 # -------------------------------------------------------- 4. Service up + smoke
 phase 4 "Service"
 health() { curl -sf -m 3 "$BASE_URL/health" 2>/dev/null; }
 start_service() {
+  rotate_log "$SERVICE_DIR/service.log"
   (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.main:app --host 127.0.0.1 --port 9000 \
       >>"$SERVICE_DIR/service.log" 2>&1 &)
   up=""
@@ -402,6 +444,7 @@ fi
 if miniapp_alive; then
   skip "already running at $MINIAPP_URL"
 else
+  rotate_log "$SERVICE_DIR/miniapp.log"
   (cd "$SERVICE_DIR" && nohup "$VENV/bin/uvicorn" app.miniapp:app --host 127.0.0.1 --port "$MINIAPP_PORT" \
       >>"$SERVICE_DIR/miniapp.log" 2>&1 &)
   up=""

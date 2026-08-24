@@ -372,7 +372,7 @@ Data collection only; no UI yet.
 
 **Privacy filter invariant:** channel text never contains balance, equity, drawdown %, or HWM (masked as `•••`); trade-level figures (prices, lots, per-leg/basket floating, realized per-trade P/L) pass through. Owner commands are mirrored as `👤 /cmd` + redacted reply via `_mirror_command_text(text, app)`, which re-runs `handle_command(text, app, redacted=True)`.
 
-**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker message ids + last text are PERSISTED in the db kv (`ticker_owner_msg_id`, `ticker_owner_text`, `ticker_channel_msg_id`, `ticker_channel_text`; loaded by `load_ticker_state` at startup, cleared on the CLOSED freeze) so a service restart mid-trade RESUMES editing the same LIVE message — 2026-08-17 three deploys during one BUY had produced three LIVE messages ("should be once and updates itself"). If the persisted message was deleted server-side (edit fails "message to edit not found"), the state is forgotten and the next tick posts a fresh LIVE. Persistence writes go through a SHORT-LIVED PRIVATE sqlite connection (`_kv_write`, path captured once at startup as `app.state.ticker_db_path`) — NOT `app.state.db.conn`: ticker_tick runs in a worker thread and the sqlite3 module forbids simultaneous calls on one connection (`InterfaceError: bad parameter or other API misuse` — bitten by the first cut, caught by the full suite). General rule this reaffirms: any NEW cross-thread db writer must not share `SignalDb.conn` (it has no statement lock). Only the ≥5 s edit-throttle clock is per-process. Authoritative P/L remains the close report.
+**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker message ids + last text are PERSISTED in the db kv (`ticker_owner_msg_id`, `ticker_owner_text`, `ticker_channel_msg_id`, `ticker_channel_text`; loaded by `load_ticker_state` at startup, cleared on the CLOSED freeze) so a service restart mid-trade RESUMES editing the same LIVE message — 2026-08-17 three deploys during one BUY had produced three LIVE messages ("should be once and updates itself"). If the persisted message was deleted server-side (edit fails "message to edit not found"), the state is forgotten and the next tick posts a fresh LIVE. Persistence writes go through a SHORT-LIVED PRIVATE sqlite connection (`_kv_write`, path captured once at startup as `app.state.ticker_db_path`) — NOT `app.state.db.conn`: ticker_tick runs in a worker thread and the sqlite3 module forbids simultaneous calls on one connection (`InterfaceError: bad parameter or other API misuse` — bitten by the first cut, caught by the full suite). General rule this reaffirms: any NEW cross-thread db writer must not share `SignalDb.conn` **raw**. (Since the 2026-08-24 lightweight pass the `SignalDb` WRITE METHODS are serialized by an internal `RLock` — see §5d — so calling those from a worker thread is fine, and `/heartbeat` now does. Bare `db.conn.execute(...)` from another thread still is not.) Only the ≥5 s edit-throttle clock is per-process. Authoritative P/L remains the close report.
 
 **Ops note:** mirroring and ticker are fail-open — channel send failures never touch owner delivery or the heartbeat path.
 
@@ -556,9 +556,9 @@ trade boxes (`TradeBoxes.mqh`, recovers open-basket state after reload).
 |---|---|
 | `GET /`, `/backtest`, `/onboarding` | the three pages (FileResponse from `static/`); `/` 307s to `/onboarding` when no profile row exists yet |
 | `/static/*` | StaticFiles mount — vendored Lightweight Charts lives here |
-| `GET /api/state` | heartbeat + age, exec mode, pending switch, proposal, stats, **`rules{entry_mode, htf_enforce, ema200_enforce}`** |
+| `GET /api/state` | heartbeat + age, exec mode, pending switch, proposal (**one query: `db.active_proposal()`, pending > approved > dispatched**), stats (**memoized**), **`rules{entry_mode, htf_enforce, ema200_enforce}`** |
 | `POST /api/rules` | `{key, value}` mirror of the Telegram rule toggles; 400 on an unknown key or a value the db setter rejects |
-| `GET /api/candles`, `/api/overlays?strategy=` | chart data; overlays 1:1 with candles, unknown strategy → `{}` |
+| `GET /api/candles`, `/api/overlays?strategy=` | chart data; overlays 1:1 with candles, unknown strategy → `{}`; **both response-cached on `_rc_key` — see §5d** |
 | `GET /api/trades` | now includes `entry_mode`, `htf_agree`, `ema200_agree` |
 | `GET /api/stats`, `/api/signals`, `/api/equity` | tables |
 | `POST /api/switch`, `/api/mode`, `/api/close-all`, `/api/proposal/{pid}` | controls |
@@ -594,6 +594,80 @@ CREATE TABLE candles (symbol TEXT, timeframe TEXT, bar_time INTEGER,
   limit)`, `candles_range` (`{start,end,count}`), `latest_candle_series()`.
 - `backtest_runs` (`id, created_ts, params_json, status, error, stats_json,
   report_path`) is the run log behind the Backtest page.
+
+## 5d. The lightweight pass (audit 2026-08-24) — what the service now caches, locks and prunes
+
+Nothing here changes a trading decision; every item is a cost or a
+correctness-under-concurrency fix, and every new failure path is fail-open.
+
+- **WAL + pragmas.** `SignalDb.__init__` sets `journal_mode=WAL`,
+  `synchronous=NORMAL`, `busy_timeout=5000` right after `connect`, inside a
+  `try/except sqlite3.OperationalError` — **drvfs/9p can refuse WAL** and the
+  db must still open (the fallback is the old `delete` journal; the other two
+  pragmas still apply). WAL is what makes commits on `/mnt/c` cheap: no
+  per-commit journal create/fsync/delete round trip. Note the file-level
+  effect: journal mode is a property of the DATABASE FILE, so the first
+  process to open it after this change converts it.
+- **One write lock.** `self._lock = threading.RLock()` serializes the body of
+  every WRITE method (`insert_signal`, `resolve_outcomes`, `insert_heartbeat`,
+  `upsert_spread`, `upsert_candles`, `insert_trade`, `set_screenshot`,
+  `set_render`, `set_kv`, `save_profile`, `create_proposal`,
+  `set_proposal_status`, `set_proposal_message`, `pop_approved_command`,
+  `insert_backtest_run`, `finish_backtest_run`). **Reads stay unlocked.**
+  This is what makes `/heartbeat`'s db block safe to run in a worker thread
+  (see below). It does NOT license raw `app.state.db.conn.execute(...)` from
+  another thread — the lock is on the METHODS; the ticker's private
+  connection (§4) stays as it is.
+- **Heartbeat de-dup is in memory.** The 60 s collapse used to run
+  `SELECT MAX(ts) FROM heartbeats` on every heartbeat (~17k/day, growing
+  table). `__init__` seeds `self._last_hb_ts` once and `insert_heartbeat`
+  compares/updates that. Consequence to know: a service restart can insert
+  one extra row inside a 60 s window. Harmless.
+- **90-day retention, at startup only** (`SignalDb._retain`, fail-open):
+  `heartbeats` older than 90 days by wall-clock `ts`, and `spread_history`
+  older than 90 days **relative to `MAX(bar_time)`** — bar_time is broker
+  server time, not UTC (same reasoning as `spread_stats`). Heartbeats grew
+  ~1.1k rows/day and were never trimmed before.
+- **Partial index** `idx_signals_unresolved ON signals(outcome_price) WHERE
+  outcome_price IS NULL` — `resolve_outcomes` runs on EVERY `/analyze` and
+  scans for unresolved rows; this keeps that proportional to the open
+  signals, not the whole table.
+- **`stats()` is memoized** behind `_signals_version`, bumped by
+  `insert_signal` and by a `resolve_outcomes` that actually resolved
+  something. Callers get a deep copy, so mutating the result cannot poison
+  the cache. `_stats_uncached()` holds the real queries.
+- **`active_proposal()`** replaces the old three-`pending_proposal`-calls
+  loop in `/api/state` and reads the newest live row in ONE query, ordered
+  `pending > approved > dispatched`. `pending_proposal(kind, status)` still
+  exists and is still what `/api/close-all` uses.
+- **`/api/candles` and `/api/overlays` are cached** on
+  `_rc_key(rc) = (symbol, timeframe, len(candles), last.t, last.c)` —
+  `app.state.candles_cache = (key, payload)` and
+  `app.state.overlays_cache = {(key, strategy): payload}` (entries whose key
+  is stale are dropped on the next miss). The dashboard polls every 30 s but
+  a bar closes every ~5 min, so ~90 % of polls become a dict lookup instead
+  of re-serializing 2000 candles / recomputing HalfTrend + four EMAs. **Any
+  new field added to those payloads must be covered by the key** or it will
+  serve stale.
+- **`/heartbeat` does its db work off the event loop**: the stale-proposal
+  sweep + `pop_approved_command` moved into one `asyncio.to_thread`
+  (`_hb_commands`), safe because of the write lock.
+- **`/analyze` guards `resolve_outcomes`** with `len(req.candles) >= 2`
+  (the bar interval is `candles[1].t - candles[0].t`) inside a
+  try/except+log — grading must not fail because the accuracy log could not
+  be updated. The request schema's `min_length=50` still rejects short
+  payloads at the HTTP boundary first (422, never 500).
+- **Silent excepts that hid defects now log** (`log = logging.getLogger(
+  "uvicorn.error")` → `service/service.log`): the `/analyze` candle upsert,
+  `_apply_telegram`'s outer except, and the two lifespan
+  seeding/reconcile excepts. Per-message Telegram fail-open paths are
+  deliberately NOT logged — far too chatty.
+- **Backtest artifacts are capped at 20 run directories**
+  (`backtest_runner._prune_runs`, called after a successful `done`, never
+  deleting the run that just finished, fail-open). Each run leaves
+  bars.json + result.json + report.html (~1.7 MB for a year of M5); 20 runs
+  ≈ 35 MB and matches the default `/api/backtest/runs?limit=20` listing.
+  Older rows keep their db row and simply 404 on the report link.
 
 ## 5c. Backtest page — the CLI engine, driven from the browser
 
@@ -679,6 +753,26 @@ wiring.
   phase (`set -euo pipefail` + `fail`) aborted everything after it — see
   §7's 2026-08-19 entry. The watchdog phase is deliberately reached in
   every run, because it is what brings the optional links back later.
+- **setup.sh launch skips (2026-08-24 lightweight pass)** — two markers cut
+  a no-op relaunch by roughly a minute:
+  - **Test gate (phase 3)** skips only when BOTH the signature
+    `<HEAD sha>:<sha256 of requirements.txt + requirements-model.txt>` matches
+    `.run/last-green-tests` AND `git status --porcelain -- service mt5` is
+    **empty**. Any uncommitted file under `service/` or `mt5/` therefore
+    runs the full suite — the marker is a commit-level cache, never a
+    substitute for testing edits. **Force a full run: delete
+    `.run/last-green-tests`.** (`.run/` is gitignored and also holds the
+    watchdog's flock.)
+  - **pip (phase 2)** skips `pip install -r requirements.txt` when
+    `sha256sum requirements.txt` matches `service/.venv/.reqs-sha`. Force
+    with `rm service/.venv/.reqs-sha`. The torch/`requirements-model.txt`
+    branch is untouched (still gated on `FORECASTER=chronos` + `import torch`
+    failing).
+- **20 MB log rotation (2026-08-24)**: `rotate_log` in setup.sh runs just
+  before each uvicorn start (phase 4 `service.log`, phase 5 `miniapp.log`)
+  and moves a file over 20 MB to `<name>.log.1`, replacing any previous
+  `.1` — one generation, no logrotate dependency. The watchdog carries the
+  same helper (§7b). `service.log` had passed 100 MB unnoticed before this.
 - **Sticky TUI progress bar (2026-08-24)**: in the launcher's WSL window
   (`[[ -t 1 ]]`, a real TTY), setup.sh draws a one-line progress bar pinned
   to terminal row 1 (`tput`/DECSTBM scroll region) while the phase log
@@ -1812,6 +1906,16 @@ decisions. Proven live: killed the miniapp → detected, restarted, tunnel
 back within ~10 s. **Follow-up the same day**: the recovered miniapp came back with EMPTY ring buffers (the bridge only backfilled on startup or after a FAILED push, and the watchdog restart was faster than one push cycle) → chart showed 1-2 candles, no indicators. Fix: `/feed/push` now returns `depth` (shallowest TF buffer) and the bridge re-sends its 500-bar backfill whenever `depth < 250` — restart-timing-independent recovery. Bridge liveness is read from the miniapp's `/healthz` (`feed_age_s` = seconds since the last `/feed/push`, `uptime_s`); a null age is excused only while `uptime_s < 90` — the first cut used `/tmp/miniapp.log` mtime as a freshness proxy and was fooled by the watchdog's OWN `/healthz` probes writing to that log. Bridge restart = kill any `python*` running `mt5_feed.py`, then `timeout 25 cmd.exe /c start "" /B <abs pythonw.exe> <abs mt5_feed.py>` — ABSOLUTE Windows paths, detached; a `Start-Process` from a WSL-invoked PowerShell dies with its wrapper (bitten live). Manual stop: `pkill -f scripts/xau-watchdog.sh`. Full unattended drill passed 2026-08-17 16:50-16:53: stale-code redeploy of the miniapp → transient miniapp DOWN recovered → bridge declared dead after 90 s of null feed → relaunched → 19 pushes/10 s, buffers re-backfilled to 500 via the push-`depth` handshake.
 The stale-code guard acts at most ONCE per distinct code mtime (2026-08-18: a file touched during the main service's ~25 s boot read as 'newer than the process' forever → three restarts in three cycles; now each code change costs exactly one restart). Practical effect: commit a `service/app` change and the watchdog deploys it for you ~30 s later (25 s cold start for main, ~5 s for the miniapp).
 
+**Split-log bug, fixed 2026-08-24**: the watchdog's `restart_main` /
+`restart_miniapp` appended to `/tmp/xau-service.log` and `/tmp/miniapp.log`,
+while setup.sh starts the same two processes into
+`service/service.log` and `service/miniapp.log`. Every watchdog restart
+therefore moved the output somewhere nobody tails — a crash loop just looked
+like a log that stopped mid-line. Both now write the **service-dir** files
+(absolute, via `$SVC`), and carry the same 20 MB `rotate_log` helper setup.sh
+uses (§6), applied before each start. When reading history, remember the
+`/tmp/*` files exist and are frozen at 2026-08-24.
+
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 **Port: `MINIAPP_PORT` in `service/.env`, default 9101 (2026-08-19).** It is
@@ -2771,3 +2875,35 @@ of this. The what-and-how lives in §5/§5a/§5b/§5c; this entry is the why.
   (`test_backtest_golden.py`, 3 tests), and the headless report smoke
   test (`service/tests/backtest_report_smoke.js`, run inside pytest via
   `test_backtest_report_smoke.py`) still pins the report's initial range.
+
+## Lightweight pass (audit 2026-08-24) — why it exists
+
+An efficiency/robustness audit of the service and the launch scripts, with a
+hard constraint: **no trading behavior may change**, and no new failure may
+block a trading path. What it found and fixed is catalogued in §5d (service)
+and §6/§7b (ops). The through-line worth remembering:
+
+- **`/mnt/c` is slow, and everything here commits to it.** Most of the wins
+  are "stop doing disk work that nothing needed": WAL instead of a journal
+  round trip per commit, an in-memory heartbeat de-dup instead of a
+  `MAX(ts)` scan 17k times a day, a partial index for the one query that
+  runs on every `/analyze`, and response caches on the two endpoints the
+  dashboard polls far faster than their inputs change.
+- **`check_same_thread=False` had been quietly load-bearing.** The db was
+  already reachable from FastAPI's threadpool and the backtest thread; the
+  RLock makes that safe rather than lucky, and is what let `/heartbeat`'s
+  db block move off the event loop. (It also made
+  `test_pop_approved_command_concurrent_exactly_once` deterministic — that
+  known flake should stop flaking.)
+- **Two things grew without bound and nobody was watching**: `heartbeats`
+  (~1.1k rows/day, never trimmed → 90-day retention) and the backtest run
+  directories (~1.7 MB each, never deleted → newest 20 kept). Both prunes
+  are fail-open housekeeping; neither can turn a good run bad.
+- **Fail-open is not the same as silent.** Four `except: pass` blocks that
+  could only fire on a real defect now `log.exception` into
+  `service/service.log`. The chatty per-message Telegram paths were left
+  silent on purpose.
+- **Verified**: full fast suite green (585 passed, 1 deselected; was 568),
+  both golden pins unmoved (`test_backtest_golden.py`, 3 tests),
+  `bash -n` clean on both scripts. New coverage:
+  `service/tests/test_lightweight.py` (17 tests).

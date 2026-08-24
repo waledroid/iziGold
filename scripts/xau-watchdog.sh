@@ -92,10 +92,26 @@ stale_code_once() {   # $1 = key into acted_mtime, $2 = pgrep pattern, $3.. = co
 }
 
 # ---- restarts ---------------------------------------------------------
+# Log paths must match setup.sh's (service/service.log, service/miniapp.log).
+# Until 2026-08-24 the watchdog appended to /tmp/xau-service.log and
+# /tmp/miniapp.log instead: every watchdog restart silently moved the output
+# somewhere nobody tails, so a crash loop looked like a log that just stopped.
+# Same 20 MB one-generation rotation setup.sh applies before each start.
+LOG_MAX_BYTES=$((20 * 1024 * 1024))
+rotate_log() {   # $1 = log path
+  local f="$1" size
+  [[ -f "$f" ]] || return 0
+  size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+  (( size > LOG_MAX_BYTES )) || return 0
+  mv -f "$f" "$f.1" 2>/dev/null || return 0
+  log "rotated $(basename "$f") (was $((size / 1024 / 1024)) MB)"
+}
 restart_main()    { pkill -f "uvicorn app.main:app" || true; sleep 2
-                    (cd "$SVC" && nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 >> /tmp/xau-service.log 2>&1 &) ; }
+                    rotate_log "$SVC/service.log"
+                    (cd "$SVC" && nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 >> "$SVC/service.log" 2>&1 &) ; }
 restart_miniapp() { pkill -f "uvicorn app.miniapp:app" || true; sleep 2
-                    (cd "$SVC" && nohup .venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port "$MINIAPP_PORT" >> /tmp/miniapp.log 2>&1 &) ; }
+                    rotate_log "$SVC/miniapp.log"
+                    (cd "$SVC" && nohup .venv/bin/uvicorn app.miniapp:app --host 127.0.0.1 --port "$MINIAPP_PORT" >> "$SVC/miniapp.log" 2>&1 &) ; }
 restart_tunnel()  { pkill -f "ngrok http" || true; sleep 2
                     [[ -n "$NGROK_TOKEN" && -n "$TUNNEL_DOMAIN" ]] || return 0
                     nohup "$HOME/.local/bin/ngrok" http --url="$TUNNEL_DOMAIN" --inspect=false "$MINIAPP_PORT" --log /tmp/ngrok.log >/dev/null 2>&1 & }

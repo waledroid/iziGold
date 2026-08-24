@@ -8,6 +8,7 @@ time (_busy): the engine is CPU-bound and the account of record is a single
 run artifact anyway.
 """
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -30,6 +31,13 @@ STRATEGIES = {
 }
 
 _busy = threading.Lock()
+
+# Every run leaves bars.json + result.json + report.html behind (~1.7 MB for
+# a year of M5 bars), and nothing ever deleted them (audit 2026-08-24).
+# 20 runs ~= 35 MB, which comfortably covers the /api/backtest/runs listing
+# (default limit 20) -- older rows keep their db row and simply 404 on the
+# report link.
+_KEEP_RUNS = 20
 
 
 def build_cli(params: dict, source: Path, json_out: Path, web_out: Path) -> list:
@@ -103,9 +111,27 @@ def _execute(db, run_id: int, params: dict) -> None:
         db.finish_backtest_run(run_id, status="done",
                                stats_json=json.dumps(stats),
                                report_path=str(web_out))
+        _prune_runs(keep=run_id)
     except Exception as exc:
         try:
             db.finish_backtest_run(run_id, status="failed",
                                    error=str(exc)[:500])
         except Exception:
             pass
+
+
+def _prune_runs(keep: int) -> None:
+    """Keep the newest _KEEP_RUNS run directories (numeric names, sorted as
+    ints) and delete the rest. `keep` is the run that just finished -- it is
+    never removed, whatever the cap says. Fail-open: housekeeping must never
+    turn a successful run into a failed one."""
+    try:
+        dirs = sorted((d for d in RUNS_DIR.iterdir()
+                       if d.is_dir() and d.name.isdigit()),
+                      key=lambda d: int(d.name), reverse=True)
+        for stale in dirs[_KEEP_RUNS:]:
+            if int(stale.name) == keep:
+                continue
+            shutil.rmtree(stale, ignore_errors=True)
+    except Exception:
+        pass
