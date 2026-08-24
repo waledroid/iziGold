@@ -385,29 +385,33 @@ $('runs').addEventListener('click', e=>{
 
 async function runs(){
  if(document.visibilityState!=='visible') return;
- const {runs}=await j('/api/backtest/runs');
- $('runs').innerHTML='<thead><tr><th>#</th><th>when</th><th>strategy</th><th>range</th>'+
-  '<th>equity</th><th>net</th><th>trades</th><th>win %</th><th>max DD</th><th>status</th><th></th></tr></thead><tbody>'+
-  runs.map(r=>{
-   const p=r.params||{}, s=r.stats||{};
-   const rid=Number(r.id);
-   const net=s.net==null?'—':`<span class="${s.net>=0?'pos':'neg'}">${s.net>=0?'+':''}${fmt(s.net)}</span>`;
-   const badge=r.status==='done'?'badge-pos':(r.status==='failed'?'badge-neg':'badge-gold');
-   const rep=r.status==='done'
-    ?`<a href="#" data-rid="${rid}" class="rep-link" style="color:var(--gold-primary)">report</a> `+
-     `<a href="/api/backtest/${rid}/report" target="_blank" style="color:var(--text-muted);font-size:11px;" title="open full page">↗</a>`
-    :'';
-   return `<tr><td>${r.id}</td><td>${new Date(r.created_ts*1000).toLocaleString()}</td>`+
-    `<td><b>${esc(p.strategy||'—')}</b></td><td>${p.start_ts?day(p.start_ts)+' → '+day(p.end_ts):'—'}</td>`+
-    `<td>$${fmt(p.balance,0)} @ ${fmt(p.risk_pct,1)}%</td><td>${net}</td>`+
-    `<td>${s.trades==null?'—':s.trades}</td><td>${s.win_rate==null?'—':fmt(s.win_rate,1)+'%'}</td>`+
-    `<td>${s.max_dd==null?'—':fmt(s.max_dd)}</td>`+
-    `<td><span class="badge ${badge}">${esc(r.status)}${r.error?': '+esc(r.error.slice(0,60)):''}</span></td>`+
-    `<td>${rep}</td></tr>`;
-  }).join('')+'</tbody>';
- if(_firstLoad){
-  _firstLoad=false;
-  if(runs.length && runs[0].status==='running') watch(runs[0].id, Date.now());
+ try {
+  const {runs}=await j('/api/backtest/runs');
+  $('runs').innerHTML='<thead><tr><th>#</th><th>when</th><th>strategy</th><th>range</th>'+
+   '<th>equity</th><th>net</th><th>trades</th><th>win %</th><th>max DD</th><th>status</th><th></th></tr></thead><tbody>'+
+   runs.map(r=>{
+    const p=r.params||{}, s=r.stats||{};
+    const rid=Number(r.id);
+    const net=s.net==null?'—':`<span class="${s.net>=0?'pos':'neg'}">${s.net>=0?'+':''}${fmt(s.net)}</span>`;
+    const badge=r.status==='done'?'badge-pos':(r.status==='failed'?'badge-neg':'badge-gold');
+    const rep=r.status==='done'
+     ?`<a href="#" data-rid="${rid}" class="rep-link" style="color:var(--gold-primary)">report</a> `+
+      `<a href="/api/backtest/${rid}/report" target="_blank" style="color:var(--text-muted);font-size:11px;" title="open full page">↗</a>`
+     :'';
+    return `<tr><td>${r.id}</td><td>${new Date(r.created_ts*1000).toLocaleString()}</td>`+
+     `<td><b>${esc(p.strategy||'—')}</b></td><td>${p.start_ts?day(p.start_ts)+' → '+day(p.end_ts):'—'}</td>`+
+     `<td>$${fmt(p.balance,0)} @ ${fmt(p.risk_pct,1)}%</td><td>${net}</td>`+
+     `<td>${s.trades==null?'—':s.trades}</td><td>${s.win_rate==null?'—':fmt(s.win_rate,1)+'%'}</td>`+
+     `<td>${s.max_dd==null?'—':fmt(s.max_dd)}</td>`+
+     `<td><span class="badge ${badge}">${esc(r.status)}${r.error?': '+esc(r.error.slice(0,60)):''}</span></td>`+
+     `<td>${rep}</td></tr>`;
+   }).join('')+'</tbody>';
+  if(_firstLoad){
+   _firstLoad=false;
+   if(runs.length && runs[0].status==='running') watch(runs[0].id, Date.now());
+  }
+ } catch(e) {
+  console.error('runs fetch failed', e);
  }
 }
 

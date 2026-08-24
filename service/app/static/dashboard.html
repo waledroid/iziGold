@@ -1211,7 +1211,7 @@ async function refreshChartAndTrades(){
     let ov={};
     try{ ov=await j('/api/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
     let trades=_trades;
-    try{ trades=(await j('/api/trades?limit=100')).trades||[]; }catch(e){}
+    try{ trades=(await j('/api/trades?limit=100')).trades||[]; }catch(e){ console.error('trades fetch failed', e); }
     _trades=trades;
 
     const candles=cd.candles||[];
