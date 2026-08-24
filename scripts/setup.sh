@@ -25,6 +25,45 @@ done
 C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
 CURRENT_PHASE="startup"
 
+# ---- TUI progress bar (launcher window only) -------------------------------
+# One sticky bar on terminal row 1; the phase logs scroll in a region below
+# it (DECSTBM). Active only when stdout is a real terminal -- the launcher's
+# WSL window. Redirected runs (watchdog, logs) keep byte-identical plain
+# output. XAU_NO_TUI=1 forces plain mode even on a terminal.
+PROGRESS_TTY=0
+[[ -t 1 && -z "${XAU_NO_TUI:-}" ]] && PROGRESS_TTY=1
+PROGRESS_RED=0
+
+progress_init() {
+  (( PROGRESS_TTY )) || return 0
+  local rows; rows=$(tput lines 2>/dev/null || echo 24)
+  (( rows >= 4 )) || { PROGRESS_TTY=0; return 0; }
+  printf '\033[2J\033[1;1H'      # clear, home (this window shows only setup.sh)
+  printf '\033[2;%dr' "$rows"    # scroll region: rows 2..bottom
+  printf '\033[2;1H'             # park the cursor inside the region
+  progress_draw 0 "starting"
+}
+progress_draw() {   # $1 = phases completed, $2 = current label
+  (( PROGRESS_TTY )) || return 0
+  local done=$1 label=$2 width=30 filled pct fill_col bar_done bar_todo
+  pct=$(( done * 100 / TOTAL ))
+  filled=$(( done * width / TOTAL ))
+  # sed, not tr: tr's SET1/SET2 are byte-wise, so it mangles multi-byte
+  # UTF-8 fill characters (confirmed empirically -- it silently emitted only
+  # the first byte of each block character, corrupting the bar).
+  bar_done=$(printf '%*s' "$filled" '' | sed 's/ /█/g')
+  bar_todo=$(printf '%*s' $(( width - filled )) '' | sed 's/ /░/g')
+  fill_col="$C_GREEN"; (( PROGRESS_RED )) && fill_col="$C_RED"
+  # save cursor, draw on row 1, restore -- the scrolling log is undisturbed
+  printf '\0337\033[1;1H\033[2K [%s%s%s%s] %3d%%  %d/%d  %s\0338' \
+    "$fill_col" "$bar_done" "$C_RESET" "$bar_todo" "$pct" "$done" "$TOTAL" "$label"
+}
+progress_done() {
+  (( PROGRESS_TTY )) || return 0
+  printf '\033[r'                # reset the scroll region to the full screen
+  PROGRESS_TTY=0                 # idempotent; everything after prints plainly
+}
+
 # Shared "process predates its code on disk" guard — also used by the
 # watchdog (scripts/xau-watchdog.sh) so there's exactly one implementation.
 source "$REPO_ROOT/scripts/lib/stale-code.sh"
@@ -44,6 +83,7 @@ phase() {
   PHASE_STATUS[$PHASE_IDX]="OK"
   _phase_ok_seen=0
   printf '\n[%d/%d] %s\n' "$1" "$TOTAL" "$2"
+  progress_draw $(( $1 - 1 )) "$2"
 }
 _set_status() {   # never downgrade a FAILED phase
   (( PHASE_IDX >= 0 )) || return 0
@@ -70,6 +110,7 @@ soft_fail() {
   printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2
   (( PHASE_IDX >= 0 )) && PHASE_STATUS[$PHASE_IDX]="FAILED"
   [[ -n "${2:-}" ]] && DOWN_NOTES+=("$2")
+  PROGRESS_RED=1; progress_draw "$PHASE_IDX" "$CURRENT_PHASE"
   return 0
 }
 print_summary() {
@@ -93,6 +134,8 @@ print_summary() {
 }
 on_exit() {
   local st=$?
+  [[ $st -eq 0 ]] && progress_draw "$TOTAL" "done"
+  progress_done
   # A hard abort (or an unexpected error) leaves the current phase
   # unfinished — never let the summary call it OK.
   if [[ $st -ne 0 ]] && (( PHASE_IDX >= 0 )); then
@@ -128,6 +171,7 @@ port_owner_hint() {  # best effort: name the squatter so the message is actionab
 }
 
 # ---------------------------------------------------------------- 1. Preflight
+progress_init
 phase 1 "Preflight"
 grep -qi microsoft /proc/version || fail "not running under WSL"
 [[ -d /mnt/c ]] || fail "/mnt/c is not mounted"

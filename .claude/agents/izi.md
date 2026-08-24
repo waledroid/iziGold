@@ -679,6 +679,20 @@ wiring.
   phase (`set -euo pipefail` + `fail`) aborted everything after it — see
   §7's 2026-08-19 entry. The watchdog phase is deliberately reached in
   every run, because it is what brings the optional links back later.
+- **Sticky TUI progress bar (2026-08-24)**: in the launcher's WSL window
+  (`[[ -t 1 ]]`, a real TTY), setup.sh draws a one-line progress bar pinned
+  to terminal row 1 (`tput`/DECSTBM scroll region) while the phase log
+  scrolls underneath it — `[N/11] pct% ██░░ label`, filling per phase and
+  turning red (staying filled, not resetting) after any `soft_fail`. The
+  scroll region is torn down before the summary prints, so `Setup summary`
+  always renders on a normal full-screen terminal. Redirected/non-TTY runs
+  (the watchdog, `| cat`, log files) get byte-identical plain output — every
+  progress code path is gated behind `PROGRESS_TTY` and off by default;
+  `XAU_NO_TUI=1` forces plain mode even on a real terminal. Implementation
+  note: the fill/empty bar characters (`█`/`░`) are multi-byte UTF-8, and
+  `tr` mangles multi-byte characters (byte-wise SET1/SET2) — confirmed
+  empirically it silently emitted only the first byte of each, corrupting
+  the bar — so the fill uses `sed 's/ /█/g'` instead.
 - **setup.sh candle-history notice (2026-08-24)**: after phase 11, setup.sh
   counts `candles` rows (venv python, READ-ONLY uri connection — the
   `sqlite3` CLI is not installed on this machine, so a `command -v sqlite3`
