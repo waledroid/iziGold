@@ -337,6 +337,16 @@ class SignalDb:
         return [{"t": t, "o": o, "h": h, "l": l, "c": c, "v": v or 0.0}
                 for t, o, h, l, c, v in rows]
 
+    def count_candles(self, symbol: str, timeframe: str,
+                      start_ts=None, end_ts=None) -> int:
+        q = "SELECT COUNT(*) FROM candles WHERE symbol=? AND timeframe=?"
+        args = [symbol, timeframe]
+        if start_ts is not None:
+            q += " AND bar_time >= ?"; args.append(int(start_ts))
+        if end_ts is not None:
+            q += " AND bar_time <= ?"; args.append(int(end_ts))
+        return self.conn.execute(q, args).fetchone()[0]
+
     def candles_range(self, symbol: str, timeframe: str) -> dict | None:
         row = self.conn.execute(
             "SELECT MIN(bar_time), MAX(bar_time), COUNT(*) FROM candles"

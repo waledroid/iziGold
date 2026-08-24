@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import json
+import math
 import re
 import time
 from contextlib import asynccontextmanager
@@ -323,6 +324,15 @@ async def lifespan(app: FastAPI):
                     "candles": [Candle(**r) for r in rows]}
     except Exception:
         pass
+    # A service restart kills any in-flight backtest thread; its row would
+    # otherwise show 'running' forever (the _busy lock is process-local).
+    try:
+        app.state.db.conn.execute(
+            "UPDATE backtest_runs SET status='failed',"
+            " error='interrupted by service restart' WHERE status='running'")
+        app.state.db.conn.commit()
+    except Exception:
+        pass
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     app.state.telegram = None
@@ -460,9 +470,10 @@ def analyze(req: AnalyzeRequest):
         "timeframe": req.timeframe,
         "candles": candles,
     }
-    # Persist the merged window: the forming bar's re-posts overwrite the
-    # same bar_time until the close is final. Fail-open -- persistence must
-    # never break grading.
+    # Persist the incoming bars (the accumulator's merge is equivalent: same
+    # keys, fresher values) -- the forming bar's re-posts overwrite the same
+    # bar_time until the close is final. Fail-open -- persistence must never
+    # break grading.
     try:
         app.state.db.upsert_candles(req.symbol, req.timeframe, req.candles)
     except Exception:
@@ -1140,8 +1151,11 @@ def ui_backtest_start(body: dict):
         risk_pct = float(body.get("risk_pct", 1.0))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="balance/risk_pct must be numbers")
-    if balance <= 0:
-        raise HTTPException(status_code=400, detail="balance must be > 0")
+    if not math.isfinite(balance) or not math.isfinite(risk_pct):
+        raise HTTPException(status_code=400, detail="balance/risk_pct must be finite numbers")
+    if balance < 500:
+        raise HTTPException(status_code=400,
+                            detail="balance must be >= 500 (engine minimum)")
     if not 0 < risk_pct <= 10:
         raise HTTPException(status_code=400, detail="risk_pct must be in (0, 10]")
     entry_mode = str(body.get("entry_mode", "adr"))
@@ -1159,11 +1173,15 @@ def ui_backtest_start(body: dict):
     symbol = series[0] if series else "XAUUSD"
     rng = app.state.db.candles_range(symbol, "M5")
     if rng is None or end_ts < rng["start"] or start_ts > rng["end"]:
-        avail = (f"{dt.datetime.utcfromtimestamp(rng['start']):%Y-%m-%d} .. "
-                 f"{dt.datetime.utcfromtimestamp(rng['end']):%Y-%m-%d}"
+        avail = (f"{dt.datetime.fromtimestamp(rng['start'], dt.timezone.utc):%Y-%m-%d} .. "
+                 f"{dt.datetime.fromtimestamp(rng['end'], dt.timezone.utc):%Y-%m-%d}"
                  if rng else "none -- run the backfill first")
         raise HTTPException(status_code=400,
                             detail=f"no candles in that range (available: {avail})")
+    n_bars = app.state.db.count_candles(symbol, "M5", start_ts, end_ts)
+    if n_bars < 300:
+        raise HTTPException(status_code=400,
+                            detail=f"only {n_bars} M5 bars in that range -- need at least 300")
     params = {"strategy": strategy, "symbol": symbol,
               "start_ts": start_ts, "end_ts": end_ts,
               "balance": balance, "risk_pct": risk_pct,

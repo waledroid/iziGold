@@ -45,6 +45,8 @@ def test_start_validates(client, monkeypatch):
          "start must be before end"),
         ({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
           "end": "2023-11-16", "balance": -5}, "balance"),
+        ({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
+          "end": "2023-11-16", "balance": 100}, "balance"),
         ({"strategy": "nope", "start": "2023-11-14", "end": "2023-11-16"},
          "unknown strategy"),
     ]
@@ -52,6 +54,29 @@ def test_start_validates(client, monkeypatch):
         r = client.post("/ui/backtest", json=body)
         assert r.status_code == 400, body
         assert frag in r.json()["detail"]
+
+
+def test_start_rejects_nan_balance(client):
+    seed_candles(client)
+    raw = json.dumps({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
+                      "end": "2023-11-16", "balance": float("nan")}, allow_nan=True)
+    r = client.post("/ui/backtest", content=raw,
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    assert "balance" in r.json()["detail"] or "finite" in r.json()["detail"]
+
+
+def test_start_rejects_sparse_range(client):
+    # Only ~50 bars on a single day -- below the runner's own 300-bar floor.
+    # This must be caught up front (400), not left to create a doomed run.
+    client.app.state.db.upsert_candles("XAUUSD", "M5", [
+        {"t": 1704067200 + 300 * i, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 0}
+        for i in range(50)])
+    r = client.post("/ui/backtest", json={
+        "strategy": "halftrend_ema_v1", "start": "2024-01-01", "end": "2024-01-01"})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "50" in detail and "300" in detail
 
 
 def test_start_and_status_roundtrip(client, monkeypatch):
@@ -95,3 +120,30 @@ def test_busy_returns_409(client, monkeypatch):
 def test_report_404s(client):
     assert client.get("/ui/backtest/12345").status_code == 404
     assert client.get("/ui/backtest/12345/report").status_code == 404
+
+
+def make_client(db_path, monkeypatch):
+    monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("DB_PATH", db_path)
+    from app import config, main
+    importlib.reload(config)
+    importlib.reload(main)
+    c = TestClient(main.app)
+    c.__enter__()
+    return c
+
+
+def test_startup_reconciles_orphaned_running_run(tmp_path, monkeypatch):
+    # A service restart kills the runner's daemon thread, but a 'running'
+    # row it left behind is process-local state that would otherwise never
+    # move -- see backtest_runner._busy. lifespan() must reconcile it to
+    # 'failed' on boot instead of leaving the page poller spinning forever.
+    from app.db import SignalDb
+    db_path = str(tmp_path / "orphan.db")
+    pre = SignalDb(db_path)
+    rid = pre.insert_backtest_run(json.dumps({"strategy": "halftrend_ema_v1"}))
+    assert pre.get_backtest_run(rid)["status"] == "running"
+    client = make_client(db_path, monkeypatch)
+    row = client.app.state.db.get_backtest_run(rid)
+    assert row["status"] == "failed"
+    assert row["error"] == "interrupted by service restart"

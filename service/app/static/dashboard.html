@@ -683,6 +683,7 @@ function buildMarkers(candles,tr){
  if(!candles.length) return [];
  const m=[];
  for(const t of tr){
+  if(t.ts < candles[0].t) continue;
   if(t.event==='open'||t.event==='add'){
    m.push({time:barTime(candles,t.ts),
     position:t.direction==='BUY'?'belowBar':'aboveBar',

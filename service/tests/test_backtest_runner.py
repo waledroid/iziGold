@@ -90,6 +90,27 @@ def test_execute_too_few_bars_fails_cleanly(tmp_path, monkeypatch):
     assert row["status"] == "failed" and "bars" in row["error"]
 
 
+def test_execute_real_engine_lifecycle(tmp_path, monkeypatch):
+    """No monkeypatching of the engine itself -- runs scripts/backtest.py
+    (the real, frozen-golden-pins engine) as an actual subprocess over the
+    frozen bars_slice.json fixture, spanning its full time range. Doesn't
+    pin any numbers -- test_backtest_golden.py already owns that; this just
+    proves the runner's plumbing (candle export, subprocess invocation,
+    status transition, report.html) works end to end against the real
+    binary, not a fake."""
+    data_path = Path(__file__).parent / "data" / "bars_slice.json"
+    candles = json.loads(data_path.read_text())  # a bare list of OHLCV dicts
+    db = SignalDb(str(tmp_path / "t.db"))
+    db.upsert_candles("XAUUSD", "M5", candles)
+    monkeypatch.setattr(backtest_runner, "RUNS_DIR", tmp_path / "runs")
+    params = _params(start_ts=candles[0]["t"], end_ts=candles[-1]["t"])
+    rid = db.insert_backtest_run(json.dumps(params))
+    backtest_runner._execute(db, rid, params)
+    row = db.get_backtest_run(rid)
+    assert row["status"] == "done", row.get("error")
+    assert Path(row["report_path"]).exists()
+
+
 def test_start_run_serializes(tmp_path, monkeypatch):
     db = SignalDb(str(tmp_path / "t.db"))
     # hold the busy lock as if a run were in flight

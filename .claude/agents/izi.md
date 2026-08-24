@@ -540,7 +540,7 @@ trade boxes (`TradeBoxes.mqh`, recovers open-basket state after reload).
 | `GET/POST /ui/profile` | Settings; secrets masked on read |
 | `GET /ui/screenshot/{id}`, `/ui/render/{id}` | trade images |
 | `GET /ui/backtest/range` | stored candle range + the strategy list the form offers |
-| `POST /ui/backtest` | start a run → `{run_id}`; **400** on bad params/empty range, **409** when one is already running |
+| `POST /ui/backtest` | start a run → `{run_id}`; **400** on bad params/empty range/balance < 500/non-finite balance-risk/fewer than 300 M5 bars in range, **409** when one is already running |
 | `GET /ui/backtest/runs?limit=20` | recent runs with parsed `params`/`stats` |
 | `GET /ui/backtest/{id}` | one run row (`running`/`done`/`failed` + `error`) |
 | `GET /ui/backtest/{id}/report` | the run's self-contained HTML report; 404 if the file is gone |
@@ -603,10 +603,27 @@ wiring.
   `start_run` releases the lock on any launch failure; `_execute` catches
   everything and lands failures in a `failed` row with the engine's stderr
   tail, so the service never sees an exception from the thread.
-- **Guards before launching**: fewer than 300 M5 bars in the range → the
-  run fails with "run the backfill"; unknown strategy / bad dates /
-  `balance <= 0` / `risk_pct` outside `(0, 10]` / a range outside the
-  stored candles → 400 with the available range spelled out.
+- **Startup reconcile for orphaned runs (2026-08-24)**: `_busy` is
+  process-local, so a service restart mid-run kills the daemon thread but
+  leaves its `backtest_runs` row stuck on `status='running'` forever — the
+  Backtest page would poll it indefinitely. `lifespan()` startup (next to
+  the candle-accumulator seeding in `main.py`) sweeps every `running` row to
+  `failed` with `error='interrupted by service restart'` before the app
+  starts serving, fail-open (`try/except: pass`) like every other startup
+  step.
+- **Guards before launching (2026-08-24: fail fast, not fail into a doomed
+  run)**: `POST /ui/backtest` now pre-checks up front and returns 400
+  instead of creating a run that would only fail once the subprocess runs:
+  unknown strategy / bad dates / non-finite balance-or-risk (`math.isfinite`,
+  catches a NaN slipped past a naive `float()`) / `balance < 500` ("balance
+  must be >= 500 (engine minimum)", matching the engine's own `MIN_BALANCE`)
+  / `risk_pct` outside `(0, 10]` / a range outside the stored candles
+  (available range spelled out) / **fewer than 300 M5 bars inside the
+  requested `[start, end]`** (`db.count_candles`, a cheap `COUNT(*)`) — "only
+  N M5 bars in that range -- need at least 300". The runner's own <300-bars
+  guard in `_execute` (below) still exists and still lands a `failed` row —
+  it's the last line of defense for a range that only goes stale between the
+  precheck and the subprocess launch, not the only line anymore.
 - **Artifacts**: `service/data/backtests/{run_id}/` holding `bars.json`
   (the exported source), `result.json` (`--json`) and `report.html`
   (`--web`, self-contained). Gitignored; 30-minute subprocess timeout; no
