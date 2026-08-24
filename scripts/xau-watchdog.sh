@@ -150,6 +150,13 @@ restart_bridge()  { # Kill any old bridge, then launch a DETACHED hidden pythonw
                     [[ -n "$py" ]] || { log "bridge: no Windows pythonw found"; return 0; }
                     timeout 25 cmd.exe /c start "" /B "$py" "$win_repo\\bridge\\mt5_feed.py" >/dev/null 2>&1 || true; }
 
+# EA link-state Telegram notices (owner 2026-08-24): the EA link is the ONE
+# exception to the "routine self-heals are silent" rule (2026-08-18), because
+# a silent EA means trading has stopped. Exactly one message per outage —
+# ea_down latches on the first restart attempt and clears only when a FRESH
+# heartbeat is actually observed (not when the check merely can't judge, e.g.
+# owner closed MT5 mid-outage), so neither notice can repeat.
+ea_down=0
 restart_mt5()     { # Gentle close -> wait -> force kill -> relaunch with the
                     # start config whose [StartUp] section re-attaches the EA.
                     # Then BLOCK (up to 4 min) until the heartbeat is fresh:
@@ -158,6 +165,10 @@ restart_mt5()     { # Gentle close -> wait -> force kill -> relaunch with the
                     # would reset the fail counter and turn a truly broken MT5
                     # into a silent restart loop instead of an alarm.
                     log "EA heartbeat stale — restarting MT5"
+                    if (( ! ea_down )); then
+                      ea_down=1
+                      notify "🔌 EA heartbeat lost (>${EA_STALE_S}s) — restarting MT5 to re-attach"
+                    fi
                     timeout 20 taskkill.exe /IM terminal64.exe >/dev/null 2>&1 || true
                     local _t; for _t in {1..15}; do mt5_running || break; sleep 2; done
                     if mt5_running; then
@@ -203,5 +214,12 @@ while true; do
   supervise tunnel  tunnel_ok  restart_tunnel
   supervise bridge  feed_ok    restart_bridge
   supervise ea      ea_ok      restart_mt5
+  if (( ea_down )); then
+    ea_age="$(hb_age)"
+    if [[ -n "$ea_age" ]] && (( ${ea_age%.*} < EA_STALE_S )); then
+      ea_down=0
+      notify "✅ EA reconnected — heartbeat back (age ${ea_age%.*}s)"
+    fi
+  fi
   sleep "$INTERVAL"
 done

@@ -840,7 +840,14 @@ wiring.
     `WATCHDOG_EA_STALE_S` (180 s default) → restart MT5 with the start
     config (gentle `taskkill`, force after 30 s, relaunch, then block up to
     4 min for the heartbeat so the fail counter stays honest → MAX_FAILS
-    still alarms via Telegram). Deliberate non-goals: MT5 not running →
+    still alarms via Telegram). The EA link is the ONE exception to the
+    "routine self-heals are silent" rule (owner 2026-08-24: a silent EA
+    means trading has stopped): exactly one Telegram notice when the
+    heartbeat is lost (🔌, latched on the first restart attempt) and one
+    when a fresh heartbeat is actually observed again (✅) — the latch
+    clears only on a real heartbeat, never on "can't judge" (service down
+    or MT5 closed), so neither message can repeat within an outage.
+    Deliberate non-goals: MT5 not running →
     do nothing (owner may have closed it on purpose — only the launcher
     starts MT5 from cold); service down → main link's problem.
 - **Service restart**: `pkill -f "uvicorn app.main:app"` in its OWN command
