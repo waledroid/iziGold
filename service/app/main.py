@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.analysis import analyze_forecast
 from app.chart_cmd import merge_forming_bar
@@ -305,6 +306,20 @@ async def lifespan(app: FastAPI):
     app.state.pending_channel = None
     app.state.last_candles = None
     app.state.recent_candles = None
+    # Seed the chart accumulator from the persistent candles table so the
+    # dashboard survives a service restart instead of starting empty.
+    try:
+        series = app.state.db.latest_candle_series()
+        if series is not None:
+            from app.models import Candle
+            sym, tf = series
+            rows = app.state.db.get_candles(sym, tf, limit=_CANDLE_WINDOW_CAP)
+            if rows:
+                app.state.recent_candles = {
+                    "symbol": sym, "timeframe": tf,
+                    "candles": [Candle(**r) for r in rows]}
+    except Exception:
+        pass
     app.state.screenshot_dir = Path(settings.screenshot_dir)
     app.state.screenshot_dir.mkdir(parents=True, exist_ok=True)
     app.state.telegram = None
@@ -329,6 +344,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="XAU Assistant AI Service", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"),
+          name="static")
 
 
 @app.get("/health")
@@ -440,6 +457,13 @@ def analyze(req: AnalyzeRequest):
         "timeframe": req.timeframe,
         "candles": candles,
     }
+    # Persist the merged window: the forming bar's re-posts overwrite the
+    # same bar_time until the close is final. Fail-open -- persistence must
+    # never break grading.
+    try:
+        app.state.db.upsert_candles(req.symbol, req.timeframe, req.candles)
+    except Exception:
+        pass
     regime = classify_regime(req.candles)
     atr_value = last_atr(req.candles)
     closes = [x.c for x in req.candles]
