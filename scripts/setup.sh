@@ -110,7 +110,7 @@ soft_fail() {
   printf '  %sFAIL%s %s\n' "$C_RED" "$C_RESET" "$1" >&2
   (( PHASE_IDX >= 0 )) && PHASE_STATUS[$PHASE_IDX]="FAILED"
   [[ -n "${2:-}" ]] && DOWN_NOTES+=("$2")
-  PROGRESS_RED=1; progress_draw "$PHASE_IDX" "$CURRENT_PHASE"
+  (( PHASE_IDX >= 0 )) && { PROGRESS_RED=1; progress_draw "$PHASE_IDX" "$CURRENT_PHASE"; }
   return 0
 }
 print_summary() {
