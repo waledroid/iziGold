@@ -712,11 +712,11 @@ wiring.
   down. Cost: no progress percent — status is `running/done/failed` and the
   page shows elapsed seconds instead.
 - **Strategy → flags** (`STRATEGIES`, mirroring the EA's registrations —
-  only ConfirmCloses differs between the lanes; amplitude 4 / EMA 55 /
-  stop buffer 0.75 are identical):
-  `halftrend_ema_v1` → `--tf M5 --confirm 2`;
-  `halftrend_m15_v1` → `--tf M15 --confirm 3`. No new engine lane was
-  needed. `boll_stochrsi` is listed `supported: false` and rejected with
+  ConfirmCloses AND stop buffer differ between the lanes since 2026-08-25;
+  amplitude 4 / EMA 55 are identical):
+  `halftrend_ema_v1` → `--tf M5 --confirm 2 --stop-buffer 0.75`;
+  `halftrend_m15_v1` → `--tf M15 --confirm 1 --stop-buffer 1.5`. No new
+  engine lane was needed. `boll_stochrsi` is listed `supported: false` and rejected with
   400 by `POST /api/backtest`.
 - **M15-bias flags only for the M5 lane**: `m15_bias=on` adds
   `--bias-ema 200 --bias-tf M15 --bias-mode target`, and only for
@@ -2783,10 +2783,20 @@ recompiling.
   reads as three sections; `input group` is a display-only pragma — the
   regex `test_strategy_config_matches_the_ea` uses to parse EA defaults
   doesn't match it, so it can't affect the parity check).
-  Every M15 input defaults to its M5 equivalent **except two, deliberately**:
-  - `M15ConfirmCloses = 3` (M5 uses 2). Measured: on M15, 3 waiting bars was
-    the only setting positive in BOTH halves of the 17-month history
-    (+1,477.65 full period) — see "Not taken, and worth remembering" above.
+  Every M15 input defaults to its M5 equivalent **except three, deliberately**:
+  - `M15ConfirmCloses = 1` and `M15StopBufferATR = 1.5` (M5 uses 2 and 0.75)
+    — the 2026-08-25 trend-rider sweep (owner: "follow the HT signal until
+    change, jump on almost every trade, wider SL"). 30 configs × 3 windows on
+    the 17-month M15 history, ALL in FIXED ride mode (`--entry-mode fixed`):
+    confirm 1 + 1.5 ATR = +$9,674 full, +$1,721/+$8,006 per half, dd $1,365
+    (lowest of all 30). The owner's EMA-clearance entry idea (enter when the
+    close clears EMA55 by K×ATR — new replay flag `--ema-clear-atr K`, engine
+    only, no EA input) was a close second at K=1.0 (+$9,331, dd $2,046);
+    K=0.5 and pure enter-at-flip lost to whipsaws. The OLD `confirm 3`
+    (+1,477.65, chosen 2026-08-22 for the ADR/target style) is NEGATIVE in
+    half 1 under ride mode — a default is only as good as the exit style it
+    was tuned with. Ride the lane with `tmode:fixed`; TP deliberately
+    unset (the FIXED target alert with tap-to-exit covers it until then).
   - `M15HtfConfirmTf = PERIOD_H1` (M5's default is `PERIOD_M15` — one step
     up). A strategy TRADING M15 can't confirm against M15; H1 is the
     equivalent one-step-up timeframe.

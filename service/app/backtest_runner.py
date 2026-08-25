@@ -21,13 +21,17 @@ RUN_TIMEOUT_S = 1800
 
 # ConfirmCloses per the EA's registrations (XauAssistant.mq5): M5 lane
 # ConfirmCloses=2, M15 lane M15ConfirmCloses=3; every other HalfTrend
-# parameter matches the engine's live defaults (amplitude 4, EMA 55,
-# stop buffer 0.75). --tf M15 makes the engine resample its M5 source.
+# parameter matches the engine's live defaults (amplitude 4, EMA 55).
+# --tf M15 makes the engine resample its M5 source. Per-lane stop buffers
+# differ since 2026-08-25: M5 keeps 0.75, M15 rides with 1.5 (trend-rider
+# sweep — see config/strategy.json, the parity-tested source of truth).
 STRATEGIES = {
     "halftrend_ema_v1": {"label": "HalfTrend M5",
-                         "flags": ["--tf", "M5", "--confirm", "2"]},
+                         "flags": ["--tf", "M5", "--confirm", "2",
+                                   "--stop-buffer", "0.75"]},
     "halftrend_m15_v1": {"label": "HalfTrend M15",
-                         "flags": ["--tf", "M15", "--confirm", "3"]},
+                         "flags": ["--tf", "M15", "--confirm", "1",
+                                   "--stop-buffer", "1.5"]},
 }
 
 _busy = threading.Lock()

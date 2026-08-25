@@ -496,6 +496,14 @@ STRICT_WINDOW = True      # EA law since 2026-08-16: flip -> wait one closed
                           # EMA, else the signal is dead until the next flip.
                           # --loose-window restores the pre-2026-08-16 replay.
 
+# --- EMA-clearance entry (owner idea 2026-08-25, M15 trend-rider study) ---
+# 0 = off. K > 0 REPLACES the entry window entirely: after a HalfTrend flip,
+# the FIRST close that clears the EMA by K x ATR(14) in the trend's direction
+# is the entry (one per flip, no waiting bars, no dead-signal concept — a
+# flip whose move never clears simply never fires). Same clearance idea the
+# M15 HTF gate validated as HtfConfirmBufferATR, applied to the entry EMA.
+EMA_CLEAR_ATR = 0.0
+
 # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
 # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
 # fill; sizing rescales over the widened distance. Entry stop only.
@@ -1071,7 +1079,17 @@ def run(candles, start_balance, verbose, active_lanes=None):
 
         signal = None
         if fired_flip != last_flip:
-            if STRICT_WINDOW:
+            if EMA_CLEAR_ATR > 0:
+                # EMA-clearance entry: first close beyond the EMA by
+                # K x ATR in the trend's direction fires; the flip is
+                # then spent whether or not price ever clears.
+                if trend == 0 and cpx > e + EMA_CLEAR_ATR * a:
+                    signal = "BUY"
+                    fired_flip = last_flip
+                elif trend == 1 and cpx < e - EMA_CLEAR_ATR * a:
+                    signal = "SELL"
+                    fired_flip = last_flip
+            elif STRICT_WINDOW:
                 # one-shot decision on the bar CONFIRM_CLOSES bars after the
                 # arrow bar (i - last_flip == CONFIRM_CLOSES); this bar's
                 # close is the entry bar's open. Pass -> signal now; fail ->
@@ -1666,6 +1684,12 @@ def build_parser():
                          "changes nothing. Kept so scripted runs written "
                          "before the flip still parse; --loose-window is what "
                          "restores the old replay")
+    exp.add_argument("--ema-clear-atr", type=float, default=0.0,
+                    help="EMA-clearance entry: after a HalfTrend flip, enter "
+                         "on the first close beyond the EMA by K x ATR(14) in "
+                         "the trend's direction — replaces the entry window "
+                         "entirely (one entry per flip, no waiting bars, no "
+                         "dead signals). 0 = off, byte-identical")
     exp.add_argument("--min-stop-atr", type=float, default=0.0,
                     help="minimum stop distance floor in ATR(14) multiples: "
                          "an ENTRY stop closer than K x ATR is pushed out to "
@@ -1775,6 +1799,8 @@ def main():
     active_lanes = lanes_for()
     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+    global EMA_CLEAR_ATR
+    EMA_CLEAR_ATR = args.ema_clear_atr
     global MIN_STOP_ATR
     apply_window_args(args)
     MIN_STOP_ATR = args.min_stop_atr
@@ -1850,7 +1876,9 @@ def main():
     if CHOP_FLIPS > 0:
         head.append(f"chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}"
                     f"/X{CHOP_BOX_ATR:g}")
-    if STRICT_WINDOW:
+    if EMA_CLEAR_ATR > 0:
+        head.append(f"ema-clear {EMA_CLEAR_ATR:g} ATR")
+    elif STRICT_WINDOW:
         head.append("STRICT WINDOW")
     if MIN_STOP_ATR > 0:
         head.append(f"min stop {MIN_STOP_ATR:g} ATR")

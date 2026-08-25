@@ -75,8 +75,8 @@ input bool   Ema200Confirm  = false;     // EMA-200 (own timeframe) agreement: B
 input group "HalfTrend M15 (halftrend_m15_v1) — second lane, owner runs ONE at a time via ActiveStrategy"
 input int    M15Amplitude    = 4;                  // Half Trend amplitude (same as M5 default)
 input int    M15EmaLength    = 55;                 // confirmation EMA (same as M5 default)
-input int    M15ConfirmCloses = 3;                 // waiting bars after the HT arrow (M5 uses 2). 3 measured: the only setting positive in BOTH halves of the 17-month M15 history (+1,477.65 full period)
-input double M15StopBufferATR = 0.75;              // pad wick stop by k*ATR(14) (same as M5 default)
+input int    M15ConfirmCloses = 1;                 // waiting bars after the HT arrow (M5 uses 2). 2026-08-25 trend-rider sweep (FIXED ride, 30 configs x 3 windows): confirm 1 + 1.5 ATR stop = +$9,674/17mo, BOTH halves positive, lowest dd ($1,365) — old 3 was tuned for ADR/target style and loses H1 in ride mode
+input double M15StopBufferATR = 1.5;               // pad wick stop by k*ATR(14) (M5 uses 0.75) — wider stop from the same 2026-08-25 sweep; flips do the exiting, the stop only catches disasters
 input bool   M15CatchupEnabled     = true;  // take a missed entry after downtime if still valid (same as M5 default)
 input int    M15CatchupMaxAgeBars  = 12;    // signal at most this many trade-TF bars old (same as M5 default)
 input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal close, in ATR(14) (same as M5 default)

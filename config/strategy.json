@@ -24,10 +24,10 @@
       "htf_chop_bars": 48
     },
     "halftrend_m15_v1": {
-      "confirm_closes": 3,
+      "confirm_closes": 1,
       "ema_length": 55,
       "ht_amplitude": 4,
-      "stop_buffer_atr": 0.75
+      "stop_buffer_atr": 1.5
     }
   }
 }
