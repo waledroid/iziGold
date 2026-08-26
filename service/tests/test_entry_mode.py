@@ -33,12 +33,13 @@ def test_entry_mode_kv_roundtrip_defaults_adr(tmp_path):
         db.set_entry_mode("yolo")
 
 
-def test_mode_command_shows_both_states_and_four_buttons(tmp_path):
+def test_mode_command_shows_both_states_and_six_buttons(tmp_path):
     app = _app(_db(tmp_path))
     text, keyboard = handle_command("/mode", app)
     assert "Execution mode" in text and "Entry mode" in text
     flat = [b["callback_data"] for row in keyboard["inline_keyboard"] for b in row]
-    assert flat == ["mode:auto", "mode:manual", "tmode:adr", "tmode:fixed"]
+    assert flat == ["mode:auto", "mode:manual", "tmode:adr", "tmode:fixed",
+                    "strat:halftrend_ema_v1", "strat:halftrend_m15_v1"]
 
 
 def test_tmode_callback_sets_kv_and_names_next_trade(tmp_path):

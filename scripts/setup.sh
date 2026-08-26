@@ -886,7 +886,7 @@ cat <<'EOF'
     halftrend_ema_v1   M5   <- active by default
     halftrend_m15_v1   M15  shadow (3 waiting bars, EMA-200 confirmation)
 
-  Switch with /strategy in Telegram — it applies on the next bar, no recompile.
+  Switch with the M5/M15 buttons on /mode in Telegram — it applies on the next bar, no recompile.
   The chart's own timeframe is display only; each strategy trades its own.
 
   Waiting up to 5 minutes for the EA heartbeat (fires every 5s, even with markets closed)...

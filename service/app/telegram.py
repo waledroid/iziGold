@@ -463,36 +463,41 @@ def _format_balance(app, redacted=False) -> str:
     return f"{text}\n{money}" if money else text
 
 
-def _format_switch(app, args: list) -> str:
-    if not args:
-        pending = app.state.pending_switch
-        current = pending if pending else "none"
-        return f"pending switch: {current} — use /switch <id>, /switch cancel"
-    target = args[0]
-    if target == "cancel":
-        app.state.pending_switch = None
-        return "pending switch cleared"
-    app.state.pending_switch = target
-    return f"switch to {target} queued — confirms on next EA heartbeat"
+# The two strategy lanes the EA registers (Experts/XauAssistant.mq5 OnInit).
+# /mode's third button row switches between them; the old typed /switch and
+# the id-list /strategy were consolidated here 2026-08-26. Deliberately a
+# hardcoded pair, not db.strategy_ids(): that list carries shadow ids (stub,
+# boll_stochrsi_v1, ...) the owner should never activate by mis-tap.
+STRATEGY_LANES = [("⏱ M5", "halftrend_ema_v1"), ("⏱ M15", "halftrend_m15_v1")]
 
 
 def _format_mode(app) -> tuple:
     mode = app.state.db.exec_mode()
     emode = app.state.db.entry_mode()
+    latest = app.state.latest_heartbeat
+    active = latest[1].active_strategy if latest else ""
+    pending = getattr(app.state, "pending_switch", None)
 
     # ● marks the currently-active choice, same convention as /agree.
     def mark(label, active):
         return ("● " + label) if active else label
 
-    return (f"Execution mode: {mode.upper()}\nAUTO executes signals "
+    text = (f"Execution mode: {mode.upper()}\nAUTO executes signals "
             f"immediately; MANUAL sends proposals with buttons.\n"
             f"Entry mode: {emode.upper()}\nADR sizes by 1% risk with "
             f"pyramid adds and targets; FIXED rides a fixed lot until "
-            f"the trend confirms a change.",
+            f"the trend confirms a change.\n"
+            f"Strategy: {active or '?'} — M5/M15 switches the HalfTrend "
+            f"lane, applies at next bar.")
+    if pending and pending != active:
+        text += f"\npending: {pending} (applies on the next heartbeat)"
+    return (text,
             kb([[(mark("🤖 AUTO", mode == "auto"), "mode:auto"),
                  (mark("👤 MANUAL", mode == "manual"), "mode:manual")],
                 [(mark("📊 ADR", emode == "adr"), "tmode:adr"),
-                 (mark("🎯 FIXED", emode == "fixed"), "tmode:fixed")]]))
+                 (mark("🎯 FIXED", emode == "fixed"), "tmode:fixed")],
+                [(mark(label, sid == active), f"strat:{sid}")
+                 for label, sid in STRATEGY_LANES]]))
 
 
 def _format_agree(app) -> tuple:
@@ -524,18 +529,6 @@ def _format_agree(app) -> tuple:
                 + ("Off (report only)" if c == "off" else "Enforcing"),
                 f"e200:{c}") for c in db.EMA200_CHOICES]
     return (body, kb([row[:2], row[2:], e200_row]))
-
-
-def _format_strategy(app) -> tuple:
-    rows = app.state.db.strategy_ids()
-    latest = app.state.latest_heartbeat
-    active = latest[1].active_strategy if latest else ""
-    buttons = [[(("● " if s == active else "") + s, f"strat:{s}")] for s in rows]
-    text = "Switch active strategy (applies at next bar):"
-    pending = getattr(app.state, "pending_switch", None)
-    if pending and pending != active:
-        text += f"\npending: {pending} (applies on the next heartbeat)"
-    return (text, kb(buttons) if buttons else None)
 
 
 def _format_config(app, redacted=False) -> str:
@@ -606,10 +599,6 @@ def _cmd_agree(app, parts, redacted):
     return _format_agree(app)
 
 
-def _cmd_strategy(app, parts, redacted):
-    return _format_strategy(app)
-
-
 def _cmd_config(app, parts, redacted):
     return _format_config(app, redacted=redacted)
 
@@ -620,10 +609,6 @@ def _cmd_stats(app, parts, redacted):
 
 def _cmd_history(app, parts, redacted):
     return _format_history(app)
-
-
-def _cmd_switch(app, parts, redacted):
-    return _format_switch(app, parts[1:])
 
 
 def _cmd_help(app, parts, redacted):
@@ -653,16 +638,14 @@ class CommandSpec:
 COMMANDS: dict[str, CommandSpec] = {
     "/status": CommandSpec(_cmd_status, "snapshot + EA connection state"),
     "/bal": CommandSpec(_cmd_bal, "balance, equity, floating P/L"),
-    "/mode": CommandSpec(_cmd_mode, "execution (AUTO/MANUAL) + entry mode (ADR/FIXED)"),
+    "/mode": CommandSpec(_cmd_mode, "execution (AUTO/MANUAL) + entry mode (ADR/FIXED) "
+                                    "+ strategy lane (M5/M15)"),
     "/agree": CommandSpec(_cmd_agree,
                           "what confirms a trade: higher-timeframe (M5) enforce on M15/M30/H1, "
                           "and EMA-200 (M5+M15) enforce or check only"),
-    "/strategy": CommandSpec(_cmd_strategy, "switch active strategy"),
     "/config": CommandSpec(_cmd_config, "current settings"),
     "/stats": CommandSpec(_cmd_stats, "per-strategy signal hit-rates"),
     "/history": CommandSpec(_cmd_history, "last 10 trade events"),
-    "/switch": CommandSpec(_cmd_switch, "queue a strategy switch (/switch cancel)",
-                           arg_hint=" <id>"),
     "/channel": CommandSpec(_cmd_channel, "link/unlink the broadcast channel"),
     "/help": CommandSpec(_cmd_help, "show this reference"),
 }
@@ -679,7 +662,7 @@ _PINNED_EXTRA: dict[str, list[str]] = {
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "9"
+PINNED_HELP_VERSION = "10"
 
 
 def format_pinned_help() -> str:

@@ -384,7 +384,7 @@ command, four changes (PINNED_HELP_VERSION bumped 8→9):
 - `/config` now shows the confirmation gates (`confirms — HTF: … |
   EMA200: …`) so the settings command lists every toggleable setting.
 - Consistency: `/mode` buttons mark the active choice with ● (same
-  convention as `/agree`); `/strategy` shows a queued switch as
+  convention as `/agree`) and show a queued strategy switch as
   `pending: <id>`.
 - `/history`: 🟢/🔴 direction dots, closes print `P/L +x.xx`, and a
   final `Σ closed shown: +$X (N)` line sums the closes displayed.
@@ -405,13 +405,19 @@ Quiet by default: only proposals, executions, failures, command replies.
   180 s). EA execution still passes all risk gates; refusals report the real
   reason. **AUTO**: trades immediately; failures notify 🚫 via `/notify`.
 - **Commands**: `/status` (session 🕒, EA connection, **Mini app line** right under it — 🟢 connected (feed Ns ago) / 🟡 up but no data (bridge?) / 🔴 down — read from the miniapp's `/healthz` via a 0.5 s urllib probe (NOT httpx: its first call costs ~700 ms of SSL/env setup, enough to delay the reply); never redacted (infra state, not an account figure), algo-trading warning),
-  `/bal`, `/mode` (four buttons in two rows — 🤖 AUTO / 👤 MANUAL execution
-  mode via `mode:auto`/`mode:manual`, and 📊 ADR / 🎯 FIXED entry mode via
-  `tmode:adr`/`tmode:fixed`, see §3 "Entry mode"), `/strategy` (switch
-  buttons), `/config` (now also echoes `entry mode: adr|fixed`), `/chart`,
+  `/bal`, `/mode` (six buttons in three rows — 🤖 AUTO / 👤 MANUAL execution
+  mode via `mode:auto`/`mode:manual`, 📊 ADR / 🎯 FIXED entry mode via
+  `tmode:adr`/`tmode:fixed` (see §3 "Entry mode"), and ⏱ M5 / ⏱ M15 strategy
+  lane via `strat:halftrend_ema_v1`/`strat:halftrend_m15_v1` — the lane pair
+  is HARDCODED as `STRATEGY_LANES` in `telegram.py`, deliberately not
+  `db.strategy_ids()` which carries shadow ids the owner must not mis-tap
+  into; the old `/switch <id>` and `/strategy` commands were folded into
+  these buttons 2026-08-26 and no longer dispatch, though the `strat:`
+  callback itself is unchanged), `/config` (now also echoes
+  `entry mode: adr|fixed`), `/chart`,
   `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "6"; full command list incl. /chart, /stats, /history, /switch). The version-bump edit also re-pins (a manually
+  forces rewrite; now "10"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service
@@ -1210,7 +1216,8 @@ clean run says WHICH strategy is trading rather than leaving it assumed.
 
 Phase 11's handoff text also now names both registered strategies
 (`halftrend_ema_v1` M5 active, `halftrend_m15_v1` M15 shadow), says the chart's
-own timeframe is display-only, and points at `/strategy` to switch. A fresh
+own timeframe is display-only, and points at `/mode`'s M5/M15 buttons to
+switch (originally `/strategy`, folded into `/mode` 2026-08-26). A fresh
 install previously gave no hint the second strategy existed.
 
 Verified against the live system and driven through every failure branch:

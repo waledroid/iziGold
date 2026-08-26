@@ -12,7 +12,7 @@ from app.db import SignalDb
 from app.telegram import (COMMANDS, PINNED_HELP_VERSION, TelegramClient,
                           _PINNED_EXTRA, format_pinned_help, format_proposal,
                           handle_callback, handle_command, market_session, pinned_tick)
-from tests.test_proposals_flow import _post_signal, client, fake_tg  # noqa: F401
+from tests.test_proposals_flow import client, fake_tg  # noqa: F401
 
 _PARIS = ZoneInfo("Europe/Paris")
 
@@ -374,11 +374,19 @@ def test_mode_marks_active_buttons():
     assert not any(l.startswith("● ") and "MANUAL" in l for l in labels)
 
 
-def test_strategy_lists_pending_switch():
-    app = _app(latest_heartbeat=_hb(), pending_switch="boll_stochrsi",
-               db=FakeDb(strategies=["halftrend_ema_v1", "boll_stochrsi"]))
-    text, _ = handle_command("/strategy", app)
-    assert "pending: boll_stochrsi" in text
+def test_mode_lists_pending_switch():
+    app = _app(latest_heartbeat=_hb(), pending_switch="halftrend_m15_v1",
+               db=FakeDb())
+    text, _ = handle_command("/mode", app)
+    assert "pending: halftrend_m15_v1" in text
+
+
+def test_mode_marks_active_strategy_button():
+    app = _app(latest_heartbeat=_hb(active="halftrend_m15_v1"), db=FakeDb())
+    _, keyboard = handle_command("/mode", app)
+    labels = {b["text"] for row in keyboard["inline_keyboard"] for b in row}
+    assert any(l.startswith("● ") and "M15" in l for l in labels)
+    assert not any(l.startswith("● ") and "M5" in l for l in labels)
 
 
 def test_history_close_rows_get_direction_emoji_and_sum_line():
@@ -405,25 +413,12 @@ def test_help_replies_with_pinned_reference():
     assert "/status" in reply
 
 
-def test_switch_with_id_sets_pending_and_names_it_in_reply():
-    app = _app()
-    reply = handle_command("/switch boll_stochrsi_v1", app)
-    assert app.state.pending_switch == "boll_stochrsi_v1"
-    assert "boll_stochrsi_v1" in reply
-
-
-def test_switch_cancel_clears_pending():
-    app = _app(pending_switch="boll_stochrsi_v1")
-    reply = handle_command("/switch cancel", app)
-    assert app.state.pending_switch is None
-    assert "cleared" in reply
-
-
-def test_switch_bare_reports_current_pending():
-    app = _app(pending_switch="boll_stochrsi_v1")
-    reply = handle_command("/switch", app)
-    assert "boll_stochrsi_v1" in reply
-    assert "/switch cancel" in reply
+def test_switch_and_strategy_commands_are_gone():
+    # Consolidated into /mode's M5/M15 buttons (2026-08-26); the old typed
+    # /switch and the /strategy button list must no longer dispatch.
+    app = _app(db=FakeDb())
+    assert handle_command("/switch halftrend_m15_v1", app) is None
+    assert handle_command("/strategy", app) is None
 
 
 def test_stats_includes_by_strategy_id():
@@ -674,10 +669,14 @@ def test_kv_roundtrip(tmp_path):
 
 def test_format_pinned_help_lists_commands_and_proposal_legend():
     text = format_pinned_help()
-    for token in ("/status", "/bal", "/mode", "/strategy", "/config",
-                  "/chart", "/stats", "/history", "/switch", "/channel",
+    for token in ("/status", "/bal", "/mode", "/config",
+                  "/chart", "/stats", "/history", "/channel",
                   "🟢 Take", "🔴 Skip", "Valid while the strategy holds"):
         assert token in text
+    # Strategy switching merged into /mode (M5/M15 buttons) — the old
+    # commands must not resurface in the pinned reference.
+    assert "/switch" not in text
+    assert "/strategy" not in text
 
 
 def test_format_pinned_help_does_not_depend_on_heartbeat():
@@ -884,29 +883,14 @@ def test_mode_command_returns_buttons(client):
     text, markup = out
     assert "manual" in text.lower()
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert set(datas) == {"mode:auto", "mode:manual", "tmode:adr", "tmode:fixed"}
+    assert set(datas) == {"mode:auto", "mode:manual", "tmode:adr", "tmode:fixed",
+                          "strat:halftrend_ema_v1", "strat:halftrend_m15_v1"}
 
 
 def test_mode_callback_switches(client):
     edit, toast = handle_callback("mode:auto", client.app)
     assert client.app.state.db.exec_mode() == "auto"
     assert "auto" in (edit or "").lower() or "auto" in toast.lower()
-
-
-def test_strategy_command_lists_known_strategies(client):
-    # NB: /analyze only inserts into `signals` for non-NONE signals (see
-    # app/main.py::analyze), so a real BUY/SELL is needed to seed strategy_ids().
-    _post_signal(client, "BUY")
-    out = handle_command("/strategy", client.app)
-    text, markup = out
-    datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert any(d.startswith("strat:") for d in datas)
-
-
-def test_strategy_command_empty_signals_table_has_no_buttons(client):
-    out = handle_command("/strategy", client.app)
-    text, markup = out
-    assert markup is None
 
 
 def test_strategy_callback_sets_pending_switch(client):
