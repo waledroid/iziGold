@@ -150,7 +150,8 @@ public:
                         string &mode, string &entryMode_out, string &cmd,
                         long &cmdId, string &cmdDir, string &htfEnforce_out,
                         string &ema200Enforce_out,
-                        double daily_loss_pct = 0.0, bool brake_reset = false)
+                        double daily_loss_pct = 0.0, bool brake_reset = false,
+                        string newsJson = "", int newsBlackoutMin = 0)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
       // Zeros on CopyRates failure -- the service treats 0 as "no forming
@@ -187,7 +188,14 @@ public:
                     ",\"bar_c\":" + DoubleToString(bar_c, 2) +
                     ",\"entry_mode\":\"" + entryMode + "\"" +
                     ",\"daily_loss_pct\":" + DoubleToString(daily_loss_pct, 1) +
-                    ",\"brake_reset\":" + (brake_reset ? "true" : "false") + "}";
+                    ",\"brake_reset\":" + (brake_reset ? "true" : "false");
+      // Upcoming high-impact USD events (NewsGuard.UpcomingJson) + blackout
+      // radius, for /news and the pre-blackout heads-up. Omitted entirely
+      // when the guard is off/empty-handed — pydantic defaults cover it.
+      if(newsJson != "" && newsJson != "[]")
+         json += ",\"news\":" + newsJson +
+                 ",\"news_blackout_min\":" + (string)newsBlackoutMin;
+      json += "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

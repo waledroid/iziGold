@@ -444,7 +444,22 @@ Quiet by default: only proposals, executions, failures, command replies.
   callback itself is unchanged), `/config` (now also echoes
   `entry mode: adr|fixed`), `/chart`,
   `/stats`, `/history`, `/channel` (link status / `/channel unlink`),
-  `/trade` (see below), `/manual` (2026-08-26: sends `docs/izi_manual.pdf`
+  `/trade` (see below), `/news` (2026-08-26: upcoming high-impact USD
+  calendar events over the next 24 h with the blackout radius — rendered
+  from the heartbeat's `news` field, which `CNewsGuard::UpcomingJson()`
+  fills from the SAME MT5 calendar feed `InBlackout()` blocks on (max 8
+  events, 10-min cache, fail-open "[]", omitted when NewsGuardEnabled is
+  off). Event times travel as RELATIVE seconds (`in_s`) because the MT5
+  server clock and the service clock disagree by hours; the service
+  renders countdowns ("in 1h 25m — CPI m/m"). The service also sends a
+  ONE-SHOT pre-blackout heads-up per event (`_news_headsup` in main.py's
+  /heartbeat, latched in kv `news_alerted` keyed by the event's absolute
+  minute — in_s jitters seconds between beats but now+in_s rounded to the
+  minute is stable; old keys pruned) as the event enters the
+  (radius + 5 min) window: "⏳ News blackout ahead: <name> in 32m…".
+  Remember: a blocked signal is SKIPPED, not postponed — /trade is the
+  manual re-entry path after the dust settles. Tests: `tests/test_news.py`),
+  `/manual` (2026-08-26: sends `docs/izi_manual.pdf`
   — the 5-page operator quick-reference — into the owner chat via
   `TelegramClient.send_document` (sendDocument multipart, same shape as
   sendPhoto). Special-cased in the poller BEFORE `handle_command`, exactly
@@ -457,7 +472,7 @@ Quiet by default: only proposals, executions, failures, command replies.
   documenting, and commit the refreshed PDF. Tests:
   `tests/test_manual_cmd.py`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "12"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
+  forces rewrite; now "13"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service

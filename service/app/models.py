@@ -49,6 +49,16 @@ class Position(BaseModel):
     profit: float
 
 
+class NewsEvent(BaseModel):
+    """One upcoming high-importance USD calendar event, as the EA sees it.
+    `in_s` is RELATIVE seconds until the event (computed EA-side from
+    TimeCurrent), deliberately not an absolute timestamp: the MT5 server
+    clock and the service clock disagree by hours, and relative time is
+    immune to that."""
+    in_s: int
+    name: str = ""
+
+
 class HeartbeatRequest(BaseModel):
     equity: float
     balance: float
@@ -76,6 +86,11 @@ class HeartbeatRequest(BaseModel):
     # Defaults keep old EA payloads valid (fail-open).
     daily_loss_pct: float = 0.0
     brake_reset: bool = False
+    # Upcoming high-impact USD events (next 24 h) + the EA's blackout
+    # radius, for /news and the pre-blackout heads-up. Defaults keep old
+    # EA payloads valid (fail-open).
+    news: list[NewsEvent] = []
+    news_blackout_min: int = 30
 
 
 class HeartbeatResponse(BaseModel):

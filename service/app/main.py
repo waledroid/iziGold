@@ -204,6 +204,49 @@ async def _mirror(app, text: str | None = None,
 _CHART_HB_FRESH_S = 60
 
 
+async def _news_headsup(app, hb) -> None:
+    """Send ONE Telegram notice per high-impact USD event as it enters the
+    notice window: (blackout radius + 5) minutes before the event. Latched
+    in kv "news_alerted" keyed by the event's absolute minute — `in_s` is
+    relative and jitters a few seconds between heartbeats, but now+in_s
+    rounded to the minute is stable. Old keys are pruned as they pass."""
+    events = [e for e in getattr(hb, "news", []) if e.in_s > 0]
+    if not events:
+        return
+    tg = getattr(app.state, "telegram", None)
+    if tg is None:
+        return
+    radius = getattr(hb, "news_blackout_min", 30)
+    window_s = (radius + 5) * 60
+    now = time.time()
+    db = app.state.db
+    try:
+        alerted = set(json.loads(db.get_kv("news_alerted") or "[]"))
+    except ValueError:
+        alerted = set()
+    now_min = int(now // 60)
+    alerted = {k for k in alerted if k >= now_min - 60}   # prune passed events
+    fired = False
+    for e in events:
+        if e.in_s > window_s:
+            continue
+        key = int((now + e.in_s) // 60)
+        if key in alerted:
+            continue
+        alerted.add(key)
+        fired = True
+        name = e.name or "high-impact USD event"
+        text = (f"⏳ News blackout ahead: {name} in "
+                f"{e.in_s // 60}m — entries frozen ±{radius}m around it.")
+        try:
+            await asyncio.to_thread(tg.send_message, text)
+        except Exception:
+            pass
+        await _mirror(app, text=text)
+    if fired or alerted != set():
+        db.set_kv("news_alerted", json.dumps(sorted(alerted)))
+
+
 # Operator manual shipped by /manual. Checked into the repo (regenerate
 # with scripts/build_manual.py after content changes); resolved relative to
 # this file so the service can run from any CWD.
@@ -649,6 +692,14 @@ async def heartbeat(hb: HeartbeatRequest):
             except Exception:
                 pass
             await _mirror(app, text=text)
+    # Pre-blackout heads-up: one-shot notice as each high-impact USD event
+    # enters the (radius + 5 min) window, so a blackout never surprises the
+    # owner mid-setup. Fail-open — a notify hiccup must never touch the
+    # heartbeat response the EA's commands ride on.
+    try:
+        await _news_headsup(app, hb)
+    except Exception:
+        pass
     if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
         app.state.pending_switch = None
     # The sweep and the pop are SQLite writes on the slow /mnt/c mount; run

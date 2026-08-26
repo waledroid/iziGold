@@ -371,7 +371,8 @@ void OnTimer()
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
                                   mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce, ema200Enforce,
-                                  g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday());
+                                  g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday(),
+                                  g_news.UpcomingJson(), NewsBlackoutMin);
    // Push the /agree settings to every strategy (shadows included, so their
    // logged verdicts match what the active one would do).
    if(htfEnforce != "")

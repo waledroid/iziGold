@@ -643,6 +643,31 @@ def _cmd_channel(app, parts, redacted):
     return _format_channel(app, parts[1:])
 
 
+def _fmt_countdown(in_s: int) -> str:
+    h, m = in_s // 3600, (in_s % 3600) // 60
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def _cmd_news(app, parts, redacted):
+    """Upcoming high-impact USD calendar events (next 24 h), straight from
+    the EA's own MT5 calendar feed — the same data the news guard blocks
+    on, so this list and the guard can never disagree. Rendered as
+    countdowns because event times arrive relative (see NewsEvent)."""
+    latest = app.state.latest_heartbeat
+    if latest is None or time.time() - latest[0] > _EA_CONNECTED_MAX_AGE_S:
+        return "EA not connected — no calendar feed"
+    hb = latest[1]
+    events = [e for e in getattr(hb, "news", []) if e.in_s > 0]
+    radius = getattr(hb, "news_blackout_min", 30)
+    if not events:
+        return ("no high-impact USD events in the next 24 h — "
+                "no news blackouts ahead")
+    lines = [f"📰 High-impact USD events (entries frozen ±{radius}m around each):"]
+    for e in sorted(events, key=lambda e: e.in_s):
+        lines.append(f"• in {_fmt_countdown(e.in_s)} — {e.name}")
+    return "\n".join(lines)
+
+
 def _manual_entry_guard(app, db) -> str | None:
     """Why a manual entry can't be queued right now, or None when it can.
     Shared by /trade and the mtrade: callback -- old buttons stay tappable
@@ -700,6 +725,7 @@ COMMANDS: dict[str, CommandSpec] = {
                           "and EMA-200 (M5+M15) enforce or check only"),
     "/trade": CommandSpec(_cmd_trade, "manual entry — tap 🔵 BUY or 🔴 SELL"),
     "/config": CommandSpec(_cmd_config, "current settings"),
+    "/news": CommandSpec(_cmd_news, "upcoming high-impact USD events (blackout windows)"),
     "/stats": CommandSpec(_cmd_stats, "per-strategy signal hit-rates"),
     "/history": CommandSpec(_cmd_history, "last 10 trade events"),
     "/channel": CommandSpec(_cmd_channel, "link/unlink the broadcast channel"),
@@ -719,7 +745,7 @@ _PINNED_EXTRA: dict[str, list[str]] = {
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "12"
+PINNED_HELP_VERSION = "13"
 
 
 def format_pinned_help() -> str:

@@ -25,6 +25,19 @@ private:
    datetime m_lastRefresh;      // 0 = never queried
    datetime m_lastWarn;
    datetime m_eventTimes[];     // cached HIGH-importance USD event times
+   datetime m_lastUpcoming;     // 0 = never queried (UpcomingJson cache)
+   datetime m_upTimes[];        // cached upcoming event times (next 24 h)
+   string   m_upNames[];        // ...and their JSON-escaped names
+   string   m_upcomingJson;
+
+   // Minimal JSON string escape for calendar event names (quotes and
+   // backslashes; names are plain ASCII in practice).
+   string JsonEscape(string s)
+     {
+      StringReplace(s, "\\", "\\\\");
+      StringReplace(s, "\"", "\\\"");
+      return s;
+     }
 
    void WarnThrottled(string msg)
      {
@@ -80,6 +93,60 @@ public:
       m_lastRefresh = 0;
       m_lastWarn = 0;
       ArrayResize(m_eventTimes, 0);
+      m_lastUpcoming = 0;
+      m_upcomingJson = "";
+      ArrayResize(m_upTimes, 0);
+      ArrayResize(m_upNames, 0);
+     }
+
+   // Upcoming high-importance USD events over the next 24 h as a JSON array
+   // of {"in_s":<relative seconds>,"name":"..."} for the heartbeat, so the
+   // service can render /news and pre-blackout notices from the SAME feed
+   // the guard blocks on. Relative seconds on purpose: the MT5 server clock
+   // and the service clock disagree by hours; "seconds from now" is immune.
+   // Own 10-minute cache (Refresh() only covers the ±blackout window).
+   // Fail-open like everything here: any calendar failure returns "[]".
+   string UpcomingJson()
+     {
+      if(!m_enabled) return "[]";
+      datetime now = TimeCurrent();
+      // Event TIMES are cached for 10 min; in_s is recomputed on every
+      // call from the cached times, so countdowns never go stale.
+      if(m_lastUpcoming == 0 || now - m_lastUpcoming >= 600)
+        {
+         m_lastUpcoming = now;
+         ArrayResize(m_upTimes, 0);
+         ArrayResize(m_upNames, 0);
+         MqlCalendarValue values[];
+         ResetLastError();
+         int total = CalendarValueHistory(values, now, now + 24 * 3600);
+         if(total > 0)
+            for(int i = 0; i < total && ArraySize(m_upTimes) < 8; i++)
+              {
+               MqlCalendarEvent ev;
+               if(!CalendarEventById(values[i].event_id, ev)) continue;
+               if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+               MqlCalendarCountry country;
+               if(!CalendarCountryById(ev.country_id, country)) continue;
+               if(country.currency != "USD") continue;
+               int n = ArraySize(m_upTimes);
+               ArrayResize(m_upTimes, n + 1);
+               ArrayResize(m_upNames, n + 1);
+               m_upTimes[n] = values[i].time;
+               m_upNames[n] = JsonEscape(ev.name);
+              }
+        }
+      string json = "[";
+      for(int i = 0; i < ArraySize(m_upTimes); i++)
+        {
+         long in_s = (long)(m_upTimes[i] - now);
+         if(in_s <= 0) continue;
+         if(StringLen(json) > 1) json += ",";
+         json += "{\"in_s\":" + (string)in_s + ",\"name\":\"" + m_upNames[i] + "\"}";
+        }
+      json += "]";
+      m_upcomingJson = json;
+      return json;
      }
 
    // True when a cached high-importance USD event sits within ±blackout of

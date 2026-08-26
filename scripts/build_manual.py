@@ -113,6 +113,7 @@ PAGES = [
         ("code", "/mode     execution AUTO/MANUAL, entry ADR/FIXED, lane M5/M15"),
         ("code", "/agree    confirmation modules: higher-TF + EMA-200 agreement"),
         ("code", "/trade    manual entry: [BUY] / [SELL] buttons, tap = confirm"),
+        ("code", "/news     upcoming high-impact USD events + blackout windows"),
         ("code", "/config   current settings incl. entry mode"),
         ("code", "/chart    live chart (mini app) or a rendered snapshot"),
         ("code", "/stats    per-strategy signal hit-rates"),
@@ -143,7 +144,10 @@ PAGES = [
                  "tap degrades to a polite refusal, never a wrong trade."),
         ("gap", ""),
         ("h2", "Quick diagnosis"),
-        ("body", "EA shows disconnected: is MT5 open, the EA on the chart (smiley icon), "
+        ("body", "Entries are also frozen for 30 minutes either side of high-impact USD "
+                 "news (the guard alerts you ~35 minutes ahead; /news lists the day's "
+                 "windows). Exits are never blocked. "
+                 "EA shows disconnected: is MT5 open, the EA on the chart (smiley icon), "
                  "Algo Trading enabled, and the WebRequest allowlist set? "
                  "Indicator lines missing after switching timeframes: they repaint on "
                  "the first tick; if the market is closed they return with the next tick. "
