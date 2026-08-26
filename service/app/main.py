@@ -134,6 +134,12 @@ async def telegram_poller(app: FastAPI):
                         except Exception:
                             pass  # fail-open: /chart must never kill the poller
                         continue
+                    if text.strip().split()[0].lower() == "/manual":
+                        try:
+                            await _send_manual(app)
+                        except Exception:
+                            pass  # fail-open: /manual must never kill the poller
+                        continue
                     reply = handle_command(text, app)
                     if isinstance(reply, tuple):
                         await asyncio.to_thread(app.state.telegram.send_message,
@@ -196,6 +202,28 @@ async def _mirror(app, text: str | None = None,
 
 
 _CHART_HB_FRESH_S = 60
+
+
+# Operator manual shipped by /manual. Checked into the repo (regenerate
+# with scripts/build_manual.py after content changes); resolved relative to
+# this file so the service can run from any CWD.
+_MANUAL_PDF = Path(__file__).resolve().parents[2] / "docs" / "izi_manual.pdf"
+
+
+async def _send_manual(app) -> None:
+    """/manual: send docs/izi_manual.pdf into the owner chat as a document.
+    Owner-only (no channel mirror — it's an operator runbook, not trade
+    activity). Missing file degrades to a text reply; never raises into
+    the poller (the caller also guards, like /chart)."""
+    tg = app.state.telegram
+    if not _MANUAL_PDF.is_file():
+        await asyncio.to_thread(
+            tg.send_message,
+            "manual not found — run scripts/build_manual.py and restart")
+        return
+    data = _MANUAL_PDF.read_bytes()
+    await asyncio.to_thread(
+        tg.send_document, "izi — operator manual", data, "izi_manual.pdf")
 
 
 async def _send_chart_snapshot(app) -> None:

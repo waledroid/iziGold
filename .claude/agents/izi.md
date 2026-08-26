@@ -444,9 +444,20 @@ Quiet by default: only proposals, executions, failures, command replies.
   callback itself is unchanged), `/config` (now also echoes
   `entry mode: adr|fixed`), `/chart`,
   `/stats`, `/history`, `/channel` (link status / `/channel unlink`),
-  `/trade` (see below).
+  `/trade` (see below), `/manual` (2026-08-26: sends `docs/izi_manual.pdf`
+  — the 5-page operator quick-reference — into the owner chat via
+  `TelegramClient.send_document` (sendDocument multipart, same shape as
+  sendPhoto). Special-cased in the poller BEFORE `handle_command`, exactly
+  like /chart (needs a file upload, not a text reply), so it gets a
+  `_PINNED_EXTRA` help line instead of a COMMANDS entry. Owner-only, no
+  channel mirror. Missing file → text reply "run scripts/build_manual.py".
+  Regenerate the PDF with `service/.venv/bin/python3
+  scripts/build_manual.py` (matplotlib PdfPages, emoji-free content lives
+  in the script's PAGES list) after any ops/commands change worth
+  documenting, and commit the refreshed PDF. Tests:
+  `tests/test_manual_cmd.py`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "11"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
+  forces rewrite; now "12"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service

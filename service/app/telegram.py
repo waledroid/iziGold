@@ -216,6 +216,12 @@ class TelegramClient:
             "sendPhoto", payload,
             {"photo": ("chart.png", png_bytes, "image/png")})
 
+    def send_document(self, caption: str, file_bytes: bytes, filename: str):
+        # /manual: same multipart shape as sendPhoto, different field name.
+        return self.transport(
+            "sendDocument", {"chat_id": self.chat_id, "caption": caption},
+            {"document": (filename, file_bytes, "application/pdf")})
+
     def edit_message(self, message_id, text: str, reply_markup: dict | None = None):
         payload = {"chat_id": self.chat_id, "message_id": message_id, "text": text}
         if reply_markup is not None:
@@ -705,6 +711,7 @@ COMMANDS: dict[str, CommandSpec] = {
 # COMMANDS itself.
 _PINNED_EXTRA: dict[str, list[str]] = {
     "/config": ["/chart — open the live chart"],
+    "/help": ["/manual — download the operator manual (PDF)"],
 }
 
 
@@ -712,7 +719,7 @@ _PINNED_EXTRA: dict[str, list[str]] = {
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "11"
+PINNED_HELP_VERSION = "12"
 
 
 def format_pinned_help() -> str:
