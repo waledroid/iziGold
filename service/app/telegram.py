@@ -100,6 +100,15 @@ def BRAKE_RESET_KB():
     return kb([[("🔓 Reset brake for today", "brakereset:1")]])
 
 
+def TARGET_KB():
+    """Keyboard on the FIXED-ride target alert: exit the basket, or ratchet
+    the stop to the current price to lock the gain and keep riding. The
+    /proposal-result edit re-attaches this same keyboard, so [Move SL]
+    stays reusable as the ride extends."""
+    return kb([[("🔴 EXIT — close trade", "exitnow:0")],
+               [("🔒 Move SL to here", "movesl:1")]])
+
+
 def TRADE_KB():
     """Keyboard on the /trade prompt: one big button per row so the two
     directions can't be fat-fingered. The tap IS the confirmation."""
@@ -929,6 +938,30 @@ def _cb_mtrade(parts, app, db, message_id):
             f"{parts[1]} queued")
 
 
+def _cb_movesl(parts, app, db, message_id):
+    # [🔒 Move SL to here] on the target alert: queue a move_sl command on
+    # the same rails as every remote command. The EA does the actual move
+    # (authoritative, tighten-only, broker stops-level aware); these are UX
+    # pre-checks for the stale-button case — the alert message and its
+    # buttons stay tappable forever.
+    latest = app.state.latest_heartbeat
+    if latest is None or time.time() - latest[0] > _EA_CONNECTED_MAX_AGE_S:
+        return (None, "EA not connected — can't move the stop")
+    if not latest[1].positions:
+        return (None, "nothing open — stop can't be moved")
+    for st in ("pending", "approved", "dispatched"):
+        if db.pending_proposal(kind="move_sl", status=st) is not None:
+            return (None, f"move already {st}")
+    direction = latest[1].positions[0].direction
+    price = getattr(latest[1], "bar_c", 0.0) or 0.0
+    pid = db.create_proposal("move_sl", direction,
+                             latest[1].active_strategy, price, None)
+    if message_id:
+        db.set_proposal_message(pid, message_id)
+    db.set_proposal_status(pid, "approved", expected="pending")
+    return (None, "moving SL on next heartbeat…")
+
+
 def _cb_brakereset(parts, app, db, message_id):
     # [Reset brake for today] on a daily-loss-brake notice: queue an
     # owner-approved reset_brake command (same rails as close_all:
@@ -981,6 +1014,7 @@ CALLBACKS = {
     "prop": _cb_prop,
     "exitnow": _cb_exitnow,
     "mtrade": _cb_mtrade,
+    "movesl": _cb_movesl,
     "brakereset": _cb_brakereset,
     "chan": _cb_chan,
 }

@@ -269,6 +269,54 @@ public:
       return SIGNAL_NONE;
      }
 
+   // Owner tapped [🔒 Move SL to here] (Telegram movesl: -> pre-approved
+   // proposal -> "move_sl" command): ratchet every own leg's stop to the
+   // current market price plus the broker's minimum stop distance, locking
+   // in whatever the basket has gained at tap time. Tighten-only — a leg
+   // whose stop already sits inside the new level is left alone, so a
+   // repeat tap can only ever lock MORE, never give back. Returns true when
+   // at least one leg moved; `detail` carries the human-readable outcome
+   // either way (rendered verbatim into the Telegram edit).
+   bool MoveStopsTight(string &detail)
+     {
+      long ptype = OwnType();
+      if(ptype < 0) { detail = "nothing open"; return false; }
+      bool isBuy = (ptype == POSITION_TYPE_BUY);
+      // Broker floor for stop distance; 30-point ($0.30) floor keeps the
+      // request valid on brokers reporting a 0 stops level.
+      double bufPts = MathMax((double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL), 30.0);
+      double px = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                        : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double newSl = NormalizeDouble(isBuy ? px - bufPts * _Point
+                                           : px + bufPts * _Point, _Digits);
+      int total = 0, moved = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
+            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         total++;
+         double curSl = PositionGetDouble(POSITION_SL);
+         bool tightens = (curSl == 0) || (isBuy ? newSl > curSl : newSl < curSl);
+         if(!tightens) continue;
+         if(m_trade.PositionModify(tk, newSl, PositionGetDouble(POSITION_TP)))
+            moved++;
+         else
+            Print("TradeManager: move_sl failed #", tk,
+                  " sl ", DoubleToString(newSl, _Digits),
+                  " retcode ", m_trade.ResultRetcode());
+        }
+      if(moved > 0)
+        {
+         detail = StringFormat("SL → %s (%d of %d legs)",
+                               DoubleToString(newSl, _Digits), moved, total);
+         return true;
+        }
+      detail = (total > 0) ? "SL already tighter than current price"
+                           : "nothing open";
+      return false;
+     }
+
    void CloseAll(string reason)
      {
       // Capture the basket direction/size/profit BEFORE closing — after the

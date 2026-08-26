@@ -37,8 +37,8 @@ public:
    virtual void OnTargetAlert(double basketProfit)
      {
       m_ui.PostNotify(StringFormat(
-         "🎯 FIXED ride hit the ADR target: +$%.2f. Exit now, or ignore to let it ride until the trend turns.",
-         basketProfit), "exit");
+         "🎯 FIXED ride hit the ADR target: +$%.2f. Exit now, lock it in with Move SL, or ignore to let it ride until the trend turns.",
+         basketProfit), "target");
      }
 
    virtual void OnTradeEvent(string event, string dir, double lots, double price,

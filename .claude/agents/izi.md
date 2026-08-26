@@ -245,15 +245,43 @@ Data collection only; no UI yet.
   **FIXED-mode target alert** (2026-08-14): the ride still WATCHES the ADR
   profit-target level (+`ProfitTargetPct`% of cycle balance). The FIRST
   time a FIXED basket crosses it, `Manage()` fires ONE Telegram notice via
-  `CUiSink::OnTargetAlert` → `PostNotify(text, exitButton=true)` →
-  `/notify {exit_button: true}` → the message carries the existing
-  `exitnow:` EXIT button (only attached while a position is open; channel
-  mirror stays text-only). Tapping = the normal pre-approved close_all
-  ("remote exit"); ignoring = the ride continues. Once per basket:
+  `CUiSink::OnTargetAlert` → `PostNotify(text, "target")` → `/notify
+  {button:"target"}` → the message carries TWO buttons (`TARGET_KB()`,
+  2026-08-26; only attached while a position is open; channel mirror stays
+  text-only): the existing `exitnow:` EXIT button, and **[🔒 Move SL to
+  here]** (`movesl:` callback). Tapping EXIT = the normal pre-approved
+  close_all ("remote exit"); tapping Move SL = pre-approved proposal kind
+  `move_sl` → heartbeat `{"cmd":"move_sl"}` → `CTradeManager::
+  MoveStopsTight`: every own leg's stop ratchets to current market price ±
+  max(broker `SYMBOL_TRADE_STOPS_LEVEL`, 30 pts = $0.30) — TIGHTEN-ONLY
+  (a leg whose stop already sits inside the new level is skipped; flat →
+  "nothing open"; no leg improved → "SL already tighter than current
+  price"). `/proposal-result` edits the tapped alert `🔒 SL → 4623.80 (1
+  of 1 legs)` and on success RE-ATTACHES `TARGET_KB()`, so [Move SL] is
+  reusable as the ride extends — each later tap locks more; the
+  movesl:/exitnow: guards (fresh heartbeat ≤30 s, positions open, one
+  move_sl in flight at a time) make stale taps safe. No live-account gate
+  (a stop move opens no order), same as close_all/reset_brake.
+  Ignoring everything = the ride continues. Once per basket:
   `XAU_TP_ALERTED_<login>_<symbol>` global (reset to 0 on every basket
   open, restart-safe; flag latched BEFORE the notify so a delivery hiccup
   can't re-alert every bar — fail-open, one shot delivered or not). ADR
   behavior untouched (alert code lives inside the FIXED early-out branch).
+  Tests: `tests/test_move_sl.py`.
+
+  **Chart repaint on timeframe switch** (bug fixed 2026-08-26): the painted
+  strategy lines are chart objects; every chart-TF switch runs
+  `OnDeinit(REASON_CHARTCHANGE)` → `ClearPaint()` deletes them all, and the
+  rebuilt strategies repaint history in their first `Evaluate()` warm-up
+  replay. But `g_lastBar` (module global) SURVIVES a TF switch, so OnTick's
+  new-bar gate deferred that first Evaluate to the NEXT trading-TF bar +
+  tick — up to 5 min (M5 lane) of blank chart, indefinite on a quiet
+  market, restarting on every further flip ("lines disappear sometimes").
+  Fix: `OnInit` resets `g_lastBar = 0`, so the first tick after ANY re-init
+  repaints immediately — identical to the recompile/restart path, whose
+  catch-up guards + `LastLiveKey` global already prevent double-fires. One
+  residual: with NO tick arriving (weekend/closed market), lines stay
+  absent until the first tick.
 
   **Switching is next-trade-only, and per-basket mode is sticky**: Telegram
   `tmode:adr`/`tmode:fixed` → `db.set_entry_mode` (kv `entry_mode`,

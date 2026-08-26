@@ -259,6 +259,14 @@ int OnInit()
    // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
    // otherwise the live box would never receive its final OnClose.
    g_tradeBoxes.RecoverFromPositions(MagicNumber);
+   // Repaint fix (2026-08-26): g_lastBar survives a chart-timeframe switch
+   // (MQL5 keeps module globals on REASON_CHARTCHANGE), so after OnDeinit
+   // wiped the painted lines, OnTick's new-bar gate would defer the
+   // warm-up repaint until the NEXT trading-TF bar — up to minutes of
+   // blank chart. Resetting the latch makes the first tick after ANY
+   // re-init run ProcessBar (warm-up replay -> full repaint), identical to
+   // the already-guarded recompile/restart path.
+   g_lastBar = 0;
    g_atrHandle = iATR(_Symbol, TradeTimeframe, 14);
    EventSetTimer(HeartbeatSec);
    if(Period() != TradeTimeframe)
@@ -478,6 +486,17 @@ void OnTimer()
             StringFormat("Brake reset for today — re-arms after another %.1f%%",
                          g_risk.MaxDailyLossPct()));
         }
+     }
+   else if(cmd == "move_sl")
+     {
+      // Owner tapped [🔒 Move SL to here] on the target alert. Same guard
+      // level as close_all: no live-account check — a stop move opens no
+      // order, only tightens protection on an existing basket. Tighten-only
+      // and stops-level handling live in TradeManager.MoveStopsTight; a
+      // stale tap on a flat account reports "nothing open" honestly.
+      string detail = "";
+      bool ok = g_trades.MoveStopsTight(detail);
+      g_ui.PostProposalResult(cmdId, ok, detail);
      }
    else if(cmd == "close_all")
      {

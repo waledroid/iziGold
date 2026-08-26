@@ -25,7 +25,7 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
 from app.regime import classify_regime, last_atr
 from app.render import render_snapshot_chart
 from app.telegram import (BRAKE_RESET_KB, EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB,
-                          TelegramClient,
+                          TARGET_KB, TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
                           handle_command, pinned_tick, set_active_client)
 from app.ticker import TickerState, load_ticker_state, ticker_tick
@@ -642,6 +642,8 @@ async def heartbeat(hb: HeartbeatRequest):
                        "direction": cmd_row["direction"]}
         elif cmd_row["kind"] == "reset_brake":
             command = {"cmd": "reset_brake", "proposal_id": cmd_row["id"]}
+        elif cmd_row["kind"] == "move_sl":
+            command = {"cmd": "move_sl", "proposal_id": cmd_row["id"]}
         else:
             command = {"cmd": "close_all", "proposal_id": cmd_row["id"]}
     return HeartbeatResponse(
@@ -677,6 +679,24 @@ async def proposal_result(res: ProposalResultRequest):
             try:
                 if row["tg_message_id"] is not None:
                     await asyncio.to_thread(tg.edit_message, row["tg_message_id"], text)
+                else:
+                    await asyncio.to_thread(tg.send_message, text)
+            except Exception:
+                pass
+            await _mirror(app, text=text)
+        return {"ok": True}
+    if row["kind"] == "move_sl":
+        # SL ratchet: edit the tapped alert with the outcome and — on
+        # success — RE-ATTACH the target keyboard, so [Move SL] stays
+        # reusable as the ride extends (the movesl:/exitnow: guards make a
+        # stale tap safe). Failure edits plain text; messageless → fresh.
+        text = f"🔒 {res.detail}" if res.ok else f"🚫 SL move failed: {res.detail}"
+        if tg is not None:
+            try:
+                if row["tg_message_id"] is not None:
+                    await asyncio.to_thread(
+                        tg.edit_message, row["tg_message_id"], text,
+                        TARGET_KB() if res.ok else None)
                 else:
                     await asyncio.to_thread(tg.send_message, text)
             except Exception:
@@ -727,6 +747,13 @@ async def notify(req: NotifyRequest):
             latest = app.state.latest_heartbeat
             if latest is not None and latest[1].positions:
                 markup = EXIT_NOW_KB(0)
+        elif button == "target":
+            # FIXED-ride target alert: [EXIT] + [🔒 Move SL to here]. Same
+            # flat-account degrade rule as "exit" — a late alert on a flat
+            # account becomes a plain notice.
+            latest = app.state.latest_heartbeat
+            if latest is not None and latest[1].positions:
+                markup = TARGET_KB()
         elif button == "reset_brake":
             # Daily-loss-brake 70% / TRIPPED notice: owner-only [Reset
             # brake for today] (callback brakereset:) — channel stays text-only.
