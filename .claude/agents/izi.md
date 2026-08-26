@@ -467,10 +467,11 @@ Quiet by default: only proposals, executions, failures, command replies.
   `_PINNED_EXTRA` help line instead of a COMMANDS entry. Owner-only, no
   channel mirror. Missing file → text reply "run scripts/build_manual.py".
   Regenerate the PDF with `service/.venv/bin/python3
-  scripts/build_manual.py` (matplotlib PdfPages, emoji-free content lives
-  in the script's PAGES list) after any ops/commands change worth
-  documenting, and commit the refreshed PDF. Tests:
-  `tests/test_manual_cmd.py`).
+  scripts/build_manual.py` (reportlab since the owner's 2026-08-26 visual
+  redesign — navy/gold "institutional" theme, tables and cards; reportlab
+  is in requirements.txt; content lives in the script's section builders,
+  keep it emoji-free) after any ops/commands change worth documenting,
+  and commit the refreshed PDF. Tests: `tests/test_manual_cmd.py`).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
   forces rewrite; now "13"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
