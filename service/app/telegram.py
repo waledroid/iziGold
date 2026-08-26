@@ -100,6 +100,12 @@ def BRAKE_RESET_KB():
     return kb([[("🔓 Reset brake for today", "brakereset:1")]])
 
 
+def TRADE_KB():
+    """Keyboard on the /trade prompt: one big button per row so the two
+    directions can't be fat-fingered. The tap IS the confirmation."""
+    return kb([[("🔵 BUY", "mtrade:BUY")], [("🔴 SELL", "mtrade:SELL")]])
+
+
 # The single "live" TelegramClient, kept in sync by app.main._apply_telegram
 # whenever the effective Telegram credentials change (profile or .env).
 # send_alert (still unit-tested directly, but no longer called from the
@@ -622,6 +628,40 @@ def _cmd_channel(app, parts, redacted):
     return _format_channel(app, parts[1:])
 
 
+def _manual_entry_guard(app, db) -> str | None:
+    """Why a manual entry can't be queued right now, or None when it can.
+    Shared by /trade and the mtrade: callback -- old buttons stay tappable
+    forever, so the tap must re-check everything the command checked. The
+    EA still re-runs its own gates (AllowLiveTrading, CanEnter, brake,
+    kill switch) authoritatively; these are UX pre-checks, and the
+    in-flight check doubles as clash prevention with the strategy's own
+    proposals (any live 'entry' blocks a manual one)."""
+    latest = app.state.latest_heartbeat
+    if latest is None or time.time() - latest[0] > _EA_CONNECTED_MAX_AGE_S:
+        return "EA not connected — can't open a trade"
+    if latest[1].positions:
+        p = latest[1].positions[0]
+        return f"already in a trade ({p.direction} {p.lots:g}) — exit it first"
+    for st in ("pending", "approved", "dispatched"):
+        if db.pending_proposal(kind="entry", status=st) is not None:
+            return f"entry already {st}"
+    return None
+
+
+def _cmd_trade(app, parts, redacted):
+    why = _manual_entry_guard(app, app.state.db)
+    if why:
+        return why
+    _, hb = app.state.latest_heartbeat
+    price = getattr(hb, "bar_c", 0.0) or 0.0
+    mode = (getattr(hb, "entry_mode", "") or "?").upper()
+    text = (f"📥 Manual entry — XAUUSD @ {price:.2f}\n"
+            f"{hb.active_strategy} · {mode} mode\n"
+            "Tap a direction — opens on the next heartbeat, then managed "
+            "like any EA trade (stop, exits, alerts).")
+    return (text, TRADE_KB())
+
+
 class CommandSpec:
     """handler(app, parts, redacted) -> reply; arg_hint/help build the pinned
     help line as f"/{cmd}{arg_hint} — {help}"."""
@@ -643,6 +683,7 @@ COMMANDS: dict[str, CommandSpec] = {
     "/agree": CommandSpec(_cmd_agree,
                           "what confirms a trade: higher-timeframe (M5) enforce on M15/M30/H1, "
                           "and EMA-200 (M5+M15) enforce or check only"),
+    "/trade": CommandSpec(_cmd_trade, "manual entry — tap 🔵 BUY or 🔴 SELL"),
     "/config": CommandSpec(_cmd_config, "current settings"),
     "/stats": CommandSpec(_cmd_stats, "per-strategy signal hit-rates"),
     "/history": CommandSpec(_cmd_history, "last 10 trade events"),
@@ -662,7 +703,7 @@ _PINNED_EXTRA: dict[str, list[str]] = {
 # this against the kv-stored "pinned_help_version" to decide whether the
 # pinned message needs rewriting -- an unrelated deploy/restart with no
 # content change must not re-edit (or even hit Telegram) every tick.
-PINNED_HELP_VERSION = "10"
+PINNED_HELP_VERSION = "11"
 
 
 def format_pinned_help() -> str:
@@ -867,6 +908,27 @@ def _cb_exitnow(parts, app, db, message_id):
     return (None, "unknown")
 
 
+def _cb_mtrade(parts, app, db, message_id):
+    # /trade direction button: the tap is the confirmation. Same rails as
+    # every remote command (pre-approved 'entry' proposal -> next heartbeat
+    # -> EA 'execute' with all risk gates -> /proposal-result edits this
+    # message with the outcome). Editing the tapped message also drops the
+    # keyboard, so a queued entry can't be double-tapped.
+    if len(parts) != 2 or parts[1] not in ("BUY", "SELL"):
+        return (None, "unknown")
+    why = _manual_entry_guard(app, db)
+    if why:
+        return (None, why)
+    _, hb = app.state.latest_heartbeat
+    price = getattr(hb, "bar_c", 0.0) or 0.0
+    pid = db.create_proposal("entry", parts[1], hb.active_strategy, price, None)
+    if message_id:
+        db.set_proposal_message(pid, message_id)
+    db.set_proposal_status(pid, "approved", expected="pending")
+    return (f"📥 {parts[1]} @ {price:.2f} — 👍 queued, opening on next heartbeat…",
+            f"{parts[1]} queued")
+
+
 def _cb_brakereset(parts, app, db, message_id):
     # [Reset brake for today] on a daily-loss-brake notice: queue an
     # owner-approved reset_brake command (same rails as close_all:
@@ -918,6 +980,7 @@ CALLBACKS = {
     "strat": _cb_strat,
     "prop": _cb_prop,
     "exitnow": _cb_exitnow,
+    "mtrade": _cb_mtrade,
     "brakereset": _cb_brakereset,
     "chan": _cb_chan,
 }

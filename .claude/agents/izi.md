@@ -415,9 +415,10 @@ Quiet by default: only proposals, executions, failures, command replies.
   these buttons 2026-08-26 and no longer dispatch, though the `strat:`
   callback itself is unchanged), `/config` (now also echoes
   `entry mode: adr|fixed`), `/chart`,
-  `/stats`, `/history`, `/channel` (link status / `/channel unlink`).
+  `/stats`, `/history`, `/channel` (link status / `/channel unlink`),
+  `/trade` (see below).
   Pinned message = static command reference (`PINNED_HELP_VERSION` bump
-  forces rewrite; now "10"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
+  forces rewrite; now "11"; full command list incl. /chart, /stats, /history). The version-bump edit also re-pins (a manually
   unpinned message otherwise stays unpinned forever once the version
   matches); if the pin is lost with a matching version, clear the
   `pinned_message_id` kv row — next `pinned_tick` (≤300 s or service
@@ -461,6 +462,28 @@ Quiet by default: only proposals, executions, failures, command replies.
   proposal (`🔓 brake reset — ⌛ expired…`). `NotifyRequest.button` ("" |
   "exit" | "reset_brake") generalizes the older `exit_button` bool, which is
   kept for compatibility (the EA sends both for "exit").
+- **`/trade` manual entry** (2026-08-26, `_cmd_trade` + `mtrade:` callback,
+  `tests/test_trade_command.py`): owner-originated entries with ZERO EA
+  changes — the prompt shows `📥 Manual entry — XAUUSD @ <bar_c>` plus
+  strategy/entry-mode and two one-per-row buttons 🔵 BUY / 🔴 SELL
+  (`TRADE_KB()`, `mtrade:BUY|SELL`); the tap IS the confirmation. It rides
+  the SAME rails as a MANUAL-mode 🟢 Take: pre-approved proposal
+  kind `entry` (price = heartbeat forming-bar `bar_c`, strategy = active,
+  tapped message id stored) → next heartbeat `{"cmd":"execute",
+  "direction":…}` → EA runs ALL its gates (AllowLiveTrading, CanEnter,
+  sizing per current ADR/FIXED entry mode, strategy `StopPrice`) →
+  `/proposal-result` edits the tapped message `📥 BUY @ … — ✅ executed /
+  🚫 blocked: <detail>` (the edit also drops the keyboard). Once open it IS
+  an EA basket — stop, exits, alerts, pyramiding rules all per current
+  mode; exit is automatic unless forced. Clash guards (`_manual_entry_guard`,
+  shared by command AND callback because old buttons stay tappable
+  forever): EA heartbeat missing/older than `_EA_CONNECTED_MAX_AGE_S`
+  (30 s) → "EA not connected"; any open position → "already in a trade
+  (DIR lots) — exit it first"; any live `entry` proposal
+  (pending/approved/dispatched — including an untaken strategy proposal)
+  → "entry already <status>". Guards are UX pre-checks only; the EA
+  re-checks authoritatively. Works in AUTO and MANUAL alike (the EA's
+  `execute` path is mode-independent).
 - **Close paths**: proposal buttons; EXIT button on trade-open photos
   (`exitnow:` callback); dashboard `/api/close-all`. All create pre-approved
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
