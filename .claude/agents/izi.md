@@ -34,6 +34,22 @@ account state + `algo_trading` + the forming bar's OHLC (`bar_t`, `bar_o/h/l/c`;
 zeros = absent or CopyRates failure, fail-open); the response carries runtime `mode`
 (auto/manual), pending strategy switch, and at most ONE command.
 
+**Strategy-lane authority (2026-08-27)**: the owner's last explicit lane
+choice (Telegram `strat:` button or dashboard `/api/switch`) persists in kv
+`active_strategy`, and every /heartbeat where the EA reports a DIFFERENT
+active strategy re-sends `switch_to` until it complies (applied at the next
+bar boundary, as always). Why: an EA re-init (recompile auto-reload,
+terminal restart, chart change) resets its lane to the `ActiveStrategy`
+INPUT, and before this the service only held a transient
+`app.state.pending_switch` — a 2026-08-26 recompile silently reverted the
+owner's M15 choice to M5 for a full afternoon of trading. Now a revert
+lasts ≤1 bar and the choice survives service restarts too. Empty/never-set
+kv = the EA input rules (nothing pushed); dashboard "clear" empties the kv,
+returning authority to the EA input deliberately. `pending_switch` is now
+derived per-heartbeat (stored-vs-reported mismatch) purely for the /status
+and /mode "active → pending" display. Tests:
+`tests/test_strategy_authority.py`.
+
 **Spread telemetry** (2026-08-09, ea-scope §3): each 5 s OnTimer tick also
 samples `SYMBOL_SPREAD` into a per-bar accumulator; on each new bar OnTick
 freezes the CLOSED bar's min/avg/max (points) and `/analyze` carries them as

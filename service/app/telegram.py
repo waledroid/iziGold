@@ -906,6 +906,9 @@ def _cb_strat(parts, app, db, message_id):
     if len(parts) > 1:
         sid = parts[1]
         app.state.pending_switch = sid
+        # Persist the choice: the heartbeat re-asserts it after any EA
+        # re-init (which reverts to the ActiveStrategy input otherwise).
+        db.set_kv("active_strategy", sid)
         return (f"Switching to {sid} at next bar.", f"→ {sid}")
     return (None, "unknown")
 

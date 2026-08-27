@@ -700,7 +700,18 @@ async def heartbeat(hb: HeartbeatRequest):
         await _news_headsup(app, hb)
     except Exception:
         pass
-    if app.state.pending_switch and hb.active_strategy == app.state.pending_switch:
+    # Strategy-lane authority (2026-08-27): the owner's last explicit choice
+    # (strat: button / /api/switch) lives in kv "active_strategy" and is
+    # re-asserted on EVERY heartbeat where the EA disagrees. Rationale: an
+    # EA re-init (recompile auto-reload, terminal restart, chart change)
+    # resets its lane to the ActiveStrategy INPUT and used to stay there —
+    # a 2026-08-26 recompile silently flipped the owner's M15 choice back
+    # to M5 for an afternoon. Now a revert survives at most one bar. Empty
+    # kv = owner never chose → the EA input rules, nothing is pushed.
+    stored = app.state.db.get_kv("active_strategy")
+    if stored and hb.active_strategy != stored:
+        app.state.pending_switch = stored
+    else:
         app.state.pending_switch = None
     # The sweep and the pop are SQLite writes on the slow /mnt/c mount; run
     # them in a worker thread so a stalled disk cannot block the event loop
@@ -853,10 +864,12 @@ def ui_switch(body: dict):
     sid = str(body.get("strategy_id", "")).strip()
     if not sid:
         app.state.pending_switch = None
+        app.state.db.set_kv("active_strategy", "")
         return {"pending": None}
     if not _STRATEGY_ID_RE.match(sid):
         raise HTTPException(status_code=400, detail="invalid strategy_id")
     app.state.pending_switch = sid
+    app.state.db.set_kv("active_strategy", sid)
     return {"pending": sid}
 
 
