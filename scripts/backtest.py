@@ -1502,7 +1502,10 @@ def build_run_json(candles, trades, args, res):
         "ind": {
             "ema9": [r2(v) for v in ema(closes, 9)],
             "ema21": [r2(v) for v in ema(closes, 21)],
-            "ema55": [r2(v) for v in ema(closes, 55)],
+            # the TRADING EMA at its actual length (--ema-len aware, so an
+            # M15 run's report draws the 45 it traded, not a phantom 55);
+            # "ema55" stays as the series slot name the report page binds to
+            "ema55": [r2(v) for v in ema(closes, EMA_LEN)],
             "ema200": [r2(v) for v in ema(closes, 200)],
             "ht": {"v": [r2(p[0]) if p else None for p in ht],
                    "trend": [p[1] if p else None for p in ht]},

@@ -32,7 +32,8 @@ STRATEGIES = {
                                    "--stop-buffer", "0.75"]},
     "halftrend_m15_v1": {"label": "HalfTrend M15",
                          "flags": ["--tf", "M15", "--confirm", "1",
-                                   "--stop-buffer", "1.75"]},
+                                   "--stop-buffer", "1.75",
+                                   "--ema-len", "45"]},
 }
 
 _busy = threading.Lock()

@@ -153,6 +153,7 @@ function runScenario(runFixture, opts) {
   const wrapEl = { getBoundingClientRect: () => WRAP_RECT };
   const elements = {
     title: { textContent: '' },
+    'legend-trade-ema': { textContent: '' },
     stats: { innerHTML: '' },
     warnbox: { innerHTML: '' },
     caveats: { textContent: '' },

@@ -349,7 +349,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     <div class="legend-row"><span class="legend-swatch legend-ht"></span>HalfTrend</div>
     <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 9</div>
     <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 21</div>
-    <div class="legend-row"><span class="legend-swatch" style="background:#f5c542"></span>EMA 55</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#f5c542"></span><span id="legend-trade-ema">EMA 55</span></div>
     <div class="legend-row"><span class="legend-swatch" style="background:mediumpurple"></span>EMA 200</div>
   </div>
   <div id="posCard"></div>
@@ -739,10 +739,18 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       });
   }
 
+  // Trading-EMA length per timeframe (mirror of the server's
+  // _TRADE_EMA_LEN): the M15 lane trades EMA 45, everything else 55.
+  function updateTradeEmaLegend() {
+    var el = document.getElementById("legend-trade-ema");
+    if (el) el.textContent = "EMA " + (currentTf === "M15" ? 45 : 55);
+  }
+
   function selectTf(tf) {
     if (tf === currentTf) return;
     currentTf = tf;
     highlightActiveTf();
+    updateTradeEmaLegend();
     loadHistory(tf);
   }
 

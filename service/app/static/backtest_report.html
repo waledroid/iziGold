@@ -58,7 +58,7 @@
   <canvas id="overlay"></canvas>
   <div id="legend">
     <i style="color:#1e90ff">HalfTrend</i><i style="color:#e0e0e0">EMA9</i>
-    <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5">EMA55</i>
+    <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5" id="legend-trade-ema">EMA55</i>
     <i style="color:#ab47bc">EMA200</i>
   </div>
 </div>
@@ -89,6 +89,10 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
 // ---- header -------------------------------------------------------------
 (function header() {
   var s = RUN.stats, m = RUN.meta;
+  // the trading-EMA series carries whatever --ema-len the run traded
+  // (meta.args.ema_len is present only when overridden; default 55)
+  var emaLen = (m.args && m.args.ema_len) || 55;
+  document.getElementById("legend-trade-ema").textContent = "EMA" + emaLen;
   document.getElementById("title").textContent =
     "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
     "  (" + m.bars.toLocaleString() + " bars, " +

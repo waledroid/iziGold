@@ -25,7 +25,7 @@
     },
     "halftrend_m15_v1": {
       "confirm_closes": 1,
-      "ema_length": 55,
+      "ema_length": 45,
       "ht_amplitude": 4,
       "stop_buffer_atr": 1.75
     }

@@ -2139,6 +2139,25 @@ needs ~$233 for 0.01 lots anyway). The behavioral lesson stands:
 a 39%-win rider strategy needs winners left alone — [🔒 Move SL], not
 manual exits.
 
+**M15 confirmation EMA 55 → 45 (2026-08-27, owner-felt + sweep-proven).**
+Owner: "the HT 55 EMA is a little slow in M15 — it should've called the
+entry sooner." Sweep (17-mo, FIXED ride, 1.75 ATR stop, EMA 13-89): 45 nets
++$9,945 vs 55's +$9,670 at IDENTICAL dd ($1,365), better in BOTH halves,
+only 4 extra trades (earlier confirms, not churn). 34 is faster still but
+nets less at higher dd; 13/21 churn the edge away; 89 LOSES half 1. Note
+this does NOT contradict the M5 "EMA-50-vs-55 doesn't help" finding — that
+was the M5 ADR lane. Where the length lives (per-TF trading EMA, M15=45,
+everything else 55): EA `M15EmaLength` (MT5 chart paint follows it),
+`config/strategy.json` m15 `ema_length` (parity-tested), backtest_runner
+m15 flags (`--ema-len 45`), engine JSON/web `ema55` series now computed at
+`EMA_LEN` (--ema-len aware), dashboard M15 overlay (`_overlays_halftrend_
+m15_v1`), mini-app `_TRADE_EMA_LEN` per-tab. CONVENTION: the wire/series
+key stays `"ema55"` everywhere — it is the SLOT name for "the trading
+EMA", not a length promise; visible labels are dynamic (mini-app legend
+follows the tab, report legend reads `meta.args.ema_len`). Tests:
+`tests/test_m15_ema45.py`. Chart-attached EA inputs survive recompile —
+the owner must set 1.75 + 45 once in the F7 dialog (or re-attach).
+
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 **Port: `MINIAPP_PORT` in `service/.env`, default 9101 (2026-08-19).** It is
