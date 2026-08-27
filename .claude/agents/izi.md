@@ -2107,6 +2107,29 @@ like a log that stopped mid-line. Both now write the **service-dir** files
 uses (§6), applied before each start. When reading history, remember the
 `/tmp/*` files exist and are frozen at 2026-08-24.
 
+**M15 stop-width autopsy + 60-run sweep (2026-08-27) — the current config
+survived; three seductive "fixes" are proven losers, do not re-propose
+them without NEW evidence.** Trigger: the owner saw the Aug 26-27 losses
+and asked to widen the M15 FIXED stop. Trade-by-trade replay of all 5
+losing baskets showed: 2 wrong-way entries where the 1.5 ATR stop SAVED
+money (price fell $37-45 further after the stop), 1 genuine whipsaw victim
+(M5 lane, not M15), 2 coin-flips — and most of the two-day damage (−$162
+of −$212) was the M5 lane trading while the owner thought M15 was active
+(the lane-authority bug, fixed same day). Fresh sweep over the 17-month
+bars_max.json (M15 FIXED, confirm 1; stop 1.0/1.5/2.0/2.5/3.0 ×
+window-start 4/9 × ema-clear 0/1.0 × full/half1/half2): current
+**1.5 ATR / full window / no clearance stays the outright winner**
+(+$9,674, dd $1,365, both halves positive). VERDICTS TO REMEMBER:
+(1) wider stops LOSE net money at identical drawdown (2.5 ATR costs
+~$1,100/17mo) — win% rises but losses grow faster; (2) **blocking Asian-
+session entries (window-start 9) cuts profit by two-thirds** (+$9,674 →
++$3,229) — the two bad Asia top-buys of Aug 26-27 were noise, Asia
+entries fund the strategy; (3) EMA-clearance chase filter earns less at
+every stop width. Untested as of this writing: breakeven-ratchet at +1R
+for FIXED rides (not in the replay engine). The behavioral lesson stands:
+a 39%-win rider strategy needs winners left alone — [🔒 Move SL], not
+manual exits.
+
 # 8. Mini-app feed service (Telegram Mini App, Phase 3 of 3 code-complete)
 
 **Port: `MINIAPP_PORT` in `service/.env`, default 9101 (2026-08-19).** It is
