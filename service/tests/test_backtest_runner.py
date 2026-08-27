@@ -43,7 +43,7 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
     s15 = " ".join(cmd15)
     assert "--tf M15" in s15 and "--confirm 1" in s15
     # per-lane stop buffers since the 2026-08-25 trend-rider sweep
-    assert "--stop-buffer 1.5" in s15
+    assert "--stop-buffer 1.75" in s15
     assert "--stop-buffer 0.75" in s
 
     biased = " ".join(backtest_runner.build_cli(_params(m15_bias="on"),

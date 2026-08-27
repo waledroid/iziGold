@@ -27,7 +27,7 @@
       "confirm_closes": 1,
       "ema_length": 55,
       "ht_amplitude": 4,
-      "stop_buffer_atr": 1.5
+      "stop_buffer_atr": 1.75
     }
   }
 }

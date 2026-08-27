@@ -2126,7 +2126,16 @@ session entries (window-start 9) cuts profit by two-thirds** (+$9,674 →
 +$3,229) — the two bad Asia top-buys of Aug 26-27 were noise, Asia
 entries fund the strategy; (3) EMA-clearance chase filter earns less at
 every stop width. Untested as of this writing: breakeven-ratchet at +1R
-for FIXED rides (not in the replay engine). The behavioral lesson stands:
+for FIXED rides (not in the replay engine). FOLLOW-UP same day: an MAE
+study (293 trades, near-infinite stop) showed 1.75 ATR survives 95.1% of
+eventual winners' reversals vs 93.5% at 1.5, at IDENTICAL net (+$9,670 vs
++$9,674) and dd — owner chose 1.75; M15StopBufferATR, config/strategy.json
+and backtest_runner updated together. Winners' reversal depth: p50=0 (half
+never touch the entry wick), p90=1.11 ATR, p95=1.60 ATR. Median initial
+stop distance at 1.75: $22/oz (avg $27, p90 $45) — sizing floor follows
+from this: at min lot 0.01 (1 oz) a stop is ~$22-45, so accounts under
+~$1k cannot carry even one M15 stop inside sane risk (and EU 1:20 margin
+needs ~$233 for 0.01 lots anyway). The behavioral lesson stands:
 a 39%-win rider strategy needs winners left alone — [🔒 Move SL], not
 manual exits.
 
