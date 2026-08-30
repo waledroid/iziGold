@@ -252,11 +252,21 @@ else
   cp "$SERVICE_DIR/.env.example" "$SERVICE_DIR/.env"
   ok "created .env from .env.example"
 fi
-if grep -q '^FORECASTER=chronos' "$SERVICE_DIR/.env" \
-   && ! "$VENV/bin/python" -c 'import torch' >/dev/null 2>&1; then
-  echo "  installing torch + chronos (first time can take several minutes)..."
-  "$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements-model.txt"
-  ok "model requirements installed"
+# The old guard here was `python -c 'import torch'` — measured at 15 s on
+# every warm launch (torch import off /mnt/c), which was the single biggest
+# cost of a launch that changed nothing. Cache on the requirements file's
+# hash instead, exactly like the core-reqs marker above; delete
+# service/.venv/.model-reqs-sha to force a re-sync.
+if grep -q '^FORECASTER=chronos' "$SERVICE_DIR/.env"; then
+  model_sha="$(sha256sum "$SERVICE_DIR/requirements-model.txt" | cut -d' ' -f1)"
+  if [[ -f "$VENV/.model-reqs-sha" && "$(cat "$VENV/.model-reqs-sha")" == "$model_sha" ]]; then
+    skip "model requirements unchanged (${model_sha:0:12})"
+  else
+    echo "  syncing torch + chronos (first install can take several minutes)..."
+    "$VENV/bin/pip" install -q -r "$SERVICE_DIR/requirements-model.txt"
+    printf '%s' "$model_sha" > "$VENV/.model-reqs-sha"
+    ok "model requirements installed"
+  fi
 fi
 
 # ------------------------------------------------------------------ 3. Test gate
@@ -301,6 +311,7 @@ start_service() {
   done
   [[ -n "$up" ]]
 }
+service_started=0
 if health >/dev/null; then
   # stale-code guard (incident 2026-08-2x): the service was started 13
   # minutes before a commit added a DB field and ran a full day silently
@@ -315,6 +326,7 @@ if health >/dev/null; then
     for _ in $(seq 1 10); do health >/dev/null || break; sleep 1; done
     if start_service; then
       ok "restarted (was running stale code; logs: service/service.log)"
+      service_started=1
     else
       tail -25 "$SERVICE_DIR/service.log" >&2
       fail "service did not come back up after the stale-code restart — see service/service.log"
@@ -325,12 +337,21 @@ if health >/dev/null; then
 else
   if start_service; then
     ok "started in background (logs: service/service.log)"
+    service_started=1
   else
     tail -25 "$SERVICE_DIR/service.log" >&2
     fail "service did not come up in 60s — see service/service.log"
   fi
 fi
 
+# Smoke /analyze only when THIS run (re)started the process. A service that
+# was already up with current code passed this exact smoke when it started,
+# and the EA re-exercises /analyze on every closed bar — re-smoking it on
+# every warm launch only slows the launcher down (and, cold model, by up to
+# 3 minutes). To force a smoke: pkill the service and re-run.
+if (( ! service_started )); then
+  skip "smoke /analyze skipped — service was already up with current code"
+else
 smoke_payload="$("$VENV/bin/python" - <<'PY'
 import json
 candles = [{"t": 1754000000 + i * 300, "o": 2400 + i * 0.1, "h": 2401 + i * 0.1,
@@ -352,6 +373,7 @@ print("  analyze ok: %s conf=%s regime=%s ai=%s"
       % (d["direction"], d["confidence"], d["regime"], d["ai_available"]))' \
   || fail "/analyze returned an unexpected body: $smoke_resp"
 ok "service healthy + /analyze smoke passed"
+fi
 
 # ---------------------------------------------------- 5. Mini-app feed service
 phase 5 "Mini-app feed service"
@@ -823,9 +845,26 @@ phase9_telegram
 
 # ------------------------------------------------------ 9. MT5 install + compile
 phase 10 "MT5 install + compile"
+# Build cache (same discipline as the test gate above): recompiling on every
+# launch cost 10-30 s of MetaEditor time AND reinitialised the running EA
+# each time (the terminal reloads a recompiled .ex5 — exactly the re-init
+# churn the lane-persistence fix had to defend against). Skip only when ALL
+# hold: mt5/ is clean in git, the mt5/ tree hash + terminal path match the
+# last green compile, and the .ex5 actually exists in the terminal (a fresh
+# MT5 install or new terminal id recompiles). Any dirty file under mt5/
+# always compiles — the marker is a commit-level cache, never a substitute
+# for building edits. Delete .run/last-ea-build to force.
+ea_marker="$REPO_ROOT/.run/last-ea-build"
+ea_sig="$(git -C "$REPO_ROOT" rev-parse HEAD:mt5 2>/dev/null):$MT5_DIR"
+mt5_dirty="$(git -C "$REPO_ROOT" status --porcelain -- mt5 2>/dev/null)"
 # Wrapped for soft_fail early-return (see phase 5): a compile problem is
 # real, but the service side of the system stays up and reported.
 phase10_mt5() {
+if [[ -z "$mt5_dirty" && -f "$ea_marker" && "$(cat "$ea_marker")" == "$ea_sig" \
+      && -f "$MT5_DIR/MQL5/Experts/XauAssistant.ex5" ]]; then
+  skip "EA unchanged since last green compile (${ea_sig:0:12}) — not recompiled, EA not reinitialised"
+  return 0
+fi
 mql5="$MT5_DIR/MQL5"
 mkdir -p "$mql5/Experts" "$mql5/Include"
 cp "$REPO_ROOT/mt5/Experts/XauAssistant.mq5" "$mql5/Experts/"
@@ -860,6 +899,11 @@ if [[ ! -f "$mql5/Experts/XauAssistant.ex5" ]]; then
   return 0
 fi
 ok "compiled: ${result_line#"${result_line%%[![:space:]]*}"}"
+# Marker only on a fully green compile — every failure path above returned
+# before this line, so a re-run after a failure always compiles again.
+if [[ -z "$mt5_dirty" ]]; then
+  mkdir -p "$REPO_ROOT/.run" && printf '%s' "$ea_sig" > "$ea_marker"
+fi
 }
 phase10_mt5
 
@@ -869,6 +913,35 @@ phase 11 "Handoff + end-to-end verify"
 # a checklist item for the owner, not a reason to exit non-zero — the
 # summary below says so plainly.
 phase11_handoff() {
+# A heartbeat only proves the EA is RUNNING. It can run perfectly while
+# unable to place a single trade -- the AutoTrading button off, the kill
+# switch latched, or the service holding it in MANUAL. Reporting "setup
+# complete" in that state is the failure that costs money quietly, so the
+# verify reads the trading-capability fields the heartbeat already carries
+# (nested under "heartbeat"; no service change was needed for this).
+probe_beat() {
+  curl -sf -m 3 "$BASE_URL/api/state" | "$VENV/bin/python" -c '
+import json, sys
+d = json.load(sys.stdin)
+a = d.get("age_s")
+if a is None or a >= 30:
+    print("")
+else:
+    hb = d.get("heartbeat") or {}
+    print("|".join([
+        "yes",
+        "on"   if hb.get("algo_trading") else "OFF",
+        "clear" if not hb.get("kill_switch") else "TRIPPED",
+        str(hb.get("active_strategy") or "?"),
+        str(d.get("mode") or "?"),
+    ]))' || true
+}
+
+# Warm-launch fast path: a heartbeat that is already fresh means the EA is
+# attached and wired — the first-install checklist and the 5-minute wait
+# are for a chart that has never spoken to us, not for every re-launch.
+beat="$(probe_beat)"
+if [[ -z "$beat" ]]; then
 cat <<'EOF'
 
   Two manual steps remain in MetaTrader 5 (MT5 stores these encrypted; no script can set them):
@@ -892,32 +965,12 @@ cat <<'EOF'
   Waiting up to 5 minutes for the EA heartbeat (fires every 5s, even with markets closed)...
 EOF
 deadline=$((SECONDS + 300))
-beat=""
 while (( SECONDS < deadline )); do
-  # A heartbeat only proves the EA is RUNNING. It can run perfectly while
-  # unable to place a single trade -- the AutoTrading button off, the kill
-  # switch latched, or the service holding it in MANUAL. Reporting "setup
-  # complete" in that state is the failure that costs money quietly, so the
-  # verify reads the trading-capability fields the heartbeat already carries
-  # (nested under "heartbeat"; no service change was needed for this).
-  beat="$(curl -sf -m 3 "$BASE_URL/api/state" | "$VENV/bin/python" -c '
-import json, sys
-d = json.load(sys.stdin)
-a = d.get("age_s")
-if a is None or a >= 30:
-    print("")
-else:
-    hb = d.get("heartbeat") or {}
-    print("|".join([
-        "yes",
-        "on"   if hb.get("algo_trading") else "OFF",
-        "clear" if not hb.get("kill_switch") else "TRIPPED",
-        str(hb.get("active_strategy") or "?"),
-        str(d.get("mode") or "?"),
-    ]))' || true)"
+  beat="$(probe_beat)"
   [[ -n "$beat" ]] && break
   sleep 5
 done
+fi
 if [[ -n "$beat" ]]; then
   IFS='|' read -r _b algo kill active exmode <<<"$beat"
   ok "EA heartbeat received — end-to-end wiring confirmed"

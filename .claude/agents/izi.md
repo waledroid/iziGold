@@ -895,9 +895,31 @@ wiring.
     watchdog's flock.)
   - **pip (phase 2)** skips `pip install -r requirements.txt` when
     `sha256sum requirements.txt` matches `service/.venv/.reqs-sha`. Force
-    with `rm service/.venv/.reqs-sha`. The torch/`requirements-model.txt`
-    branch is untouched (still gated on `FORECASTER=chronos` + `import torch`
-    failing).
+    with `rm service/.venv/.reqs-sha`.
+- **setup.sh warm-launch pass (2026-08-30)** — a launch that changes nothing
+  now finishes in ~1.5 s (was ~20–35 s). Four more skips, same
+  commit-level-cache discipline as above:
+  - **Model reqs (phase 2)**: the old `import torch` probe cost a measured
+    **15 s per launch** (torch import off /mnt/c) — it was the single
+    biggest warm cost. Now gated on `sha256sum requirements-model.txt`
+    matching `service/.venv/.model-reqs-sha` (still only when
+    `FORECASTER=chronos`). Force with `rm service/.venv/.model-reqs-sha`.
+  - **EA compile (phase 10)**: copy+MetaEditor-compile skip when mt5/ is
+    clean in git AND `<git tree hash of HEAD:mt5>:<MT5_DIR>` matches
+    `.run/last-ea-build` AND the terminal's `XauAssistant.ex5` exists. Any
+    dirty file under `mt5/` always compiles; a new terminal id or missing
+    .ex5 recompiles. Skipping also means the running EA is **no longer
+    reinitialised on every launch** (a recompile auto-reloads the EA — the
+    churn the lane-persistence fix defends against). **Force a recompile:
+    delete `.run/last-ea-build`.**
+  - **Smoke /analyze (phase 4)**: runs only when this run actually
+    (re)started the service. Already-up-with-current-code skips it — the
+    EA re-exercises `/analyze` every closed bar. Force: pkill the service
+    and re-run.
+  - **Handoff (phase 11)**: probes `/api/state` once first; a fresh
+    heartbeat (<30 s) skips the first-install checklist and the 5-min wait
+    (the trading-capability checks — Algo Trading, kill switch — still run
+    on the probed beat).
 - **20 MB log rotation (2026-08-24)**: `rotate_log` in setup.sh runs just
   before each uvicorn start (phase 4 `service.log`, phase 5 `miniapp.log`)
   and moves a file over 20 MB to `<name>.log.1`, replacing any previous
