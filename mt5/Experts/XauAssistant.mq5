@@ -14,6 +14,7 @@
 #include <XauAssistant/StrategyRegistry.mqh>
 #include <XauAssistant/Strategies/HalfTrendEma.mqh>
 #include <XauAssistant/Strategies/BollStochRsi.mqh>
+#include <XauAssistant/Strategies/SessionStructure.mqh>
 #include <XauAssistant/Reconciler.mqh>
 #include <XauAssistant/UiSink.mqh>
 
@@ -96,6 +97,14 @@ input int    RsiPeriod       = 14;   // boll_stochrsi: RSI period
 input int    StochPeriod     = 14;   // boll_stochrsi: stochastic window over RSI
 input int    KSmooth         = 3;    // boll_stochrsi: %K smoothing
 input int    DSmooth         = 3;    // boll_stochrsi: %D smoothing
+
+input group "SessionStructure (session_structure_v1) — shadow-only session drift lanes, SERVER hours"
+input int    SsWin1StartHour = 1;    // Asia-drift LONG: documented 30y anomaly; hours 01-03 = +23.1% over this broker's own 17mo (bars_max.json study 2026-08-30)
+input int    SsWin1EndHour   = 4;    // exit hour: drift measured negative from 04 (also where the live trading window starts — 01-04 was excluded for spreads)
+input int    SsWin2StartHour = -1;   // optional 2nd LONG window, -1 = off. Best data-mined candidate is hour 09 (t=+2.24) but it has no academic prior — enable only after shadow stats earn it
+input int    SsWin2EndHour   = -1;
+input int    SsShortStartHour = -1;  // PM-fix fade SHORT, -1 = off. The academic prior says 16-17 server, but this broker's 17mo shows NO edge there (t=-0.67, bull regime) — ships disabled
+input int    SsShortEndHour  = -1;
 
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
@@ -233,6 +242,16 @@ int OnInit()
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));
+   // Session-structure drift shadow (research 2026-08-30): long the Asia
+   // drift window, evidence in SessionStructure.mqh's header. Shadow-only
+   // until its SQLite hit-rate earns more; NOTE if ever made active, the
+   // shared TradingWindowStartHour=4 blocks its 01-04 entries — the window
+   // input must be widened deliberately (spreads at 01-04 are hostile,
+   // which is WHY those hours were excluded; the drift may not survive them).
+   g_registry.Register(new CSessionStructureStrategy(TradeTimeframe,
+                       SsWin1StartHour, SsWin1EndHour,
+                       SsWin2StartHour, SsWin2EndHour,
+                       SsShortStartHour, SsShortEndHour));
    if(!g_registry.SetActive(ActiveStrategy))
      {
       g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");

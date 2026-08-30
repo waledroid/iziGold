@@ -2941,6 +2941,39 @@ current Windows, quoting-fragile). Manual stop: PowerShell
 `Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*mt5_feed.py*' }
 | % { Stop-Process -Id $_.ProcessId }`.
 
+## Session-structure drift shadow (owner request after research, 2026-08-30)
+
+`session_structure_v1` (`mt5/Include/XauAssistant/Strategies/SessionStructure.mqh`,
+registered in `OnInit` like `boll_stochrsi_v1`: EA inputs, no
+`config/strategy.json` block, no backtest.py lane) trades gold's
+best-documented intraday anomaly: the Asia-hours upward drift (30+ years of
+academic literature — physical buying in the East, paper selling in the
+West/London PM fix). Checked against 101k of this broker's own M5 bars
+(17 months, `bars_max.json`; rerun any time with
+`python3 scripts/session_hour_study.py bars_max.json`):
+
+- **Server hours 01–03: +23.1% cumulative** — the Asia drift is real here.
+  Drift turns NEGATIVE at 04–05, exactly where `TradingWindowStartHour=4`
+  begins. Those hours were excluded for hostile spreads, not lack of drift.
+- **PM-fix fade (16–17): t=−0.67 — NO edge in this sample** (bull regime
+  drowns the short side). The short window exists as an input but ships
+  DISABLED (`SsShortStartHour=-1`).
+- Hour 09 (t=+2.24) is the best data-mined extra long window but has no
+  academic prior — `SsWin2StartHour=-1` until shadow stats earn it.
+
+Behavior: once per day per enabled window, BUY on the first closed trade-TF
+bar inside the window, `SIGNAL_EXIT` at the window's end hour; missed
+windows stay missed (no catch-up — a late session entry is a different
+trade). Stop = ATR default. Windows are SERVER hours (`SsWin1StartHour=1`,
+`SsWin1EndHour=4`).
+
+**Shadow-only, deliberately.** If it is ever made active: (1) the shared
+trading window blocks 01–04 entries — widening it is a deliberate decision
+because 01–04 spreads are hostile and may eat the ~6 bp/day edge the mid
+prices show; (2) shadow hit-rates score MID prices, no spread — treat them
+as an upper bound. The 2026-08-30 study lives in the file header and
+`scripts/session_hour_study.py`; re-run it when the bull regime turns.
+
 ## Second HalfTrend lane on M15 (owner request, 2026-08-22)
 
 The owner eyeballed live trades and prefers M15 over M5, but wants to
