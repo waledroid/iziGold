@@ -988,6 +988,21 @@ if [[ -n "$beat" ]]; then
   if [[ "$exmode" != "auto" ]]; then
     echo "     note: execution mode is $exmode — signals raise Telegram proposals instead of trading."
   fi
+  # Startup notice (owner request 2026-08-30: "no alert that the system is
+  # up"). Same /notify endpoint the watchdog uses; fail-open — a launch
+  # must never fail over a Telegram hiccup. Sent only on a confirmed
+  # heartbeat so the message can't lie about the EA being connected, and it
+  # carries the two can't-trade states so "up" is never mistaken for
+  # "trading" when the toolbar button is off or the kill switch latched.
+  up_text="✅ XAU system up — EA connected ($active, mode: $exmode)"
+  [[ "$algo" != "on" ]] && up_text="$up_text ⚠️ Algo Trading OFF"
+  [[ "$kill" != "clear" ]] && up_text="$up_text ⚠️ kill switch TRIPPED"
+  if curl -sf -m 5 -X POST "$BASE_URL/notify" -H 'Content-Type: application/json' \
+      -d "{\"text\":\"$up_text\"}" >/dev/null 2>&1; then
+    echo "     Telegram startup notice sent."
+  else
+    echo "     (Telegram startup notice not sent — bot not linked yet, or Telegram unreachable.)"
+  fi
   cat <<EOF
 
   ✅ Setup complete.

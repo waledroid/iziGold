@@ -114,25 +114,120 @@ def profile_completion(profile) -> int:
     return round(100 * filled / len(PROFILE_FIELDS))
 
 
+class _SerializedCursor:
+    """Cursor whose fetches take the connection lock (see _SerializedConnection).
+    Fetching steps the underlying statement, so it needs the same exclusion
+    as execute(); iteration materializes under the lock for the same reason."""
+    __slots__ = ("_cur", "_lock")
+
+    def __init__(self, cur, lock):
+        self._cur = cur
+        self._lock = lock
+
+    def fetchone(self):
+        with self._lock:
+            return self._cur.fetchone()
+
+    def fetchall(self):
+        with self._lock:
+            return self._cur.fetchall()
+
+    def fetchmany(self, size=None):
+        with self._lock:
+            return self._cur.fetchmany(size) if size is not None else self._cur.fetchmany()
+
+    def __iter__(self):
+        with self._lock:
+            return iter(self._cur.fetchall())
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+
+class _SerializedConnection:
+    """Serializes every use of the ONE shared sqlite3 connection.
+
+    check_same_thread=False lets FastAPI's threadpool, the ticker/poller
+    to_thread hops and the backtest thread all touch the connection, and the
+    old design locked only the WRITE methods on the premise that "SQLite
+    readers don't need it". That premise holds across connections — not on
+    the same connection object: two threads running the SAME SQL race on
+    pysqlite's per-connection statement cache and die with
+    sqlite3.InterfaceError "bad parameter or other API misuse" (1458 hits in
+    service.log by 2026-08-30, from /heartbeat's get_kv vs the ticker).
+    Wrapping the connection — rather than locking each of ~40 methods —
+    also covers main.py's direct db.conn.execute() calls and any future
+    call site by construction. The RLock is shared with SignalDb._lock, so
+    the existing `with self._lock:` write blocks nest harmlessly."""
+    __slots__ = ("_conn", "_lock")
+
+    def __init__(self, conn, lock):
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, sql, params=()):
+        with self._lock:
+            return _SerializedCursor(self._conn.execute(sql, params), self._lock)
+
+    def executemany(self, sql, seq_of_params):
+        with self._lock:
+            return _SerializedCursor(self._conn.executemany(sql, seq_of_params), self._lock)
+
+    def commit(self):
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self):
+        with self._lock:
+            self._conn.rollback()
+
+    def close(self):
+        with self._lock:
+            self._conn.close()
+
+    # `with db.conn:` — sqlite3's transaction scope (commit/rollback on
+    # exit). Dunders bypass __getattr__, so delegate explicitly, and hold
+    # the lock for the WHOLE transaction so no other thread can interleave
+    # statements into it (RLock: nests fine under an outer `with self._lock`).
+    def __enter__(self):
+        self._lock.acquire()
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            return self._conn.__exit__(*exc)
+        finally:
+            self._lock.release()
+
+    def __getattr__(self, name):   # row_factory, total_changes, ...
+        return getattr(self._conn, name)
+
+
 class SignalDb:
     def __init__(self, path: str):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        raw_conn = sqlite3.connect(path, check_same_thread=False)
         # Lighter, safer writes on the slow /mnt/c mount (audit 2026-08-24):
         # WAL avoids the per-commit journal create/fsync/delete round trip;
         # drvfs/9p can refuse WAL, so fall back silently (synchronous=NORMAL
         # and the busy_timeout still apply either way).
         try:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.execute("PRAGMA synchronous=NORMAL")
-            self.conn.execute("PRAGMA busy_timeout=5000")
+            raw_conn.execute("PRAGMA journal_mode=WAL")
+            raw_conn.execute("PRAGMA synchronous=NORMAL")
+            raw_conn.execute("PRAGMA busy_timeout=5000")
         except sqlite3.OperationalError:
             pass
-        # check_same_thread=False means FastAPI's threadpool, the heartbeat's
-        # to_thread hop and the backtest thread can all write concurrently.
-        # One reentrant lock serializes the WRITE methods (reads stay
-        # unlocked -- SQLite readers don't need it, and WAL lets them run
-        # alongside a writer).
         self._lock = threading.RLock()
+        self.conn = _SerializedConnection(raw_conn, self._lock)
         self.conn.execute(_SCHEMA)
         self.conn.execute(_HB_SCHEMA)
         self.conn.execute(_TRADES_SCHEMA)

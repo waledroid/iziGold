@@ -435,7 +435,7 @@ command, four changes (PINNED_HELP_VERSION bumped 8→9):
 - `/help` is now a registered command returning `format_pinned_help()`
   (it used to be silently ignored — unknown commands return None).
 
-**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker message ids + last text are PERSISTED in the db kv (`ticker_owner_msg_id`, `ticker_owner_text`, `ticker_channel_msg_id`, `ticker_channel_text`; loaded by `load_ticker_state` at startup, cleared on the CLOSED freeze) so a service restart mid-trade RESUMES editing the same LIVE message — 2026-08-17 three deploys during one BUY had produced three LIVE messages ("should be once and updates itself"). If the persisted message was deleted server-side (edit fails "message to edit not found"), the state is forgotten and the next tick posts a fresh LIVE. Persistence writes go through a SHORT-LIVED PRIVATE sqlite connection (`_kv_write`, path captured once at startup as `app.state.ticker_db_path`) — NOT `app.state.db.conn`: ticker_tick runs in a worker thread and the sqlite3 module forbids simultaneous calls on one connection (`InterfaceError: bad parameter or other API misuse` — bitten by the first cut, caught by the full suite). General rule this reaffirms: any NEW cross-thread db writer must not share `SignalDb.conn` **raw**. (Since the 2026-08-24 lightweight pass the `SignalDb` WRITE METHODS are serialized by an internal `RLock` — see §5d — so calling those from a worker thread is fine, and `/heartbeat` now does. Bare `db.conn.execute(...)` from another thread still is not.) Only the ≥5 s edit-throttle clock is per-process. Authoritative P/L remains the close report.
+**Live ticker** (2026-08-11, `app/ticker.py`): one self-editing `📊 LIVE` message per trade cycle (flat→open posts LIVE, open→open silently edits in-place throttled to ≥5 s and skipped when unchanged, open→flat freezes as `📊 CLOSED`). Both owner chat and channel (if configured) get the message; the channel variant is redacted (Equity hidden, Floating + positions visible). Ticker message ids + last text are PERSISTED in the db kv (`ticker_owner_msg_id`, `ticker_owner_text`, `ticker_channel_msg_id`, `ticker_channel_text`; loaded by `load_ticker_state` at startup, cleared on the CLOSED freeze) so a service restart mid-trade RESUMES editing the same LIVE message — 2026-08-17 three deploys during one BUY had produced three LIVE messages ("should be once and updates itself"). If the persisted message was deleted server-side (edit fails "message to edit not found"), the state is forgotten and the next tick posts a fresh LIVE. Persistence writes go through a SHORT-LIVED PRIVATE sqlite connection (`_kv_write`, path captured once at startup as `app.state.ticker_db_path`) — NOT `app.state.db.conn`: ticker_tick runs in a worker thread and the sqlite3 module forbids simultaneous calls on one connection (`InterfaceError: bad parameter or other API misuse` — bitten by the first cut, caught by the full suite). (Since 2026-08-30 `SignalDb.conn` is a serializing proxy — see §5d — so cross-thread use of the shared connection, methods AND bare `db.conn.execute(...)`, is safe; the ticker's private connection predates that and stays as it is.) Only the ≥5 s edit-throttle clock is per-process. Authoritative P/L remains the close report.
 
 **Ops note:** mirroring and ticker are fail-open — channel send failures never touch owner delivery or the heartbeat path.
 
@@ -738,16 +738,23 @@ correctness-under-concurrency fix, and every new failure path is fail-open.
   per-commit journal create/fsync/delete round trip. Note the file-level
   effect: journal mode is a property of the DATABASE FILE, so the first
   process to open it after this change converts it.
-- **One write lock.** `self._lock = threading.RLock()` serializes the body of
-  every WRITE method (`insert_signal`, `resolve_outcomes`, `insert_heartbeat`,
-  `upsert_spread`, `upsert_candles`, `insert_trade`, `set_screenshot`,
-  `set_render`, `set_kv`, `save_profile`, `create_proposal`,
-  `set_proposal_status`, `set_proposal_message`, `pop_approved_command`,
-  `insert_backtest_run`, `finish_backtest_run`). **Reads stay unlocked.**
-  This is what makes `/heartbeat`'s db block safe to run in a worker thread
-  (see below). It does NOT license raw `app.state.db.conn.execute(...)` from
-  another thread — the lock is on the METHODS; the ticker's private
-  connection (§4) stays as it is.
+- **One lock, EVERYTHING serialized (2026-08-30).** `SignalDb.conn` is a
+  `_SerializedConnection` proxy: every `execute`/`executemany`/`commit`/
+  `rollback`/`with conn:` transaction — and every cursor fetch, via
+  `_SerializedCursor` — takes the one `RLock`. The write methods keep their
+  explicit `with self._lock:` blocks (RLock nests). History: the 2026-08-24
+  design locked only writes on the premise "reads stay unlocked — SQLite
+  readers don't need it". That holds across CONNECTIONS, not on the same
+  connection object: two threads running the SAME SQL race on pysqlite's
+  per-connection statement cache → `sqlite3.InterfaceError: bad parameter
+  or other API misuse`. 1,458 hits had accumulated in service.log by
+  2026-08-30 (`/heartbeat`'s `get_kv`/`exec_mode` vs the ticker/poller
+  threads) before anyone looked. The proxy also covers `main.py`'s direct
+  `db.conn.execute(...)` calls and any future call site by construction —
+  raw cross-thread `db.conn` use is now safe, though the ticker's private
+  connection (§4) stays as it is. Regression test:
+  `tests/test_db_thread_safety.py` (8 threads × same-SQL hammer; reproduced
+  the InterfaceError in ~1 s pre-fix).
 - **Heartbeat de-dup is in memory.** The 60 s collapse used to run
   `SELECT MAX(ts) FROM heartbeats` on every heartbeat (~17k/day, growing
   table). `__init__` seeds `self._last_hb_ts` once and `insert_heartbeat`
@@ -920,6 +927,13 @@ wiring.
     heartbeat (<30 s) skips the first-install checklist and the 5-min wait
     (the trading-capability checks — Algo Trading, kill switch — still run
     on the probed beat).
+- **Startup Telegram notice (2026-08-30, owner request)**: phase 11 POSTs
+  the existing `/notify` endpoint on a CONFIRMED heartbeat — "✅ XAU system
+  up — EA connected (<strategy>, mode: <mode>)", with ⚠️ suffixes when Algo
+  Trading is OFF or the kill switch is tripped, so "up" is never mistaken
+  for "trading". Fail-open (a Telegram hiccup never fails the launch).
+  There is deliberately NO "system down" alert: shutting the machine down
+  kills the watchdog with everything else — nothing is left to send it.
 - **20 MB log rotation (2026-08-24)**: `rotate_log` in setup.sh runs just
   before each uvicorn start (phase 4 `service.log`, phase 5 `miniapp.log`)
   and moves a file over 20 MB to `<name>.log.1`, replacing any previous
