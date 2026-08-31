@@ -1,11 +1,15 @@
-"""M15 trades and charts use EMA 45 (2026-08-27 sweep): the dashboard M15
-overlay and the mini-app M15 tab must compute the trading EMA at 45, while
-every M5 surface keeps 55. The wire key stays "ema55" (it is the series
-slot, not the length); visible labels update in the frontends."""
+"""M15 trades and charts use EMA 50 (owner request 2026-08-31; sweep same
+day: 50 nets +$10,069 vs 45's +$9,945 over 17 mo, better in BOTH halves,
+same dd — 45 came from the 2026-08-27 sweep): the dashboard M15 overlay and
+the mini-app M15 tab must compute the trading EMA at 50, while every M5
+surface keeps 55. The wire key stays "ema55" (it is the series slot, not
+the length); visible labels update in the frontends."""
 from app.indicators import ema
 from app.main import _OVERLAY_BUILDERS, _resample_m15
 from app.miniapp import _indicator_series
 from app.models import Candle
+
+M15_TRADING_EMA = 50
 
 
 def m5(t, c):
@@ -16,26 +20,26 @@ def _wavy(n=600):
     return [m5(900 + 300 * i, 100.0 + (i % 7) - 3 + i * 0.01) for i in range(n)]
 
 
-def test_dashboard_m15_overlay_trading_ema_is_45():
+def test_dashboard_m15_overlay_trading_ema():
     candles = _wavy()
     closes = [c.c for c in candles]
     out = _OVERLAY_BUILDERS["halftrend_m15_v1"](candles, closes)
     m15 = _resample_m15(candles)
     closes15 = [b["c"] for b in m15]
-    want45 = ema(closes15, 45)
+    want = ema(closes15, M15_TRADING_EMA)
     want55 = ema(closes15, 55)
     i = 450
     bucket = i - (i % 3)
     k = next(j for j, b in enumerate(m15) if b["t"] == candles[bucket].t)
-    assert out["ema55"][i] == want45[k]
+    assert out["ema55"][i] == want[k]
     assert out["ema55"][i] != want55[k]
 
 
-def test_miniapp_m15_tab_trading_ema_is_45():
+def test_miniapp_m15_tab_trading_ema():
     rows = [{"t": 900 + 900 * i, "o": 1.0, "h": 2.0, "l": 0.5,
              "c": 100.0 + (i % 5) + i * 0.01, "v": 1} for i in range(200)]
     closes = [r["c"] for r in rows]
     out15 = _indicator_series(rows, "M15")
     out5 = _indicator_series(rows, "M5")
-    assert out15["ema55"] == ema(closes, 45)
+    assert out15["ema55"] == ema(closes, M15_TRADING_EMA)
     assert out5["ema55"] == ema(closes, 55)

@@ -740,10 +740,10 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   }
 
   // Trading-EMA length per timeframe (mirror of the server's
-  // _TRADE_EMA_LEN): the M15 lane trades EMA 45, everything else 55.
+  // _TRADE_EMA_LEN): the M15 lane trades EMA 50, everything else 55.
   function updateTradeEmaLegend() {
     var el = document.getElementById("legend-trade-ema");
-    if (el) el.textContent = "EMA " + (currentTf === "M15" ? 45 : 55);
+    if (el) el.textContent = "EMA " + (currentTf === "M15" ? 50 : 55);
   }
 
   function selectTf(tf) {

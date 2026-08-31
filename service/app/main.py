@@ -1044,10 +1044,10 @@ def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
     m15_objs = [type("C", (), b)() for b in m15]
     closes15 = [b["c"] for b in m15]
     ht15 = halftrend(m15_objs, amplitude=4)
-    # M15 trades EMA 45 (2026-08-27 sweep: beats 55 in both halves at the
-    # same drawdown). "ema55" stays as the wire SLOT name every chart
+    # M15 trades EMA 50 (owner 2026-08-31, sweep-checked: better than 45 in
+    # both halves, same dd). "ema55" stays as the wire SLOT name every chart
     # frontend already binds to — the value is the lane's trading EMA.
-    e55, e200 = ema(closes15, 45), ema(closes15, 200)
+    e55, e200 = ema(closes15, 50), ema(closes15, 200)
     idx = {b["t"]: i for i, b in enumerate(m15)}
     out_ht, out55, out200 = [], [], []
     for c in candles:

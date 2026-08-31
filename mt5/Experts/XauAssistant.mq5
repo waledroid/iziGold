@@ -75,7 +75,7 @@ input bool   Ema200Confirm  = false;     // EMA-200 (own timeframe) agreement: B
 
 input group "HalfTrend M15 (halftrend_m15_v1) — second lane, owner runs ONE at a time via ActiveStrategy"
 input int    M15Amplitude    = 4;                  // Half Trend amplitude (same as M5 default)
-input int    M15EmaLength    = 45;                 // confirmation EMA. 55→45 on 2026-08-27: 17-mo sweep at 1.75 ATR — 45 nets +$9,945 vs 55's +$9,670, same dd, BOTH halves better (owner: "55 calls the entry late on M15"). 34 was faster but nets less at higher dd
+input int    M15EmaLength    = 50;                 // confirmation EMA. 45→50 on 2026-08-31 (owner request, sweep-checked same day: 50 nets +$10,069 vs 45's +$9,945 over 17 mo, better in BOTH halves, same dd — 45/50 sit on one plateau). 55→45 history: 2026-08-27 sweep, "55 calls the entry late on M15"
 input int    M15ConfirmCloses = 1;                 // waiting bars after the HT arrow (M5 uses 2). 2026-08-25 trend-rider sweep (FIXED ride, 30 configs x 3 windows): confirm 1 + 1.5 ATR stop = +$9,674/17mo, BOTH halves positive, lowest dd ($1,365) — old 3 was tuned for ADR/target style and loses H1 in ride mode
 input double M15StopBufferATR = 1.75;              // pad wick stop by k*ATR(14) (M5 uses 0.75). 1.5→1.75 on 2026-08-27: MAE study over 17mo (293 trades, near-infinite stop) — 1.75 survives 95.1% of eventual winners' reversals vs 93.5%, net identical (+$9,670 vs +$9,674), win% 40.1 vs 39.4, same dd. Past 1.75 the net falls off — do not widen further without new evidence
 input bool   M15CatchupEnabled     = true;  // take a missed entry after downtime if still valid (same as M5 default)

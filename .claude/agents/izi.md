@@ -1166,6 +1166,26 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
+## M15 confirmation EMA 45 → 50 (owner request 2026-08-31, sweep-checked)
+
+On a no-trade Monday the owner asked whether the EMA-45 gate was the cause
+and requested 50. The diagnosis said no — the day's only two M15 chances
+were a BUY arrow rejected $21 below the EMA (any nearby length rejects
+that) and a SELL that CONFIRMED through EMA-45 and was then blocked by the
+NEWS BLACKOUT — but the sweep was run anyway before changing anything:
+17-mo bars_max.json, M15 FIXED, confirm 1, 1.75 ATR (the exact 08-27
+recipe; 45 baseline reproduced to the cent, +$9,944.59). **EMA-50:
++$10,069 full vs 45's +$9,945, better in BOTH halves (h1 +$1,906 vs
++$1,858, h2 +$8,042 vs +$8,018), same max dd** — 45 and 50 sit on one
+plateau, so the owner's preference costs nothing. Changed on every
+surface: EA input `M15EmaLength`, `config/strategy.json` m15
+`ema_length`, dashboard overlay (`main.py`), mini-app `_TRADE_EMA_LEN` +
+legend label (`miniapp.py`/`miniapp.html`), contract test renamed
+`test_m15_trading_ema.py` (was `test_m15_ema45.py`). NOTE: an EA input
+DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
+with `mt5-start.ini` (which attaches source defaults), not by recompile
+alone.
+
 ## A recompile does NOT guarantee the running EA reloaded (2026-08-31)
 
 The weekend's recompiles (session shadow + power-cut hardening) produced a

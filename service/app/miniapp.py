@@ -207,11 +207,11 @@ def history(tf: str, _=Depends(require_viewer)):
     return {"tf": tf, "candles": rows, **_indicator_series(rows, tf)}
 
 
-# Trading-EMA length per timeframe: the M15 lane trades EMA 45 (2026-08-27
-# sweep), everything else keeps 55. The "ema55" key below is the series
-# SLOT the frontend binds to, not a promise about the length — the legend
-# label follows the tab's timeframe in miniapp.html.
-_TRADE_EMA_LEN = {"M15": 45}
+# Trading-EMA length per timeframe: the M15 lane trades EMA 50 (owner
+# 2026-08-31, sweep-checked), everything else keeps 55. The "ema55" key
+# below is the series SLOT the frontend binds to, not a promise about the
+# length — the legend label follows the tab's timeframe in miniapp.html.
+_TRADE_EMA_LEN = {"M15": 50}
 
 
 def _indicator_series(rows: list[dict], tf: str = "M5") -> dict:
