@@ -1166,6 +1166,26 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
+## A recompile does NOT guarantee the running EA reloaded (2026-08-31)
+
+The weekend's recompiles (session shadow + power-cut hardening) produced a
+fresh .ex5, 0 errors — and the chart EA kept running the OLD build for two
+days. A live heartbeat proves the EA is ALIVE, not which build it is: the
+after-compile "hb age 0.0" checks passed while session_structure_v1 never
+evaluated once (its 01–04 window passed in silence; the logic itself was
+verified correct by simulation). **Build fingerprint that settles it:** the
+2026-08-31 build polls `GET /api/last-close-ticket` every 60 s — grep
+service.log; zero polls = stale build. Generic fallback: the expert log
+prints a fresh init block (agreement CHECK ONLY lines, "trading TF M5
+(chart M15 — visual only)") with a new timestamp on a real reload. Fix
+when stale: restart MT5 the watchdog's way (graceful `taskkill
+terminal64.exe` — lets gvariables.dat save — then relaunch with
+`/config:scripts/mt5-start.ini`); attach self-heals, the service re-asserts
+the owner's lane on the first heartbeat. Expect TWO instances in the log
+after restart (profile-restored chart + the [StartUp] M5 chart) — the
+single-instance guard keeps exactly one owner, and the bar gate runs on
+`TradeTimeframe` (M5) regardless of which chart's copy won.
+
 ## A power cut replayed a week of closes as fresh Telegram alerts (2026-08-31)
 
 The owner got 4 "profit" close alerts at Monday's open for trades that had
