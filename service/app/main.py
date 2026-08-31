@@ -1168,6 +1168,20 @@ def ui_onboarding():
                         media_type="text/html")
 
 
+@app.get("/api/last-close-ticket")
+async def last_close_ticket():
+    """Newest close-deal ticket this service has recorded. The EA's
+    reconciler reads it before replaying "offline" closes and takes
+    max(its MT5-global watermark, this) — a watermark rolled back by a
+    hard terminal kill (gvariables.dat is only saved on clean shutdown;
+    incident 2026-08-31) then can't resurrect closes the service already
+    knows. Aggregate closes carry ticket=0 and are naturally ignored."""
+    row = app.state.db.conn.execute(
+        "SELECT MAX(ticket) FROM trades WHERE event='close' AND ticket>0"
+    ).fetchone()
+    return {"ticket": int(row[0]) if row and row[0] else 0}
+
+
 @app.post("/trade-event")
 async def trade_event(ev: TradeEventRequest):
     # Idempotent receiver for the EA's at-least-once close delivery: deal

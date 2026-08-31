@@ -78,7 +78,15 @@ public:
    void AdvanceReconWatermark(long dealTicket)
      {
       if((double)dealTicket > GlobalVariableGet(ReconKey()))
+        {
          GlobalVariableSet(ReconKey(), (double)dealTicket);
+         // Hard-kill safety (incident 2026-08-31): globals only reach
+         // gvariables.dat on a clean terminal shutdown, so a power cut
+         // rolled this watermark back a WEEK and the reconciler re-reported
+         // all 25 of that week's closes (4 duplicate Telegram profit
+         // alerts, 10 phantom db rows). Flush makes every advance durable.
+         GlobalVariablesFlush();
+        }
      }
 
    // TradeManager.CloseAll's aggregate "close" event (reversal, EXIT signal,
@@ -154,10 +162,28 @@ public:
             break;
            }
          GlobalVariableSet(ReconKey(), (double)newest);
+         GlobalVariablesFlush();   // durable immediately (see AdvanceReconWatermark)
          PrintFormat("XauAssistant: reconcile watermark seeded at deal %I64d", newest);
          return;
         }
       long watermark = (long)GlobalVariableGet(ReconKey());
+      // Replay guard (incident 2026-08-31): the service's own record of the
+      // newest reported close ticket bounds the replay from below. A
+      // watermark rolled back by a hard terminal kill (see
+      // AdvanceReconWatermark) would otherwise re-report every close the
+      // service already has — 25 replays, 4 duplicate Telegram alerts that
+      // day. Fail-open: -1 (service down / endpoint missing) changes
+      // nothing, and the guard can only RAISE the watermark, never lower
+      // it. The raised value is persisted+flushed so the guard holds even
+      // if the service is unreachable on a later pass.
+      long svcTicket = (m_ui != NULL) ? m_ui.GetLastCloseTicket() : -1;
+      if(svcTicket > watermark)
+        {
+         watermark = svcTicket;
+         GlobalVariableSet(ReconKey(), (double)svcTicket);
+         GlobalVariablesFlush();
+         PrintFormat("XauAssistant: reconcile watermark raised to service's last close ticket %I64d", svcTicket);
+        }
       if(!HistorySelect(TimeCurrent() - 30 * 86400, TimeCurrent() + 60))
         {
          if(TimeCurrent() - m_lastReconWarn > 3600)

@@ -311,6 +311,32 @@ public:
       return (id >= 0) ? (long)id : -1;
      }
 
+   // GET /api/last-close-ticket — the newest close-deal ticket the service
+   // has recorded, or -1 on any failure (the caller treats -1 as "no guard
+   // available", fail-open). Added for the reconciler's replay guard
+   // (incident 2026-08-31): a hard terminal kill can roll the MT5-global
+   // watermark back (gvariables.dat saves on clean shutdown only), and this
+   // is the independent record that stops a rolled-back watermark from
+   // re-reporting closes the service already knows about.
+   long GetLastCloseTicket()
+     {
+      char req[], res[];
+      string resp_headers;
+      ResetLastError();
+      int code = WebRequest("GET", m_baseUrl + "/api/last-close-ticket", "",
+                            m_timeout, req, res, resp_headers);
+      if(code != 200)
+        {
+         WarnThrottled(StringFormat(
+            "UiApi: last-close-ticket WebRequest failed code=%d err=%d",
+            code, GetLastError()));
+         return -1;
+        }
+      string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
+      double t = ExtractNumber(body, "ticket");
+      return (t >= 0) ? (long)t : -1;
+     }
+
    // Captures the current chart to MQL5\Files, uploads the raw PNG bytes, then
    // deletes the temp file. Every failure path is a silent no-op — screenshots
    // are best-effort and must never affect trading.

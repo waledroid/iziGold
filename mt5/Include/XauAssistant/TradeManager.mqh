@@ -406,6 +406,10 @@ public:
          GlobalVariableSet(PeakKey(), 0);
          GlobalVariableSet(BasketModeKey(), entryModeFixed ? 1 : 0);
          GlobalVariableSet(TpAlertKey(), 0);   // fresh basket, alert re-armed
+         // Basket-open state must survive a hard kill (2026-08-31); the
+         // per-tick PeakKey update below stays UNflushed on purpose — a
+         // rolled-back peak only locks profit earlier, the safe direction.
+         GlobalVariablesFlush();
          if(m_sink != NULL)
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";

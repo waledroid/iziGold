@@ -1166,6 +1166,34 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
+## A power cut replayed a week of closes as fresh Telegram alerts (2026-08-31)
+
+The owner got 4 "profit" close alerts at Monday's open for trades that had
+closed live the previous Mon–Wed. Chain: the machine died hard Thursday
+~02:28 local (MT5 log cut mid-session, WSL heartbeats stopped the same
+minute) → MT5 saves global variables to gvariables.dat **only on clean
+shutdown**, so the reconciler's watermark rolled back a full week → Sunday's
+cold start replayed **all 25** of that week's closing deals as "closed
+offline (reconciled)" → the service's ticket dedupe caught 15 (their deal
+tickets matched live rows) but the 10 legs originally reported as
+**ticket=0 aggregate** closes (profit lock / remote exit) matched nothing
+and inserted → the 4 basket-final ones fired Telegram reports, all
+coincidentally profitable. The 10 phantom rows double-counted +$169.65 and
+were deleted (backup kept in the session scratchpad; the 3 rows from the
+real 2026-08-13 outage are legitimate and stay). Three fixes, same commit:
+
+- **`GlobalVariablesFlush()` after every state-critical global write** —
+  reconciler watermark (advance + seed), RiskManager end-of-`OnBarUpdate`
+  (kill switch, HWM, exposure — a power cut could otherwise resurrect a
+  TRIPPED KILL SWITCH as clear), `ResetDailyBrake`, TradeManager
+  basket-open block. The per-tick `PeakKey` update stays unflushed on
+  purpose: a rolled-back peak locks profit earlier — the safe direction.
+- **`GET /api/last-close-ticket`** (`main.py`): newest close-deal ticket
+  the service has recorded (ticket>0, so aggregates don't weaken it).
+- **Reconciler replay guard** (`Reconciler.mqh`): before replaying, take
+  `max(local watermark, service ticket)`, persist+flush the raised value.
+  Fail-open (-1 = no guard); the guard can only RAISE the watermark.
+
 - $200 EU demo couldn't margin 0.01 lots (ESMA 1:20) → balance topped to $4.2k.
 - Missed trades: Algo button off (→ `/config` ini + heartbeat warning),
   `[not enough money]` (→ margin), window blocks (→ 🚫 notices).

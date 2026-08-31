@@ -124,6 +124,13 @@ public:
          double mins = GlobalVariableGet(ExpoKey());
          GlobalVariableSet(ExpoKey(), mins + PeriodSeconds(m_tf) / 60.0);
         }
+      // Hard-kill safety (incident 2026-08-31): globals reach gvariables.dat
+      // only on a clean terminal shutdown, so a power cut rolls back every
+      // unflushed write — which for THIS block means a tripped kill switch
+      // resurrecting as clear, a rolled-back HWM, and freed-up exposure
+      // budget. One flush per closed bar makes the whole protection state
+      // durable at trivial cost.
+      GlobalVariablesFlush();
      }
 
    // Any position on THIS symbol carrying one of our magics.
@@ -265,6 +272,7 @@ public:
       InvalidateDailyCache();
       GlobalVariableSet(Key("BRAKE_BASE"), TodayRealized());
       GlobalVariableSet(Key("BRAKE_RESET"), TodayNumber());
+      GlobalVariablesFlush();   // owner action must survive a hard kill (2026-08-31)
      }
 
    // ---- Brake & kill-switch awareness latches (2026-08-18) ----------------
