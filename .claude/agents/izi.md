@@ -1166,6 +1166,32 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
+## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
+
+The owner asked for an aggressive M15: enter EVERY HalfTrend flip, 1-candle
+confirm, with an ATR check so the confirm close is "not hanging on the
+line". Both readings were swept (17-mo bars_max.json, M15 FIXED, EMA-50,
+1.75 ATR):
+
+- **Replace-the-window mode** (`--ema-clear-atr`, already in the replay:
+  first close clearing EMA by K·ATR after a flip, no waiting bars, no dead
+  signals): decisively WORSE at every K — best was K=0.1 at +$7,336 vs the
+  strict window's +$10,069 (−27%), higher dd. Strict window kept; it earns
+  its keep.
+- **Filter mode** (NEW `--confirm-clear-atr` in backtest.py, and now the
+  EA): keep the strict window, but the one-shot decision close must clear
+  the EMA by K·ATR or the signal dies. Line-hangers proved ~break-even, but
+  **K=0.3 buys dd −10% (1,365→1,225), dd lower in BOTH halves, win%
+  40.4→41.3, for net −0.9%** (−$94/17mo). Owner chose it.
+
+Wiring: `CHalfTrendEmaStrategy` gained `confirmClearAtr` (default 0 — the
+M5 lane keeps the plain side test), EA input `M15ConfirmClearATR = 0.3`,
+`config/strategy.json` m15 `confirm_clear_atr`, mapping added in
+`test_strategy_config.py`. The EA's dead-signal log line now says "without
+clearing EMA<len> by X (K x ATR)" when the clearance (not the side) killed
+it. Deployed via MT5 restart (input defaults need a fresh attach).
+`--confirm-clear-atr 0` verified byte-identical to the pre-flag replay.
+
 ## M15 confirmation EMA 45 → 50 (owner request 2026-08-31, sweep-checked)
 
 On a no-trade Monday the owner asked whether the EMA-45 gate was the cause

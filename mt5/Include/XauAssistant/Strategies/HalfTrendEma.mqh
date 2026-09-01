@@ -22,6 +22,8 @@ private:
    int      m_amplitude;
    int      m_emaLen;
    int      m_confirm;
+   double   m_confirmClearAtr;  // confirm close must clear the EMA by this
+                                // x ATR(14); 0 = plain side test (M5 lane)
    int      m_emaHandle;
    int      m_warmupBars;
    double   m_stopBufferAtr;
@@ -224,7 +226,21 @@ private:
          // as diagnostics/paint inputs.
          if(!m_signalDead && m_confirmShift == 0 && m_barsSinceFlip == m_confirm)
            {
-            bool ok = (m_trend == 0) ? (close > emaBuf[0]) : (close < emaBuf[0]);
+            // Confirm-quality clearance (owner 2026-09-01): the decision
+            // close must clear the EMA by K x ATR(14), not merely sit on
+            // the right side — a confirm "hanging on the line" dies like a
+            // wrong-side one. 0 = off (M5 lane keeps the plain side test).
+            // Sweep (17-mo, M15 FIXED, EMA-50, 1.75 ATR): K=0.3 -> net
+            // -0.9%, max dd -10%, dd lower in BOTH halves, win% 40.4->41.3.
+            double clearMargin = 0.0;
+            if(m_confirmClearAtr > 0)
+              {
+               double atrBuf[];
+               if(CopyBuffer(m_atrHandle, 0, shift, 1, atrBuf) == 1)
+                  clearMargin = m_confirmClearAtr * atrBuf[0];
+              }
+            bool ok = (m_trend == 0) ? (close > emaBuf[0] + clearMargin)
+                                     : (close < emaBuf[0] - clearMargin);
             if(ok)
               {
                m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift);
@@ -241,8 +257,11 @@ private:
                m_signalDead = true;
                if(m_lastProcessed != 0)
                   Print(m_id + ": ", m_trend == 0 ? "BUY" : "SELL",
-                        " arrow — entry bar would open on the wrong side of EMA",
-                        m_emaLen, " (", DoubleToString(close, 2), " vs ",
+                        " arrow — entry bar would open ",
+                        clearMargin > 0 ? "without clearing" : "on the wrong side of",
+                        " EMA", m_emaLen,
+                        clearMargin > 0 ? StringFormat(" by %.2f (%.1f x ATR)", clearMargin, m_confirmClearAtr) : "",
+                        " (", DoubleToString(close, 2), " vs ",
                         DoubleToString(emaBuf[0], 2), "): signal ignored until next flip");
               }
            }
@@ -312,8 +331,10 @@ public:
                          bool catchupEnabled, int catchupMaxAgeBars, double catchupMaxChaseAtr,
                          bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
                          double htfBufferAtr, bool chopOnly, int chopBars,
-                         double chopEffMax, bool ema200Confirm)
+                         double chopEffMax, bool ema200Confirm,
+                         double confirmClearAtr = 0.0)
       : m_id(id), m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
+        m_confirmClearAtr(confirmClearAtr),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
         m_maxLowPrice(0), m_minHighPrice(0), m_extreme(0),
         m_consecAbove(0), m_consecBelow(0), m_barsSinceFlip(0), m_signalDead(false), m_fired(false), m_lastProcessed(0),

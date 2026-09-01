@@ -78,6 +78,7 @@ STRATEGY_EA_NAMES = {
     # lane that still has one.
     "halftrend_m15_v1": {
         "confirm_closes": "M15ConfirmCloses",
+        "confirm_clear_atr": "M15ConfirmClearATR",
         "ema_length": "M15EmaLength",
         "ht_amplitude": "M15Amplitude",
         "stop_buffer_atr": "M15StopBufferATR",
