@@ -504,6 +504,12 @@ STRICT_WINDOW = True      # EA law since 2026-08-16: flip -> wait one closed
 # M15 HTF gate validated as HtfConfirmBufferATR, applied to the entry EMA.
 EMA_CLEAR_ATR = 0.0
 
+# Strict-window confirm-quality filter (owner request 2026-09-01): the
+# one-shot decision close must clear the EMA by K x ATR(14) or the signal
+# dies — same clearance idea as EMA_CLEAR_ATR above, but FILTERING the
+# existing window instead of replacing it. 0 = off, byte-identical.
+CONFIRM_CLEAR_ATR = 0.0
+
 # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
 # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
 # fill; sizing rescales over the widened distance. Entry stop only.
@@ -1094,10 +1100,15 @@ def run(candles, start_balance, verbose, active_lanes=None):
                 # arrow bar (i - last_flip == CONFIRM_CLOSES); this bar's
                 # close is the entry bar's open. Pass -> signal now; fail ->
                 # dead until the next flip (fired_flip latched either way).
+                # CONFIRM_CLEAR_ATR (owner request 2026-09-01): the decision
+                # close must clear the EMA by K x ATR(14), not merely sit on
+                # the right side — a confirm "hanging on the line" dies like
+                # a wrong-side one. 0 = off, byte-identical.
                 if i - last_flip == CONFIRM_CLOSES:
-                    if trend == 0 and cpx > e:
+                    m = CONFIRM_CLEAR_ATR * a
+                    if trend == 0 and cpx > e + m:
                         signal = "BUY"
-                    elif trend == 1 and cpx < e:
+                    elif trend == 1 and cpx < e - m:
                         signal = "SELL"
                     else:
                         dead_signals.append((when, "BUY" if trend == 0 else "SELL"))
@@ -1693,6 +1704,13 @@ def build_parser():
                          "the trend's direction — replaces the entry window "
                          "entirely (one entry per flip, no waiting bars, no "
                          "dead signals). 0 = off, byte-identical")
+    exp.add_argument("--confirm-clear-atr", type=float, default=0.0,
+                    help="strict-window confirm-quality filter: the one-shot "
+                         "decision close must clear the EMA by K x ATR(14) "
+                         "or the signal dies (a confirm 'hanging on the "
+                         "line' is treated like a wrong-side one). Filters "
+                         "the window, unlike --ema-clear-atr which replaces "
+                         "it. 0 = off, byte-identical")
     exp.add_argument("--min-stop-atr", type=float, default=0.0,
                     help="minimum stop distance floor in ATR(14) multiples: "
                          "an ENTRY stop closer than K x ATR is pushed out to "
@@ -1804,6 +1822,8 @@ def main():
     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
     global EMA_CLEAR_ATR
     EMA_CLEAR_ATR = args.ema_clear_atr
+    global CONFIRM_CLEAR_ATR
+    CONFIRM_CLEAR_ATR = args.confirm_clear_atr
     global MIN_STOP_ATR
     apply_window_args(args)
     MIN_STOP_ATR = args.min_stop_atr
@@ -1881,6 +1901,8 @@ def main():
                     f"/X{CHOP_BOX_ATR:g}")
     if EMA_CLEAR_ATR > 0:
         head.append(f"ema-clear {EMA_CLEAR_ATR:g} ATR")
+    if CONFIRM_CLEAR_ATR > 0:
+        head.append(f"confirm-clear {CONFIRM_CLEAR_ATR:g} ATR")
     elif STRICT_WINDOW:
         head.append("STRICT WINDOW")
     if MIN_STOP_ATR > 0:
