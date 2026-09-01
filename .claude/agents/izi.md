@@ -1241,6 +1241,27 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## Two MT5 "restarts" were silent no-ops — verify by INIT FINGERPRINT (2026-09-01)
+
+Init-line census across 08-31/09-01 shows only THREE real EA inits (08-31
+11:02, 09-01 02:36, 09-01 14:21) — the restarts meant to deploy the EMA-50
+build and the 0.3-filter build produced NO init: the graceful `taskkill`
+evidently failed, the relaunch was a no-op against the running terminal,
+and the "restarted → heartbeat back" check passed because **heartbeats
+never stopped** (proof: Monday-evening flips still printed "EMA45" hours
+after the EMA-50 "deploy"). The EMA-50+filter build actually went live at
+the 02:36 accidental reinit, and the known-good fresh attach is 14:21.
+**Restart verification rule: a restart is proven ONLY by a NEW
+"trading TF M5 (chart M15 — visual only)" init line (or new "CHECK ONLY"
+block) with a fresh timestamp in MQL5/Logs — never by the heartbeat, which
+survives a failed restart untouched.** Unresolved footnote: the 09-01
+06:00-server SELL confirm passed with the close ~$0.93 beyond the
+overlay-resampled EMA-50 while the 0.3×ATR filter (~$2.77) should have
+killed it — either the reinit kept a stale input set or resample-vs-broker
+EMA drift; the 14:21 attach runs source defaults, so the filter is
+verifiably active from there. Watch the next few M15 confirms for the
+"without clearing" reject message as live proof.
+
 ## Session shadow re-fired after a spontaneous EA reinit (2026-09-01)
 
 MT5 reinitialized the chart EA at 03:36 server with NO compile, NO MT5
