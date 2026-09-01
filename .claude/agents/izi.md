@@ -934,6 +934,15 @@ wiring.
   for "trading". Fail-open (a Telegram hiccup never fails the launch).
   There is deliberately NO "system down" alert: shutting the machine down
   kills the watchdog with everything else — nothing is left to send it.
+- **EA-reconnect notice (2026-09-01, owner: "no notification that the EA is
+  on?")**: the launcher notice above fires only when setup.sh runs, and the
+  watchdog announces only restarts IT performed — a direct MT5 restart
+  produced silence. Now `/heartbeat` in `main.py` posts "🟢 EA back online
+  after Ns — <strategy>, algo ON/OFF⚠️" whenever a heartbeat arrives after
+  a gap > 60 s, covering every restart path. A fresh SERVICE process
+  (previous heartbeat is None) stays silent on purpose: the service
+  restarts on every code deploy while the EA runs on undisturbed, and that
+  must not spam. Tests: tail of `tests/test_heartbeat.py`.
 - **20 MB log rotation (2026-08-24)**: `rotate_log` in setup.sh runs just
   before each uvicorn start (phase 4 `service.log`, phase 5 `miniapp.log`)
   and moves a file over 20 MB to `<name>.log.1`, replacing any previous

@@ -682,6 +682,24 @@ async def heartbeat(hb: HeartbeatRequest):
                 app.state.ticker_busy = False
 
         app.state.ticker_task = asyncio.create_task(_ticker_bg())
+    # EA-reconnect notice (owner request 2026-09-01: an MT5 restart produced
+    # no Telegram signal that the EA was back — the launcher's "system up"
+    # notice fires only when setup.sh runs, and the watchdog only announces
+    # restarts IT performed). The service sees every heartbeat, so it covers
+    # every restart path: a heartbeat after a gap > 60 s posts one notice.
+    # previous is None (fresh service process) stays silent — the service
+    # restarts on every code deploy while the EA runs on undisturbed.
+    if previous is not None and (time.time() - previous[0]) > 60:
+        tg = getattr(app.state, "telegram", None)
+        if tg is not None:
+            gap_s = int(time.time() - previous[0])
+            text = ("🟢 EA back online after %ds — %s, algo %s"
+                    % (gap_s, hb.active_strategy or "?",
+                       "ON" if hb.algo_trading else "OFF ⚠️"))
+            try:
+                await asyncio.to_thread(tg.send_message, text)
+            except Exception:
+                pass
     if prev_algo_trading != hb.algo_trading:
         tg = getattr(app.state, "telegram", None)
         if tg is not None:

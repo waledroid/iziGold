@@ -78,3 +78,50 @@ def test_switch_queue_cancel_clears_pending(client):
     assert body["switch_to"] is None
     assert body["mode"] == "auto"   # echoes the stored mode (fresh default)
     assert body["command"] is None
+
+
+# --- EA-reconnect Telegram notice (owner request 2026-09-01) ---------------
+# The launcher's "system up" notice only fires when setup.sh runs; a direct
+# MT5 restart (watchdog, or by hand) produced no Telegram signal that the EA
+# was back. The service sees every heartbeat, so IT announces the reconnect:
+# a heartbeat arriving after a gap > 60 s posts one notice. A fresh service
+# process (previous is None) stays silent — service restarts happen on every
+# code deploy while the EA runs on undisturbed.
+
+class _CaptureTg:
+    def __init__(self):
+        self.sent = []
+
+    def send_message(self, text, reply_markup=None):
+        self.sent.append(text)
+
+    def __getattr__(self, name):        # ticker etc. — accept and ignore
+        return lambda *a, **k: None
+
+
+def _flat_hb(active="halftrend_m15_v1"):
+    return {"equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0,
+            "positions": [], "kill_switch": False, "hwm": 10100.0,
+            "exposure_min": 5, "window_open": True, "spread_points": 25.0,
+            "active_strategy": active}
+
+
+def test_reconnect_notice_after_gap(client):
+    from app import main
+    client.post("/heartbeat", json=_flat_hb())
+    ts, hb = main.app.state.latest_heartbeat
+    main.app.state.latest_heartbeat = (ts - 120, hb)   # simulate 2-min outage
+    tg = _CaptureTg()
+    main.app.state.telegram = tg
+    client.post("/heartbeat", json=_flat_hb())
+    assert any("EA back online" in t for t in tg.sent), tg.sent
+    assert any("halftrend_m15_v1" in t for t in tg.sent), tg.sent
+
+
+def test_no_notice_for_small_gap_or_fresh_service(client):
+    from app import main
+    tg = _CaptureTg()
+    main.app.state.telegram = tg
+    client.post("/heartbeat", json=_flat_hb())       # previous is None
+    client.post("/heartbeat", json=_flat_hb())       # gap ~0 s
+    assert not any("EA back online" in t for t in tg.sent), tg.sent
