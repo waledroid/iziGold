@@ -1241,6 +1241,26 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## TradeManager ATR now follows the ACTIVE LANE (owner-felt, 2026-09-01)
+
+The owner: "the adds are too quick for m15 — though good for m5." Correct,
+and mechanical: `g_atrHandle` was `iATR(TradeTimeframe=M5)` no matter which
+lane traded, so with the M15 lane active, pyramid adds spaced on 1.0 x M5
+ATR (~$5) instead of M15 ATR (~$9) — verified live (adds $6.33/$4.76 apart
+on the 09-01 basket) — and add-leg fallback stops scaled the same way.
+Every backtest always used the trading TF's own ATR, so live was running a
+config NO sweep had ever priced. Modeled cost (17-mo, ADR mode, current
+M15 recipe): live-bug ~0.5 ATR spacing = +$458 / dd $817; correct 1.0 x
+M15 ATR = +$2,407 / dd $586. Fix: `CStrategy::TradeTf()` (PERIOD_CURRENT =
+"EA's TradeTimeframe"; each strategy returns its m_tf) +
+`SyncAtrToActiveLane()` in the EA at init and after every successful lane
+switch — logs "TradeManager ATR now M15 (active lane)", verified live.
+Wider-adds sweep (same recipe, new `--add-trigger-atr` flag): 1.0 is best
+NET; 2.5 trades −11% net for −33% dd — owner's EMA-200-conditional
+widening idea parked since plain widening adds no money. NOTE the ADR-mode
+M15 numbers (+$2,407) are NOT comparable to the FIXED-ride sweeps
+(+$9,975) — different management, different scale.
+
 ## Two MT5 "restarts" were silent no-ops — verify by INIT FINGERPRINT (2026-09-01)
 
 Init-line census across 08-31/09-01 shows only THREE real EA inits (08-31

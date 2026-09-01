@@ -137,6 +137,7 @@ public:
      }
 
    virtual string Id() { return "boll_stochrsi_v1"; }
+   virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
 
    virtual ENUM_SIGNAL Evaluate()
      {

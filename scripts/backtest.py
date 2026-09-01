@@ -1643,6 +1643,12 @@ def build_parser():
                     help="override daily exposure minutes (0 = unlimited)")
     rules.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
+    rules.add_argument("--add-trigger-atr", type=float, default=None,
+                    help="override the pyramid add spacing (x ATR of the "
+                         "trading TF; config default %s). NOTE the live EA "
+                         "bug found 2026-09-01: it spaced adds on M5 ATR "
+                         "even on the M15 lane — this replay always uses "
+                         "the trading TF's own ATR" % _CFG["add_trigger_atr"])
     rules.add_argument("--confirm", type=int, default=None,
                     help="override ConfirmCloses (consecutive closes beyond "
                          "the EMA required after a flip; default 1)")
@@ -1851,6 +1857,9 @@ def main():
     if args.risk is not None:
         global RISK_PCT
         RISK_PCT = args.risk
+    if args.add_trigger_atr is not None:
+        global ADD_TRIGGER_ATR
+        ADD_TRIGGER_ATR = args.add_trigger_atr
     if args.confirm is not None:
         global CONFIRM_CLOSES
         CONFIRM_CLOSES = args.confirm

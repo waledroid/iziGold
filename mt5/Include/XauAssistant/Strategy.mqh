@@ -47,6 +47,12 @@ public:
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }
+   // The timeframe this strategy trades. PERIOD_CURRENT = "the EA's
+   // TradeTimeframe input" (the default for strategies without their own
+   // lane TF). The EA uses this to scale TradeManager's ATR to the ACTIVE
+   // lane (2026-09-01: adds were spacing on M5 ATR while the M15 lane
+   // traded — modeled at ~80% of the lane's net over 17 months).
+   virtual ENUM_TIMEFRAMES TradeTf() { return PERIOD_CURRENT; }
    // Called once per closed bar.
    virtual ENUM_SIGNAL Evaluate() { return SIGNAL_NONE; }
    // True while the entry condition remains valid (pyramiding gate, spec 5b).

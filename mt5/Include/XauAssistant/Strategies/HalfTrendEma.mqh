@@ -493,6 +493,7 @@ public:
    virtual int LastEma200Agree() const override { return m_lastEma200Agree; }
 
    virtual string Id() { return m_id; }
+   virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
 
    virtual ENUM_SIGNAL Evaluate()
      {

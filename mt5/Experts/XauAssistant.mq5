@@ -117,6 +117,25 @@ CRiskManager   g_risk;
 CTradeManager  g_trades;
 CTradeBoxes    g_tradeBoxes;
 int            g_atrHandle = INVALID_HANDLE;
+
+// TradeManager's ATR must be the ACTIVE LANE's trade-TF ATR, not the EA's
+// TradeTimeframe (2026-09-01, owner: "the adds are too quick for m15"): with
+// the M15 lane active, adds were spacing on 1.0 x M5 ATR (~$5) instead of
+// M15 ATR (~$9) — modeled over 17 months that costs ~80% of the lane's net
+// (+$458/dd $817 vs +$2,407/dd $586) AND raises drawdown. Every backtest
+// always used the trading TF's own ATR, so this also closes a live-vs-replay
+// divergence. Called at init and after every successful lane switch.
+void SyncAtrToActiveLane()
+  {
+   ENUM_TIMEFRAMES tf = TradeTimeframe;
+   CStrategy *active = g_registry.Active();
+   if(active != NULL && active.TradeTf() != PERIOD_CURRENT)
+      tf = active.TradeTf();
+   if(g_atrHandle != INVALID_HANDLE) IndicatorRelease(g_atrHandle);
+   g_atrHandle = iATR(_Symbol, tf, 14);
+   PrintFormat("XauAssistant: TradeManager ATR now %s (active lane)",
+               StringSubstr(EnumToString(tf), 7));
+  }
 datetime       g_lastBar = 0;
 bool           g_debugFired = false;
 string         g_pendingSwitch = "";
@@ -288,7 +307,7 @@ int OnInit()
    // re-init run ProcessBar (warm-up replay -> full repaint), identical to
    // the already-guarded recompile/restart path.
    g_lastBar = 0;
-   g_atrHandle = iATR(_Symbol, TradeTimeframe, 14);
+   SyncAtrToActiveLane();
    EventSetTimer(HeartbeatSec);
    if(Period() != TradeTimeframe)
       PrintFormat("XauAssistant: trading TF %s (chart %s — visual only)",
@@ -614,6 +633,7 @@ void ProcessBar()
         {
          if(oldActive != NULL) oldActive.EnablePaint(false);
          g_registry.Active().EnablePaint(true);
+         SyncAtrToActiveLane();
          Print("XauAssistant: switched active strategy to '", sw, "'");
          g_alerts.Notify("switched to " + sw);
         }

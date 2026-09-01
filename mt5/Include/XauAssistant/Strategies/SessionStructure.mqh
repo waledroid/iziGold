@@ -66,6 +66,7 @@ public:
         m_virtualDir(SIGNAL_NONE), m_virtualEndHour(-1) {}
 
    virtual string Id() { return "session_structure_v1"; }
+   virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
