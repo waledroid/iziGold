@@ -58,7 +58,8 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
             current["entries"].append(
                 {"ts": r.get("ts"), "price": r.get("price"),
                  "lots": r.get("lots"), "htf_agree": r.get("htf_agree"),
-                 "ema200_agree": r.get("ema200_agree")})
+                 "ema200_agree": r.get("ema200_agree"),
+                 "news_blackout": r.get("news_blackout")})
         elif event == "close":
             if current is None:
                 # a close with no open basket in the fetched window is a
@@ -166,18 +167,20 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     has_strat = "strategy_id" in cols
     has_htf = "htf_agree" in cols
     has_e200 = "ema200_agree" in cols
+    has_news = "news_blackout" in cols
     sel = ("SELECT id, ts, event, direction, lots, price, profit, final, "
            + ("entry_mode" if has_mode else "''") + ", "
            + ("reason" if has_reason else "''") + ", "
            + ("strategy_id" if has_strat else "''") + ", "
            + ("htf_agree" if has_htf else "-1") + ", "
-           + ("ema200_agree" if has_e200 else "-1")
+           + ("ema200_agree" if has_e200 else "-1") + ", "
+           + ("news_blackout" if has_news else "-1")
            + " FROM trades WHERE ts >= ? AND ts < ? ORDER BY id ASC")
     raw = conn.execute(sel, (start_utc - REPORT_LOOKBACK_S, end_utc)).fetchall()
     rows = [{"id": r[0], "ts": r[1], "event": r[2], "direction": r[3], "lots": r[4],
              "price": r[5], "profit": r[6], "final": r[7], "entry_mode": r[8],
              "reason": r[9], "strategy_id": r[10], "htf_agree": r[11],
-             "ema200_agree": r[12]}
+             "ema200_agree": r[12], "news_blackout": r[13]}
             for r in raw]
     baskets = [b for b in _group_baskets(rows, cap=None)
                if b.get("exit") and isinstance(b["exit"].get("ts"), (int, float))
@@ -292,6 +295,10 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             # EMA-200 (own-timeframe) agreement, same shape, backfilled by
             # scripts/backfill_ema200_agree.py.
             "e200": _ema200_flag(entries),
+            # Entered inside a news blackout window (owner 2026-09-01:
+            # blackout raises a proposal instead of blocking) — first leg's
+            # verdict; True / False / None when unknown.
+            "news": _flag(entries, "news_blackout"),
             # Which market session the trade was OPENED in -- entry time is
             # what the session describes, not the exit.
             "session": market_session_short(

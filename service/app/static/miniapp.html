@@ -1160,7 +1160,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
     thead.innerHTML = ""; tbody.innerHTML = "";
     var hr = el("tr");
-    ["Time", "Session", "Dir", "M15", "E200", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    ["Time", "Session", "Dir", "M15", "E200", "News", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
     thead.appendChild(hr);
     var rows = Array.isArray(data.rows) ? data.rows : [];
     rows.forEach(function (r) {
@@ -1185,6 +1185,14 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
                     : (r.e200 === false ? "EMA-200 disagreed — this trade would be refused if enforcing"
                                        : "not recorded for this trade");
       tr.appendChild(e200cell);
+      // News blackout at entry: ⚠️ = entered inside a high-impact blackout
+      // window (owner-approved or pre-change auto), blank = clear, – = not
+      // recorded (rows before 2026-09-01).
+      var newsCell = el("td", r.news === true ? "dir-sell" : "muted",
+                        r.news === true ? "⚠️" : (r.news === false ? "" : "–"));
+      newsCell.title = r.news === true ? "entered inside a news blackout window"
+                     : (r.news === false ? "no blackout at entry" : "not recorded for this trade");
+      tr.appendChild(newsCell);
       tr.appendChild(el("td", "muted", (r.mode || "adr").toString().toUpperCase()));
       var ent = fmtPx(r.entry) + (isNumeric(r.entries) && r.entries > 1 ? " (" + r.entries + ")" : "");
       tr.appendChild(el("td", null, ent + " → " + fmtPx(r.exit)));

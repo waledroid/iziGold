@@ -294,6 +294,15 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN ema200_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+        if "news_blackout" not in trade_cols:
+            # 1 = entered inside a high-impact news blackout window (owner
+            # 2026-09-01: blackout is a proposal/warning, not a block),
+            # 0 = clear at entry, -1 = unknown (older rows / close events).
+            try:
+                self.conn.execute(
+                    "ALTER TABLE trades ADD COLUMN news_blackout INTEGER DEFAULT -1")
+            except sqlite3.OperationalError:
+                pass
         # resolve_outcomes runs on EVERY /analyze and scans for unresolved
         # rows; a partial index keeps that scan proportional to the handful
         # of open signals instead of the whole (ever-growing) table.
@@ -567,21 +576,23 @@ class SignalDb:
         with self._lock:
             cur = self.conn.execute(
                 "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-                " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree, ema200_agree)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree,"
+                " ema200_agree, news_blackout)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
                  ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
                  ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
                  ev.get("tp", 0.0), int(ev.get("final", True)),
                  ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
-                 int(ev.get("ema200_agree", -1))))
+                 int(ev.get("ema200_agree", -1)), int(ev.get("news_blackout", -1))))
             self.conn.commit()
             return cur.lastrowid
 
     def recent_trades(self, limit: int = 50) -> list:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
                 "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
-                "tp", "final", "entry_mode", "htf_agree", "ema200_agree"]
+                "tp", "final", "entry_mode", "htf_agree", "ema200_agree",
+                "news_blackout"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()

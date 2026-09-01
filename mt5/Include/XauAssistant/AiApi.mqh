@@ -21,7 +21,8 @@ private:
 
    string BuildJson(ENUM_SIGNAL sig, int count, string strategyId,
                     string &shadowIds[], ENUM_SIGNAL &shadowSigs[],
-                    double sprMin, double sprAvg, double sprMax)
+                    double sprMin, double sprAvg, double sprMax,
+                    bool newsBlackout)
      {
       MqlRates rates[];
       // shift 1 = last CLOSED bar; the forming bar is never sent
@@ -50,7 +51,8 @@ private:
       // Closed-bar spread telemetry (points); all zeros = no samples.
       json += "],\"spread_min\":" + DoubleToString(sprMin, 2) +
               ",\"spread_avg\":" + DoubleToString(sprAvg, 2) +
-              ",\"spread_max\":" + DoubleToString(sprMax, 2);
+              ",\"spread_max\":" + DoubleToString(sprMax, 2) +
+              ",\"news_blackout\":" + (newsBlackout ? "true" : "false");
       return json + "}";
      }
 
@@ -85,11 +87,12 @@ public:
 
    bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
                 ENUM_SIGNAL &shadowSigs[], AiResponse &out,
-                double sprMin = 0.0, double sprAvg = 0.0, double sprMax = 0.0)
+                double sprMin = 0.0, double sprAvg = 0.0, double sprMax = 0.0,
+                bool newsBlackout = false)
      {
       out.ai_available = false;
       string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs,
-                              sprMin, sprAvg, sprMax);   // 300 bars so EMA200 has warmup in renders
+                              sprMin, sprAvg, sprMax, newsBlackout);   // 300 bars so EMA200 has warmup in renders
       if(json == "") return false;
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

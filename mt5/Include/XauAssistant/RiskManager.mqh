@@ -362,7 +362,12 @@ public:
       return adx[0] >= m_adxThreshold;
      }
 
-   bool CanEnter(string &why)
+   // newsOverride (owner request 2026-09-01): a Telegram-approved "execute"
+   // is the OWNER deciding to trade INSIDE a blackout — the news gate must
+   // not refuse their explicit yes. Every other guard still applies to an
+   // approved command (kill switch, window, exposure, loss brake, spread,
+   // ADX): the override is scoped to news, nothing else.
+   bool CanEnter(string &why, bool newsOverride = false)
      {
       why = "";
       if(KillSwitchTripped())                          { why = "kill switch tripped"; return false; }
@@ -370,7 +375,7 @@ public:
       if(dt.hour < m_winStart || dt.hour >= m_winEnd)  { why = "outside trading window"; return false; }
       if(GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
       if(DailyLossBreached())                          { why = "daily loss limit"; return false; }
-      if(NewsBlackout())                               { why = "news blackout"; return false; }
+      if(!newsOverride && NewsBlackout())              { why = "news blackout"; return false; }
       long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
       if(spread > m_maxSpread)                         { why = "spread too wide"; return false; }
       if(!TrendOK())                                   { why = "ADX below threshold"; return false; }

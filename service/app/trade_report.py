@@ -135,7 +135,8 @@ def _pl_message(profit: float, direction: str = "", legs: list | None = None,
 
 
 def _trade_caption(event, direction, lots, price, reason, profit,
-                   htf_agree: int = -1, ema200_agree: int = -1) -> str:
+                   htf_agree: int = -1, ema200_agree: int = -1,
+                   news_blackout: int = -1) -> str:
     caption = f"{event} {direction} {lots}@{price} — {reason}"
     if event == "close":
         caption += f"; P/L {profit}"
@@ -151,6 +152,11 @@ def _trade_caption(event, direction, lots, price, reason, profit,
             # reported on every entry, both strategies, even when the
             # enforcement toggle is off and it could not have blocked.
             caption += (f"\nE200: {'agrees ✅' if ema200_agree == 1 else 'DISAGREES ⚠️'}")
+        if news_blackout == 1:
+            # Only worth a line when it actually applies (owner 2026-09-01):
+            # this entry happened INSIDE a high-impact blackout window —
+            # either owner-approved via the blackout proposal, or manual.
+            caption += "\nNEWS BLACKOUT at entry ⚠️"
     return caption
 
 

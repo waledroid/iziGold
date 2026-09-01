@@ -24,10 +24,12 @@ def make_analyze_payload(signal="BUY", strategy_id="halftrend_ema_v1"):
             "candles": [c.model_dump() for c in trend_candles(200)]}
 
 
-def _post_signal(client, signal, strategy_id="halftrend_ema_v1"):
+def _post_signal(client, signal, strategy_id="halftrend_ema_v1",
+                 news_blackout=False):
     payload = make_analyze_payload()
     payload["signal"] = signal
     payload["strategy_id"] = strategy_id
+    payload["news_blackout"] = news_blackout
     return client.post("/analyze", json=payload)
 
 
@@ -400,3 +402,26 @@ def test_pl_message_includes_avg_entry_and_exit(client, fake_tg):
     assert sends, "P/L message not sent"
     msg = sends[-1][1]
     assert "-$8.24 loss" in msg and "SELL 4077.76" in msg and "4078.65" in msg
+
+
+# --- blackout entries propose even in AUTO (owner request 2026-09-01) ------
+# During a news blackout the EA does not auto-execute; a BUY/SELL /analyze
+# arriving with news_blackout=true raises a Telegram proposal (with the
+# blackout warning prefixed) so the owner decides the trade themselves.
+# Auto behavior resumes when the window ends — no exec-mode state is flipped.
+
+def test_blackout_entry_creates_proposal_in_auto_mode(client, fake_tg):
+    client.app.state.db.set_exec_mode("auto")
+    _post_signal(client, "BUY", news_blackout=True)
+    p = client.app.state.db.pending_proposal()
+    assert p is not None and p["kind"] == "entry" and p["direction"] == "BUY"
+    texts = [str(c) for c in fake_tg.calls]
+    assert any("NEWS BLACKOUT" in t for t in texts), texts
+
+
+def test_blackout_none_or_exit_does_not_propose_in_auto(client, fake_tg):
+    client.app.state.db.set_exec_mode("auto")
+    _post_signal(client, "NONE", news_blackout=True)
+    assert client.app.state.db.pending_proposal() is None
+    _post_signal(client, "EXIT", news_blackout=True)   # exits stay auto
+    assert client.app.state.db.pending_proposal() is None

@@ -10,6 +10,7 @@
 #include <XauAssistant/UiApi.mqh>
 #include <XauAssistant/TradeBoxes.mqh>
 #include <XauAssistant/Reconciler.mqh>
+#include <XauAssistant/NewsGuard.mqh>
 
 class CUiSink : public CTradeEventSink
   {
@@ -18,16 +19,19 @@ private:
    CUiApi            *m_ui;
    CTradeBoxes       *m_boxes;
    CReconciler       *m_recon;
+   CNewsGuard        *m_news;
 
 public:
-   CUiSink() : m_registry(NULL), m_ui(NULL), m_boxes(NULL), m_recon(NULL) {}
+   CUiSink() : m_registry(NULL), m_ui(NULL), m_boxes(NULL), m_recon(NULL), m_news(NULL) {}
 
-   void Init(CStrategyRegistry *registry, CUiApi *ui, CTradeBoxes *boxes, CReconciler *recon)
+   void Init(CStrategyRegistry *registry, CUiApi *ui, CTradeBoxes *boxes, CReconciler *recon,
+             CNewsGuard *news = NULL)
      {
       m_registry = registry;
       m_ui       = ui;
       m_boxes    = boxes;
       m_recon    = recon;
+      m_news     = news;
      }
 
    // FIXED-mode target alert: one Telegram notice with a tap-to-exit
@@ -85,14 +89,19 @@ public:
       // The higher-timeframe (and EMA200) verdicts belong to the ENTRY
       // decision, so they are only meaningful on open/add rows; closes
       // carry -1 (unknown).
-      int htfAgree = -1, ema200Agree = -1;
+      int htfAgree = -1, ema200Agree = -1, newsBlackout = -1;
       if(event != "close" && active != NULL)
         {
          htfAgree = active.LastHtfAgree();
          ema200Agree = active.LastEma200Agree();
         }
+      // News blackout stamp (owner 2026-09-01): entry-decision context, so
+      // open/add rows only — closes stay -1 like the agree verdicts.
+      if(event != "close" && m_news != NULL)
+         newsBlackout = m_news.InBlackout() ? 1 : 0;
       long id = m_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
-                                    profit, tp, basketGone, entryMode, htfAgree, ema200Agree);
+                                    profit, tp, basketGone, entryMode, htfAgree, ema200Agree,
+                                    newsBlackout);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
       // re-report this deal on the next MT5/service restart. CloseAll's

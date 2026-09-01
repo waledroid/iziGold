@@ -528,3 +528,25 @@ def test_strategy_pnl_groups_closes_by_strategy(tmp_path):
     out = db.strategy_pnl()
     assert out["a"] == (pytest.approx(12.5), 2)
     assert out["b"] == (pytest.approx(-1.0), 1)
+
+
+# --- news_blackout column (owner request 2026-09-01) -----------------------
+# The blackout no longer blocks entries — it is reported instead: the EA
+# stamps every open with news_blackout (1 = entered inside a blackout,
+# 0 = clear, -1 = unknown/old build), the db stores it, /api/trades exposes
+# it, and the mini-app history renders it as its own column.
+
+def test_news_blackout_stored_and_exposed(client):
+    r = client.post("/trade-event", json=_trade(news_blackout=1))
+    assert r.status_code == 200
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["news_blackout"] == 1
+    r = client.post("/trade-event", json=_trade(ticket=12346, news_blackout=0))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["news_blackout"] == 0
+
+
+def test_news_blackout_defaults_unknown(client):
+    client.post("/trade-event", json=_trade(ticket=12347))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["news_blackout"] == -1

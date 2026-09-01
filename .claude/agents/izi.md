@@ -1241,6 +1241,32 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## News blackout: propose instead of block (owner request, 2026-09-01)
+
+Two blackouts on one Monday cost the owner the day's only other M15 entry;
+they asked for "switch to manual during blackout, then back to auto". The
+implementation flips NO mode state (a temporary exec_mode change would
+fight the heartbeat lane/mode re-assert) — instead a blackout ENTRY simply
+RIDES THE MANUAL RAILS per-signal:
+
+- The EA still refuses auto entries in a blackout (`RiskManager.CanEnter`
+  unchanged for the auto path) and now sends `news_blackout` on every
+  `/analyze` (`AiApi.BuildJson`).
+- `maybe_propose` (main.py) raises a Telegram entry proposal in AUTO mode
+  when `news_blackout` is set — prefixed "⚠️ NEWS BLACKOUT — auto entry
+  paused. Take it yourself?" with the normal execute/skip buttons. NONE
+  and EXIT never propose this way (exits still auto-execute in a blackout,
+  as before). When the window ends auto entries resume by themselves.
+- The approved execute passes `CanEnter(why, newsOverride=true)` — the
+  owner's explicit yes bypasses ONLY the news gate; kill switch, window,
+  exposure, loss brake, spread and ADX still apply to approved commands.
+- **Reporting column** end-to-end like htf/e200: `news_blackout` on
+  TradeEventRequest (1/0/-1), trades-table migration, `recent_trades`,
+  basket flag `"news"` (reports.py `_flag`), miniapp history "News" column
+  (⚠️ = entered inside a blackout), and the screenshot caption line
+  "NEWS BLACKOUT at entry ⚠️". UiSink stamps open/add rows via an injected
+  `CNewsGuard*`; closes stay -1.
+
 ## TradeManager ATR now follows the ACTIVE LANE (owner-felt, 2026-09-01)
 
 The owner: "the adds are too quick for m15 — though good for m5." Correct,

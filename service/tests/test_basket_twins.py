@@ -131,7 +131,7 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     # reason to. This is the explicit assertion the shared-contract test
     # must make so the difference is a choice, not silent drift. ---
     leg_keys = {"price", "lots", "event", "sl", "tp"}
-    entry_keys = {"ts", "price", "lots", "htf_agree", "ema200_agree"}
+    entry_keys = {"ts", "price", "lots", "htf_agree", "ema200_agree", "news_blackout"}
     for legs in (legs1, legs2, legs3):
         for leg in legs:
             assert set(leg.keys()) == leg_keys
@@ -147,7 +147,7 @@ def test_basket_legs_and_group_baskets_agree_on_the_same_legs(client):
     # entries carry ts/htf_agree/ema200_agree (report display) instead --
     # neither field crosses over, on purpose (see the TWIN WARNING comments).
     assert leg_keys - entry_keys == {"event", "sl", "tp"}
-    assert entry_keys - leg_keys == {"ts", "htf_agree", "ema200_agree"}
+    assert entry_keys - leg_keys == {"ts", "htf_agree", "ema200_agree", "news_blackout"}
 
     # --- ema200_agree survives grouping just like htf_agree, and the two
     # verdicts are independent (basket 1 deliberately disagrees between

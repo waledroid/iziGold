@@ -276,7 +276,8 @@ public:
    long PostTradeEvent(string event, string strategyId, string dir, double lots,
                        double price, double sl, string reason, long ticket,
                        double profit = 0.0, double tp = 0.0, bool isFinal = true,
-                       string entryMode = "", int htfAgree = -1, int ema200Agree = -1)
+                       string entryMode = "", int htfAgree = -1, int ema200Agree = -1,
+                       int newsBlackout = -1)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -291,7 +292,8 @@ public:
                     ",\"final\":" + (isFinal ? "true" : "false") +
                     ",\"entry_mode\":\"" + entryMode + "\"" +
                     ",\"htf_agree\":" + (string)htfAgree +
-                    ",\"ema200_agree\":" + (string)ema200Agree + "}";
+                    ",\"ema200_agree\":" + (string)ema200Agree +
+                    ",\"news_blackout\":" + (string)newsBlackout + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

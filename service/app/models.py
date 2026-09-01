@@ -29,6 +29,11 @@ class AnalyzeRequest(BaseModel):
     spread_min: float = 0.0
     spread_avg: float = 0.0
     spread_max: float = 0.0
+    # True when the EA is inside a high-impact news blackout window (owner
+    # 2026-09-01: the blackout no longer auto-trades OR silently blocks —
+    # a BUY/SELL arriving with this set raises a Telegram proposal so the
+    # owner decides the trade themselves; auto resumes when the window ends).
+    news_blackout: bool = False
 
 
 class AnalyzeResponse(BaseModel):
@@ -125,6 +130,10 @@ class TradeEventRequest(BaseModel):
     htf_agree: int = -1
     # EMA-200 (own-timeframe) agreement at entry, same shape.
     ema200_agree: int = -1
+    # News blackout at entry (owner 2026-09-01: blackout is a WARNING, not a
+    # block): 1 = entered inside a high-impact blackout window, 0 = clear,
+    # -1 = unknown (older EA builds / non-open events).
+    news_blackout: int = -1
 
 
 class ProposalResultRequest(BaseModel):

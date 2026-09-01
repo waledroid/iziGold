@@ -503,10 +503,18 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
         if db.set_proposal_status(approved["id"], "expired", expected="approved"):
             edit(approved, "⌛ expired before execution (stance changed)")
 
-    # 2. new proposals: manual mode only, entry/exit signals only
+    # 2. new proposals: manual mode — or a BLACKOUT entry in auto mode
+    # (owner 2026-09-01): during a news blackout the EA does not auto-
+    # execute; a BUY/SELL signal arriving with news_blackout set becomes a
+    # Telegram proposal instead, so the owner decides the trade themselves.
+    # Auto behavior resumes by itself when the window ends — no mode state
+    # is flipped, so nothing can be left stuck in manual. Exits stay
+    # auto-executed during a blackout exactly as before.
     if req.signal not in ("BUY", "SELL", "EXIT"):
         return
-    if db.exec_mode() != "manual":
+    blackout_entry = bool(getattr(req, "news_blackout", False)) \
+        and req.signal in ("BUY", "SELL")
+    if db.exec_mode() != "manual" and not blackout_entry:
         return
     kind = "exit" if req.signal == "EXIT" else "entry"
     if kind == "exit":
@@ -532,8 +540,11 @@ def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
     pid = db.create_proposal(kind, direction, req.strategy_id, price, None)
     if tg is not None:
         markup = (PROPOSAL_KB(pid) if kind == "entry" else EXIT_KB(pid))
-        sent = tg.send_message(format_proposal(kind, direction, price, resp),
-                               reply_markup=markup)
+        text = format_proposal(kind, direction, price, resp)
+        if blackout_entry:
+            text = ("⚠️ NEWS BLACKOUT — auto entry paused. "
+                    "Take it yourself?\n" + text)
+        sent = tg.send_message(text, reply_markup=markup)
         if sent and sent.get("result", {}).get("message_id"):
             db.set_proposal_message(pid, sent["result"]["message_id"])
         cid = _linked_channel(app)
@@ -1269,7 +1280,8 @@ async def screenshot(event: int, request: Request):
         try:
             row = app.state.db.conn.execute(
                 "SELECT event, direction, lots, price, reason, profit,"
-                " COALESCE(htf_agree, -1), COALESCE(ema200_agree, -1)"
+                " COALESCE(htf_agree, -1), COALESCE(ema200_agree, -1),"
+                " COALESCE(news_blackout, -1)"
                 " FROM trades WHERE id=?", (event,)).fetchone()
             if row is not None:
                 caption = _trade_caption(*row)

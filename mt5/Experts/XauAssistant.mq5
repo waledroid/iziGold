@@ -284,7 +284,7 @@ int OnInit()
    g_api.Init(ApiUrl, ApiTimeoutMs, TradeTimeframe);
    g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber, TradeTimeframe);
    g_recon.Init(MagicNumber, &g_ui, ActiveStrategy);
-   g_uiSink.Init(&g_registry, &g_ui, &g_tradeBoxes, &g_recon);
+   g_uiSink.Init(&g_registry, &g_ui, &g_tradeBoxes, &g_recon, &g_news);
    // Key shapes are settled (MigrateGlobalKeys) and g_ui is initialized
    // (base URL/timeout) — safe to back-fill any offline closes now.
    g_recon.ReconcileOfflineCloses();
@@ -483,7 +483,9 @@ void OnTimer()
       else
         {
          string why = "";
-         if(!g_risk.CanEnter(why))
+         // newsOverride=true: an approved execute during a blackout is the
+         // owner's explicit decision (2026-09-01 blackout-goes-manual flow).
+         if(!g_risk.CanEnter(why, true))
            {
             g_ui.PostProposalResult(cmdId, false, why);
            }
@@ -706,12 +708,12 @@ void ProcessBar()
      {
       AiResponse quiet;
       g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, quiet,
-                    g_barSprMin, g_barSprAvg, g_barSprMax);
+                    g_barSprMin, g_barSprAvg, g_barSprMax, g_risk.NewsBlackout());
       return;   // keeps outcome-resolution data flowing (spec 6.3)
      }
    AiResponse r;
    bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r,
-                           g_barSprMin, g_barSprAvg, g_barSprMax);
+                           g_barSprMin, g_barSprAvg, g_barSprMax, g_risk.NewsBlackout());
    if(sig == SIGNAL_NONE) return;        // shadows logged; nothing to alert
    string report = g_sm.BuildReport(sig, r, ok) + "\n" + g_risk.Status();
    g_alerts.Draw(sig, report);
