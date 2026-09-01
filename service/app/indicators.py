@@ -131,3 +131,64 @@ def halftrend(candles, amplitude: int = 4) -> list[tuple[float, int] | None]:
         out[p] = (line_value, trend)
 
     return out
+
+
+def rsi(closes: list[float], period: int = 14) -> list[float | None]:
+    """Wilder's RSI (matches MT5's iRSI): seed with the simple average of
+    the first `period` gains/losses, then Wilder-smooth. Same length as
+    `closes`; the first `period` positions are None. Flat tape (no gains
+    AND no losses) reads 50; all-gains reads 100, all-losses 0. Short or
+    degenerate input degrades to all-None. Added 2026-09-02 for the
+    replay filter study — reporting/replay only, never in the EA."""
+    n = len(closes)
+    if period <= 0 or n <= period:
+        return [None] * n
+    gains = [0.0] * n
+    losses = [0.0] * n
+    for i in range(1, n):
+        d = closes[i] - closes[i - 1]
+        if d >= 0:
+            gains[i] = d
+        else:
+            losses[i] = -d
+    out: list[float | None] = [None] * period
+    ag = sum(gains[1:period + 1]) / period
+    al = sum(losses[1:period + 1]) / period
+
+    def _rsi_val(g, l):
+        if l == 0.0:
+            return 50.0 if g == 0.0 else 100.0
+        return 100.0 - 100.0 / (1.0 + g / l)
+
+    out.append(_rsi_val(ag, al))
+    for i in range(period + 1, n):
+        ag = (ag * (period - 1) + gains[i]) / period
+        al = (al * (period - 1) + losses[i]) / period
+        out.append(_rsi_val(ag, al))
+    return out
+
+
+def macd(closes: list[float], fast: int = 12, slow: int = 26,
+         signal_period: int = 9) -> tuple:
+    """Classic MACD: line = EMA(fast) − EMA(slow), signal = EMA(signal_period)
+    of the line, histogram = line − signal. Three lists, each the same
+    length as `closes`, None during warm-up. NOTE MT5's built-in MACD
+    draws an SMA signal line instead of an EMA one — this is the classic
+    (TradingView/textbook) form, used only by the replay/reporting side."""
+    n = len(closes)
+    e_fast, e_slow = ema(closes, fast), ema(closes, slow)
+    line: list[float | None] = [
+        (e_fast[i] - e_slow[i]) if e_slow[i] is not None else None
+        for i in range(n)]
+    defined = [v for v in line if v is not None]
+    sig_defined = ema(defined, signal_period)
+    signal: list[float | None] = [None] * n
+    j = 0
+    for i in range(n):
+        if line[i] is not None:
+            signal[i] = sig_defined[j]
+            j += 1
+    hist: list[float | None] = [
+        (line[i] - signal[i]) if signal[i] is not None else None
+        for i in range(n)]
+    return line, signal, hist

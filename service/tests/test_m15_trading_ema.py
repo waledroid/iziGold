@@ -21,6 +21,10 @@ def _wavy(n=600):
 
 
 def test_dashboard_m15_overlay_trading_ema():
+    """The M15 trading EMA is drawn SMOOTH on the M5 chart (owner
+    2026-09-02: the stair-stepped bucket expansion looked 'ziggy zaggy'):
+    each completed M15 bucket's EMA value anchors on that bucket's LAST M5
+    bar, and the M5 bars in between interpolate linearly between anchors."""
     candles = _wavy()
     closes = [c.c for c in candles]
     out = _OVERLAY_BUILDERS["halftrend_m15_v1"](candles, closes)
@@ -28,11 +32,19 @@ def test_dashboard_m15_overlay_trading_ema():
     closes15 = [b["c"] for b in m15]
     want = ema(closes15, M15_TRADING_EMA)
     want55 = ema(closes15, 55)
-    i = 450
-    bucket = i - (i % 3)
-    k = next(j for j, b in enumerate(m15) if b["t"] == candles[bucket].t)
-    assert out["ema55"][i] == want[k]
-    assert out["ema55"][i] != want55[k]
+    # candles are 300 s apart starting on a 900 s boundary: bar i sits in
+    # bucket i // 3, and i % 3 == 2 is the bucket's last M5 bar (anchor).
+    i = 452                       # bucket-final bar of bucket 150
+    k = i // 3
+    assert out["ema55"][i] == want[k]           # anchor == bucket EMA
+    assert out["ema55"][i] != want55[k]         # and it is the 50, not 55
+    # mid-bucket bar: strictly between the two neighbouring anchors
+    j = 451                       # second bar of the same bucket
+    lo, hi = sorted((want[k - 1], want[k]))
+    assert lo <= out["ema55"][j] <= hi
+    assert out["ema55"][j] != out["ema55"][i] or want[k - 1] == want[k]
+    # exact interpolation: 2/3 of the way from the previous anchor
+    assert abs(out["ema55"][j] - (want[k - 1] + (want[k] - want[k - 1]) * 2 / 3)) < 1e-9
 
 
 def test_miniapp_m15_tab_trading_ema():

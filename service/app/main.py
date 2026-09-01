@@ -1078,13 +1078,40 @@ def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
     # frontend already binds to — the value is the lane's trading EMA.
     e55, e200 = ema(closes15, 50), ema(closes15, 200)
     idx = {b["t"]: i for i, b in enumerate(m15)}
+
+    # Bucket sizes, so the interpolation below knows where each M5 bar sits
+    # inside its M15 bucket (3 normally; fewer at session edges/gaps).
+    counts: dict = {}
+    for c in candles:
+        b = c.t - (c.t % 900)
+        counts[b] = counts.get(b, 0) + 1
+
+    # Smooth EMA expansion (owner 2026-09-02: the flat-per-bucket step
+    # rendering read as "ziggy zaggy"): a bucket's EMA value anchors on that
+    # bucket's LAST M5 bar — the moment the value actually became known —
+    # and the M5 bars inside the bucket interpolate linearly from the
+    # previous bucket's anchor. The forming bucket interpolates toward its
+    # live (partial-close) EMA, so the line stays continuous to the newest
+    # bar. HalfTrend stays bucket-stepped on purpose: it IS a step line.
+    def smooth(series, i, b, kth):
+        cur = series[i]
+        if cur is None:
+            return None
+        prev = series[i - 1] if i > 0 else None
+        if prev is None:
+            return cur if kth == counts[b] else None
+        return prev + (cur - prev) * (kth / counts[b])
+
+    seen: dict = {}
     out_ht, out55, out200 = [], [], []
     for c in candles:
-        i = idx[c.t - (c.t % 900)]
+        b = c.t - (c.t % 900)
+        i = idx[b]
+        seen[b] = seen.get(b, 0) + 1
         v = ht15[i]
         out_ht.append(list(v) if v is not None else None)
-        out55.append(e55[i])
-        out200.append(e200[i])
+        out55.append(smooth(e55, i, b, seen[b]))
+        out200.append(smooth(e200, i, b, seen[b]))
     return {"halftrend": out_ht, "ema55": out55, "ema200": out200}
 
 

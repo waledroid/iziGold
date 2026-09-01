@@ -1241,6 +1241,37 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## RSI/MACD study + smooth M15 overlay (owner request, 2026-09-02)
+
+**Overlay fix**: the dashboard's M15 EMA lines were stair-stepped ("ziggy
+zaggy") — each M5 bar took its M15 bucket's flat EMA value. Now each
+completed bucket's EMA anchors on that bucket's LAST M5 bar and the bars
+between interpolate linearly (`smooth()` in `_overlays_halftrend_m15_v1`);
+the forming bucket interpolates toward its live partial value, so the line
+is continuous to the newest bar. HalfTrend stays bucket-stepped ON PURPOSE
+(it is a step line). Contract in `test_m15_trading_ema.py` +
+`test_overlays_m15.py`. Mini-app M15 tab was already per-bar (no change);
+its line presence depends on the bridge (500-bar backfill auto-recovers).
+
+**rsi()/macd()** added to `app/indicators.py` (Wilder RSI = MT5's iRSI;
+MACD is the classic EMA-9-signal form — MT5's builtin draws an SMA signal,
+noted in the docstring). `scripts/backtest.py` carries standalone copies;
+parity pinned by `tests/test_rsi_macd.py`. Replay flags `--rsi-filter N`
+(BUY needs RSI<N, SELL needs RSI>100-N) and `--macd-agree` (histogram sign
+must match direction); 0/off = byte-identical.
+
+**Sweep verdicts (17-mo bars_max, both halves; owner: reporting only —
+nothing touches the EA):**
+- **M15 + RSI-70: PASSES the house standard** — net +$10,691 vs +$9,975
+  (+7%), max dd $816 vs $1,225 (−33%), better in BOTH halves on net AND
+  dd. The one genuine find; if any indicator ever becomes a report-only
+  agreement column, this is the candidate.
+- M15 + MACD-agree: weakly positive (+1% net, both halves >= base, only
+  26 refusals/17mo) — real but tiny.
+- M5 + RSI-60: full +14% at dd −46% BUT half2 −39% — regime-dependent,
+  FAILS both-halves. Do not trust.
+- M5 + MACD-agree: fails half1. FAILS.
+
 ## News blackout: propose instead of block (owner request, 2026-09-01)
 
 Two blackouts on one Monday cost the owner the day's only other M15 entry;

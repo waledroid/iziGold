@@ -26,10 +26,16 @@ def test_m15_overlays_align_with_m5_list():
     assert set(out) == {"halftrend", "ema55", "ema200"}
     for arr in out.values():
         assert len(arr) == len(candles)          # 1:1 with /api/candles
-    # three consecutive M5 bars share their M15 bucket's value
+    # SMOOTH expansion (2026-09-02, replaces the old shared-step contract):
+    # the three M5 bars of a bucket interpolate monotonically toward the
+    # bucket's EMA, which lands exactly on the bucket-final bar. The
+    # HalfTrend line stays bucket-stepped on purpose (it IS a step line).
     i = 450
     j = i - (i % 3)
-    assert out["ema55"][j] == out["ema55"][j + 1] == out["ema55"][j + 2]
+    a, b, c3 = out["ema55"][j], out["ema55"][j + 1], out["ema55"][j + 2]
+    assert a != b or b != c3                 # no more three-bar plateau
+    assert (a <= b <= c3) or (a >= b >= c3)  # monotone within the bucket
+    assert out["halftrend"][j] == out["halftrend"][j + 1] == out["halftrend"][j + 2]
 
 
 def test_bb_alias_registered():

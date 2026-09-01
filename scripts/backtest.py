@@ -510,6 +510,14 @@ EMA_CLEAR_ATR = 0.0
 # existing window instead of replacing it. 0 = off, byte-identical.
 CONFIRM_CLEAR_ATR = 0.0
 
+# Indicator filter study (2026-09-02, replay-only — owner: "reporting
+# purposes only", nothing touches the EA). RSI_FILTER is the overbought
+# level: a BUY needs RSI(14) < level and a SELL needs RSI > 100-level;
+# 0 = off. MACD_AGREE requires the classic MACD histogram's sign to agree
+# with the entry direction.
+RSI_FILTER = 0.0
+MACD_AGREE = False
+
 # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
 # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
 # fill; sizing rescales over the widened distance. Entry stop only.
@@ -911,6 +919,56 @@ def lanes_for(strategy=None):
     return set(LANES)
 
 
+def rsi_series(closes, period=14):
+    """Wilder's RSI — mirrors service/app/indicators.py rsi() exactly
+    (parity pinned by tests/test_rsi_macd.py). Replay/study only."""
+    n = len(closes)
+    if period <= 0 or n <= period:
+        return [None] * n
+    gains = [0.0] * n
+    losses = [0.0] * n
+    for i in range(1, n):
+        d = closes[i] - closes[i - 1]
+        if d >= 0:
+            gains[i] = d
+        else:
+            losses[i] = -d
+    out = [None] * period
+    ag = sum(gains[1:period + 1]) / period
+    al = sum(losses[1:period + 1]) / period
+
+    def val(g, l):
+        if l == 0.0:
+            return 50.0 if g == 0.0 else 100.0
+        return 100.0 - 100.0 / (1.0 + g / l)
+
+    out.append(val(ag, al))
+    for i in range(period + 1, n):
+        ag = (ag * (period - 1) + gains[i]) / period
+        al = (al * (period - 1) + losses[i]) / period
+        out.append(val(ag, al))
+    return out
+
+
+def macd_hist_series(closes, fast=12, slow=26, sig=9):
+    """Classic MACD histogram (EMA12−EMA26, EMA9 signal) — mirrors
+    service/app/indicators.py macd(). Replay/study only."""
+    n = len(closes)
+    e_fast, e_slow = ema(closes, fast), ema(closes, slow)
+    line = [(e_fast[i] - e_slow[i]) if e_slow[i] is not None else None
+            for i in range(n)]
+    defined = [v for v in line if v is not None]
+    sig_defined = ema(defined, sig)
+    hist = [None] * n
+    j = 0
+    for i in range(n):
+        if line[i] is not None:
+            if sig_defined[j] is not None:
+                hist[i] = line[i] - sig_defined[j]
+            j += 1
+    return hist
+
+
 def run(candles, start_balance, verbose, active_lanes=None):
     closes = [x["c"] for x in candles]
     ema55 = ema(closes, EMA_LEN)
@@ -921,6 +979,9 @@ def run(candles, start_balance, verbose, active_lanes=None):
     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
         else None
     ema200 = ema(closes, 200) if EMA200_CONFIRM else None
+    rsi14 = rsi_series(closes, 14) if RSI_FILTER > 0 else None
+    mhist = macd_hist_series(closes) if MACD_AGREE else None
+    rsi_refused, macd_refused = [], []
 
     active_lanes = set(LANES) if active_lanes is None else active_lanes
 
@@ -1120,6 +1181,26 @@ def run(candles, start_balance, verbose, active_lanes=None):
                     signal = "SELL"
                 if signal:
                     fired_flip = last_flip
+
+        # --- indicator filter study (2026-09-02; replay-only, owner:
+        # "reporting purposes only"). Applied AFTER the entry decision so
+        # every entry mode (clearance / strict window / loose) is filtered
+        # identically. A refused signal counts and dies — the flip stays
+        # spent, exactly like a dead strict-window signal.
+        if signal and RSI_FILTER > 0 and rsi14 is not None:
+            r_now = rsi14[i]
+            if r_now is None or \
+               (signal == "BUY" and r_now >= RSI_FILTER) or \
+               (signal == "SELL" and r_now <= 100 - RSI_FILTER):
+                rsi_refused.append((when, signal))
+                signal = None
+        if signal and MACD_AGREE and mhist is not None:
+            h_now = mhist[i]
+            if h_now is None or \
+               (signal == "BUY" and h_now <= 0) or \
+               (signal == "SELL" and h_now >= 0):
+                macd_refused.append((when, signal))
+                signal = None
 
         # ---- manage open basket
         if basket:
@@ -1391,6 +1472,8 @@ def run(candles, start_balance, verbose, active_lanes=None):
     run.expo = expo          # server-day -> minutes of open-position time
     run.open_diff_bars = open_diff_bars
     run.dead_signals = dead_signals
+    run.rsi_refused = rsi_refused
+    run.macd_refused = macd_refused
     run.bias_flips = None
     if BIAS_EMA > 0:
         run.bias_flips = {
@@ -1643,6 +1726,14 @@ def build_parser():
                     help="override daily exposure minutes (0 = unlimited)")
     rules.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
+    exp.add_argument("--rsi-filter", type=float, default=0.0,
+                    help="RSI(14) entry filter (study 2026-09-02): BUY needs "
+                         "RSI < LEVEL, SELL needs RSI > 100-LEVEL. 0 = off, "
+                         "byte-identical")
+    exp.add_argument("--macd-agree", action="store_true",
+                    help="require the classic MACD histogram (12/26/9 EMA "
+                         "signal) to agree with the entry direction "
+                         "(study 2026-09-02). Off = byte-identical")
     rules.add_argument("--add-trigger-atr", type=float, default=None,
                     help="override the pyramid add spacing (x ATR of the "
                          "trading TF; config default %s). NOTE the live EA "
@@ -1860,6 +1951,9 @@ def main():
     if args.add_trigger_atr is not None:
         global ADD_TRIGGER_ATR
         ADD_TRIGGER_ATR = args.add_trigger_atr
+    global RSI_FILTER, MACD_AGREE
+    RSI_FILTER = args.rsi_filter
+    MACD_AGREE = args.macd_agree
     if args.confirm is not None:
         global CONFIRM_CLOSES
         CONFIRM_CLOSES = args.confirm
@@ -1912,6 +2006,10 @@ def main():
         head.append(f"ema-clear {EMA_CLEAR_ATR:g} ATR")
     if CONFIRM_CLEAR_ATR > 0:
         head.append(f"confirm-clear {CONFIRM_CLEAR_ATR:g} ATR")
+    if RSI_FILTER > 0:
+        head.append(f"rsi-filter {RSI_FILTER:g}")
+    if MACD_AGREE:
+        head.append("macd-agree")
     elif STRICT_WINDOW:
         head.append("STRICT WINDOW")
     if MIN_STOP_ATR > 0:
@@ -2072,6 +2170,10 @@ def main():
         nb = sum(1 for _, _, r in sk if r == "counter-trend")
         if BIAS_MODE == "skip":
             print(f"  skip: refused {nb} counter-trend entries")
+        if getattr(run, "rsi_refused", None):
+            print(f"  rsi-filter: refused {len(run.rsi_refused)} entries")
+        if getattr(run, "macd_refused", None):
+            print(f"  macd-agree: refused {len(run.macd_refused)} entries")
         bf = getattr(run, "bias_flips", None) or {}
         for tf in ("M5", "M15"):
             if tf in bf:
