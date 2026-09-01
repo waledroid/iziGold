@@ -1186,6 +1186,15 @@ def ui_onboarding():
                         media_type="text/html")
 
 
+@app.get("/vocabs")
+def ui_vocabs():
+    """Gold-trading vocabulary reference (owner request 2026-09-01): grouped
+    terms with one-at-a-time accordion explanations; the system's own
+    guardrails are marked inline. Static page, no data dependencies."""
+    return FileResponse(Path(__file__).parent / "static" / "vocabs.html",
+                        media_type="text/html")
+
+
 @app.get("/api/last-close-ticket")
 async def last_close_ticket():
     """Newest close-deal ticket this service has recorded. The EA's

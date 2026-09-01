@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vocabs — XAU Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-dark: #07090e;
+  --bg-card: rgba(14, 19, 30, 0.82);
+  --bg-card-hover: rgba(22, 30, 46, 0.92);
+  --border-card: rgba(255, 255, 255, 0.07);
+  --border-card-hover: rgba(245, 197, 66, 0.35);
+  --gold-primary: #f5c542;
+  --gold-secondary: #d4af37;
+  --gold-glow: rgba(245, 197, 66, 0.2);
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --pos-green: #10b981;
+  --neg-red: #f43f5e;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg-dark); color: var(--text-main);
+  min-height: 100vh; font-size: 15px; line-height: 1.55;
+}
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 28px; border-bottom: 1px solid var(--border-card);
+  flex-wrap: wrap; gap: 12px;
+}
+.logo { font-family: Outfit, sans-serif; font-weight: 800; font-size: 19px; }
+.logo .au { color: var(--gold-primary); }
+.nav-links { display: flex; gap: 6px; flex-wrap: wrap; }
+.nav-links a {
+  color: var(--text-muted); text-decoration: none; padding: 7px 14px;
+  border-radius: 8px; font-weight: 600; font-size: 14px;
+}
+.nav-links a:hover { color: var(--text-main); background: var(--bg-card-hover); }
+.nav-links a.active { color: var(--gold-primary); background: var(--bg-card); box-shadow: 0 0 0 1px var(--border-card-hover); }
+.wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+h1 { font-family: Outfit, sans-serif; font-weight: 800; font-size: 28px; margin: 0 0 4px; }
+.sub { color: var(--text-muted); margin: 0 0 26px; max-width: 62ch; }
+.group { margin: 30px 0 8px; }
+.group h2 {
+  font-size: 13px; letter-spacing: 1.4px; text-transform: uppercase;
+  color: var(--gold-primary); margin: 0 0 10px; font-weight: 700;
+}
+.acc-item {
+  background: var(--bg-card); border: 1px solid var(--border-card);
+  border-radius: 10px; margin-bottom: 8px; overflow: hidden;
+}
+.acc-item:hover { border-color: var(--border-card-hover); }
+.acc-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 13px 16px; background: none; border: none;
+  color: var(--text-main); font: inherit; font-weight: 600; cursor: pointer;
+  text-align: left;
+}
+.acc-head:focus-visible { outline: 2px solid var(--gold-primary); outline-offset: -2px; border-radius: 10px; }
+.acc-head .num {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--gold-secondary);
+  font-weight: 500; white-space: nowrap;
+}
+.acc-head .chev { color: var(--text-dim); transition: transform 0.18s; flex: none; }
+.acc-item.open .chev { transform: rotate(90deg); color: var(--gold-primary); }
+.acc-body { display: none; padding: 0 16px 14px; color: var(--text-muted); }
+.acc-item.open .acc-body { display: block; }
+.acc-item.open { border-color: var(--border-card-hover); box-shadow: 0 0 18px var(--gold-glow); }
+.acc-body .sys {
+  display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(245, 197, 66, 0.12); color: var(--gold-primary);
+  font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+}
+.acc-body .warn { color: var(--neg-red); font-weight: 600; }
+.acc-body .up { color: var(--pos-green); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .acc-head .chev { transition: none; } }
+</style>
+</head>
+<body>
+<header class="header">
+  <div class="logo"><span class="au">XAU</span> Assistant</div>
+  <nav class="nav-links">
+    <a href="/">⚡ Dashboard</a>
+    <a href="/backtest">📊 Backtest</a>
+    <a href="/vocabs" class="active">📖 Vocabs</a>
+    <a href="/onboarding">⚙️ Settings</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <h1>Gold trading vocabs</h1>
+  <p class="sub">Everything worth knowing at the gold desk, one term at a time. Click a term to open it — the <span style="color:var(--gold-primary)">gold chips</span> mark what this system already enforces for you.</p>
+
+  <div class="group"><h2>Cost &amp; mechanics</h2>
+    <div class="acc-item"><button class="acc-head">Spread <span class="num">15–50 pt normal</span><span class="chev">▶</span></button>
+      <div class="acc-body">The gap between buy and sell price, in points of $0.01. It explodes at rollover, Sunday open, and news — a scalp targeting less than ~3× spread donates money.<br><span class="sys">entries refused above 500 points</span></div></div>
+    <div class="acc-item"><button class="acc-head">Contract math <span class="num">$1 move = $100/lot</span><span class="chev">▶</span></button>
+      <div class="acc-body">1 lot = 100 oz of gold. So a $1.00 price move is $100 per lot, or $1 on 0.01 lots. A $45 stop on 0.05 lots risks $225 — do this math before entering, not after.</div></div>
+    <div class="acc-item"><button class="acc-head">Point vs pip<span class="chev">▶</span></button>
+      <div class="acc-body">Gold has no real "pips" — it moves in points of $0.01. When someone says "gold moved 500 pips" they usually mean $5.00. Think in dollars to stay safe.</div></div>
+    <div class="acc-item"><button class="acc-head">Margin &amp; leverage <span class="num">price × 100 × lots ÷ 20</span><span class="chev">▶</span></button>
+      <div class="acc-body">At EU 1:20 leverage and $4,500 gold, even 0.01 lots needs ~$225 of margin. Pyramiding multiplies the requirement — three stacked positions need triple.</div></div>
+    <div class="acc-item"><button class="acc-head">Swap <span class="num">3× Wednesday</span><span class="chev">▶</span></button>
+      <div class="acc-body">The nightly financing charge for holding a position. Long gold usually pays negative swap, tripled Wednesday to cover the weekend. Irrelevant intraday.<br><span class="sys">flatten-before-break closes everything before the daily break</span></div></div>
+    <div class="acc-item"><button class="acc-head">Slippage<span class="chev">▶</span></button>
+      <div class="acc-body">A stop is a request, not a guarantee — in fast tape it fills at the next available price, which around news can be dollars away. This is why backtests model extra cost per trade.</div></div>
+    <div class="acc-item"><button class="acc-head">Stop &amp; freeze levels<span class="chev">▶</span></button>
+      <div class="acc-body">Brokers enforce a minimum distance between price and your stop, and freeze changes when price gets close. A very tight stop can simply be rejected by the server.</div></div>
+    <div class="acc-item"><button class="acc-head">Commission<span class="chev">▶</span></button>
+      <div class="acc-body">ECN accounts charge per lot (~$6–7 round trip) in exchange for tighter spreads. Cost per trade is the number a high-frequency style multiplies hardest.</div></div>
+  </div>
+
+  <div class="group"><h2>Volatility &amp; range</h2>
+    <div class="acc-item"><button class="acc-head">ATR <span class="num">Average True Range</span><span class="chev">▶</span></button>
+      <div class="acc-body">The average size of recent bars — the market's current "breathing depth". Stops sized in ATR multiples adapt when volatility changes; fixed-dollar stops don't.<br><span class="sys">stops = 2.0× ATR default, 1.75× on M15</span></div></div>
+    <div class="acc-item"><button class="acc-head">ADR <span class="num">Average Daily Range</span><span class="chev">▶</span></button>
+      <div class="acc-body">How far gold travels in a typical day — lately $50–100+. Once today's range is spent, chasing continuation is low-odds, and targets beyond the remaining range are wishes.</div></div>
+    <div class="acc-item"><button class="acc-head">Regime <span class="num">trend / range / high-vol</span><span class="chev">▶</span></button>
+      <div class="acc-body">Which "personality" the market is in. The same signal behaves differently in each — chop is where trend systems bleed.<br><span class="sys">classified via ADX + ATR percentile on every signal</span></div></div>
+    <div class="acc-item"><button class="acc-head">Weekend gap<span class="chev">▶</span></button>
+      <div class="acc-body">Gold reopens Sunday wherever weekend news left it. Stops do not protect through a gap — they fill at the open, however far away that is.</div></div>
+    <div class="acc-item"><button class="acc-head">Volatility clustering<span class="chev">▶</span></button>
+      <div class="acc-body">Big days follow big days. After a $100 shock day, expect another wide one — widen stops and expectations instead of assuming calm returns.</div></div>
+  </div>
+
+  <div class="group"><h2>The clock <span style="color:var(--text-dim); text-transform:none; letter-spacing:0">(server time)</span></h2>
+    <div class="acc-item"><button class="acc-head">Asia session <span class="num">01–04</span><span class="chev">▶</span></button>
+      <div class="acc-body">Thin books and wide spreads, but a documented <span class="up">upward drift</span> from physical buying in the East — +23% cumulative over 17 months of this broker's own bars.<br><span class="sys">outside the live window; session_structure_v1 shadow-trades it</span></div></div>
+    <div class="acc-item"><button class="acc-head">London open <span class="num">~09</span><span class="chev">▶</span></button>
+      <div class="acc-body">The first real volatility expansion of the day — overnight institutional orders get unleashed, and breakouts here carry follow-through that Asia breakouts lack.</div></div>
+    <div class="acc-item"><button class="acc-head">London–NY overlap <span class="num">15–19</span><span class="chev">▶</span></button>
+      <div class="acc-body">Both major centers live at once: deepest liquidity, tightest spreads, and most of the day's trend distance. If you only watch four hours, watch these.</div></div>
+    <div class="acc-item"><button class="acc-head">London fixes <span class="num">AM ~12:30 · PM 17:00</span><span class="chev">▶</span></button>
+      <div class="acc-body">Twice-daily benchmark auctions with real institutional flow. The PM fix is the classic moment of <span class="warn">systematic weakness</span> — expect stop-runs into round numbers just before it.</div></div>
+    <div class="acc-item"><button class="acc-head">Rollover <span class="num">23–01</span><span class="chev">▶</span></button>
+      <div class="acc-body">Daily settlement: spreads blow out and phantom wicks appear. Nothing good happens here.<br><span class="sys">trading window 04–23 fences it off</span></div></div>
+    <div class="acc-item"><button class="acc-head">Daily close <span class="num">00:00 = 17:00 NY</span><span class="chev">▶</span></button>
+      <div class="acc-body">Server midnight aligns with the New York close, so daily candles match what institutions see. Daily counters (exposure, brake) reset here too.</div></div>
+    <div class="acc-item"><button class="acc-head">Seasonality<span class="chev">▶</span></button>
+      <div class="acc-body">Weak but documented tendencies: January strength, autumn festival demand from India, softer early summer. Context, never an entry.</div></div>
+  </div>
+
+  <div class="group"><h2>Drivers</h2>
+    <div class="acc-item"><button class="acc-head">US dollar (DXY)<span class="chev">▶</span></button>
+      <div class="acc-body">Gold is priced in dollars, so dollar strength is a headwind for every long. Check DXY's direction before fighting a gold trend.</div></div>
+    <div class="acc-item"><button class="acc-head">Real yields<span class="chev">▶</span></button>
+      <div class="acc-body">The 10-year TIPS yield is gold's big-picture driver: gold pays no interest, so rising real yields make holding it more expensive. Multi-month moves track this.</div></div>
+    <div class="acc-item"><button class="acc-head">News events <span class="num">NFP · CPI · FOMC</span><span class="chev">▶</span></button>
+      <div class="acc-body">Gold's violence hours — spreads triple and stops slip dollars. A blocked entry near news is protection working, not a bug.<br><span class="sys">NewsGuard blocks ±30 min around high-impact USD events</span></div></div>
+    <div class="acc-item"><button class="acc-head">Safe-haven flows<span class="chev">▶</span></button>
+      <div class="acc-body">Shocks bid gold — but in a true liquidation panic gold <span class="warn">falls with everything</span>, sold to raise margin. The haven bid returns after the deleveraging.</div></div>
+    <div class="acc-item"><button class="acc-head">Central banks &amp; ETFs<span class="chev">▶</span></button>
+      <div class="acc-body">Central-bank buying has been the structural bid of this bull market. ETF holdings and COT positioning show what big money is doing — slow data that frames the trend you trade inside.</div></div>
+    <div class="acc-item"><button class="acc-head">Silver &amp; the ratio<span class="chev">▶</span></button>
+      <div class="acc-body">Silver is high-beta gold: when silver leads a move, it often signals conviction. A stretched gold/silver ratio flags regime turns.</div></div>
+  </div>
+
+  <div class="group"><h2>Structure &amp; execution</h2>
+    <div class="acc-item"><button class="acc-head">Round numbers <span class="num">$50 grid</span><span class="chev">▶</span></button>
+      <div class="acc-body">Gold respects the $50 grid ($4,450, $4,500…). Stops cluster on these levels and get hunted — park yours beyond the level plus a margin, never exactly on it.</div></div>
+    <div class="acc-item"><button class="acc-head">Prior day high/low<span class="chev">▶</span></button>
+      <div class="acc-body">The most-watched intraday levels. A sweep below yesterday's low that instantly reclaims is a classic long trigger; acceptance beyond it is a different trade.</div></div>
+    <div class="acc-item"><button class="acc-head">Stop hunt<span class="chev">▶</span></button>
+      <div class="acc-body">An engineered wick through an obvious level to harvest the stops parked there, then reverse. If your stop sits where everyone's does, you are the liquidity.</div></div>
+    <div class="acc-item"><button class="acc-head">Position sizing <span class="num">risk % first</span><span class="chev">▶</span></button>
+      <div class="acc-body">Size from the stop, not from conviction: lots = (equity × risk%) ÷ (stop distance × $100). Doubling after losses is how gold accounts die.<br><span class="sys">1% per trade · no martingale — pyramids only into winners</span></div></div>
+    <div class="acc-item"><button class="acc-head">Expectancy<span class="chev">▶</span></button>
+      <div class="acc-body">(win% × avg win) − (loss% × avg loss), after costs. Win rate alone means nothing — this system's M15 lane wins ~41% and still profits because losers are smaller than winners.</div></div>
+    <div class="acc-item"><button class="acc-head">Drawdown math <span class="num">−10% needs +11%</span><span class="chev">▶</span></button>
+      <div class="acc-body">Losses compound against you: −20% needs +25% to recover, −50% needs +100%. Circuit breakers exist because of this asymmetry.<br><span class="sys">kill switch at 10% off high-water mark · daily brake 3% · exposure 360 min/day</span></div></div>
+    <div class="acc-item"><button class="acc-head">Overtrading<span class="chev">▶</span></button>
+      <div class="acc-body">More trades usually means less money — this system's own 17-month sweeps showed every step toward higher trade count removing profit. Frequency is a cost, not an edge.</div></div>
+  </div>
+</div>
+
+<script>
+// One explanation at a time: opening an item closes its siblings everywhere.
+function closeOthers(except) {
+  document.querySelectorAll(".acc-item.open").forEach(function (it) {
+    if (it !== except) it.classList.remove("open");
+  });
+}
+document.querySelectorAll(".acc-head").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var item = btn.parentElement;
+    var willOpen = !item.classList.contains("open");
+    closeOthers(item);
+    item.classList.toggle("open", willOpen);
+  });
+});
+</script>
+</body>
+</html>

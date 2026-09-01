@@ -682,6 +682,16 @@ trade boxes (`TradeBoxes.mqh`, recovers open-basket state after reload).
 
 ## 5a. UI endpoints (`app/main.py`)
 
+- **`/vocabs` (2026-09-01, owner request)**: gold-trading vocabulary page —
+  grouped terms (cost/mechanics, volatility, clock, drivers, execution),
+  each an accordion that opens ONE explanation at a time (`closeOthers` in
+  the inline script — the UI-endpoint test asserts on that name). Static
+  `static/vocabs.html`, dashboard design tokens, no data dependencies;
+  linked from the nav of dashboard, backtest and onboarding. The gold
+  `sys` chips inline mark rules the system itself enforces (spread cap,
+  NewsGuard, ATR stops, kill switch/brake, no-martingale). Content mirrors
+  the owner's "Gold Desk Reference" artifact, shortened.
+
 | endpoint | what it does |
 |---|---|
 | `GET /`, `/backtest`, `/onboarding` | the three pages (FileResponse from `static/`); `/` 307s to `/onboarding` when no profile row exists yet |

@@ -116,3 +116,15 @@ def test_dashboard_served(client):
     for needle in ("/api/state", "/api/candles", "/api/stats", "/api/signals", "/api/switch",
                    "/api/trades", "/api/overlays"):
         assert needle in r.text
+
+
+def test_vocabs_page_serves_and_navs_link_it(client):
+    r = client.get("/vocabs")
+    assert r.status_code == 200
+    body = r.text
+    assert "Vocabs" in body and "acc-item" in body
+    # one-at-a-time accordion contract: the opener script closes siblings
+    assert "closeOthers" in body
+    # every page's nav offers the vocabs page
+    for page in ("/", "/backtest", "/onboarding"):
+        assert 'href="/vocabs"' in client.get(page).text, page
