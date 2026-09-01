@@ -42,6 +42,16 @@ private:
       return (hour >= start || hour < end);   // window wrapping midnight
      }
 
+   // True when the window has already started (or finished) at this hour of
+   // the current day — used only by the firstCall seed to declare it spent.
+   bool WindowSpent(int hour, int start, int end)
+     {
+      if(start < 0) return false;
+      if(InWindow(hour, start, end)) return true;
+      if(start <= end) return (hour >= end);
+      return true;   // wrapped window: some part of it is always "today"
+     }
+
 public:
    CSessionStructureStrategy(ENUM_TIMEFRAMES tf,
                              int w1Start, int w1End,
@@ -74,7 +84,20 @@ public:
          m_lastDay = dt.day_of_year;
          m_w1Fired = false; m_w2Fired = false; m_wsFired = false;
         }
-      if(firstCall) return SIGNAL_NONE;
+      if(firstCall)
+        {
+         // Reinit tolerance (2026-09-01): a spontaneous EA reinit at 03:36
+         // server (no compile, no MT5 restart — MT5 just does this) wiped
+         // the in-memory fired flags and the Asia window re-fired a second
+         // BUY the same day. Seeding mid-day therefore marks every window
+         // that has already STARTED today as spent — same doctrine as the
+         // no-catch-up rule above: a missed (or interrupted) window stays
+         // missed until tomorrow.
+         m_w1Fired = WindowSpent(dt.hour, m_w1Start, m_w1End);
+         m_w2Fired = WindowSpent(dt.hour, m_w2Start, m_w2End);
+         m_wsFired = WindowSpent(dt.hour, m_wsStart, m_wsEnd);
+         return SIGNAL_NONE;
+        }
 
       // Exit first: leaving the window closes the virtual position even on
       // the same bar a later window would open (windows must not chain a

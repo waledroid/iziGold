@@ -1241,6 +1241,20 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## Session shadow re-fired after a spontaneous EA reinit (2026-09-01)
+
+MT5 reinitialized the chart EA at 03:36 server with NO compile, NO MT5
+restart and NO heartbeat gap (MT5 just does this occasionally — chart/
+profile refresh class). That wiped `session_structure_v1`'s in-memory
+fired-today flags and the Asia window fired a second BUY the same day
+(bar 03:35; the spurious signals row was deleted from the db). Fix in
+`SessionStructure.mqh`: the firstCall seed now marks every window that
+already STARTED today as spent (`WindowSpent`) — same doctrine as the
+no-catch-up rule, "a missed or interrupted window stays missed". Also
+reconfirmed: this terminal NEVER hot-reloads on recompile — the fix
+needed an MT5 restart to deploy, verified by the fresh init fingerprint
+(two "visual only" lines, new timestamp), not by the heartbeat.
+
 ## A recompile does NOT guarantee the running EA reloaded (2026-08-31)
 
 The weekend's recompiles (session shadow + power-cut hardening) produced a
