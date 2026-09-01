@@ -1201,6 +1201,16 @@ clearing EMA<len> by X (K x ATR)" when the clearance (not the side) killed
 it. Deployed via MT5 restart (input defaults need a fresh attach).
 `--confirm-clear-atr 0` verified byte-identical to the pre-flag replay.
 
+Follow-up same day — the owner asked again for maximum aggression
+("flip candle closes beyond the line → enter directly"). Full ladder
+priced (same recipe): current confirm-1+0.3clr **+$9,975 / dd $1,225 /
+$35 per trade**; flip-bar entry (confirm 0) +$8,525 / dd $1,658 (−15%
+net, +35% dd); flip-bar+0.3clr +$7,303 / dd $2,092; loose no-dead window
++$5,715 (−43%) at 357 trades. Every step toward more trades removes
+money — the waiting bar is where the edge lives (chop flip bars reverse
+immediately). **Owner chose to keep the current rule.** If the real goal
+is more action per day, the answer is the M5 lane, not loosening M15.
+
 ## M15 confirmation EMA 45 → 50 (owner request 2026-08-31, sweep-checked)
 
 On a no-trade Monday the owner asked whether the EMA-45 gate was the cause
