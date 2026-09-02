@@ -1249,6 +1249,29 @@ popup fired on each restart and became noise. The switch still prints to
 the expert journal and is visible on Telegram /mode. Verified live:
 post-restart switch line with zero new "Alert: switched" entries.
 
+## Revival entry hypothesis — tested, FAILS (owner idea, 2026-09-02)
+
+The owner asked: instead of a failed strict-window confirm dying, wait and
+enter when price LATER clears the EMA by 0.3 x ATR. Implemented honestly
+as `--revive-clear-atr K` in the replay (a failed confirm stays armed
+until the next flip; passing confirms untouched; 0 = byte-identical,
+baseline reproduced to the cent). Verdicts (17-mo, current recipes):
+
+- **M15**: revive 0.3 -> +$6,562 vs +$9,975 (−34%) at dd +36%; revive 0.5
+  -> −19%. Decisively worse — late entries on flips that could not confirm
+  cleanly are chasing, and chasing loses.
+- **M5**: full period LOOKS good (+$5,302 vs +$4,084, +30%) but half 1 is
+  NEGATIVE (−$423 vs +$118) — the entire gain is the recent bull half
+  rewarding chasing. FAILS both-halves, same regime trap as M5+RSI-60.
+
+Strict-window doctrine reconfirmed a third time (aggression ladder,
+loose-window, now revival): a flip that does not confirm cleanly is a bad
+flip, and every mechanism that lets it in later loses money. Also fixed
+(source, rides the NEXT compile per owner): the dead-signal log line now
+distinguishes "confirm close hangs on EMA<len>: clears by X, needs Y"
+from the plain "wrong side of EMA<len>" case — the old message said
+"without clearing" for both.
+
 ## RSI + MACD sub-panels on every chart, plugin-style (owner, 2026-09-02)
 
 Display only, both surfaces:

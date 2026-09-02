@@ -269,13 +269,26 @@ private:
               {
                m_signalDead = true;
                if(m_lastProcessed != 0)
-                  Print(m_id + ": ", m_trend == 0 ? "BUY" : "SELL",
-                        " arrow — entry bar would open ",
-                        clearMargin > 0 ? "without clearing" : "on the wrong side of",
-                        " EMA", m_emaLen,
-                        clearMargin > 0 ? StringFormat(" by %.2f (%.1f x ATR)", clearMargin, m_confirmClearAtr) : "",
-                        " (", DoubleToString(close, 2), " vs ",
-                        DoubleToString(emaBuf[0], 2), "): signal ignored until next flip");
+                 {
+                  // Two distinct refusal reasons, named precisely (owner
+                  // 2026-09-02: the old message said "without clearing"
+                  // even for an outright wrong-side close): sideOk means
+                  // the close was on the trend's side but hung inside the
+                  // clearance margin; !sideOk is the plain wrong-side case.
+                  bool sideOk = (m_trend == 0) ? (close > emaBuf[0])
+                                               : (close < emaBuf[0]);
+                  if(sideOk && clearMargin > 0)
+                     Print(m_id + ": ", m_trend == 0 ? "BUY" : "SELL",
+                           " arrow — confirm close hangs on EMA", m_emaLen,
+                           StringFormat(": clears by %.2f, needs %.2f (%.1f x ATR)",
+                                        MathAbs(close - emaBuf[0]), clearMargin, m_confirmClearAtr),
+                           ": signal ignored until next flip");
+                  else
+                     Print(m_id + ": ", m_trend == 0 ? "BUY" : "SELL",
+                           " arrow — entry bar would open on the wrong side of EMA",
+                           m_emaLen, " (", DoubleToString(close, 2), " vs ",
+                           DoubleToString(emaBuf[0], 2), "): signal ignored until next flip");
+                 }
               }
            }
         }

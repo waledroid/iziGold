@@ -518,6 +518,14 @@ CONFIRM_CLEAR_ATR = 0.0
 RSI_FILTER = 0.0
 MACD_AGREE = False
 
+# Revival entry (owner hypothesis 2026-09-02): when the strict window's
+# one-shot confirm FAILS (wrong side, or hanging inside the clearance
+# margin), do not kill the signal — keep the flip armed and enter on the
+# FIRST later close that clears the EMA by K x ATR in the trend's
+# direction (killed by the next flip as usual). Confirms that PASS are
+# untouched. 0 = off, byte-identical.
+REVIVE_CLEAR_ATR = 0.0
+
 # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
 # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
 # fill; sizing rescales over the widened distance. Entry stop only.
@@ -982,6 +990,8 @@ def run(candles, start_balance, verbose, active_lanes=None):
     rsi14 = rsi_series(closes, 14) if RSI_FILTER > 0 else None
     mhist = macd_hist_series(closes) if MACD_AGREE else None
     rsi_refused, macd_refused = [], []
+    revive_flip = None       # flip index whose failed confirm is armed for revival
+    revived = []             # (when, dir) entries taken via revival
 
     active_lanes = set(LANES) if active_lanes is None else active_lanes
 
@@ -1173,6 +1183,8 @@ def run(candles, start_balance, verbose, active_lanes=None):
                         signal = "SELL"
                     else:
                         dead_signals.append((when, "BUY" if trend == 0 else "SELL"))
+                        if REVIVE_CLEAR_ATR > 0:
+                            revive_flip = last_flip
                     fired_flip = last_flip
             else:
                 if trend == 0 and cpx > e and consec_above >= CONFIRM_CLOSES:
@@ -1181,6 +1193,21 @@ def run(candles, start_balance, verbose, active_lanes=None):
                     signal = "SELL"
                 if signal:
                     fired_flip = last_flip
+
+        # --- revival entry (owner hypothesis 2026-09-02): a failed strict
+        # confirm stays armed; the first later close clearing the EMA by
+        # K x ATR in the trend's direction enters. The next flip (which
+        # resets last_flip) disarms it naturally via the equality check.
+        if signal is None and REVIVE_CLEAR_ATR > 0 and revive_flip is not None \
+                and revive_flip == last_flip:
+            m = REVIVE_CLEAR_ATR * a
+            if trend == 0 and cpx > e + m:
+                signal = "BUY"
+            elif trend == 1 and cpx < e - m:
+                signal = "SELL"
+            if signal:
+                revived.append((when, signal))
+                revive_flip = None
 
         # --- indicator filter study (2026-09-02; replay-only, owner:
         # "reporting purposes only"). Applied AFTER the entry decision so
@@ -1474,6 +1501,7 @@ def run(candles, start_balance, verbose, active_lanes=None):
     run.dead_signals = dead_signals
     run.rsi_refused = rsi_refused
     run.macd_refused = macd_refused
+    run.revived = revived
     run.bias_flips = None
     if BIAS_EMA > 0:
         run.bias_flips = {
@@ -1726,6 +1754,12 @@ def build_parser():
                     help="override daily exposure minutes (0 = unlimited)")
     rules.add_argument("--risk", type=float, default=None,
                     help="override risk percent per trade")
+    exp.add_argument("--revive-clear-atr", type=float, default=0.0,
+                    help="revive a FAILED strict-window confirm: enter on "
+                         "the first later close clearing the EMA by K x "
+                         "ATR(14) in the trend's direction (until the next "
+                         "flip). Passing confirms unchanged. 0 = off, "
+                         "byte-identical")
     exp.add_argument("--rsi-filter", type=float, default=0.0,
                     help="RSI(14) entry filter (study 2026-09-02): BUY needs "
                          "RSI < LEVEL, SELL needs RSI > 100-LEVEL. 0 = off, "
@@ -1954,6 +1988,8 @@ def main():
     global RSI_FILTER, MACD_AGREE
     RSI_FILTER = args.rsi_filter
     MACD_AGREE = args.macd_agree
+    global REVIVE_CLEAR_ATR
+    REVIVE_CLEAR_ATR = args.revive_clear_atr
     if args.confirm is not None:
         global CONFIRM_CLOSES
         CONFIRM_CLOSES = args.confirm
@@ -2006,6 +2042,8 @@ def main():
         head.append(f"ema-clear {EMA_CLEAR_ATR:g} ATR")
     if CONFIRM_CLEAR_ATR > 0:
         head.append(f"confirm-clear {CONFIRM_CLEAR_ATR:g} ATR")
+    if REVIVE_CLEAR_ATR > 0:
+        head.append(f"revive-clear {REVIVE_CLEAR_ATR:g} ATR")
     if RSI_FILTER > 0:
         head.append(f"rsi-filter {RSI_FILTER:g}")
     if MACD_AGREE:
@@ -2170,6 +2208,8 @@ def main():
         nb = sum(1 for _, _, r in sk if r == "counter-trend")
         if BIAS_MODE == "skip":
             print(f"  skip: refused {nb} counter-trend entries")
+        if getattr(run, "revived", None):
+            print(f"  revive: {len(run.revived)} failed confirms entered on a later clearing close")
         if getattr(run, "rsi_refused", None):
             print(f"  rsi-filter: refused {len(run.rsi_refused)} entries")
         if getattr(run, "macd_refused", None):
