@@ -1241,6 +1241,14 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## Lane-switch popup removed (owner, 2026-09-02)
+
+The remote-switch path no longer calls `Alert()` — the service re-asserts
+the lane after EVERY EA reinit, so the "switched to halftrend_m15_v1"
+popup fired on each restart and became noise. The switch still prints to
+the expert journal and is visible on Telegram /mode. Verified live:
+post-restart switch line with zero new "Alert: switched" entries.
+
 ## RSI agreement column — report-only, both lanes (owner, 2026-09-02)
 
 Follow-up to the study below: the owner asked to SEE the RSI-70 verdict on
