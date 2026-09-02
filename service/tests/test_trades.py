@@ -550,3 +550,14 @@ def test_news_blackout_defaults_unknown(client):
     client.post("/trade-event", json=_trade(ticket=12347))
     trades = client.get("/api/trades").json()["trades"]
     assert trades[0]["news_blackout"] == -1
+
+
+def test_rsi_agree_stored_and_exposed(client):
+    # Report-only RSI verdict column (owner 2026-09-02) — same plumbing
+    # as htf/e200/news: stored on the row, exposed by /api/trades.
+    client.post("/trade-event", json=_trade(ticket=12348, rsi_agree=0))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["rsi_agree"] == 0
+    client.post("/trade-event", json=_trade(ticket=12349))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["rsi_agree"] == -1

@@ -89,6 +89,14 @@ private:
    double   m_confirmEma200;   // EMA-200 value at the confirm bar; 0 = none yet
    string   m_ema200Override;  // "" follow EA input, "off" report-only, "on" enforce
 
+   // RSI(14, own-timeframe) report-only verdict (owner 2026-09-02; sweep:
+   // M15+RSI-70 beat baseline in BOTH halves, +7% net at -33% dd). Read at
+   // the SAME confirm shift as m_confirmEma200 so the verdict describes
+   // the bar that decided. NEVER blocks — evidence collection only.
+   int      m_rsiHandle;
+   double   m_confirmRsi;      // RSI at the confirm bar; -1 = none yet
+   int      m_lastRsiAgree;    // 1 agreed / 0 refused / -1 not evaluated
+
    int      m_ema9Handle;
    int      m_ema21Handle;
    int      m_ema200Handle;
@@ -194,6 +202,7 @@ private:
          m_extreme = (m_trend == 0) ? barLow : barHigh;
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
          m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0; m_confirmEma200 = 0;
+         m_confirmRsi = -1;
          if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print(m_id + ": HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
@@ -251,6 +260,10 @@ private:
                // actually decided, not whatever the EMA reads today.
                double e200Buf[];
                m_confirmEma200 = (CopyBuffer(m_ema200Handle, 0, shift, 1, e200Buf) == 1) ? e200Buf[0] : 0.0;
+               double rsiBuf[];
+               m_confirmRsi = (m_rsiHandle != INVALID_HANDLE
+                               && CopyBuffer(m_rsiHandle, 0, shift, 1, rsiBuf) == 1)
+                              ? rsiBuf[0] : -1.0;
               }
             else
               {
@@ -346,6 +359,7 @@ public:
         m_chopBars(chopBars), m_chopEffMax(chopEffMax),
         m_ema200Confirm(ema200Confirm), m_lastEma200Agree(-1),
         m_confirmEma200(0), m_ema200Override(""),
+        m_rsiHandle(INVALID_HANDLE), m_confirmRsi(-1), m_lastRsiAgree(-1),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -354,6 +368,7 @@ public:
       m_ema9Handle   = iMA(_Symbol, m_tf, 9,   0, MODE_EMA, PRICE_CLOSE);
       m_ema21Handle  = iMA(_Symbol, m_tf, 21,  0, MODE_EMA, PRICE_CLOSE);
       m_ema200Handle = iMA(_Symbol, m_tf, 200, 0, MODE_EMA, PRICE_CLOSE);
+      m_rsiHandle = iRSI(_Symbol, m_tf, 14, PRICE_CLOSE);
       m_atrHandle    = iATR(_Symbol, m_tf, 14);
       m_htfTf        = htfTf;
       if(m_htfConfirm)
@@ -494,6 +509,7 @@ public:
 
    virtual string Id() { return m_id; }
    virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
+   virtual int LastRsiAgree() const { return m_lastRsiAgree; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
@@ -550,6 +566,20 @@ public:
          // confirm event even if HTF ends up refusing the entry below.
          bool e200Ok = Ema200Agrees(wanted);
          m_lastEma200Agree = e200Ok ? 1 : 0;
+         // RSI(14) verdict (owner 2026-09-02) — report-only, never blocks:
+         // BUY agrees when RSI < 70, SELL when RSI > 30, judged at the
+         // confirm bar (m_confirmRsi). -1 (unreadable) stays "not evaluated".
+         if(m_confirmRsi < 0)
+            m_lastRsiAgree = -1;
+         else if(wanted == SIGNAL_BUY)
+            m_lastRsiAgree = (m_confirmRsi < 70.0) ? 1 : 0;
+         else
+            m_lastRsiAgree = (m_confirmRsi > 30.0) ? 1 : 0;
+         if(m_lastRsiAgree == 0)
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
+                  " DISAGREES (", (wanted == SIGNAL_BUY ? ">=70 overbought" : "<=30 oversold"),
+                  ") but the check is report-only; entering anyway");
          if(!htfOk && !HtfEnforced())
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "

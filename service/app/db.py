@@ -294,6 +294,14 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN ema200_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+        if "rsi_agree" not in trade_cols:
+            # RSI(14, lane TF) verdict at the confirm bar (2026-09-02,
+            # report-only): 1 agreed / 0 disagreed / -1 unknown (older rows).
+            try:
+                self.conn.execute(
+                    "ALTER TABLE trades ADD COLUMN rsi_agree INTEGER DEFAULT -1")
+            except sqlite3.OperationalError:
+                pass
         if "news_blackout" not in trade_cols:
             # 1 = entered inside a high-impact news blackout window (owner
             # 2026-09-01: blackout is a proposal/warning, not a block),
@@ -577,14 +585,15 @@ class SignalDb:
             cur = self.conn.execute(
                 "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
                 " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree,"
-                " ema200_agree, news_blackout)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " ema200_agree, news_blackout, rsi_agree)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
                  ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
                  ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
                  ev.get("tp", 0.0), int(ev.get("final", True)),
                  ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
-                 int(ev.get("ema200_agree", -1)), int(ev.get("news_blackout", -1))))
+                 int(ev.get("ema200_agree", -1)), int(ev.get("news_blackout", -1)),
+                 int(ev.get("rsi_agree", -1))))
             self.conn.commit()
             return cur.lastrowid
 
@@ -592,7 +601,7 @@ class SignalDb:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
                 "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
                 "tp", "final", "entry_mode", "htf_agree", "ema200_agree",
-                "news_blackout"]
+                "news_blackout", "rsi_agree"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()

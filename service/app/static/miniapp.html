@@ -1160,7 +1160,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
     thead.innerHTML = ""; tbody.innerHTML = "";
     var hr = el("tr");
-    ["Time", "Session", "Dir", "M15", "E200", "News", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    ["Time", "Session", "Dir", "M15", "E200", "RSI", "News", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
     thead.appendChild(hr);
     var rows = Array.isArray(data.rows) ? data.rows : [];
     rows.forEach(function (r) {
@@ -1185,6 +1185,15 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
                     : (r.e200 === false ? "EMA-200 disagreed — this trade would be refused if enforcing"
                                        : "not recorded for this trade");
       tr.appendChild(e200cell);
+      // RSI(14, lane TF) verdict at entry (report-only, 2026-09-02): Yes =
+      // agreed (BUY with RSI<70 / SELL with RSI>30), No = entered against
+      // it, – = not recorded (older rows).
+      var rsiCell = el("td", r.rsi === true ? "dir-buy" : (r.rsi === false ? "dir-sell" : "muted"),
+                       r.rsi === true ? "Yes" : (r.rsi === false ? "No" : "–"));
+      rsiCell.title = r.rsi === true ? "RSI agreed with this entry"
+                    : (r.rsi === false ? "RSI disagreed (overbought BUY / oversold SELL) — this entry would be refused by the RSI-70 filter"
+                                       : "not recorded for this trade");
+      tr.appendChild(rsiCell);
       // News blackout at entry: ⚠️ = entered inside a high-impact blackout
       // window (owner-approved or pre-change auto), blank = clear, – = not
       // recorded (rows before 2026-09-01).

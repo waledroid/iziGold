@@ -44,6 +44,13 @@ public:
    // Runtime toggle for a strategy's EMA-200 agreement module. No-op for
    // strategies that have none.
    virtual void SetEma200Override(string v) {}
+
+   // RSI(14, own-timeframe) verdict behind the current signal (owner
+   // 2026-09-02, after the sweep found M15+RSI-70 better in both halves):
+   // BUY agrees when RSI < 70, SELL when RSI > 30. REPORT-ONLY — this
+   // never blocks anything; it exists so live trades accumulate evidence.
+   // 1 agreed, 0 refused, -1 not evaluated / strategy has no RSI module.
+   virtual int LastRsiAgree() const { return -1; }
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }

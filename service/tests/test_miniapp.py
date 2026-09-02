@@ -418,9 +418,9 @@ def test_trades_groups_baskets(trades_client):
     # no htf_agree/ema200_agree) so the report can render them -- dropping
     # a field here was the bug that made every M15 cell a dash
     assert first["entries"][0] == {"ts": 100, "price": 4000.0, "lots": 0.05,
-                                   "htf_agree": None, "ema200_agree": None, "news_blackout": None}
+                                   "htf_agree": None, "ema200_agree": None, "news_blackout": None, "rsi_agree": None}
     assert first["entries"][1] == {"ts": 200, "price": 4005.0, "lots": 0.05,
-                                   "htf_agree": None, "ema200_agree": None, "news_blackout": None}
+                                   "htf_agree": None, "ema200_agree": None, "news_blackout": None, "rsi_agree": None}
     assert first["exit"] == {"ts": 300, "price": 4010.0, "profit": 50.0}
 
     second = baskets[1]

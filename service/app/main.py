@@ -1308,7 +1308,7 @@ async def screenshot(event: int, request: Request):
             row = app.state.db.conn.execute(
                 "SELECT event, direction, lots, price, reason, profit,"
                 " COALESCE(htf_agree, -1), COALESCE(ema200_agree, -1),"
-                " COALESCE(news_blackout, -1)"
+                " COALESCE(news_blackout, -1), COALESCE(rsi_agree, -1)"
                 " FROM trades WHERE id=?", (event,)).fetchone()
             if row is not None:
                 caption = _trade_caption(*row)

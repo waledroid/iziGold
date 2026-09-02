@@ -277,7 +277,7 @@ public:
                        double price, double sl, string reason, long ticket,
                        double profit = 0.0, double tp = 0.0, bool isFinal = true,
                        string entryMode = "", int htfAgree = -1, int ema200Agree = -1,
-                       int newsBlackout = -1)
+                       int newsBlackout = -1, int rsiAgree = -1)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
@@ -293,7 +293,8 @@ public:
                     ",\"entry_mode\":\"" + entryMode + "\"" +
                     ",\"htf_agree\":" + (string)htfAgree +
                     ",\"ema200_agree\":" + (string)ema200Agree +
-                    ",\"news_blackout\":" + (string)newsBlackout + "}";
+                    ",\"news_blackout\":" + (string)newsBlackout +
+                    ",\"rsi_agree\":" + (string)rsiAgree + "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);

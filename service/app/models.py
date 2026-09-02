@@ -134,6 +134,10 @@ class TradeEventRequest(BaseModel):
     # block): 1 = entered inside a high-impact blackout window, 0 = clear,
     # -1 = unknown (older EA builds / non-open events).
     news_blackout: int = -1
+    # RSI(14, lane timeframe) verdict at the confirm bar (owner 2026-09-02;
+    # sweep: M15+RSI-70 better in both halves). Report-only: 1 = agreed
+    # (BUY with RSI<70 / SELL with RSI>30), 0 = disagreed, -1 = unknown.
+    rsi_agree: int = -1
 
 
 class ProposalResultRequest(BaseModel):

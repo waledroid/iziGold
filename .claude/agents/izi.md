@@ -1241,6 +1241,20 @@ DEFAULT only takes effect on a FRESH attach — deployed via MT5 restart
 with `mt5-start.ini` (which attaches source defaults), not by recompile
 alone.
 
+## RSI agreement column — report-only, both lanes (owner, 2026-09-02)
+
+Follow-up to the study below: the owner asked to SEE the RSI-70 verdict on
+every trade. Wired exactly like M15/E200/News: `CStrategy::LastRsiAgree()`
+(default -1), `CHalfTrendEmaStrategy` reads RSI(14) on its OWN timeframe at
+the confirm shift (`m_confirmRsi`, same instant as `m_confirmEma200`) and
+judges 1 = agreed (BUY with RSI<70 / SELL with RSI>30), 0 = disagreed —
+with a report-only "entering anyway" log line. NEVER blocks. Flows:
+UiSink -> PostTradeEvent `rsi_agree` -> TradeEventRequest -> trades
+migration -> recent_trades -> basket flag `"rsi"` -> mini-app history
+"RSI" column (Yes/No/–) -> screenshot caption "RSI: agrees/DISAGREES".
+Thresholds 70/30 are constants in the strategy — sweepable via the replay's
+--rsi-filter before ever changing them.
+
 ## RSI/MACD study + smooth M15 overlay (owner request, 2026-09-02)
 
 **Overlay fix**: the dashboard's M15 EMA lines were stair-stepped ("ziggy
