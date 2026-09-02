@@ -1249,6 +1249,21 @@ popup fired on each restart and became noise. The switch still prints to
 the expert journal and is visible on Telegram /mode. Verified live:
 post-restart switch line with zero new "Alert: switched" entries.
 
+## Trade screenshot follows the active lane's timeframe (owner, 2026-09-02)
+
+The EA always sends M5 candles (`AiApi` uses `TradeTimeframe`=M5), so the
+Telegram trade render was M5 even for an M15-lane trade — flip->entry
+looked 9 bars apart there vs 3 on the owner's MT5 M15 chart (3 M15 = 9 M5;
+same instant, different zoom, not a mislocated entry). Fix in
+`trade_report.py`: `_LANE_RENDER` maps strategy_id -> (bucket_seconds,
+trade-EMA length); `_resample()` lifts the M5 candles to the lane TF
+before `render_trade_chart`, which now takes `trade_ema_len` (M15 draws
+EMA-50 to match its live overlay). Default M5/55 unchanged for the M5
+lane. A new higher-TF lane adds one `_LANE_RENDER` row. Service-only —
+deploys via the watchdog, no EA change. The render marker was always at
+the rightmost bar at trade price (no timestamp snapping), so only the
+candle width changed.
+
 ## Owner-approved blackout entry was double-checked and blocked (bugfix 2026-09-02)
 
 The blackout-goes-manual flow (2026-09-01) had a hole: the EA's approved-

@@ -10,10 +10,37 @@ import asyncio
 from pathlib import Path
 
 from app.db import SignalDb
+from app.models import Candle
 from app.render import render_trade_chart
 from app.telegram import TelegramClient
 
 _SCREENSHOT_RETENTION = 500
+
+# The trade screenshot follows the ACTIVE LANE's timeframe (owner 2026-09-02:
+# an M15-lane trade was rendered on M5 candles, so flip->entry looked 9 bars
+# apart instead of 3, mismatching the owner's MT5 M15 chart). The EA always
+# sends M5 candles (AiApi TradeTimeframe), so a lane trading a higher TF has
+# its candles resampled up here. Map: strategy_id -> (bucket_seconds, trade
+# EMA length) — default M5/55; the M15 lane resamples to 900 s and draws its
+# EMA-50 like its live overlay. A new higher-TF lane adds one row.
+_LANE_RENDER = {"halftrend_m15_v1": (900, 50)}
+
+
+def _resample(candles: list, bucket_s: int) -> list:
+    """M5 Candle objects -> higher-TF Candle objects aligned to bucket_s
+    boundaries (same rule as main._resample_m15; the trailing partial
+    bucket is kept). Volume summed. Returns Candle objects so render's
+    attribute access (.t/.o/.h/.l/.c) is unchanged."""
+    out = []
+    for c in candles:
+        b = c.t - (c.t % bucket_s)
+        if out and out[-1].t == b:
+            p = out[-1]
+            out[-1] = Candle(t=b, o=p.o, h=max(p.h, c.h), l=min(p.l, c.l),
+                             c=c.c, v=(p.v or 0) + (c.v or 0))
+        else:
+            out.append(Candle(t=b, o=c.o, h=c.h, l=c.l, c=c.c, v=c.v))
+    return out
 
 
 def _basket_legs(db: SignalDb, trade_id: int) -> list:
@@ -86,9 +113,14 @@ async def _report_trade_event(ev, trade_id: int, legs: list, *,
                         if leg.get("tp"):
                             trade_dict["tp"] = leg["tp"]
                             break
+            # Resample to the active lane's timeframe so the chart matches
+            # the lane the owner actually watches (see _LANE_RENDER).
+            bucket_s, ema_len = _LANE_RENDER.get(ev.strategy_id, (0, 55))
+            render_candles = _resample(last_candles, bucket_s) if bucket_s \
+                else last_candles
             ok = await asyncio.to_thread(
-                render_trade_chart, last_candles, trade_dict,
-                str(render_path))
+                render_trade_chart, render_candles, trade_dict,
+                str(render_path), ema_len)
             if ok:
                 db.set_render(trade_id, str(render_path))
                 await asyncio.to_thread(_prune_screenshots, screenshot_dir)

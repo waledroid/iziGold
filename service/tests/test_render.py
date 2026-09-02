@@ -435,7 +435,7 @@ def test_close_render_inherits_open_legs_sl_and_tp_when_own_are_zero(client, mon
     client.post("/analyze", json=_analyze_payload())
     captured = {}
 
-    def _fake_render(candles, trade, out_path):
+    def _fake_render(candles, trade, out_path, trade_ema_len=55):
         captured["trade"] = trade
         return True
 
@@ -463,7 +463,7 @@ def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
     client.post("/analyze", json=_analyze_payload())
     captured = {}
 
-    def _fake_render(candles, trade, out_path):
+    def _fake_render(candles, trade, out_path, trade_ema_len=55):
         captured["trade"] = trade
         return True
 
@@ -597,3 +597,33 @@ def test_final_close_after_non_final_leg_sends_pl_message_no_photos(client):
     assert "profit" in pl_msgs[0][1]["text"]
     # no render photos at all any more (open, non-final close, final close)
     assert [c for c in ft.calls if c[0] == "sendPhoto"] == []
+
+
+def test_lane_resample_m15_matches_bucketing():
+    """The M15 lane's trade chart is resampled from M5 candles to M15
+    (owner 2026-09-02) so flip->entry spacing matches the owner's MT5 M15
+    chart instead of appearing 3x wider on M5."""
+    from app.models import Candle
+    from app.trade_report import _LANE_RENDER, _resample
+    # 9 M5 bars on a 900s grid -> exactly 3 M15 buckets
+    m5 = [Candle(t=900 + 300 * i, o=10.0 + i, h=12.0 + i, l=9.0 + i,
+                 c=11.0 + i, v=1.0) for i in range(9)]
+    bucket_s, ema_len = _LANE_RENDER["halftrend_m15_v1"]
+    assert (bucket_s, ema_len) == (900, 50)
+    out = _resample(m5, bucket_s)
+    assert len(out) == 3
+    # first bucket = bars 0-2: open of bar0, high=max, low=min, close of bar2
+    b0 = out[0]
+    assert b0.t == 900 and b0.o == 10.0 and b0.c == 13.0
+    assert b0.h == 14.0 and b0.l == 9.0 and b0.v == 3.0
+
+
+def test_render_trade_chart_accepts_ema_len(tmp_path):
+    from app.models import Candle
+    from app.render import render_trade_chart
+    candles = [Candle(t=900 + 900 * i, o=100.0 + i, h=101.0 + i,
+                      l=99.0 + i, c=100.5 + i, v=1.0) for i in range(120)]
+    out = tmp_path / "r.png"
+    ok = render_trade_chart(candles, {"event": "open", "direction": "BUY",
+                                      "price": 160.0}, str(out), 50)
+    assert ok and out.exists()
