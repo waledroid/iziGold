@@ -78,3 +78,18 @@ def test_backtest_series_match_indicators():
         assert (a is None) == (b is None)
         if a is not None:
             assert abs(a - b) < 1e-9
+
+
+def test_miniapp_serves_rsi_and_macd_series():
+    """Every TF tab's /api/history payload carries the sub-panel series
+    (owner 2026-09-02); the frontend panel plugins consume them."""
+    from app.miniapp import _indicator_series
+    rows = [{"t": 900 + 300 * i, "o": 1.0, "h": 2.0, "l": 0.5,
+             "c": 100.0 + (i % 9) + i * 0.02, "v": 1} for i in range(120)]
+    closes = [r["c"] for r in rows]
+    out = _indicator_series(rows, "M5")
+    assert out["rsi"] == rsi(closes, 14)
+    line, sig, hist = macd(closes)
+    assert out["macd_line"] == line
+    assert out["macd_signal"] == sig
+    assert out["macd_hist"] == hist

@@ -15,6 +15,7 @@
 #include <XauAssistant/Strategies/HalfTrendEma.mqh>
 #include <XauAssistant/Strategies/BollStochRsi.mqh>
 #include <XauAssistant/Strategies/SessionStructure.mqh>
+#include <XauAssistant/ChartPanels.mqh>
 #include <XauAssistant/Reconciler.mqh>
 #include <XauAssistant/UiSink.mqh>
 
@@ -107,6 +108,10 @@ input int    SsWin2EndHour   = -1;
 input int    SsShortStartHour = -1;  // PM-fix fade SHORT, -1 = off. The academic prior says 16-17 server, but this broker's 17mo shows NO edge there (t=-0.67, bull regime) — ships disabled
 input int    SsShortEndHour  = -1;
 
+input group "Chart panels — plugin indicators below the candles (display only)"
+input bool   ShowRsiPanel  = true;   // attach RSI(14) in its own subwindow (chart TF); false = remove
+input bool   ShowMacdPanel = true;   // attach MACD(12,26,9) in its own subwindow (chart TF); false = remove
+
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
 CAiApi         g_api;
@@ -117,6 +122,7 @@ CRiskManager   g_risk;
 CTradeManager  g_trades;
 CTradeBoxes    g_tradeBoxes;
 int            g_atrHandle = INVALID_HANDLE;
+CChartPanels   g_chartPanels;
 
 // TradeManager's ATR must be the ACTIVE LANE's trade-TF ATR, not the EA's
 // TradeTimeframe (2026-09-01, owner: "the adds are too quick for m15"): with
@@ -308,6 +314,7 @@ int OnInit()
    // the already-guarded recompile/restart path.
    g_lastBar = 0;
    SyncAtrToActiveLane();
+   g_chartPanels.Init(ShowRsiPanel, ShowMacdPanel);
    EventSetTimer(HeartbeatSec);
    if(Period() != TradeTimeframe)
       PrintFormat("XauAssistant: trading TF %s (chart %s — visual only)",
@@ -561,6 +568,7 @@ void OnTimer()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   g_chartPanels.Deinit();
    CStrategy *a = g_registry.Active();
    if(a != NULL) a.ClearPaint();
    g_registry.Clear();

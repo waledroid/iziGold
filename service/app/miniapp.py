@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import miniapp_auth
 from app.config import settings
-from app.indicators import ema, halftrend
+from app.indicators import ema, halftrend, macd, rsi
 from app.models import Candle
 from app.reports import (_empty_report, _group_baskets, _report_day,
                           _report_month, _server_date)
@@ -226,12 +226,20 @@ def _indicator_series(rows: list[dict], tf: str = "M5") -> dict:
     closes = [r["c"] for r in rows]
     candle_objs = [Candle(**r) for r in rows]
     ht = halftrend(candle_objs, amplitude=4)
+    # RSI + MACD sub-panel series (owner 2026-09-02): served for EVERY
+    # timeframe tab; the frontend's panel-plugin registry decides which
+    # panes actually render (see PANEL_PLUGINS in miniapp.html).
+    macd_line, macd_signal, macd_hist = macd(closes)
     return {
         "ema9": ema(closes, 9),
         "ema21": ema(closes, 21),
         "ema55": ema(closes, _TRADE_EMA_LEN.get(tf, 55)),
         "ema200": ema(closes, 200),
         "halftrend": [({"v": e[0], "trend": e[1]} if e else None) for e in ht],
+        "rsi": rsi(closes, 14),
+        "macd_line": macd_line,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
     }
 
 

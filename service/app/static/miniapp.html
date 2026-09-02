@@ -456,6 +456,107 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   // filter can never desync overlays from the candle series. Missing/short
   // indicator arrays (old server) degrade to "no points for that series"
   // -- overlays just don't draw, the candle chart still works.
+  // ---- Indicator sub-panel PLUGINS (owner 2026-09-02) --------------------
+  // Each pane below the main chart is a self-contained plugin: to REMOVE a
+  // pane, delete its id from ENABLED_PANELS; to ADD one, register an entry
+  // in PANEL_PLUGINS (build() creates its series on a dedicated chart,
+  // update() maps the /api/history payload into them) and list its id.
+  // Panels are read-only slaves of the main chart's time scale and refresh
+  // on every history load (boot, TF switch, bar rollover) — no per-tick
+  // updates, matching how the server computes the series on closed data.
+  var ENABLED_PANELS = ["rsi", "macd"];
+  var PANEL_PLUGINS = {
+    rsi: {
+      height: 92,
+      build: function (pchart, colors) {
+        var s = pchart.addLineSeries({ color: "#f5c542", lineWidth: 1.5,
+                                       priceLineVisible: false, lastValueVisible: false });
+        [70, 30].forEach(function (lvl) {
+          s.createPriceLine({ price: lvl, color: colors.grid, lineWidth: 1,
+                              lineStyle: LightweightCharts.LineStyle.Dashed,
+                              axisLabelVisible: true, title: "" });
+        });
+        return { line: s };
+      },
+      update: function (st, body, idxMap, times) {
+        var pts = [];
+        for (var i = 0; i < idxMap.length; i++) {
+          var v = arrAt(body.rsi, idxMap[i]);
+          pts.push(isNumeric(v) ? { time: times[i], value: v } : { time: times[i] });
+        }
+        try { st.line.setData(pts); } catch (e) {}
+      }
+    },
+    macd: {
+      height: 92,
+      build: function (pchart, colors) {
+        var hist = pchart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+        var line = pchart.addLineSeries({ color: "#38bdf8", lineWidth: 1.5,
+                                          priceLineVisible: false, lastValueVisible: false });
+        var sig = pchart.addLineSeries({ color: "#f5c542", lineWidth: 1,
+                                         priceLineVisible: false, lastValueVisible: false });
+        return { hist: hist, line: line, sig: sig };
+      },
+      update: function (st, body, idxMap, times) {
+        var h = [], l = [], s = [];
+        for (var i = 0; i < idxMap.length; i++) {
+          var orig = idxMap[i], t = times[i];
+          var vh = arrAt(body.macd_hist, orig);
+          h.push(isNumeric(vh)
+            ? { time: t, value: vh, color: vh >= 0 ? "rgba(38,166,154,0.6)" : "rgba(239,83,80,0.6)" }
+            : { time: t });
+          var vl = arrAt(body.macd_line, orig);
+          l.push(isNumeric(vl) ? { time: t, value: vl } : { time: t });
+          var vs = arrAt(body.macd_signal, orig);
+          s.push(isNumeric(vs) ? { time: t, value: vs } : { time: t });
+        }
+        try { st.hist.setData(h); } catch (e) {}
+        try { st.line.setData(l); } catch (e) {}
+        try { st.sig.setData(s); } catch (e) {}
+      }
+    }
+  };
+  var panelStates = {};   // id -> {chart, series-state}
+
+  function initPanels() {
+    var colors = themeColors();
+    ENABLED_PANELS.forEach(function (id) {
+      var plug = PANEL_PLUGINS[id];
+      if (!plug || panelStates[id]) return;
+      var el = document.createElement("div");
+      el.id = "panel-" + id;
+      el.style.height = plug.height + "px";
+      chartEl.parentNode.insertBefore(el, chartEl.nextSibling);
+      var pchart = LightweightCharts.createChart(el, {
+        layout: { background: { type: "solid", color: colors.bg }, textColor: colors.text },
+        grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
+        rightPriceScale: { borderColor: colors.border },
+        timeScale: { borderColor: colors.border, visible: false },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        handleScroll: false, handleScale: false,   // slaves of the main chart
+        autoSize: true
+      });
+      panelStates[id] = { chart: pchart, state: plug.build(pchart, colors) };
+    });
+    // one-way sync: the main chart drives every panel's visible range
+    if (chart && chart.timeScale) {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(function (range) {
+        if (!range) return;
+        ENABLED_PANELS.forEach(function (id) {
+          var ps = panelStates[id];
+          if (ps) { try { ps.chart.timeScale().setVisibleLogicalRange(range); } catch (e) {} }
+        });
+      });
+    }
+  }
+
+  function setPanelData(body, idxMap, times) {
+    ENABLED_PANELS.forEach(function (id) {
+      var ps = panelStates[id], plug = PANEL_PLUGINS[id];
+      if (ps && plug) plug.update(ps.state, body, idxMap, times);
+    });
+  }
+
   function setIndicatorSeriesData(body, idxMap, times) {
     var e9 = [], e21 = [], e55 = [], e200 = [], ht = [];
     for (var i = 0; i < idxMap.length; i++) {
@@ -725,6 +826,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
         }
         series.setData(rows);
         setIndicatorSeriesData(body, idxMap, times);
+        setPanelData(body, idxMap, times);
         setEmaBaseline(body);
         // Past-trade markers: refetched after every successful history
         // load (initial boot, TF switch, and the bar-rollover refetch in
@@ -1476,6 +1578,8 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       wickUpColor: "#26a69a",
       wickDownColor: "#ef5350"
     });
+
+    initPanels();
 
     // Belt-and-suspenders resize: autoSize handles most cases, but
     // Telegram WebApp viewport changes (keyboard, safe-area) don't
