@@ -636,8 +636,11 @@ void ProcessBar()
          if(oldActive != NULL) oldActive.EnablePaint(false);
          g_registry.Active().EnablePaint(true);
          SyncAtrToActiveLane();
+         // Print only — no MT5 Alert() popup (owner 2026-09-02: the service
+         // re-asserts the lane after EVERY EA reinit, so the popup fired on
+         // every restart and became noise). The switch is still visible in
+         // the expert log and confirmed on Telegram's /mode.
          Print("XauAssistant: switched active strategy to '", sw, "'");
-         g_alerts.Notify("switched to " + sw);
         }
       else
          Print("XauAssistant: remote switch requested unknown strategy id '", sw, "'");
