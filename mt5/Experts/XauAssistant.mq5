@@ -505,7 +505,8 @@ void OnTimer()
             bool opened = false;
             if(atrVal > 0 && act != NULL)
                opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir),
-                                          g_entryMode == ENTRY_FIXED, FixedLots);
+                                          g_entryMode == ENTRY_FIXED, FixedLots,
+                                          true);   // owner-approved: news override honoured inside OnSignal too
             bool ok = opened || g_trades.BasketDirection() == dir;
             g_ui.PostProposalResult(cmdId, ok,
                                     ok ? "opened" : "blocked by risk checks");

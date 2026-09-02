@@ -1249,6 +1249,20 @@ popup fired on each restart and became noise. The switch still prints to
 the expert journal and is visible on Telegram /mode. Verified live:
 post-restart switch line with zero new "Alert: switched" entries.
 
+## Owner-approved blackout entry was double-checked and blocked (bugfix 2026-09-02)
+
+The blackout-goes-manual flow (2026-09-01) had a hole: the EA's approved-
+execute path called `g_risk.CanEnter(why, newsOverride=true)` — passed —
+then `TradeManager.OnSignal` ran its OWN `m_risk.CanEnter(why)` WITHOUT the
+flag, so the news blackout blocked the owner's explicit yes a second time
+and Telegram reported "blocked by risk checks". Live proof: 2026-09-02
+~15:11 server, two approved BUYs (proposals 20/21) both status=blocked
+with repeated "Entry blocked: news blackout" in the journal. Fix:
+`OnSignal` gained a `newsOverride` param threaded to its internal
+CanEnter; the approved-execute call site passes true (AUTO entries pass
+false — their blackout behaviour is unchanged). Lesson: news override must
+be honoured at BOTH gates or neither.
+
 ## Revival entry hypothesis — tested, FAILS (owner idea, 2026-09-02)
 
 The owner asked: instead of a failed strict-window confirm dying, wait and

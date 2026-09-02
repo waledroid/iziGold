@@ -366,8 +366,15 @@ public:
    // the CURRENT runtime mode for the new basket" automatic (same call,
    // same fresh param) rather than requiring a setter call ordered before
    // every OnSignal.
+   // newsOverride (2026-09-02 bugfix): an approved-execute during a news
+   // blackout passed g_risk.CanEnter(...,true) in the EA, but OnSignal then
+   // re-ran CanEnter WITHOUT the flag and the blackout blocked the owner's
+   // explicit yes a second time ("blocked by risk checks"). Thread the
+   // override through so the internal gate honours the same decision. AUTO
+   // entries pass false, so their blackout behaviour is unchanged.
    bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0,
-                bool entryModeFixed = false, double fixedLots = 0.0)
+                bool entryModeFixed = false, double fixedLots = 0.0,
+                bool newsOverride = false)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return false; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return false;
@@ -384,7 +391,7 @@ public:
          wasReversal = true;
         }
       string why;
-      if(!m_risk.CanEnter(why)) { Print("Entry blocked: ", why); return false; }
+      if(!m_risk.CanEnter(why, newsOverride)) { Print("Entry blocked: ", why); return false; }
       double price = (sig == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                                          : SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double sl;
