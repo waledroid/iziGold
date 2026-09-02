@@ -1249,6 +1249,33 @@ popup fired on each restart and became noise. The switch still prints to
 the expert journal and is visible on Telegram /mode. Verified live:
 post-restart switch line with zero new "Alert: switched" entries.
 
+## RSI + MACD sub-panels on every chart, plugin-style (owner, 2026-09-02)
+
+Display only, both surfaces:
+
+- **MT5** (`Include/XauAssistant/ChartPanels.mqh`, `CChartPanels`): the EA
+  attaches the terminal's own RSI(14) and MACD(12,26,9) to its chart in
+  their own subwindows at init. One EA input per panel (`ShowRsiPanel` /
+  `ShowMacdPanel`, default true) — false removes it, plugin-style.
+  PERIOD_CURRENT, so panels follow the chart timeframe (M5 chart -> M5
+  panels, M15 -> M15; a chart-TF switch re-attaches on the new TF).
+  Reinit-safe (skips if a same-shortname panel exists) and polite on the
+  way out (Deinit removes only panels it added — never a user's own copy).
+- **Mini-app** (`miniapp.html`): a JS panel-plugin registry —
+  `PANEL_PLUGINS` (build/update per pane) + `ENABLED_PANELS` (remove an id
+  to drop a pane, register+list to add one). RSI pane (line + dashed 70/30
+  levels) and MACD pane (sign-colored histogram + line + signal) render
+  below the candles on EVERY timeframe tab, as slave charts synced to the
+  main chart's visible range (scroll/scale disabled on the panes). They
+  refresh on every history load (boot, TF switch, bar rollover) — no
+  per-tick updates, matching the closed-bar series. Server:
+  `_indicator_series` now ships `rsi`, `macd_line`, `macd_signal`,
+  `macd_hist` for all tabs (tests in test_rsi_macd.py).
+
+Fingerprint footnote: "visual only" init lines print ONLY when chart TF !=
+TradeTimeframe (an M5-chart instance inits silently) — a restart proof can
+also rest on a fresh "CHECK ONLY" block + "ATR now" line timestamps.
+
 ## RSI agreement column — report-only, both lanes (owner, 2026-09-02)
 
 Follow-up to the study below: the owner asked to SEE the RSI-70 verdict on
