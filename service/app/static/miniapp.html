@@ -1333,7 +1333,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     var thead = repEls.table.tHead, tbody = repEls.table.tBodies[0];
     thead.innerHTML = ""; tbody.innerHTML = "";
     var hr = el("tr");
-    ["Time", "Session", "Dir", "M15", "E200", "RSI", "News", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
+    ["Time", "Session", "Dir", "M15", "E200", "RSI", "S/R", "News", "Mode", "Entry → Exit", "Reason", "P/L $", "Balance", "AI"].forEach(function (h) { hr.appendChild(el("th", null, h)); });
     thead.appendChild(hr);
     var rows = Array.isArray(data.rows) ? data.rows : [];
     rows.forEach(function (r) {
@@ -1367,6 +1367,15 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
                     : (r.rsi === false ? "RSI disagreed (overbought BUY / oversold SELL) — this entry would be refused by the RSI-70 filter"
                                        : "not recorded for this trade");
       tr.appendChild(rsiCell);
+      // S/R zone verdict at entry (report-only, 2026-09-05): Yes = clear
+      // room ahead; "No H4" = the entry sat inside / within one ATR of an
+      // opposing H4 box; – = not recorded.
+      var srCell = el("td", r.sr === true ? "dir-buy" : (r.sr === false ? "dir-sell" : "muted"),
+                      r.sr === true ? "Yes" : (r.sr === false ? ("No " + (r.sr_tier || "")).trim() : "–"));
+      srCell.title = r.sr === true ? "no support/resistance wall within reach of this entry"
+                   : (r.sr === false ? "entered into a " + (r.sr_tier || "") + " support/resistance zone (report only — nothing blocked)"
+                                     : "not recorded for this trade");
+      tr.appendChild(srCell);
       // News blackout at entry: ⚠️ = entered inside a high-impact blackout
       // window (owner-approved or pre-change auto), blank = clear, – = not
       // recorded (rows before 2026-09-01).

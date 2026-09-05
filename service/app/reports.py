@@ -60,7 +60,8 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
                  "lots": r.get("lots"), "htf_agree": r.get("htf_agree"),
                  "ema200_agree": r.get("ema200_agree"),
                  "news_blackout": r.get("news_blackout"),
-                 "rsi_agree": r.get("rsi_agree")})
+                 "rsi_agree": r.get("rsi_agree"),
+                 "sr_agree": r.get("sr_agree"), "sr_tier": r.get("sr_tier")})
         elif event == "close":
             if current is None:
                 # a close with no open basket in the fetched window is a
@@ -144,6 +145,16 @@ def _flag(entries, key):
     return None
 
 
+def _first_str(entries, key):
+    """The first non-empty string value of `key` recorded on a basket's
+    entries, ordered by ts. "" when no entry carried one."""
+    for e in sorted(entries, key=lambda x: x.get("ts") or 0):
+        v = e.get(key)
+        if v:
+            return str(v)
+    return ""
+
+
 def _htf_flag(entries):
     """The higher-timeframe verdict recorded on a basket's FIRST leg.
     None when unknown (-1, or no entry row carried the column)."""
@@ -170,6 +181,7 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     has_e200 = "ema200_agree" in cols
     has_news = "news_blackout" in cols
     has_rsi = "rsi_agree" in cols
+    has_sr = "sr_agree" in cols
     sel = ("SELECT id, ts, event, direction, lots, price, profit, final, "
            + ("entry_mode" if has_mode else "''") + ", "
            + ("reason" if has_reason else "''") + ", "
@@ -177,13 +189,16 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
            + ("htf_agree" if has_htf else "-1") + ", "
            + ("ema200_agree" if has_e200 else "-1") + ", "
            + ("news_blackout" if has_news else "-1") + ", "
-           + ("rsi_agree" if has_rsi else "-1")
+           + ("rsi_agree" if has_rsi else "-1") + ", "
+           + ("sr_agree" if has_sr else "-1") + ", "
+           + ("sr_tier" if has_sr else "''")
            + " FROM trades WHERE ts >= ? AND ts < ? ORDER BY id ASC")
     raw = conn.execute(sel, (start_utc - REPORT_LOOKBACK_S, end_utc)).fetchall()
     rows = [{"id": r[0], "ts": r[1], "event": r[2], "direction": r[3], "lots": r[4],
              "price": r[5], "profit": r[6], "final": r[7], "entry_mode": r[8],
              "reason": r[9], "strategy_id": r[10], "htf_agree": r[11],
-             "ema200_agree": r[12], "news_blackout": r[13], "rsi_agree": r[14]}
+             "ema200_agree": r[12], "news_blackout": r[13], "rsi_agree": r[14],
+             "sr_agree": r[15], "sr_tier": r[16]}
             for r in raw]
     baskets = [b for b in _group_baskets(rows, cap=None)
                if b.get("exit") and isinstance(b["exit"].get("ts"), (int, float))
@@ -306,6 +321,10 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             # True = agreed (BUY<70 / SELL>30), False = disagreed, None
             # when unknown (older rows).
             "rsi": _flag(entries, "rsi_agree"),
+            # S/R zone verdict at entry (2026-09-05, report-only): True =
+            # clear, False = wall, None unknown; sr_tier = the wall's tier.
+            "sr": _flag(entries, "sr_agree"),
+            "sr_tier": _first_str(entries, "sr_tier"),
             # Which market session the trade was OPENED in -- entry time is
             # what the session describes, not the exit.
             "session": market_session_short(

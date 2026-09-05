@@ -175,7 +175,8 @@ def _pl_message(profit: float, direction: str = "", legs: list | None = None,
 
 def _trade_caption(event, direction, lots, price, reason, profit,
                    htf_agree: int = -1, ema200_agree: int = -1,
-                   news_blackout: int = -1, rsi_agree: int = -1) -> str:
+                   news_blackout: int = -1, rsi_agree: int = -1,
+                   sr_agree: int = -1, sr_tier: str = "") -> str:
     caption = f"{event} {direction} {lots}@{price} — {reason}"
     if event == "close":
         caption += f"; P/L {profit}"
@@ -195,6 +196,11 @@ def _trade_caption(event, direction, lots, price, reason, profit,
             # Report-only RSI(14) verdict (2026-09-02): same "always
             # evaluated" rule as M15/E200 above.
             caption += f"\nRSI: {'agrees ✅' if rsi_agree == 1 else 'DISAGREES ⚠️'}"
+        if sr_agree in (0, 1):
+            # Report-only S/R zone verdict (2026-09-05): "WALL <tier>" =
+            # the entry sat inside / within SrRoomAtr of an opposing box.
+            caption += ("\nS/R: clear ✅" if sr_agree == 1
+                        else f"\nS/R: WALL {sr_tier or '?'} ⚠️")
         if news_blackout == 1:
             # Only worth a line when it actually applies (owner 2026-09-01):
             # this entry happened INSIDE a high-impact blackout window —

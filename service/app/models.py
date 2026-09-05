@@ -138,6 +138,12 @@ class TradeEventRequest(BaseModel):
     # sweep: M15+RSI-70 better in both halves). Report-only: 1 = agreed
     # (BUY with RSI<70 / SELL with RSI>30), 0 = disagreed, -1 = unknown.
     rsi_agree: int = -1
+    # S/R zone verdict at the confirm bar (owner 2026-09-05, report-only):
+    # 1 = clear room ahead, 0 = the entry sat inside or within SrRoomAtr of
+    # an opposing zone ("wall"), -1 = unknown. sr_tier names the strongest
+    # tier that judged 0 ("H4"/"H1"/"M15"), "" otherwise.
+    sr_agree: int = -1
+    sr_tier: str = ""
 
 
 class ProposalResultRequest(BaseModel):

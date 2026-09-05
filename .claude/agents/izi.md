@@ -1195,7 +1195,9 @@ series in miniapp.html. Dashboard: `/api/overlays` carries `sr_zones`
 from the M5 candles table (`sr_zones_from_db`, memoised on
 `app.state.sr_cache`). Renders: trade PNGs and `/chart` snapshots draw
 only the zones overlapping the 100-bar window (`render._plot_sr_zones`),
-zones from `sr_zones_from_db`.)
+zones from `sr_zones_from_db`. Trade rows carry `sr_agree`/`sr_tier`
+(mirrors `rsi_agree`): caption line `S/R: clear ✅` / `S/R: WALL H4 ⚠️`,
+mini-app history column S/R.)
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 

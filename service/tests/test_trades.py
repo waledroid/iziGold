@@ -561,3 +561,25 @@ def test_rsi_agree_stored_and_exposed(client):
     client.post("/trade-event", json=_trade(ticket=12349))
     trades = client.get("/api/trades").json()["trades"]
     assert trades[0]["rsi_agree"] == -1
+
+
+def test_sr_agree_and_tier_stored_and_exposed(client):
+    client.post("/trade-event", json=_trade(ticket=12350, sr_agree=0, sr_tier="H4"))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["sr_agree"] == 0 and trades[0]["sr_tier"] == "H4"
+    client.post("/trade-event", json=_trade(ticket=12351))
+    trades = client.get("/api/trades").json()["trades"]
+    assert trades[0]["sr_agree"] == -1 and trades[0]["sr_tier"] == ""
+
+
+def test_caption_reports_the_sr_wall():
+    from app.trade_report import _trade_caption
+    clear = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0,
+                           -1, -1, -1, -1, 1, "")
+    wall = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0,
+                          -1, -1, -1, -1, 0, "H1")
+    none = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0)
+    assert "S/R: clear ✅" in clear
+    assert "S/R: WALL H1 ⚠️" in wall
+    assert "S/R" not in none and "S/R" not in _trade_caption(
+        "close", "BUY", 0.1, 4500.0, "stop-loss", -3.0, -1, -1, -1, -1, 0, "H4")

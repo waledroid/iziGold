@@ -302,6 +302,15 @@ class SignalDb:
                     "ALTER TABLE trades ADD COLUMN rsi_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
+        if "sr_agree" not in trade_cols:
+            # S/R zone verdict (2026-09-05, report-only): 1 clear / 0 wall /
+            # -1 unknown; sr_tier = strongest tier behind a 0, '' otherwise.
+            for ddl in ("ALTER TABLE trades ADD COLUMN sr_agree INTEGER DEFAULT -1",
+                        "ALTER TABLE trades ADD COLUMN sr_tier TEXT DEFAULT ''"):
+                try:
+                    self.conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
         if "news_blackout" not in trade_cols:
             # 1 = entered inside a high-impact news blackout window (owner
             # 2026-09-01: blackout is a proposal/warning, not a block),
@@ -585,15 +594,16 @@ class SignalDb:
             cur = self.conn.execute(
                 "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
                 " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree,"
-                " ema200_agree, news_blackout, rsi_agree)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " ema200_agree, news_blackout, rsi_agree, sr_agree, sr_tier)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
                  ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
                  ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
                  ev.get("tp", 0.0), int(ev.get("final", True)),
                  ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
                  int(ev.get("ema200_agree", -1)), int(ev.get("news_blackout", -1)),
-                 int(ev.get("rsi_agree", -1))))
+                 int(ev.get("rsi_agree", -1)),
+                 int(ev.get("sr_agree", -1)), str(ev.get("sr_tier", "") or "")))
             self.conn.commit()
             return cur.lastrowid
 
@@ -601,7 +611,7 @@ class SignalDb:
         cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
                 "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
                 "tp", "final", "entry_mode", "htf_agree", "ema200_agree",
-                "news_blackout", "rsi_agree"]
+                "news_blackout", "rsi_agree", "sr_agree", "sr_tier"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()
