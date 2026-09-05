@@ -138,7 +138,8 @@ private:
       SrZone kept[SR_MAX_ZONES]; int nk = 0;
       for(int role = SR_ROLE_RES; role <= SR_ROLE_SUP; role++)
         {
-         bool used[SR_MAX_ZONES]; ArrayInitialize(used, false);
+         bool used[SR_MAX_ZONES];
+         for(int u = 0; u < SR_MAX_ZONES; u++) used[u] = false;
          for(int pick = 0; pick < m_p.keepPerRole; pick++)
            {
             int best = -1;
@@ -218,8 +219,13 @@ public:
       bool changed = false;
       if(!m_seeded)
         {
+         // Both guards return BEFORE m_seeded/m_lastBar move: an empty seed
+         // must never latch, or Seeded() would report a confident "clear"
+         // from a tier that holds no boxes for the rest of the session.
+         if(BarsCalculated(m_atrHandle) < 1) return false;  // ATR not ready: retry next tick
          int avail = Bars(_Symbol, m_tf) - 2 * m_p.wing - 2;
-         int from = MathMin(m_lookback, MathMax(avail, 1));
+         if(avail < 1) return false;            // not enough history yet: retry next tick
+         int from = MathMin(m_lookback, avail);
          if(avail < m_lookback)
             PrintFormat("SrZones %s: seeding from %d bars (wanted %d)", m_name, avail, m_lookback);
          for(int s = from; s >= 1; s--) ProcessBar(s);
@@ -238,7 +244,10 @@ public:
    string Name() const   { return m_name; }
    bool   Seeded() const { return m_seeded; }
    int    Count() const  { return m_count; }
-   void   Get(int i, SrZone &out) const { if(i >= 0 && i < m_count) out = m_zones[i]; }
+   // Deliberately NOT const: copying out of a const member array into a
+   // non-const reference is the const construct MetaEditor is likeliest to
+   // reject, and nothing needs Get() on a const CSrZoneTier.
+   void   Get(int i, SrZone &out) { if(i >= 0 && i < m_count) out = m_zones[i]; }
   };
 
 class CSrZoneSet
