@@ -636,16 +636,21 @@ def test_render_trade_chart_accepts_ema_len(tmp_path):
 
 def _zones():
     """Two boxes inside the rendered 100-bar window, one far outside it
-    (must be skipped so it cannot stretch the y axis)."""
+    (must be skipped so it cannot stretch the y axis), and one that
+    partially overlaps the window's top edge with a huge `hi` (must be
+    clipped to the window's price range rather than skipped or drawn full
+    height)."""
     w = trend_candles(200)[-100:]
-    lo, hi = min(c.l for c in w), max(c.h for c in w)
-    span = hi - lo
-    return [{"tier": "H4", "role": "resistance", "lo": lo + 0.70 * span, "hi": lo + 0.74 * span,
+    lo_px, hi_px = min(c.l for c in w), max(c.h for c in w)
+    span = hi_px - lo_px
+    return [{"tier": "H4", "role": "resistance", "lo": lo_px + 0.70 * span, "hi": lo_px + 0.74 * span,
              "touches": 3, "born": 0, "last_touch": 0},
-            {"tier": "M15", "role": "support", "lo": lo + 0.20 * span, "hi": lo + 0.23 * span,
+            {"tier": "M15", "role": "support", "lo": lo_px + 0.20 * span, "hi": lo_px + 0.23 * span,
              "touches": 1, "born": 0, "last_touch": 0},
-            {"tier": "H1", "role": "resistance", "lo": hi + 50 * span, "hi": hi + 51 * span,
-             "touches": 1, "born": 0, "last_touch": 0}]
+            {"tier": "H1", "role": "resistance", "lo": hi_px + 50 * span, "hi": hi_px + 51 * span,
+             "touches": 1, "born": 0, "last_touch": 0},
+            {"tier": "H1", "role": "resistance", "lo": hi_px - 0.02 * span, "hi": hi_px + 40 * span,
+             "touches": 2, "born": 0, "last_touch": 0}]
 
 
 def test_render_trade_chart_accepts_zones_and_keeps_the_axis_tight(tmp_path):
@@ -655,18 +660,39 @@ def test_render_trade_chart_accepts_zones_and_keeps_the_axis_tight(tmp_path):
 
     def spy(ax, window, zones):
         real(ax, window, zones)
-        seen["ylim"] = ax.get_ylim()
-        seen["patches"] = len(ax.patches)
+        seen["ax"] = ax                        # stash the axis; ylim is read
+        seen["patches"] = len(ax.patches)       # AFTER render_trade_chart returns
+
     r._plot_sr_zones = spy
+    w = trend_candles(200)[-100:]
+    lo_px, hi_px = min(c.l for c in w), max(c.h for c in w)
+    span = hi_px - lo_px
+    # Entry/SL placed INSIDE the window (the module-level _trade() defaults
+    # of 2400/2390 predate the zones feature and sit nowhere near this
+    # fixture's ~3200-3400 window -- using them here would swamp the y axis
+    # with the entry/SL lines themselves, making the assertion about zone
+    # clipping meaningless). trade_ema_len=9 keeps the "gold" EMA overlay
+    # in step with the always-drawn EMA9/21 lines instead of EMA55, whose
+    # multi-bar lag on this fixture's straight-line trend would itself pull
+    # the axis down by far more than the zone clipping ever could.
+    trade = _trade(price=lo_px + 0.5 * span, sl=lo_px + 0.30 * span)
     try:
-        ok = render_trade_chart(trend_candles(200), _trade(), str(tmp_path / "z.png"),
-                                sr_zones=_zones())
+        ok = render_trade_chart(trend_candles(200), trade, str(tmp_path / "z.png"),
+                                trade_ema_len=9, sr_zones=_zones())
     finally:
         r._plot_sr_zones = real
     assert ok is True
-    assert seen["patches"] == 2            # the far zone is off-window and skipped
-    w = trend_candles(200)[-100:]
-    assert seen["ylim"][1] < max(c.h for c in w) * 1.5
+    # two inside + the partially-overlapping zone clipped to the window;
+    # the far-outside zone is still skipped entirely.
+    assert seen["patches"] == 3
+    ylim = seen["ax"].get_ylim()               # read AFTER render/autoscale
+    # 0.15*span (rather than the zone clip's own 0.05*span pad) leaves
+    # headroom for the always-on EMA9/21/HalfTrend overlays' own small lag
+    # on this fixture, while still being far tighter than the tens-of-span
+    # blowout an unclipped zone would cause (see the disable-clip check in
+    # the fix report for this item).
+    assert ylim[1] <= hi_px + 0.15 * span
+    assert ylim[0] >= lo_px - 0.15 * span
 
 
 def test_render_snapshot_chart_accepts_zones(tmp_path):

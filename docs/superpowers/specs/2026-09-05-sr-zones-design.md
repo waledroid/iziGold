@@ -106,8 +106,10 @@ H4 > H1 > M15.
   charting exactly like `TradeBoxes.mqh`: `OBJ_RECTANGLE`, `OBJPROP_FILL`,
   `OBJPROP_BACK`, not selectable, hidden from the object list. Name prefix
   `xau_sr_<tier>_<role>_<bornTime>`; one `ObjectsDeleteAll(0, "xau_sr_")`
-  clears everything. Left edge = `born`, right edge = the current bar
-  (moved every closed chart bar, create-once-then-move like `TradeBoxes`).
+  clears everything. Left edge = `born`, right edge = the current bar,
+  rebuilt (delete-all + recreate, at most 36 objects) whenever the engine's
+  version changes or the chart opens a new bar — zones die and change
+  shape, so create-once-then-move does not fit them.
   A right-edge `OBJ_TEXT` label reads e.g. `R H4 x3` / `S M15 x1`. Drawn
   whenever `ShowSrBoxes` is true — the zones are lane-independent, so
   they are not tied to the active lane's paint state — and redrawn from

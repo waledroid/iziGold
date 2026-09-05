@@ -72,8 +72,12 @@ def _plot_sr_zones(ax, window, zones):
     """Light-blue support / light-yellow resistance boxes (2026-09-05),
     behind everything else. Only zones that overlap the window's own price
     range are drawn -- an off-screen box must never widen the y axis of a
-    100-bar snapshot. x spans from the zone's `born` bar (or the window's
-    first bar) to the right edge; label at the right edge."""
+    100-bar snapshot. A zone that only partially overlaps the window (e.g.
+    its low edge is inside the window but its high edge is far above) is
+    clipped to the window's price range (plus the same pad used for the
+    overlap test) so matplotlib's autoscale can never stretch the y axis
+    to the zone's off-screen edge. x spans from the zone's `born` bar (or
+    the window's first bar) to the right edge; label at the right edge."""
     if not zones or not window:
         return
     lo_px = min(c.l for c in window)
@@ -84,6 +88,10 @@ def _plot_sr_zones(ax, window, zones):
         try:
             lo, hi = float(z["lo"]), float(z["hi"])
             if hi < lo_px - pad or lo > hi_px + pad:
+                continue
+            lo = max(lo, lo_px - pad)
+            hi = min(hi, hi_px + pad)
+            if hi <= lo:
                 continue
             rgb = SR_RGB.get(z.get("role"))
             alpha = SR_ALPHA.get(z.get("tier"))

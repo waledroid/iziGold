@@ -1206,13 +1206,20 @@ H4 300 / H1 400 / M15 400 bars. Constants are EA inputs under the
 "S/R zones" group and keyword args in Python; the replay sweep
 (increment 2), not taste, moves them. The EA engine refuses to seed (and
 retries on the next trade-TF bar, without latching) while
-`BarsCalculated(iATR) < 1` or fewer than `2*wing+2` bars exist — so boxes
+`BarsCalculated(iATR) < 1` or at most `2*wing+2` bars exist — so boxes
 can be absent for a few bars after a cold attach; `Redraw()` draws
-nothing until a tier is seeded. Cold-seed head parity between the EA and
-Python differs only in the oldest ~20 bars (lookback counted in
-confirming bars vs slice bars; MT5's `iATR` has full history where
-`sma_atr` is `None` for the first 14) — the surviving zone set converges;
-accepted.
+nothing until a tier is seeded. The EA/Python head-parity difference isn't
+only a cold-start artifact: it recurs at the head of EVERY rebuild window
+on the Python side, because `zones_from_m5` slices to `LOOKBACK[tier]`
+resampled bars and `sma_atr` is `None` for the first 14 bars of that
+slice, whereas MT5's `iATR` always has full history behind it. The
+surviving zone set still converges because `Bound()` keeps only the
+nearest three per role, and that head disagreement in early pivots washes
+out once boxes age past it — no fix needed.
+
+MetaEditor watch item: `CSrZoneTier m_tiers[3]` is the repo's only member
+array of class objects — fallback is three named members plus a switch in
+`Tier(i)`.
 
 **Where the boxes come from on each surface.** The EA reads its own
 tier bars. The mini-app builds from the H4/H1/M15 ring buffers the bridge
@@ -1246,8 +1253,10 @@ basket flags `sr` / `sr_tier` → mini-app history column **S/R**
 `S/R: WALL H4 ⚠️`. The EA logs "S/R WALL ... entering anyway". `sr_agree`
 on a pyramid "add" row repeats the confirm-time verdict of the basket's
 entry (same convention as `rsi_agree`/`htf_agree`/`ema200_agree`). A
-blank `SrTiers` input yields verdict 1 (clear), not -1 — harmless while
-report-only; must become -1 before any enforcement (increment 3).
+blank `SrTiers` input now yields verdict -1 (not evaluated), not 1
+(clear) — fixed post-review; the tier match itself is a case-sensitive
+substring test (`StringFind(tiers, name)`), so e.g. `"h4"` (lowercase)
+disables that tier rather than matching it.
 
 **Not yet:** `--sr-filter` in the replay and any enforcement input are
 increment 2/3 of the spec — do not enable a block without the sweep.

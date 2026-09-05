@@ -449,8 +449,9 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   // S/R zone boxes (owner 2026-09-05, spec 2026-09-05-sr-zones-design.md):
   // Lightweight Charts v4 has no rectangle primitive, so each box is a
   // BASELINE series filled between baseValue (= box lo) and value (= box
-  // hi). A fixed POOL of 18 series is created in boot() BEFORE the candle
-  // series so candles paint on top; slots are grouped weakest tier first
+  // hi). A fixed POOL of 18 series is created in boot() BEFORE the EMA/
+  // HalfTrend overlays and the candle series so it paints under every
+  // overlay and the candles; slots are grouped weakest tier first
   // (M15, H1, H4) so a stronger tier's fill draws over a weaker one where
   // they overlap. Unused slots hold empty data. autoscaleInfoProvider
   // returns null so a far-away box can never stretch the price axis.
@@ -1631,6 +1632,11 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       autoSize: true
     });
 
+    // S/R pool is added first so the translucent boxes sit under every
+    // overlay and the candles (Lightweight Charts draws later-added series
+    // on top).
+    initSrPool();   // 18 box slots, under every overlay and the candles
+
     // Overlays are added BEFORE the candlestick series so candles paint on
     // top of them (Lightweight Charts draws later-added series on top),
     // matching render.py's PNG zorder (indicators under the OHLC bars).
@@ -1649,8 +1655,6 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     // blue/red at trend changes.
     htSeries = chart.addLineSeries(Object.assign(
       { color: HT_UP_COLOR, lineWidth: 2 }, noLabel));
-
-    initSrPool();   // 18 box slots, under the candles
 
     series = chart.addCandlestickSeries({
       upColor: "#26a69a",

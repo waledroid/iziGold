@@ -203,9 +203,13 @@ def _m5_rows(n, t0=1_700_000_000 - (1_700_000_000 % 14400)):
 
 def test_zones_from_m5_builds_every_tier():
     rows = _m5_rows(M5_ROWS_FOR_ZONES)
-    # one big single-bar spike: every tier's bucket containing it is a
-    # strict swing high (a 48-bar plateau would give EQUAL highs -> no pivot)
-    r = dict(rows[8000]); r["h"] = 2100.0; rows[8000] = r
+    # Each tier only ever sees its last LOOKBACK[tier] resampled bars (400
+    # M15/H1 bars = 1200/4800 M5 rows, 300 H4 bars = 14400 M5 rows), so the
+    # spike must sit in the tail shared by all three windows -- index 14000
+    # is inside all of them (matching test_sr_dashboard.py). One big
+    # single-bar spike: every tier's bucket containing it is a strict swing
+    # high (a 48-bar plateau would give EQUAL highs -> no pivot).
+    r = dict(rows[14000]); r["h"] = 2100.0; rows[14000] = r
     zones = zones_from_m5(rows)
     tiers = {zn.tier for zn in zones}
     assert tiers == {"H4", "H1", "M15"}

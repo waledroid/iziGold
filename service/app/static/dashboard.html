@@ -1203,6 +1203,18 @@ function initChart(){
   });
 
   const noLbl={priceLineVisible:false,lastValueVisible:false};
+
+  // S/R zone boxes (2026-09-05) -- same pooled-baseline trick as miniapp.html
+  // (see initSrPool there): 18 slots created first so the translucent boxes
+  // sit under every overlay and the candles, weakest tier first.
+  S.sr={};
+  const SR_TIERS=['M15','H1','H4'], SR_CLEAR='rgba(0,0,0,0)';
+  SR_TIERS.forEach(t=>{ S.sr[t]=[]; for(let k=0;k<6;k++){ S.sr[t].push(chart.addBaselineSeries({
+    baseValue:{type:'price',price:0}, topLineColor:SR_CLEAR, bottomLineColor:SR_CLEAR,
+    topFillColor1:SR_CLEAR, topFillColor2:SR_CLEAR, bottomFillColor1:SR_CLEAR, bottomFillColor2:SR_CLEAR,
+    lineWidth:1, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false,
+    autoscaleInfoProvider:()=>null })); } });
+
   S.ema9=chart.addLineSeries(Object.assign({color:'rgba(148,163,184,0.6)',lineWidth:1},noLbl));
   S.ema21=chart.addLineSeries(Object.assign({color:'rgba(148,163,184,0.8)',lineWidth:1},noLbl));
   S.ema55=chart.addLineSeries(Object.assign({color:'#f5c542',lineWidth:2},noLbl));
@@ -1211,16 +1223,6 @@ function initChart(){
   S.bb_upper=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
   S.bb_mid=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed},noLbl));
   S.bb_lower=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
-
-  // S/R zone boxes (2026-09-05) -- same pooled-baseline trick as miniapp.html
-  // (see initSrPool there): 18 slots under the candles, weakest tier first.
-  S.sr={};
-  const SR_TIERS=['M15','H1','H4'], SR_CLEAR='rgba(0,0,0,0)';
-  SR_TIERS.forEach(t=>{ S.sr[t]=[]; for(let k=0;k<6;k++){ S.sr[t].push(chart.addBaselineSeries({
-    baseValue:{type:'price',price:0}, topLineColor:SR_CLEAR, bottomLineColor:SR_CLEAR,
-    topFillColor1:SR_CLEAR, topFillColor2:SR_CLEAR, bottomFillColor1:SR_CLEAR, bottomFillColor2:SR_CLEAR,
-    lineWidth:1, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false,
-    autoscaleInfoProvider:()=>null })); } });
 
   candleSeries=chart.addCandlestickSeries({
     upColor:'#10b981',

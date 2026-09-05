@@ -299,6 +299,7 @@ public:
    int Verdict(int dir, double entry, double room, string tiers, string &tierOut)
      {
       tierOut = "";
+      if(StringLen(tiers) == 0) return -1;   // no tiers to honour: not evaluated, never "clear"
       if(!Seeded()) return -1;
       for(int i = 2; i >= 0; i--)               // strongest first
         {
