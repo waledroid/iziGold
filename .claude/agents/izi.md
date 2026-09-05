@@ -1187,26 +1187,70 @@ wiring.
 
 ## S/R zones — three timeframe tiers as boxes (owner, 2026-09-05)
 
-(Placeholder — expanded in the increment-1 wrap-up commit. Engine:
-`service/app/sr_zones.py` + `mt5/Include/XauAssistant/SrZones.mqh`;
-spec `docs/superpowers/specs/2026-09-05-sr-zones-design.md`. Mini-app
-`/api/history` now carries `sr_zones`, drawn by a pool of 18 baseline
-series in miniapp.html. Dashboard: `/api/overlays` carries `sr_zones`
-from the M5 candles table (`sr_zones_from_db`, memoised on
-`app.state.sr_cache`). Renders: trade PNGs and `/chart` snapshots draw
-only the zones overlapping the 100-bar window (`render._plot_sr_zones`),
-zones from `sr_zones_from_db`. Trade rows carry `sr_agree`/`sr_tier`
-(mirrors `rsi_agree`): caption line `S/R: clear ✅` / `S/R: WALL H4 ⚠️`,
-mini-app history column S/R. EA engine: `SrZones.mqh` (`CSrZoneTier` per
-timeframe, `CSrZoneSet` = M15/H1/H4), twin of `app/sr_zones.py`, same
-per-bar order; uncompiled until the owner's MetaEditor pass. EA chart:
-`SrBoxes.mqh` draws the boxes (prefix `xau_sr_`, weakest tier first,
-labels `R H4 x3`), wired in `ProcessBar` before the strategies evaluate;
-inputs under the "S/R zones" group, `ShowSrBoxes` switches drawing.
-EA verdict: both HalfTrend lanes judge `LastSrAgree()`/`LastSrTier()` at the
-confirm (room = `SrRoomAtr` x ATR(14, lane TF)); logged as 'S/R WALL ...
-entering anyway'; UiSink posts `sr_agree`/`sr_tier`. Report-only — nothing
-blocks.)
+The owner asked both HalfTrend lanes to know where price was rejected
+before, as BOXES (not lines), in three tiers: H4 major, H1 intermediate,
+M15 minor. Spec: `docs/superpowers/specs/2026-09-05-sr-zones-design.md`.
+Increment 1 (this entry) changes NO trading decision — report first,
+sweep second, enforce last, the same law as M15/E200/RSI.
+
+**Engine, twice, one contract.** `service/app/sr_zones.py` and
+`mt5/Include/XauAssistant/SrZones.mqh` implement the identical per-bar
+order: death by close-through (0.5 tier-ATR beyond the box), the fractal
+pivot (3-bar wing) confirmed by this bar births a box (wick → body,
+clamped 0.15–0.60 ATR) or merges into the nearest same-role box within
+0.5 ATR (touch count +1), keep the 3 nearest per role, sort by (born, lo).
+ATR is MT5's built-in `iATR` — an SMA of True Range, NOT Wilder — which is
+why Python can reproduce the EA exactly (`sma_atr`). A wick through a box
+is a test (the box stays); only a CLOSE through kills it. Lookbacks
+H4 300 / H1 400 / M15 400 bars. Constants are EA inputs under the
+"S/R zones" group and keyword args in Python; the replay sweep
+(increment 2), not taste, moves them. The EA engine refuses to seed (and
+retries on the next trade-TF bar, without latching) while
+`BarsCalculated(iATR) < 1` or fewer than `2*wing+2` bars exist — so boxes
+can be absent for a few bars after a cold attach; `Redraw()` draws
+nothing until a tier is seeded. Cold-seed head parity between the EA and
+Python differs only in the oldest ~20 bars (lookback counted in
+confirming bars vs slice bars; MT5's `iATR` has full history where
+`sma_atr` is `None` for the first 14) — the surviving zone set converges;
+accepted.
+
+**Where the boxes come from on each surface.** The EA reads its own
+tier bars. The mini-app builds from the H4/H1/M15 ring buffers the bridge
+already pushes (`/api/history` → `sr_zones`, same list on every tab; the
+forming bar is dropped). The dashboard (`/api/overlays` → `sr_zones`) and
+the trade/`/chart` renders build from the persistent M5 `candles` table
+resampled with the replay's bucket rule (`sr_zones_from_db`, memoised on
+the newest M5 bar; `[]` if the stored series is not M5 or anything
+fails). Lightweight Charts has no rectangle: a fixed pool of 18 baseline
+series (weakest tier first, `autoscaleInfoProvider: null` so a far box
+cannot stretch the axis) draws the fills. `render.py` draws only boxes
+overlapping the 100-bar window for the same reason.
+
+**Colours (owner):** support LIGHT BLUE `173,216,230`, resistance LIGHT
+YELLOW `255,245,157`; alpha by tier 0.35/0.22/0.12. MT5 has no alpha, so
+`SrBoxes.mqh` uses pre-blended tints; boxes are BACK objects with prefix
+`xau_sr_`, labels `R H4 x3` / `S M15 x1`. Dead zones are deleted, not
+kept — a stale S/R box is misinformation. Boxes are NOT tied to the
+active lane's paint state (zones are lane-independent); `ShowSrBoxes`
+input switches them.
+
+**The verdict.** `CStrategy::LastSrAgree()` / `LastSrTier()` (default
+-1/""). Both HalfTrend lanes judge at the confirm: BUY is a WALL (0) if
+the entry sits inside a resistance box or the nearest one's bottom is
+within `SrRoomAtr` (1.0) × ATR(14, lane TF) above it; SELL mirrored
+against support. `sr_tier` names the strongest wall (H4 > H1 > M15).
+Flows exactly like `rsi_agree`: UiSink → PostTradeEvent `sr_agree` +
+`sr_tier` → `TradeEventRequest` → `trades` migration → `recent_trades` →
+basket flags `sr` / `sr_tier` → mini-app history column **S/R**
+(`Yes` / `No H4` / `–`) → screenshot caption `S/R: clear ✅` /
+`S/R: WALL H4 ⚠️`. The EA logs "S/R WALL ... entering anyway". `sr_agree`
+on a pyramid "add" row repeats the confirm-time verdict of the basket's
+entry (same convention as `rsi_agree`/`htf_agree`/`ema200_agree`). A
+blank `SrTiers` input yields verdict 1 (clear), not -1 — harmless while
+report-only; must become -1 before any enforcement (increment 3).
+
+**Not yet:** `--sr-filter` in the replay and any enforcement input are
+increment 2/3 of the spec — do not enable a block without the sweep.
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 
@@ -1828,6 +1872,14 @@ New homes:
   diffing real `/api/report` month and day output before and after.
 - **`service/app/trade_report.py`** — trade-event reporting, captions, render
   and screenshot retention.
+- **`service/app/sr_zones.py`** (2026-09-05, S/R zones increment 1) — the
+  pure S/R zone engine (`build_zones`) shared by the replay, the mini-app
+  and `render.py`; see §7 "S/R zones — three timeframe tiers as boxes".
+- **`mt5/Include/XauAssistant/SrZones.mqh`** (2026-09-05) — the EA's twin
+  of `sr_zones.py`, one `CSrZoneTier` per H4/H1/M15 timeframe.
+- **`mt5/Include/XauAssistant/SrBoxes.mqh`** (2026-09-05) — pure charting
+  for the S/R boxes, `TradeBoxes.mqh`-style (`OBJ_RECTANGLE`, BACK,
+  prefix `xau_sr_`).
 
 **Twin pointers moved with them.** `_basket_legs` (now in `trade_report.py`)
 and `_group_baskets` (now in `reports.py`) still name each other, and

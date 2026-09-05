@@ -31,6 +31,8 @@ this spec changes NO trading behaviour.
   that lag is inherent and is identical in the EA and the replay.
 - **Tier ATR** — ATR(14) of the tier's own timeframe at the bar being
   processed. Every width/distance below is in tier ATR unless stated.
+  ATR here is MT5's built-in `iATR`, an SMA of True Range (not Wilder) —
+  exactly reproducible in Python, see `sma_atr`.
 
 ## Zone engine — one algorithm, two implementations
 
@@ -55,10 +57,11 @@ not recompute the H4 tier).
    kill it (that is a test, and the box stays). Role flipping (a broken
    support becoming resistance) is deliberately NOT in v1; a later pivot
    simply creates the new box.
-4. **Bound.** After each update the tier keeps only the `3` nearest boxes
-   above the last close and the `3` nearest below, by edge distance. Boxes
-   further out are dropped (they can be reborn from later pivots). This
-   caps chart clutter at 18 boxes and bounds compute.
+4. **Bound.** After each update the tier keeps, per role, only the `3`
+   boxes nearest the last close by edge distance (0 if the box contains
+   it; ties → more touches, then older). Still at most 6 per tier / 18 in
+   total. Boxes further out are dropped (they can be reborn from later
+   pivots). This caps chart clutter and bounds compute.
 5. **Lookback.** The engine is seeded from history on start:
    `H4: 300 bars`, `H1: 400 bars`, `M15: 400 bars`, then updated
    incrementally. A cold start that cannot read that much history seeds
@@ -106,8 +109,9 @@ H4 > H1 > M15.
   clears everything. Left edge = `born`, right edge = the current bar
   (moved every closed chart bar, create-once-then-move like `TradeBoxes`).
   A right-edge `OBJ_TEXT` label reads e.g. `R H4 x3` / `S M15 x1`. Drawn
-  only while painting is enabled (the ACTIVE lane, `EnablePaint`), and
-  redrawn from the engine's list after any tier update; dead boxes are
+  whenever `ShowSrBoxes` is true — the zones are lane-independent, so
+  they are not tied to the active lane's paint state — and redrawn from
+  the engine's list after any tier update; dead boxes are
   deleted, not left as history (a dead S/R box is misinformation, unlike a
   finished trade box). `ShowSrBoxes` EA input, default true.
 - **Mini-app + dashboard** — `_indicator_series` gains
