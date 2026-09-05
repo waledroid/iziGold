@@ -12,6 +12,7 @@ from pathlib import Path
 from app.db import SignalDb
 from app.models import Candle
 from app.render import render_trade_chart
+from app.sr_zones import sr_zones_from_db
 from app.telegram import TelegramClient
 
 _SCREENSHOT_RETENTION = 500
@@ -84,7 +85,7 @@ def _basket_legs(db: SignalDb, trade_id: int) -> list:
 async def _report_trade_event(ev, trade_id: int, legs: list, *,
                                last_candles, screenshot_dir: Path,
                                db: SignalDb, telegram: TelegramClient | None,
-                               mirror) -> None:
+                               mirror, sr_cache: dict | None = None) -> None:
     """Render/photo/P&L message for a trade event, OFF the response path.
     Render/photo only for opens and FINAL closes -- 'add' legs are still
     recorded (so the eventual close chart can draw their A-lines via
@@ -118,9 +119,15 @@ async def _report_trade_event(ev, trade_id: int, legs: list, *,
             bucket_s, ema_len = _LANE_RENDER.get(ev.strategy_id, (0, 55))
             render_candles = _resample(last_candles, bucket_s) if bucket_s \
                 else last_candles
+            zones = []
+            if sr_cache is not None:
+                try:
+                    zones = await asyncio.to_thread(sr_zones_from_db, db, sr_cache)
+                except Exception:
+                    zones = []
             ok = await asyncio.to_thread(
                 render_trade_chart, render_candles, trade_dict,
-                str(render_path), ema_len)
+                str(render_path), ema_len, zones)
             if ok:
                 db.set_render(trade_id, str(render_path))
                 await asyncio.to_thread(_prune_screenshots, screenshot_dir)

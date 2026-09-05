@@ -63,8 +63,47 @@ def _plot_halftrend(ax, ht_values, offset, window_len, linewidth=1.6, zorder=1):
         prev_x, prev_y = i, y
 
 
+SR_RGB = {"support": (173 / 255, 216 / 255, 230 / 255),
+          "resistance": (255 / 255, 245 / 255, 157 / 255)}
+SR_ALPHA = {"H4": 0.35, "H1": 0.22, "M15": 0.12}
+
+
+def _plot_sr_zones(ax, window, zones):
+    """Light-blue support / light-yellow resistance boxes (2026-09-05),
+    behind everything else. Only zones that overlap the window's own price
+    range are drawn -- an off-screen box must never widen the y axis of a
+    100-bar snapshot. x spans from the zone's `born` bar (or the window's
+    first bar) to the right edge; label at the right edge."""
+    if not zones or not window:
+        return
+    lo_px = min(c.l for c in window)
+    hi_px = max(c.h for c in window)
+    pad = (hi_px - lo_px) * 0.05
+    n = len(window)
+    for z in zones:
+        try:
+            lo, hi = float(z["lo"]), float(z["hi"])
+            if hi < lo_px - pad or lo > hi_px + pad:
+                continue
+            rgb = SR_RGB.get(z.get("role"))
+            alpha = SR_ALPHA.get(z.get("tier"))
+            if rgb is None or alpha is None:
+                continue
+            x0 = next((i for i, c in enumerate(window) if c.t >= int(z.get("born", 0))), 0)
+            ax.add_patch(Rectangle((x0 - 0.5, lo), n - x0, hi - lo,
+                                   facecolor=rgb, alpha=alpha, edgecolor="none",
+                                   zorder=0.3))
+            tag = ("R " if z.get("role") == "resistance" else "S ") + \
+                  f"{z.get('tier')} x{int(z.get('touches', 1))}"
+            ax.text(n - 1, hi if z.get("role") == "resistance" else lo, tag,
+                    fontsize=6, ha="right", va="bottom", color=rgb, alpha=0.9,
+                    zorder=6)
+        except Exception:
+            continue
+
+
 def render_trade_chart(candles, trade: dict, out_path: str,
-                       trade_ema_len: int = 55) -> bool:
+                       trade_ema_len: int = 55, sr_zones=None) -> bool:
     """Render the last 100 candles as manual OHLC bars with HalfTrend/EMA
     overlays, an entry/exit marker with a price label, and an optional SL
     line, saved as a PNG to `out_path`.
@@ -81,6 +120,8 @@ def render_trade_chart(candles, trade: dict, out_path: str,
     renders here run concurrently via `asyncio.to_thread` for overlapping
     /trade-event calls, so sharing pyplot's global current-figure state
     across threads could race and corrupt/cross-contaminate figures.
+
+    sr_zones: zone dicts from app.sr_zones; None/[] draws nothing.
 
     Returns True on success, False on any failure (empty candles, bad
     out_path, etc.) -- never raises.
@@ -102,6 +143,7 @@ def render_trade_chart(candles, trade: dict, out_path: str,
 
         fig = Figure(figsize=(10, 5))
         ax = fig.add_subplot(111)
+        _plot_sr_zones(ax, window, sr_zones)
 
         # Overlays first, drawn under the price bars (lower zorder).
         _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
@@ -196,7 +238,7 @@ def render_trade_chart(candles, trade: dict, out_path: str,
         return False
 
 
-def render_snapshot_chart(candles, out_path: str, positions=None) -> bool:
+def render_snapshot_chart(candles, out_path: str, positions=None, sr_zones=None) -> bool:
     """Current-market render for /chart: the last-100 window with
     HalfTrend/EMA overlays and a right-edge last-price label; when an open
     basket is supplied, each leg's entry line plus the shared SL line are
@@ -218,6 +260,7 @@ def render_snapshot_chart(candles, out_path: str, positions=None) -> bool:
 
         fig = Figure(figsize=(10, 5))
         ax = fig.add_subplot(111)
+        _plot_sr_zones(ax, window, sr_zones)
 
         _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
         _plot_ema(ax, ema9_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)

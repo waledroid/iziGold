@@ -302,7 +302,8 @@ async def _send_chart_snapshot(app) -> None:
         candles = merge_forming_bar(candles, hb)
     out = str(app.state.screenshot_dir / "chart_cmd.png")
     positions = hb.positions if hb is not None else []
-    ok = await asyncio.to_thread(render_snapshot_chart, candles, out, positions)
+    zones = await asyncio.to_thread(sr_zones_from_db, app.state.db, app.state.sr_cache)
+    ok = await asyncio.to_thread(render_snapshot_chart, candles, out, positions, zones)
     if not ok:
         await asyncio.to_thread(tg.send_message, "chart render failed")
         return
@@ -1292,7 +1293,8 @@ async def trade_event(ev: TradeEventRequest):
         screenshot_dir=app.state.screenshot_dir,
         db=app.state.db,
         telegram=app.state.telegram,
-        mirror=lambda **kw: _mirror(app, **kw)))
+        mirror=lambda **kw: _mirror(app, **kw),
+        sr_cache=app.state.sr_cache))
     app.state.report_tasks.add(task)
     task.add_done_callback(app.state.report_tasks.discard)
     return {"id": trade_id}

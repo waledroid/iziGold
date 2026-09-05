@@ -1193,7 +1193,9 @@ spec `docs/superpowers/specs/2026-09-05-sr-zones-design.md`. Mini-app
 `/api/history` now carries `sr_zones`, drawn by a pool of 18 baseline
 series in miniapp.html. Dashboard: `/api/overlays` carries `sr_zones`
 from the M5 candles table (`sr_zones_from_db`, memoised on
-`app.state.sr_cache`).)
+`app.state.sr_cache`). Renders: trade PNGs and `/chart` snapshots draw
+only the zones overlapping the 100-bar window (`render._plot_sr_zones`),
+zones from `sr_zones_from_db`.)
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 

@@ -133,7 +133,8 @@ def _snap_app(tmp_path, candles, hb=None, hb_age=0.0, channel_id=""):
                          "candles": candles} if candles else None),
         latest_heartbeat=((_time.time() - hb_age, hb) if hb is not None else None),
         screenshot_dir=pathlib.Path(tmp_path),
-        db=_Db(channel_id)))
+        db=_Db(channel_id),
+        sr_cache={}))
     return app, transport, app_main
 
 

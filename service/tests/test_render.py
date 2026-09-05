@@ -435,7 +435,7 @@ def test_close_render_inherits_open_legs_sl_and_tp_when_own_are_zero(client, mon
     client.post("/analyze", json=_analyze_payload())
     captured = {}
 
-    def _fake_render(candles, trade, out_path, trade_ema_len=55):
+    def _fake_render(candles, trade, out_path, trade_ema_len=55, sr_zones=None):
         captured["trade"] = trade
         return True
 
@@ -451,6 +451,7 @@ def test_close_render_inherits_open_legs_sl_and_tp_when_own_are_zero(client, mon
         "/trade-event",
         json=_trade(event="close", price=2415.0, sl=0.0, tp=0.0,
                     reason="stop-loss"))
+    _drain()
 
     trade = captured["trade"]
     assert trade["sl"] == 2390.0   # inherited from the basket's first leg
@@ -463,7 +464,7 @@ def test_close_render_keeps_own_sl_tp_when_nonzero(client, monkeypatch):
     client.post("/analyze", json=_analyze_payload())
     captured = {}
 
-    def _fake_render(candles, trade, out_path, trade_ema_len=55):
+    def _fake_render(candles, trade, out_path, trade_ema_len=55, sr_zones=None):
         captured["trade"] = trade
         return True
 
@@ -627,3 +628,52 @@ def test_render_trade_chart_accepts_ema_len(tmp_path):
     ok = render_trade_chart(candles, {"event": "open", "direction": "BUY",
                                       "price": 160.0}, str(out), 50)
     assert ok and out.exists()
+
+
+# ---------------------------------------------------------------------------
+# S/R zone boxes (Task 5)
+# ---------------------------------------------------------------------------
+
+def _zones():
+    """Two boxes inside the rendered 100-bar window, one far outside it
+    (must be skipped so it cannot stretch the y axis)."""
+    w = trend_candles(200)[-100:]
+    lo, hi = min(c.l for c in w), max(c.h for c in w)
+    span = hi - lo
+    return [{"tier": "H4", "role": "resistance", "lo": lo + 0.70 * span, "hi": lo + 0.74 * span,
+             "touches": 3, "born": 0, "last_touch": 0},
+            {"tier": "M15", "role": "support", "lo": lo + 0.20 * span, "hi": lo + 0.23 * span,
+             "touches": 1, "born": 0, "last_touch": 0},
+            {"tier": "H1", "role": "resistance", "lo": hi + 50 * span, "hi": hi + 51 * span,
+             "touches": 1, "born": 0, "last_touch": 0}]
+
+
+def test_render_trade_chart_accepts_zones_and_keeps_the_axis_tight(tmp_path):
+    from app import render as r
+    seen = {}
+    real = r._plot_sr_zones
+
+    def spy(ax, window, zones):
+        real(ax, window, zones)
+        seen["ylim"] = ax.get_ylim()
+        seen["patches"] = len(ax.patches)
+    r._plot_sr_zones = spy
+    try:
+        ok = render_trade_chart(trend_candles(200), _trade(), str(tmp_path / "z.png"),
+                                sr_zones=_zones())
+    finally:
+        r._plot_sr_zones = real
+    assert ok is True
+    assert seen["patches"] == 2            # the far zone is off-window and skipped
+    w = trend_candles(200)[-100:]
+    assert seen["ylim"][1] < max(c.h for c in w) * 1.5
+
+
+def test_render_snapshot_chart_accepts_zones(tmp_path):
+    from app.render import render_snapshot_chart
+    assert render_snapshot_chart(trend_candles(200), str(tmp_path / "s.png"),
+                                 sr_zones=_zones()) is True
+
+
+def test_render_without_zones_is_unchanged(tmp_path):
+    assert render_trade_chart(trend_candles(200), _trade(), str(tmp_path / "n.png")) is True
