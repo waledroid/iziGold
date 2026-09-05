@@ -24,6 +24,7 @@ from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
                         TradeEventRequest)
 from app.regime import classify_regime, last_atr
 from app.render import render_snapshot_chart
+from app.sr_zones import sr_zones_from_db
 from app.telegram import (BRAKE_RESET_KB, EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB,
                           TARGET_KB, TelegramClient,
                           format_proposal, handle_callback, handle_channel_post,
@@ -401,6 +402,7 @@ async def lifespan(app: FastAPI):
     # recomputing HalfTrend + four EMAs) each time. Keyed on _rc_key.
     app.state.candles_cache = None            # (key, payload)
     app.state.overlays_cache = {}             # {(key, strategy): payload}
+    app.state.sr_cache = {}                   # {"t": newest M5 bar, "zones": [...]}
     # Seed the chart accumulator from the persistent candles table so the
     # dashboard survives a service restart instead of starting empty.
     try:
@@ -1151,6 +1153,10 @@ def ui_overlays(strategy: str = ""):
     candles = rc["candles"]
     closes = [c.c for c in candles]
     payload = builder(candles, closes)
+    # S/R boxes (2026-09-05): from the persistent M5 table, not the 2000-bar
+    # accumulator (H4 needs ~50 days of M5 bars). Memoised on the newest M5
+    # bar in app.state.sr_cache, separate from this overlays_cache.
+    payload["sr_zones"] = sr_zones_from_db(app.state.db, app.state.sr_cache)
     # Only the current key's entries are kept (one per strategy the
     # dashboard asks for) -- a new bar drops the whole previous generation
     # rather than letting the dict grow without bound.

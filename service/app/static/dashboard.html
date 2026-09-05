@@ -1211,7 +1211,17 @@ function initChart(){
   S.bb_upper=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
   S.bb_mid=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed},noLbl));
   S.bb_lower=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
-  
+
+  // S/R zone boxes (2026-09-05) -- same pooled-baseline trick as miniapp.html
+  // (see initSrPool there): 18 slots under the candles, weakest tier first.
+  S.sr={};
+  const SR_TIERS=['M15','H1','H4'], SR_CLEAR='rgba(0,0,0,0)';
+  SR_TIERS.forEach(t=>{ S.sr[t]=[]; for(let k=0;k<6;k++){ S.sr[t].push(chart.addBaselineSeries({
+    baseValue:{type:'price',price:0}, topLineColor:SR_CLEAR, bottomLineColor:SR_CLEAR,
+    topFillColor1:SR_CLEAR, topFillColor2:SR_CLEAR, bottomFillColor1:SR_CLEAR, bottomFillColor2:SR_CLEAR,
+    lineWidth:1, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false,
+    autoscaleInfoProvider:()=>null })); } });
+
   candleSeries=chart.addCandlestickSeries({
     upColor:'#10b981',
     downColor:'#f43f5e',
@@ -1225,6 +1235,23 @@ function initChart(){
 function setLine(s,arr){
   if(!arr||!_pcData){s.setData([]);return;}
   s.setData(_pcData.candles.map((c,i)=>arr[i]==null?null:{time:c.t,value:arr[i]}).filter(Boolean));
+}
+
+function setSrZones(zones,times){
+  const ALPHA={H4:0.35,H1:0.22,M15:0.12}, RGB={support:'173,216,230',resistance:'255,245,157'};
+  const byTier={M15:[],H1:[],H4:[]};
+  (Array.isArray(zones)?zones:[]).forEach(z=>{ if(z&&byTier[z.tier]&&Number.isFinite(z.lo)&&Number.isFinite(z.hi)&&z.hi>z.lo) byTier[z.tier].push(z); });
+  Object.keys(byTier).forEach(tier=>{
+    const pool=(S.sr&&S.sr[tier])||[];
+    pool.forEach((s,k)=>{
+      const z=byTier[tier][k];
+      if(!z){ try{s.setData([]);}catch(e){} return; }
+      let pts=times.filter(t=>t>=z.born).map(t=>({time:t,value:z.hi}));
+      if(!pts.length&&times.length) pts=[{time:times[times.length-1],value:z.hi}];
+      const col='rgba('+RGB[z.role]+','+ALPHA[z.tier]+')';
+      try{ s.applyOptions({baseValue:{type:'price',price:z.lo},topFillColor1:col,topFillColor2:col}); s.setData(pts); }catch(e){}
+    });
+  });
 }
 
 function setHt(arr){
@@ -1304,6 +1331,7 @@ async function refreshChartAndTrades(){
       setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
       setLine(S.ema55,ov.ema55); setLine(S.ema200,ov.ema200);
       setHt(ov.halftrend);
+      setSrZones(ov.sr_zones, candles.map(c=>c.t));
       setLine(S.bb_upper,ov.bb_upper); setLine(S.bb_mid,ov.bb_mid);
       setLine(S.bb_lower,ov.bb_lower);
       candleSeries.setMarkers(buildMarkers(candles,trades));
