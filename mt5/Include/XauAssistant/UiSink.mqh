@@ -90,11 +90,16 @@ public:
       // decision, so they are only meaningful on open/add rows; closes
       // carry -1 (unknown).
       int htfAgree = -1, ema200Agree = -1, newsBlackout = -1, rsiAgree = -1;
+      // Same rule for the S/R zone verdict (owner 2026-09-05): it describes
+      // the entry decision, so open/add rows only. Report-only end to end.
+      int srAgree = -1; string srTier = "";
       if(event != "close" && active != NULL)
         {
          htfAgree = active.LastHtfAgree();
          ema200Agree = active.LastEma200Agree();
          rsiAgree = active.LastRsiAgree();
+         srAgree = active.LastSrAgree();
+         srTier  = active.LastSrTier();
         }
       // News blackout stamp (owner 2026-09-01): entry-decision context, so
       // open/add rows only — closes stay -1 like the agree verdicts.
@@ -102,7 +107,7 @@ public:
          newsBlackout = m_news.InBlackout() ? 1 : 0;
       long id = m_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
                                     profit, tp, basketGone, entryMode, htfAgree, ema200Agree,
-                                    newsBlackout, rsiAgree);
+                                    newsBlackout, rsiAgree, srAgree, srTier);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
       // re-report this deal on the next MT5/service restart. CloseAll's

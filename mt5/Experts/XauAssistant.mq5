@@ -274,11 +274,13 @@ int OnInit()
    g_srZones.Init(srp, SrLookbackH4, SrLookbackH1, SrLookbackM15);
    g_srBoxes.Init(&g_srZones, ShowSrBoxes);
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
-   g_registry.Register(new CHalfTrendEmaStrategy("halftrend_ema_v1", TradeTimeframe, HtAmplitude, EmaLength,
+   CHalfTrendEmaStrategy *laneM5 = new CHalfTrendEmaStrategy("halftrend_ema_v1", TradeTimeframe, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
                        CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
                        HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR,
-                       HtfChopOnly, HtfChopBars, HtfChopEffMax, Ema200Confirm));
+                       HtfChopOnly, HtfChopBars, HtfChopEffMax, Ema200Confirm);
+   laneM5.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   g_registry.Register(laneM5);
    // Second, independently-parameterised HalfTrend lane trading M15 (owner
    // request 2026-08-22): same rules, own inputs, shadow-evaluated every bar
    // like every other registered strategy. Only ActiveStrategy trades/alerts
@@ -287,11 +289,13 @@ int OnInit()
    // this lane (owner 2026-08-22: "for this m15 the only confirmation is the
    // ema 200") -- htfConfirm=false with placeholder HTF args that are never
    // used (no M15Htf* inputs exist to source them from any more).
-   g_registry.Register(new CHalfTrendEmaStrategy("halftrend_m15_v1", PERIOD_M15, M15Amplitude, M15EmaLength,
+   CHalfTrendEmaStrategy *laneM15 = new CHalfTrendEmaStrategy("halftrend_m15_v1", PERIOD_M15, M15Amplitude, M15EmaLength,
                        M15ConfirmCloses, M15StopBufferATR,
                        M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
                        false, PERIOD_H1, 55, 0.0, false, 48, 0.08, M15Ema200Confirm,
-                       M15ConfirmClearATR));
+                       M15ConfirmClearATR);
+   laneM15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   g_registry.Register(laneM15);
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
                        SqueezeLookback, SqueezePctile, ExpansionBars,
                        RsiPeriod, StochPeriod, KSmooth, DSmooth));

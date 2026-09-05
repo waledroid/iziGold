@@ -11,6 +11,7 @@
 #ifndef XAU_STRAT_HALFTREND_EMA_MQH
 #define XAU_STRAT_HALFTREND_EMA_MQH
 #include <XauAssistant/Strategy.mqh>
+#include <XauAssistant/SrZones.mqh>
 
 class CHalfTrendEmaStrategy : public CStrategy
   {
@@ -96,6 +97,17 @@ private:
    int      m_rsiHandle;
    double   m_confirmRsi;      // RSI at the confirm bar; -1 = none yet
    int      m_lastRsiAgree;    // 1 agreed / 0 refused / -1 not evaluated
+
+   // S/R zone verdict (owner 2026-09-05) — report-only. The engine is the
+   // EA-owned CSrZoneSet shared by every lane (zones are not lane-specific);
+   // this lane only holds the pointer, the tiers it honours and its room
+   // distance. Judged at Evaluate time (the confirm bar's close for a live
+   // confirm; for a catch-up entry, the zones/ATR as they stand now).
+   CSrZoneSet *m_srZones;
+   string      m_srTiers;
+   double      m_srRoomAtr;
+   int         m_lastSrAgree;   // 1 clear / 0 wall / -1 not evaluated
+   string      m_lastSrTier;    // strongest wall's tier behind a 0
 
    int      m_ema9Handle;
    int      m_ema21Handle;
@@ -373,6 +385,7 @@ public:
         m_ema200Confirm(ema200Confirm), m_lastEma200Agree(-1),
         m_confirmEma200(0), m_ema200Override(""),
         m_rsiHandle(INVALID_HANDLE), m_confirmRsi(-1), m_lastRsiAgree(-1),
+        m_srZones(NULL), m_srTiers(""), m_srRoomAtr(0.0), m_lastSrAgree(-1), m_lastSrTier(""),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -523,6 +536,11 @@ public:
    virtual string Id() { return m_id; }
    virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
    virtual int LastRsiAgree() const { return m_lastRsiAgree; }
+   virtual int    LastSrAgree() const { return m_lastSrAgree; }
+   virtual string LastSrTier()  const { return m_lastSrTier; }
+   // Hand this lane the EA's shared zone engine. Called once from OnInit.
+   void SetSrZones(CSrZoneSet *zones, string tiers, double roomAtr)
+     { m_srZones = zones; m_srTiers = tiers; m_srRoomAtr = roomAtr; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
@@ -593,6 +611,24 @@ public:
                   " — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
                   " DISAGREES (", (wanted == SIGNAL_BUY ? ">=70 overbought" : "<=30 oversold"),
                   ") but the check is report-only; entering anyway");
+         // S/R zone verdict (owner 2026-09-05) — report-only, never blocks.
+         // Room is SrRoomAtr x ATR(14) of THIS lane's timeframe (shift 1 =
+         // the bar that just closed, i.e. the confirm bar on a live confirm).
+         m_lastSrAgree = -1; m_lastSrTier = "";
+         if(m_srZones != NULL)
+           {
+            double srAb[]; double room = 0.0;
+            if(CopyBuffer(m_atrHandle, 0, 1, 1, srAb) == 1 && srAb[0] > 0)
+               room = m_srRoomAtr * srAb[0];
+            m_lastSrAgree = m_srZones.Verdict(wanted, m_confirmClose, room, m_srTiers, m_lastSrTier);
+            if(m_lastSrAgree == 0)
+               Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                     " — S/R WALL: ", m_lastSrTier,
+                     (wanted == SIGNAL_BUY ? " resistance" : " support"),
+                     " inside/within ", DoubleToString(m_srRoomAtr, 2), " ATR of ",
+                     DoubleToString(m_confirmClose, 2),
+                     " but the check is report-only; entering anyway");
+           }
          if(!htfOk && !HtfEnforced())
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "

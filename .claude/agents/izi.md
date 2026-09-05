@@ -1202,7 +1202,11 @@ timeframe, `CSrZoneSet` = M15/H1/H4), twin of `app/sr_zones.py`, same
 per-bar order; uncompiled until the owner's MetaEditor pass. EA chart:
 `SrBoxes.mqh` draws the boxes (prefix `xau_sr_`, weakest tier first,
 labels `R H4 x3`), wired in `ProcessBar` before the strategies evaluate;
-inputs under the "S/R zones" group, `ShowSrBoxes` switches drawing.)
+inputs under the "S/R zones" group, `ShowSrBoxes` switches drawing.
+EA verdict: both HalfTrend lanes judge `LastSrAgree()`/`LastSrTier()` at the
+confirm (room = `SrRoomAtr` x ATR(14, lane TF)); logged as 'S/R WALL ...
+entering anyway'; UiSink posts `sr_agree`/`sr_tier`. Report-only — nothing
+blocks.)
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 

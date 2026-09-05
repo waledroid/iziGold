@@ -51,6 +51,15 @@ public:
    // never blocks anything; it exists so live trades accumulate evidence.
    // 1 agreed, 0 refused, -1 not evaluated / strategy has no RSI module.
    virtual int LastRsiAgree() const { return -1; }
+
+   // S/R zone verdict behind the current signal (owner 2026-09-05,
+   // spec 2026-09-05-sr-zones-design.md): 1 = clear room ahead, 0 = the
+   // entry sits inside or within SrRoomAtr of an opposing zone ("wall"),
+   // -1 = not evaluated / no zone engine. REPORT-ONLY in increment 1 —
+   // never blocks. LastSrTier() names the strongest wall ("H4"/"H1"/"M15")
+   // behind a 0, "" otherwise.
+   virtual int    LastSrAgree() const { return -1; }
+   virtual string LastSrTier()  const { return ""; }
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }
