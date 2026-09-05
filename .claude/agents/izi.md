@@ -1185,6 +1185,14 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
+## S/R zones — three timeframe tiers as boxes (owner, 2026-09-05)
+
+(Placeholder — expanded in the increment-1 wrap-up commit. Engine:
+`service/app/sr_zones.py` + `mt5/Include/XauAssistant/SrZones.mqh`;
+spec `docs/superpowers/specs/2026-09-05-sr-zones-design.md`. Mini-app
+`/api/history` now carries `sr_zones`, drawn by a pool of 18 baseline
+series in miniapp.html.)
+
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 
 The owner asked for an aggressive M15: enter EVERY HalfTrend flip, 1-candle

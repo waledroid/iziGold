@@ -32,6 +32,7 @@ from app.indicators import ema, halftrend, macd, rsi
 from app.models import Candle
 from app.reports import (_empty_report, _group_baskets, _report_day,
                           _report_month, _server_date)
+from app.sr_zones import zone_dicts, zones_from_rings
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -199,12 +200,23 @@ def page():
     return FileResponse(STATIC_DIR / "miniapp.html", media_type="text/html")
 
 
+def _sr_zone_payload(state_candles: dict) -> list:
+    """S/R boxes for every tab (2026-09-05): built from the H4/H1/M15 ring
+    buffers the bridge already pushes (500 bars each >= the tier
+    lookbacks), never from the tab's own TF. Fail-open: [] on any error."""
+    try:
+        return zone_dicts(zones_from_rings(state_candles))
+    except Exception:
+        return []
+
+
 @app.get("/api/history")
 def history(tf: str, _=Depends(require_viewer)):
     if tf not in TFS:
         raise HTTPException(status_code=400, detail=f"unknown tf {tf}")
     rows = list(state.candles[tf])
-    return {"tf": tf, "candles": rows, **_indicator_series(rows, tf)}
+    return {"tf": tf, "candles": rows, **_indicator_series(rows, tf),
+            "sr_zones": _sr_zone_payload(state.candles)}
 
 
 # Trading-EMA length per timeframe: the M15 lane trades EMA 50 (owner

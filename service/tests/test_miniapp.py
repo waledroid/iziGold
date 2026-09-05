@@ -742,3 +742,40 @@ def test_report_balance_fallback_carries_cumulative_pl_across_a_heartbeat_gap(re
     assert rows[0]["balance_after"] == pytest.approx(1040.0)   # 1000 + 40
     assert rows[1]["balance_after"] == pytest.approx(1025.0)   # 1000 + 40 - 15
     assert rows[2]["balance_after"] == pytest.approx(1035.0)   # real heartbeat
+
+
+def _spiky_rows(n, sec, t0=1_700_000_000 - (1_700_000_000 % 14400), spike_at=30):
+    rows = []
+    for i in range(n):
+        px = 4000.0
+        h = px + 0.5 if i != spike_at else px + 30.0
+        c = px if i != spike_at else px + 1.0
+        rows.append({"t": t0 + sec * i, "o": px, "h": h, "l": px - 0.5, "c": c, "v": 1.0})
+    return rows
+
+
+def test_history_includes_sr_zones_from_the_tier_rings(client):
+    _push(client, {"candles": {"H4": _spiky_rows(80, 14400),
+                               "H1": _spiky_rows(80, 3600),
+                               "M15": _spiky_rows(80, 900),
+                               "M5": _spiky_rows(60, 300)}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    zones = body["sr_zones"]
+    assert {z["tier"] for z in zones} == {"H4", "H1", "M15"}
+    for z in zones:
+        assert set(z) == {"tier", "role", "lo", "hi", "touches", "born", "last_touch"}
+        assert z["role"] == "resistance" and z["hi"] == 4030.0
+    # every tab carries the same zone list -- it is not a per-TF indicator
+    assert client.get("/api/history", params={"tf": "H1"}).json()["sr_zones"] == zones
+
+
+def test_history_sr_zones_empty_without_tier_data(client):
+    _push(client, {"candles": {"M5": [_candle(1000, 4000.0), _candle(1300, 4001.0)]}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert body["sr_zones"] == []
+
+
+def test_page_has_the_sr_pool(client):
+    html = client.get("/").text
+    assert "initSrPool" in html and "setSrZones" in html
+    assert "173,216,230" in html and "255,245,157" in html

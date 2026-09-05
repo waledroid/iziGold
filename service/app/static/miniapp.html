@@ -446,6 +446,76 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   var emaK = { e9: 2 / 10, e21: 2 / 22, e55: 2 / 56, e200: 2 / 201 };
   var lastBarT = null;
 
+  // S/R zone boxes (owner 2026-09-05, spec 2026-09-05-sr-zones-design.md):
+  // Lightweight Charts v4 has no rectangle primitive, so each box is a
+  // BASELINE series filled between baseValue (= box lo) and value (= box
+  // hi). A fixed POOL of 18 series is created in boot() BEFORE the candle
+  // series so candles paint on top; slots are grouped weakest tier first
+  // (M15, H1, H4) so a stronger tier's fill draws over a weaker one where
+  // they overlap. Unused slots hold empty data. autoscaleInfoProvider
+  // returns null so a far-away box can never stretch the price axis.
+  var SR_TIERS = ["M15", "H1", "H4"];
+  var SR_PER_TIER = 6;                       // 3 per role x 2 roles
+  var SR_ALPHA = { H4: 0.35, H1: 0.22, M15: 0.12 };
+  var SR_RGB = { support: "173,216,230", resistance: "255,245,157" };
+  var SR_CLEAR = "rgba(0,0,0,0)";
+  var srPool = {};                           // tier -> [baseline series]
+
+  function srColor(zone) {
+    return "rgba(" + SR_RGB[zone.role] + "," + SR_ALPHA[zone.tier] + ")";
+  }
+
+  function initSrPool() {
+    SR_TIERS.forEach(function (tier) {
+      srPool[tier] = [];
+      for (var k = 0; k < SR_PER_TIER; k++) {
+        srPool[tier].push(chart.addBaselineSeries({
+          baseValue: { type: "price", price: 0 },
+          topLineColor: SR_CLEAR, bottomLineColor: SR_CLEAR,
+          topFillColor1: SR_CLEAR, topFillColor2: SR_CLEAR,
+          bottomFillColor1: SR_CLEAR, bottomFillColor2: SR_CLEAR,
+          lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          autoscaleInfoProvider: function () { return null; }
+        }));
+      }
+    });
+  }
+
+  // zones: the /api/history sr_zones list; times: the loaded bars' times
+  // (unix seconds, ascending -- toLwCandle passes c.t through). A box
+  // spans from its `born` bar (or the first loaded bar when older than
+  // the window) to the newest loaded bar.
+  function setSrZones(zones, times) {
+    var byTier = {};
+    SR_TIERS.forEach(function (t) { byTier[t] = []; });
+    (Array.isArray(zones) ? zones : []).forEach(function (z) {
+      if (z && byTier[z.tier] && isNumeric(z.lo) && isNumeric(z.hi) && z.hi > z.lo) {
+        byTier[z.tier].push(z);
+      }
+    });
+    SR_TIERS.forEach(function (tier) {
+      var pool = srPool[tier] || [];
+      for (var k = 0; k < pool.length; k++) {
+        var z = byTier[tier][k];
+        if (!z) { try { pool[k].setData([]); } catch (e) {} continue; }
+        var pts = [];
+        for (var i = 0; i < times.length; i++) {
+          if (times[i] >= z.born) pts.push({ time: times[i], value: z.hi });
+        }
+        if (!pts.length && times.length) {
+          pts.push({ time: times[times.length - 1], value: z.hi });
+        }
+        var col = srColor(z);
+        try {
+          pool[k].applyOptions({ baseValue: { type: "price", price: z.lo },
+                                 topFillColor1: col, topFillColor2: col });
+          pool[k].setData(pts);
+        } catch (e) {}
+      }
+    });
+  }
+
   function arrAt(arr, i) {
     return (Array.isArray(arr) && i >= 0 && i < arr.length) ? arr[i] : null;
   }
@@ -826,6 +896,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
         }
         series.setData(rows);
         setIndicatorSeriesData(body, idxMap, times);
+        setSrZones(body.sr_zones, times);
         setPanelData(body, idxMap, times);
         setEmaBaseline(body);
         // Past-trade markers: refetched after every successful history
@@ -1569,6 +1640,8 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     // blue/red at trend changes.
     htSeries = chart.addLineSeries(Object.assign(
       { color: HT_UP_COLOR, lineWidth: 2 }, noLabel));
+
+    initSrPool();   // 18 box slots, under the candles
 
     series = chart.addCandlestickSeries({
       upColor: "#26a69a",
