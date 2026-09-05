@@ -1,7 +1,8 @@
 import pytest
 
 from app.sr_zones import (LOOKBACK, TIER_SEC, Zone, build_zones, resample,
-                          sma_atr)
+                          sma_atr, M5_ROWS_FOR_ZONES, sr_verdict, sr_zones_from_db,
+                          zone_dicts, zones_from_m5, zones_from_rings)
 from tests.test_backtest_golden import _load_bt
 
 
@@ -153,3 +154,99 @@ def test_zones_are_sorted_by_born_then_lo():
 def test_constants_match_the_spec():
     assert TIER_SEC == {"M15": 900, "H1": 3600, "H4": 14400}
     assert LOOKBACK == {"M15": 400, "H1": 400, "H4": 300}
+
+
+# ---------------------------------------------------------- verdict + sources
+
+def z(tier, role, lo, hi, touches=1, born=0):
+    return Zone(tier, role, lo, hi, touches, born, born)
+
+
+def test_verdict_buy_inside_or_just_below_resistance_is_a_wall():
+    zones = [z("M15", "resistance", 101.0, 101.5), z("H4", "resistance", 101.2, 101.8)]
+    assert sr_verdict(zones, "BUY", 101.1, room=0.5) == (0, "H4")   # inside M15, 0.1 below H4 -> strongest
+    assert sr_verdict(zones, "BUY", 100.6, room=0.5) == (0, "M15")  # 0.4 below M15 lo; H4 is 0.6 away
+    assert sr_verdict(zones, "BUY", 100.4, room=0.5) == (1, "")     # 0.6 / 0.8 below: both beyond room
+
+
+def test_verdict_clear_when_room_is_enough():
+    zones = [z("H1", "resistance", 102.0, 102.5)]
+    assert sr_verdict(zones, "BUY", 100.0, room=1.0) == (1, "")
+    assert sr_verdict(zones, "BUY", 101.0, room=1.0) == (0, "H1")   # exactly room away counts
+
+
+def test_verdict_ignores_disabled_tiers_and_wrong_roles():
+    zones = [z("H4", "resistance", 100.5, 101.0), z("H4", "support", 99.0, 99.5)]
+    assert sr_verdict(zones, "BUY", 100.4, room=0.5, tiers=("H1", "M15")) == (1, "")
+    assert sr_verdict(zones, "BUY", 100.4, room=0.5) == (0, "H4")
+    assert sr_verdict(zones, "SELL", 100.4, room=0.5) == (1, "")   # support 0.9 below
+
+
+def test_verdict_sell_mirror():
+    zones = [z("H1", "support", 98.0, 98.5), z("M15", "support", 99.0, 99.4)]
+    assert sr_verdict(zones, "SELL", 99.2, room=0.3) == (0, "M15")
+    assert sr_verdict(zones, "SELL", 99.8, room=0.3) == (1, "")
+    assert sr_verdict(zones, "SELL", 98.7, room=0.3) == (0, "H1")
+
+
+def test_verdict_no_zones_is_clear():
+    assert sr_verdict([], "BUY", 100.0, room=1.0) == (1, "")
+
+
+def _m5_rows(n, t0=1_700_000_000 - (1_700_000_000 % 14400)):
+    rows = []
+    for i in range(n):
+        px = 2000.0 + (i % 200) * 0.05
+        rows.append(bar(t0 + 300 * i, px, px + 0.3, px - 0.3, px + 0.1, 1.0))
+    return rows
+
+
+def test_zones_from_m5_builds_every_tier():
+    rows = _m5_rows(M5_ROWS_FOR_ZONES)
+    # one big single-bar spike: every tier's bucket containing it is a
+    # strict swing high (a 48-bar plateau would give EQUAL highs -> no pivot)
+    r = dict(rows[8000]); r["h"] = 2100.0; rows[8000] = r
+    zones = zones_from_m5(rows)
+    tiers = {zn.tier for zn in zones}
+    assert tiers == {"H4", "H1", "M15"}
+    assert all(isinstance(d["born"], int) for d in zone_dicts(zones))
+
+
+def test_zones_from_rings_drops_the_forming_bar():
+    rows = with_spike(flat(60), 58, 104.0)          # spike 1 bar from the end
+    rows.append(bar(rows[-1]["t"] + 900, 100, 100.5, 99.5, 100))   # forming bar
+    rings = {"M15": rows, "H1": [], "H4": flat(10)}
+    assert zones_from_rings(rings) == []            # spike's right wing never completes
+    assert zones_from_rings({"M15": with_spike(flat(80), 30, 104.0) + [rows[-1]]})[0].tier == "M15"
+
+
+class _FakeDb:
+    def __init__(self, rows, series=("XAUUSD", "M5")):
+        self.rows, self.series, self.calls = rows, series, 0
+
+    def latest_candle_series(self):
+        return self.series
+
+    def get_candles(self, symbol, timeframe, start_ts=None, end_ts=None, limit=None):
+        self.calls += 1
+        assert timeframe == "M5" and limit == M5_ROWS_FOR_ZONES
+        return self.rows[-limit:]
+
+
+def test_sr_zones_from_db_memoises_on_the_newest_bar():
+    db = _FakeDb(_m5_rows(M5_ROWS_FOR_ZONES))
+    cache = {}
+    a = sr_zones_from_db(db, cache)
+    b = sr_zones_from_db(db, cache)
+    assert a == b and db.calls == 2 and isinstance(a, list)   # one cheap re-read, one build
+    assert cache["t"] == db.rows[-1]["t"]
+
+
+def test_sr_zones_from_db_fails_open():
+    assert sr_zones_from_db(_FakeDb([], series=None), {}) == []
+    assert sr_zones_from_db(_FakeDb(_m5_rows(100), series=("XAUUSD", "M15")), {}) == []
+
+    class Boom:
+        def latest_candle_series(self):
+            raise RuntimeError("db gone")
+    assert sr_zones_from_db(Boom(), {}) == []

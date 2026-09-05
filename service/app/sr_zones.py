@@ -181,3 +181,73 @@ def build_zones(candles: list, tier: str, *, wing: int = PIVOT_WING,
 
 def zone_dicts(zones: list) -> list:
     return [asdict(z) for z in zones]
+
+
+def sr_verdict(zones: list, direction: str, entry: float, room: float,
+               tiers=TIER_ORDER) -> tuple:
+    """Report-only verdict behind an entry (spec 'Strategy hook'):
+    1 = clear, 0 = a wall -- the entry sits INSIDE an opposing zone, or the
+    nearest opposing zone's near edge is within `room` (absolute price)
+    ahead of it. BUY looks at resistance above, SELL at support below.
+    The tier returned is the STRONGEST wall (H4 > H1 > M15), '' when clear."""
+    walls = set()
+    for zn in zones:
+        if zn.tier not in tiers:
+            continue
+        if direction == "BUY" and zn.role == "resistance":
+            if zn.lo <= entry <= zn.hi or (zn.lo > entry and zn.lo - entry <= room):
+                walls.add(zn.tier)
+        elif direction == "SELL" and zn.role == "support":
+            if zn.lo <= entry <= zn.hi or (zn.hi < entry and entry - zn.hi <= room):
+                walls.add(zn.tier)
+    if not walls:
+        return 1, ""
+    for t in TIER_ORDER:
+        if t in walls:
+            return 0, t
+    return 0, sorted(walls)[0]
+
+
+def zones_from_m5(m5_rows: list) -> list:
+    """All three tiers from one M5 history (the candles table / the replay
+    feed). Each tier sees at most its LOOKBACK bars of resampled history."""
+    zones: list = []
+    for tier in TIER_ORDER:
+        rows = resample(m5_rows, TIER_SEC[tier])[-LOOKBACK[tier]:]
+        zones.extend(build_zones(rows, tier))
+    return zones
+
+
+def zones_from_rings(candles_by_tf: dict) -> list:
+    """All three tiers from the mini-app's per-TF ring buffers. The LAST
+    row of each ring is the still-forming bar (the bridge re-sends it on
+    every tick), so it is dropped before building."""
+    zones: list = []
+    for tier in TIER_ORDER:
+        rows = list(candles_by_tf.get(tier) or [])[:-1][-LOOKBACK[tier]:]
+        zones.extend(build_zones(rows, tier))
+    return zones
+
+
+def sr_zones_from_db(db, cache: dict) -> list:
+    """Zones (as dicts) from the persistent M5 candles table, for surfaces
+    whose own candle window is too short for an H4 lookback (the dashboard
+    accumulator holds 2000 M5 bars ~ 7 days; H4 needs ~50). Memoised in
+    `cache` ({"t": newest bar time, "zones": [...]}) so the 30 s dashboard
+    poll re-reads one cheap row set and rebuilds only after a new M5 bar.
+    FAIL-OPEN: [] on any error, or when the stored series is not M5."""
+    try:
+        series = db.latest_candle_series()
+        if not series or series[1] != "M5":
+            return []
+        rows = db.get_candles(series[0], "M5", limit=M5_ROWS_FOR_ZONES)
+        if not rows:
+            return []
+        newest = rows[-1]["t"]
+        if cache.get("t") == newest and "zones" in cache:
+            return cache["zones"]
+        zones = zone_dicts(zones_from_m5(rows))
+        cache["t"], cache["zones"] = newest, zones
+        return zones
+    except Exception:
+        return []
