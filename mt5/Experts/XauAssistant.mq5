@@ -11,6 +11,8 @@
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/TradeManager.mqh>
 #include <XauAssistant/TradeBoxes.mqh>
+#include <XauAssistant/SrZones.mqh>
+#include <XauAssistant/SrBoxes.mqh>
 #include <XauAssistant/StrategyRegistry.mqh>
 #include <XauAssistant/Strategies/HalfTrendEma.mqh>
 #include <XauAssistant/Strategies/BollStochRsi.mqh>
@@ -112,6 +114,20 @@ input group "Chart panels — plugin indicators below the candles (display only)
 input bool   ShowRsiPanel  = true;   // attach RSI(14) in its own subwindow (chart TF); false = remove
 input bool   ShowMacdPanel = true;   // attach MACD(12,26,9) in its own subwindow (chart TF); false = remove
 
+input group "S/R zones — three timeframe tiers drawn as boxes (spec 2026-09-05); REPORT-ONLY, never blocks"
+input bool   ShowSrBoxes     = true;          // draw the zone boxes on the chart (light blue support / light yellow resistance)
+input string SrTiers         = "H4,H1,M15";   // tiers the verdict honours (drawing always shows all three)
+input double SrRoomAtr       = 1.0;           // "wall" = opposing box within this x ATR(14, lane TF) of the entry, or containing it
+input int    SrPivotWing     = 3;             // fractal wing: bars each side a swing must dominate
+input double SrMinHeightAtr  = 0.15;          // box height floor, x tier ATR(14)
+input double SrMaxHeightAtr  = 0.60;          // box height cap, x tier ATR(14)
+input double SrMergeAtr      = 0.50;          // a pivot within this of a box merges into it (adds a touch)
+input double SrBreakAtr      = 0.50;          // a CLOSE beyond a box by this kills it (a wick does not)
+input int    SrKeepPerRole   = 3;             // nearest boxes kept per role per tier (3 -> at most 18 boxes)
+input int    SrLookbackH4    = 300;           // seeding depth per tier, tier bars
+input int    SrLookbackH1    = 400;
+input int    SrLookbackM15   = 400;
+
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
 CAiApi         g_api;
@@ -123,6 +139,8 @@ CTradeManager  g_trades;
 CTradeBoxes    g_tradeBoxes;
 int            g_atrHandle = INVALID_HANDLE;
 CChartPanels   g_chartPanels;
+CSrZoneSet     g_srZones;   // shared by every lane: zones are not lane-specific
+CSrBoxes       g_srBoxes;
 
 // TradeManager's ATR must be the ACTIVE LANE's trade-TF ATR, not the EA's
 // TradeTimeframe (2026-09-01, owner: "the adds are too quick for m15"): with
@@ -247,6 +265,14 @@ int OnInit()
    ClaimOwnership();   // newest attachment wins; any older instance steps down
    g_execMode = ExecutionMode;
    g_entryMode = EntryMode;
+   // S/R zone engine (spec 2026-09-05): built before the lanes so both
+   // HalfTrend instances can be handed the shared pointer. Fail-open by
+   // construction — an unreadable tier stays empty and the verdict is -1.
+   SrParams srp;
+   srp.wing = SrPivotWing; srp.minHeightAtr = SrMinHeightAtr; srp.maxHeightAtr = SrMaxHeightAtr;
+   srp.mergeAtr = SrMergeAtr; srp.breakAtr = SrBreakAtr; srp.keepPerRole = SrKeepPerRole;
+   g_srZones.Init(srp, SrLookbackH4, SrLookbackH1, SrLookbackM15);
+   g_srBoxes.Init(&g_srZones, ShowSrBoxes);
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
    g_registry.Register(new CHalfTrendEmaStrategy("halftrend_ema_v1", TradeTimeframe, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
@@ -570,6 +596,7 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    g_chartPanels.Deinit();
+   g_srBoxes.Clear();
    CStrategy *a = g_registry.Active();
    if(a != NULL) a.ClearPaint();
    g_registry.Clear();
@@ -630,6 +657,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
 void ProcessBar()
   {
+   // Advance the S/R zone tiers that closed a bar with this one, then
+   // repaint the boxes (cheap: nothing is redrawn unless a tier changed or
+   // the chart opened a new bar). Runs BEFORE the strategies evaluate so a
+   // confirm on this bar is judged against zones that include it.
+   g_srZones.Update();
+   g_srBoxes.Redraw();
+
    // Apply any pending remote strategy switch only at the bar boundary.
    if(g_pendingSwitch != "")
      {

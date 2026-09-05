@@ -1199,7 +1199,10 @@ zones from `sr_zones_from_db`. Trade rows carry `sr_agree`/`sr_tier`
 (mirrors `rsi_agree`): caption line `S/R: clear ✅` / `S/R: WALL H4 ⚠️`,
 mini-app history column S/R. EA engine: `SrZones.mqh` (`CSrZoneTier` per
 timeframe, `CSrZoneSet` = M15/H1/H4), twin of `app/sr_zones.py`, same
-per-bar order; uncompiled until the owner's MetaEditor pass.)
+per-bar order; uncompiled until the owner's MetaEditor pass. EA chart:
+`SrBoxes.mqh` draws the boxes (prefix `xau_sr_`, weakest tier first,
+labels `R H4 x3`), wired in `ProcessBar` before the strategies evaluate;
+inputs under the "S/R zones" group, `ShowSrBoxes` switches drawing.)
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 
