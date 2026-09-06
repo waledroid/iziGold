@@ -32,6 +32,8 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--chop-mode skip|soft|off] [--loose-window]
                    [--min-stop-atr K] [--bias-ema N]
                    [--sr-lookback N] [--sr-min-headroom X] [--sr-report]
+                   [--sr-zone-tiers H4,H1,M15] [--sr-zone-room-atr K]
+                   [--sr-zone-report] [--sr-zone-params K=V,...]
                    [--bias-mode tag|target|target_lock|size_target|skip]
                    [--bias-tf M5|M15]
                    [--window-start H] [--window-end H] [--hour-table]
@@ -518,6 +520,24 @@ CONFIRM_CLEAR_ATR = 0.0
 RSI_FILTER = 0.0
 MACD_AGREE = False
 
+# S/R ZONE wall study (spec 2026-09-05-sr-zones-design, increment 2 — the
+# replay half of the evidence the live EA's report-only `sr_agree` verdict
+# collects). NOT the older --sr-lookback headroom study above: this one
+# uses the SAME three-tier box engine the EA mirrors (app.sr_zones), so a
+# replay refusal is exactly what the EA would judge a WALL at that confirm.
+# SR_ZONE_TIERS: tiers honoured ("" = off, byte-identical). A decision whose
+# entry sits inside an opposing box, or within SR_ZONE_ROOM_ATR x ATR(14,
+# trading TF, MT5's SMA-of-TR definition) of its near edge, is refused and
+# the flip is spent (like a dead strict-window signal). SR_ZONE_REPORT tags
+# every entry with the wall tier ("" = clear) and NEVER refuses — the
+# wall-vs-clear table then reads straight off an otherwise untouched
+# baseline. SR_ZONE_PARAMS overrides the engine constants (build_zones
+# kwargs) so the sweep can probe them.
+SR_ZONE_TIERS = ()
+SR_ZONE_ROOM_ATR = 1.0
+SR_ZONE_REPORT = False
+SR_ZONE_PARAMS = {}
+
 # Revival entry (owner hypothesis 2026-09-02): when the strict window's
 # one-shot confirm FAILS (wrong side, or hanging inside the clearance
 # margin), do not kill the signal — keep the flip armed and enter on the
@@ -927,6 +947,64 @@ def lanes_for(strategy=None):
     return set(LANES)
 
 
+_SR_ZONE_PARAM_KEYS = ("wing", "min_height_atr", "max_height_atr",
+                       "merge_atr", "break_atr", "keep_per_role", "atr_period")
+_SR_ZONE_INT_KEYS = ("wing", "keep_per_role", "atr_period")
+
+
+def parse_sr_zone_params(spec):
+    """'merge_atr=0.4,keep_per_role=2' -> build_zones kwargs. Unknown keys
+    exit with a message (a typo must never silently run the default)."""
+    out = {}
+    for item in filter(None, (s.strip() for s in spec.split(","))):
+        if "=" not in item:
+            sys.exit(f"--sr-zone-params: expected KEY=VALUE, got {item!r}")
+        k, v = (s.strip() for s in item.split("=", 1))
+        if k not in _SR_ZONE_PARAM_KEYS:
+            sys.exit(f"--sr-zone-params: unknown key {k!r} "
+                     f"(known: {', '.join(_SR_ZONE_PARAM_KEYS)})")
+        out[k] = int(v) if k in _SR_ZONE_INT_KEYS else float(v)
+    return out
+
+
+def parse_sr_zone_tiers(spec):
+    """'H4,H1' -> ('H4', 'H1'); case-insensitive; '' -> () (off)."""
+    from app.sr_zones import TIER_SEC
+    tiers = tuple(s.strip().upper() for s in spec.split(",") if s.strip())
+    for t in tiers:
+        if t not in TIER_SEC:
+            sys.exit(f"--sr-zone-tiers: unknown tier {t!r} "
+                     f"(known: {', '.join(TIER_SEC)})")
+    return tiers
+
+
+def sr_zones_at(candles, i, src_sec, cache, params):
+    """Every tier's zones as they stood when bar i CLOSED — built only from
+    tier bars whose bucket is complete by then (resample drops a trailing
+    partial bucket), over the trailing LOOKBACK[tier] bars, exactly what
+    the EA's CSrZoneSet holds when the same confirm is judged. Called only
+    at signal decisions (a few hundred per run), so the per-call rebuild is
+    cheap; `cache` memoises per tier on the newest closed tier bar."""
+    from app.sr_zones import LOOKBACK, TIER_ORDER, TIER_SEC, build_zones, resample
+    zones = []
+    for tier in TIER_ORDER:
+        sec = TIER_SEC[tier]
+        # +2 buckets of slack: the head bucket of the slice may be partial
+        # (a mid-bucket cut) and the [-LOOKBACK:] tail must never reach it.
+        need = (LOOKBACK[tier] + 2) * max(1, sec // src_sec)
+        rows = resample(candles[max(0, i + 1 - need):i + 1], sec, src_sec)
+        if not rows:
+            continue
+        hit = cache.get(tier)
+        if hit is not None and hit[0] == rows[-1]["t"]:
+            zones.extend(hit[1])
+            continue
+        built = build_zones(rows[-LOOKBACK[tier]:], tier, **params)
+        cache[tier] = (rows[-1]["t"], built)
+        zones.extend(built)
+    return zones
+
+
 def rsi_series(closes, period=14):
     """Wilder's RSI — mirrors service/app/indicators.py rsi() exactly
     (parity pinned by tests/test_rsi_macd.py). Replay/study only."""
@@ -990,6 +1068,16 @@ def run(candles, start_balance, verbose, active_lanes=None):
     rsi14 = rsi_series(closes, 14) if RSI_FILTER > 0 else None
     mhist = macd_hist_series(closes) if MACD_AGREE else None
     rsi_refused, macd_refused = [], []
+    # S/R zone wall study: only pay for the ATR series and the zone cache
+    # when the study is on; sr_atr is MT5's iATR (SMA of TR) on the trading
+    # TF, the exact `room` unit the EA's verdict uses.
+    sr_zone_on = bool(SR_ZONE_TIERS) or SR_ZONE_REPORT
+    sr_zone_refused = []     # (when, dir, tier) entries refused as walls
+    sr_zone_cache = {}
+    sr_atr = None
+    if sr_zone_on:
+        from app.sr_zones import sma_atr
+        sr_atr = sma_atr(candles, 14)
     revive_flip = None       # flip index whose failed confirm is armed for revival
     revived = []             # (when, dir) entries taken via revival
 
@@ -1060,6 +1148,7 @@ def run(candles, start_balance, verbose, active_lanes=None):
                        "bias_ema": basket.get("bias_ema"),
                        "ema200_agree": basket.get("ema200_agree"),
                        "headroom": basket.get("headroom"),
+                       "sr_wall": basket.get("sr_wall"),
                        "cycle_bal": basket["cycle_bal"]})
         peak_bal = max(peak_bal, bal)
         max_dd = max(max_dd, peak_bal - bal)
@@ -1227,6 +1316,24 @@ def run(candles, start_balance, verbose, active_lanes=None):
                (signal == "BUY" and h_now <= 0) or \
                (signal == "SELL" and h_now >= 0):
                 macd_refused.append((when, signal))
+                signal = None
+        # --- S/R zone wall verdict (spec 2026-09-05, increment 2). Judged
+        # at the decision close against zones built from tier bars closed
+        # by this bar — the EA's LastSrAgree() at the same confirm. Report
+        # mode only tags (sr_wall = wall tier or ""); filter mode refuses
+        # and spends the flip. None = not evaluated (study off).
+        sr_wall = None
+        if signal and sr_zone_on:
+            from app.sr_zones import TIER_ORDER, sr_verdict
+            a_sr = sr_atr[i] if sr_atr is not None else None
+            room = SR_ZONE_ROOM_ATR * a_sr if a_sr else 0.0
+            zones_now = sr_zones_at(candles, i, TF_SEC[TF], sr_zone_cache,
+                                    SR_ZONE_PARAMS)
+            tiers = SR_ZONE_TIERS or TIER_ORDER
+            agree, tier = sr_verdict(zones_now, signal, x["c"], room, tiers)
+            sr_wall = tier if agree == 0 else ""
+            if agree == 0 and SR_ZONE_TIERS and not SR_ZONE_REPORT:
+                sr_zone_refused.append((when, signal, tier))
                 signal = None
 
         # ---- manage open basket
@@ -1470,7 +1577,8 @@ def run(candles, start_balance, verbose, active_lanes=None):
                               "flip_t": candles[last_flip]["t"],
                               "entry_offset": i - last_flip,
                               "bias": bias, "bias_ema": bval,
-                              "ema200_agree": e200_agree}
+                              "ema200_agree": e200_agree,
+                              "sr_wall": sr_wall}
                     if bias == "counter" and BIAS_MODE in (
                             "target", "target_lock", "size_target"):
                         # basket-sticky: decided once, here, at entry
@@ -1501,6 +1609,7 @@ def run(candles, start_balance, verbose, active_lanes=None):
     run.dead_signals = dead_signals
     run.rsi_refused = rsi_refused
     run.macd_refused = macd_refused
+    run.sr_zone_refused = sr_zone_refused
     run.revived = revived
     run.bias_flips = None
     if BIAS_EMA > 0:
@@ -1643,6 +1752,7 @@ def build_run_json(candles, trades, args, res):
             "exit": r2(t["exit"]), "exit_t": t["exit_t"], "why": t["why"],
             "pl": round(t["pl"], 2), "bal_after": round(t["bal_after"], 2),
             "regime": t.get("regime"),
+            "sr_wall": t.get("sr_wall"),
         } for t in trades],
     }
 
@@ -1764,6 +1874,25 @@ def build_parser():
                     help="RSI(14) entry filter (study 2026-09-02): BUY needs "
                          "RSI < LEVEL, SELL needs RSI > 100-LEVEL. 0 = off, "
                          "byte-identical")
+    exp.add_argument("--sr-zone-tiers", default="",
+                    help="S/R ZONE wall filter (spec 2026-09-05, increment "
+                         "2; the EA's report-only sr_agree, replayed): "
+                         "comma list of H4,H1,M15 to honour. An entry inside "
+                         "an opposing box, or within --sr-zone-room-atr of "
+                         "its near edge, is refused and the flip is spent. "
+                         "'' = off, byte-identical. (Unrelated to the older "
+                         "--sr-lookback headroom study.)")
+    exp.add_argument("--sr-zone-room-atr", type=float, default=1.0,
+                    help="room the entry needs ahead of it, x ATR(14) of the "
+                         "trading TF (MT5 SMA-of-TR definition); default 1.0")
+    exp.add_argument("--sr-zone-report", action="store_true",
+                    help="tag every entry with its wall tier (all three "
+                         "tiers) and print the wall-vs-clear table, but NEVER "
+                         "refuse — overrides --sr-zone-tiers' refusal")
+    exp.add_argument("--sr-zone-params", default="",
+                    help="engine overrides KEY=VALUE,...: wing, "
+                         "min_height_atr, max_height_atr, merge_atr, "
+                         "break_atr, keep_per_role, atr_period")
     exp.add_argument("--macd-agree", action="store_true",
                     help="require the classic MACD histogram (12/26/9 EMA "
                          "signal) to agree with the entry direction "
@@ -1988,6 +2117,11 @@ def main():
     global RSI_FILTER, MACD_AGREE
     RSI_FILTER = args.rsi_filter
     MACD_AGREE = args.macd_agree
+    global SR_ZONE_TIERS, SR_ZONE_ROOM_ATR, SR_ZONE_REPORT, SR_ZONE_PARAMS
+    SR_ZONE_TIERS = parse_sr_zone_tiers(args.sr_zone_tiers)
+    SR_ZONE_ROOM_ATR = args.sr_zone_room_atr
+    SR_ZONE_REPORT = args.sr_zone_report
+    SR_ZONE_PARAMS = parse_sr_zone_params(args.sr_zone_params)
     global REVIVE_CLEAR_ATR
     REVIVE_CLEAR_ATR = args.revive_clear_atr
     if args.confirm is not None:
@@ -2048,6 +2182,14 @@ def main():
         head.append(f"rsi-filter {RSI_FILTER:g}")
     if MACD_AGREE:
         head.append("macd-agree")
+    if SR_ZONE_REPORT:
+        head.append(f"sr-zones report-only (room {SR_ZONE_ROOM_ATR:g} ATR)")
+    elif SR_ZONE_TIERS:
+        head.append(f"sr-zones {','.join(SR_ZONE_TIERS)} "
+                    f"room {SR_ZONE_ROOM_ATR:g} ATR")
+    if SR_ZONE_PARAMS:
+        head.append("sr-zone-params " + ",".join(
+            f"{k}={v:g}" for k, v in SR_ZONE_PARAMS.items()))
     elif STRICT_WINDOW:
         head.append("STRICT WINDOW")
     if MIN_STOP_ATR > 0:
@@ -2214,6 +2356,12 @@ def main():
             print(f"  rsi-filter: refused {len(run.rsi_refused)} entries")
         if getattr(run, "macd_refused", None):
             print(f"  macd-agree: refused {len(run.macd_refused)} entries")
+        if getattr(run, "sr_zone_refused", None):
+            from collections import Counter
+            by_tier = Counter(t for _, _, t in run.sr_zone_refused)
+            print(f"  sr-zones: refused {len(run.sr_zone_refused)} wall "
+                  "entries (" + ", ".join(
+                      f"{k} {v}" for k, v in sorted(by_tier.items())) + ")")
         bf = getattr(run, "bias_flips", None) or {}
         for tf in ("M5", "M15"):
             if tf in bf:
@@ -2274,6 +2422,30 @@ def main():
         if untag:
             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
                   f"trades; these are never refused)")
+    if ht_trades and (SR_ZONE_REPORT or SR_ZONE_TIERS):
+        # wall-vs-clear table: what the EA's sr_agree column will show once
+        # enough live trades exist, read off the replay today.
+        print("S/R zone verdict at entry (three-tier boxes, room "
+              f"{SR_ZONE_ROOM_ATR:g} ATR; 'wall' = inside/near an opposing box):")
+        print("  verdict       trades   win%        net        avg"
+              "   winners $   losers $")
+        groups = [("clear", lambda v: v == ""),
+                  ("wall H4", lambda v: v == "H4"),
+                  ("wall H1", lambda v: v == "H1"),
+                  ("wall M15", lambda v: v == "M15"),
+                  ("wall (any)", lambda v: v in ("H4", "H1", "M15")),
+                  ("not judged", lambda v: v is None)]
+        for lab, pred in groups:
+            sub = [t for t in ht_trades if pred(t.get("sr_wall"))]
+            if not sub:
+                continue
+            w = [t for t in sub if t["pl"] > 0]
+            l = [t for t in sub if t["pl"] <= 0]
+            net = sum(t["pl"] for t in sub)
+            print(f"  {lab:12} {len(sub):7}  {100 * len(w) / len(sub):5.1f}"
+                  f"  {net:+10.2f} {net / len(sub):+10.2f}"
+                  f"  {sum(t['pl'] for t in w):+10.2f}"
+                  f" {sum(t['pl'] for t in l):+10.2f}")
     if ht_trades and CONFIRM_MODE == "open":
         od = getattr(run, "open_diff_bars", [])
         print(f"confirm-mode open: {len(od)} decision bars where the next "
