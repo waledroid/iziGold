@@ -45,6 +45,18 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
     # per-lane stop buffers since the 2026-08-25 trend-rider sweep
     assert "--stop-buffer 1.75" in s15
     assert "--stop-buffer 0.75" in s
+    # the M15 lane's live recipe: EMA-50 (2026-08-31) + 0.3 ATR confirm
+    # clearance (2026-09-01) -- the page replays what the EA trades
+    assert "--ema-len 50" in s15 and "--confirm-clear-atr 0.3" in s15
+    assert "--ema-len" not in s
+
+    # S/R wall filter (2026-09-05 increment 2): same flags on both lanes,
+    # absent when off
+    assert "--sr-zone-tiers" not in s and "--sr-zone-tiers" not in s15
+    for strat in ("halftrend_ema_v1", "halftrend_m15_v1"):
+        srs = " ".join(backtest_runner.build_cli(
+            _params(strategy=strat, sr_filter="on"), src, jout, wout))
+        assert "--sr-zone-tiers H4,H1,M15" in srs and "--sr-zone-room-atr 1.0" in srs
 
     biased = " ".join(backtest_runner.build_cli(_params(m15_bias="on"),
                                                 src, jout, wout))

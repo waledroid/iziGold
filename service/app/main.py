@@ -1434,9 +1434,11 @@ def ui_backtest_start(body: dict):
         raise HTTPException(status_code=400, detail="entry_mode must be adr|fixed")
     if exit_scheme not in ("target-exit", "floor-a", "floor-b", "floor-a-adds"):
         raise HTTPException(status_code=400, detail="bad exit_scheme")
-    if ema200_confirm not in ("off", "on") or m15_bias not in ("off", "on"):
+    sr_filter = str(body.get("sr_filter", "off"))
+    if ema200_confirm not in ("off", "on") or m15_bias not in ("off", "on") \
+            or sr_filter not in ("off", "on"):
         raise HTTPException(status_code=400,
-                            detail="ema200_confirm/m15_bias must be off|on")
+                            detail="ema200_confirm/m15_bias/sr_filter must be off|on")
     series = app.state.db.latest_candle_series()
     symbol = series[0] if series else "XAUUSD"
     rng = app.state.db.candles_range(symbol, "M5")
@@ -1454,7 +1456,8 @@ def ui_backtest_start(body: dict):
               "start_ts": start_ts, "end_ts": end_ts,
               "balance": balance, "risk_pct": risk_pct,
               "entry_mode": entry_mode, "exit_scheme": exit_scheme,
-              "ema200_confirm": ema200_confirm, "m15_bias": m15_bias}
+              "ema200_confirm": ema200_confirm, "m15_bias": m15_bias,
+              "sr_filter": sr_filter}
     try:
         run_id = backtest_runner.start_run(app.state.db, params)
     except RuntimeError as exc:

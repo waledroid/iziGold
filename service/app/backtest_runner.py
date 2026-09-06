@@ -30,11 +30,21 @@ STRATEGIES = {
     "halftrend_ema_v1": {"label": "HalfTrend M5",
                          "flags": ["--tf", "M5", "--confirm", "2",
                                    "--stop-buffer", "0.75"]},
+    # EMA 45 -> 50 and the 0.3 ATR confirm-clearance went live on the M15
+    # lane on 2026-08-31 / 2026-09-01 (EA inputs + config/strategy.json);
+    # this map lagged until 2026-09-06 -- the page was replaying EMA-45
+    # without the clearance filter for a week.
     "halftrend_m15_v1": {"label": "HalfTrend M15",
                          "flags": ["--tf", "M15", "--confirm", "1",
                                    "--stop-buffer", "1.75",
-                                   "--ema-len", "45"]},
+                                   "--ema-len", "50",
+                                   "--confirm-clear-atr", "0.3"]},
 }
+
+# S/R zone wall filter (spec 2026-09-05, increment 2): the replay half of
+# the EA's report-only sr_agree verdict. Same recipe on both lanes -- the
+# zones are lane-independent (H4/H1/M15 boxes, 1.0 ATR room).
+SR_FILTER_FLAGS = ["--sr-zone-tiers", "H4,H1,M15", "--sr-zone-room-atr", "1.0"]
 
 _busy = threading.Lock()
 
@@ -61,6 +71,8 @@ def build_cli(params: dict, source: Path, json_out: Path, web_out: Path) -> list
     # HTF module (EA: "the only confirmation is the ema 200").
     if params.get("m15_bias") == "on" and params["strategy"] == "halftrend_ema_v1":
         cmd += ["--bias-ema", "200", "--bias-tf", "M15", "--bias-mode", "target"]
+    if params.get("sr_filter") == "on":
+        cmd += SR_FILTER_FLAGS
     return cmd
 
 
