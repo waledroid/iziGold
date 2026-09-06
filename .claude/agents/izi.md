@@ -1258,8 +1258,61 @@ blank `SrTiers` input now yields verdict -1 (not evaluated), not 1
 substring test (`StringFind(tiers, name)`), so e.g. `"h4"` (lowercase)
 disables that tier rather than matching it.
 
-**Not yet:** `--sr-filter` in the replay and any enforcement input are
-increment 2/3 of the spec — do not enable a block without the sweep.
+**Increment 2 (2026-09-06) — the sweep is done; see the next entry.**
+Enforcement (increment 3) is still NOT wired: nothing blocks on S/R yet.
+
+## S/R wall sweep — M5 keeps it, M15 must never get it (2026-09-06)
+
+Increment 2 of the S/R spec: the replay half of the evidence. Full tables
+in `docs/studies/2026-09-06-sr-zone-wall-sweep.md`.
+
+**Replay flags** (`scripts/backtest.py`, experiments group, all off =
+byte-identical, golden pins untouched): `--sr-zone-tiers H4,H1,M15`
+(tiers honoured; an entry inside an opposing box or within
+`--sr-zone-room-atr K` × ATR(14, trading TF, MT5 SMA-of-TR) of its near
+edge is refused and the flip is spent, like a dead strict-window
+signal), `--sr-zone-report` (tags every entry `sr_wall` = tier or "" and
+prints the wall-vs-clear table, never refuses), `--sr-zone-params
+KEY=VALUE,...` (engine constant overrides). Named `sr-zone-*` because
+`--sr-lookback/--sr-min-headroom/--sr-report` is the OLDER pivot-headroom
+study and must not be confused with it. Zones are rebuilt at each signal
+decision from the trailing lookback of tier bars CLOSED by that bar
+(`sr_zones_at`, memoised per tier on the newest closed tier bar) with the
+same `app.sr_zones` engine the EA mirrors — so a replay refusal is what
+the EA's `sr_agree` would say at that confirm. 40/40 refusals were
+re-judged identically from a from-scratch full-history rebuild; no zone
+is born after its decision bar. The backtest page gained an "S/R wall
+filter" option (both lanes, `H4,H1,M15 @ 1.0`) and its M15 recipe was
+caught up to the live lane (it had replayed EMA-45 with no clearance
+filter for a week).
+
+**Verdicts (17-mo bars_max.json, $10,000, halves split 2025-12-04):**
+- **M5 lane — PASSES the house standard, decisively.** Refuse entries
+  inside / within **0.5 ATR of an M15-tier box** (`--sr-zone-tiers M15
+  --sr-zone-room-atr 0.5`). FIXED 0.05 lots (compounding removed): net
+  **+$5,641 → +$8,920 (+58%)**, max dd **$2,041 → $1,471 (−28%)**, h1
+  +$2,904 → +$3,510, h2 +$2,714 → +$5,387, trades 867 → 632. A PLATEAU,
+  not a point: rooms 0.25 / 0.35 / 0.5 / 0.75 all pass both halves
+  (+34% / +44% / +58% / +47%); even room 0 (inside-the-box only) is +19%
+  with dd −18%. Risk-sized it reads +154% / dd −29.5% — the same shape,
+  inflated by compounding. Adding H1 or H4 to the tier list only
+  weakens it (H4-wall entries are the M5 lane's BEST group at +$22/trade;
+  H1-wall ≈ flat; M15-wall −$14/trade at 34% wins — the failed-breakout
+  entry under a fresh M15 swing high is the money leak).
+- **M15 lane — FAILS at every tier and room, badly (−13% to −87%).** The
+  report table says why: on the trend-rider the "wall" entries are the
+  best trades (H1-wall +$4,572 at 50.0% wins, H4-wall +$3,575 at 50.0%,
+  vs "clear" +$772 at 36.4%). Riding THROUGH a level is that lane's edge.
+  **Never gate the M15 lane on S/R**, and read its live `S/R: WALL`
+  caption lines as a good sign, not a warning.
+
+**What increment 3 should wire, if the owner wants it:** an M5-only
+enforcement (`SrConfirm` input + service override in the EMA-200 shape)
+with the lane's tiers/room set to `M15` / `0.5` — NOT the current
+report-only defaults (`H4,H1,M15` / 1.0), which describe a different,
+losing filter on M5 and a harmful one on M15. Consider also switching the
+live report-only verdict to the same `M15 @ 0.5` recipe so the `sr_agree`
+column collects the evidence that actually matters.
 
 ## "Aggressive M15" request → confirm-clearance filter instead (2026-09-01)
 

@@ -169,17 +169,21 @@ caption `S/R: clear` / `S/R: WALL H4`.
 **byte-identical when off** (golden pins in izi §6 must not move):
 
 ```
---sr-filter TIERS        comma list of H4,H1,M15 to honour; empty = off
---sr-room-atr K          room needed ahead of the entry, x ATR(14) of --tf (default 1.0)
+--sr-zone-tiers TIERS    comma list of H4,H1,M15 to honour; empty = off
+--sr-zone-room-atr K     room needed ahead of the entry, x ATR(14) of --tf (default 1.0)
+--sr-zone-report         tag every entry with its wall tier, never refuse
+--sr-zone-params K=V,... engine constant overrides (wing, merge_atr, ...)
 ```
 
-When on, an entry whose verdict is `0` under those tiers is refused and
-counted (`run.sr_refused`, printed like `rsi-filter: refused N entries`).
-The engine constants are also exposed as `--sr-*` overrides so the sweep can
-probe them. The zones are built by `service/app/sr_zones.py` on the same
-resampled bars, so the replay and the live EA judge identical boxes. The
-backtest page's `STRATEGIES` flag map gains an `sr_filter` option for both
-lanes.
+(Shipped names carry the `sr-zone-` prefix because `--sr-lookback` /
+`--sr-min-headroom` / `--sr-report` already belong to an older pivot-headroom
+study in the same file.) When on, an entry whose verdict is `0` under those
+tiers is refused and counted (`run.sr_zone_refused`, printed like
+`rsi-filter: refused N entries`, with a per-tier breakdown). The zones are
+rebuilt at each signal decision from the trailing lookback of tier bars
+closed by that bar, by `service/app/sr_zones.py` on the same resampled bars,
+so the replay and the live EA judge identical boxes. The backtest page's
+flag map gains an `sr_filter` option for both lanes.
 
 The sweep runs the 17-month dataset, both halves, tiers × room; the
 decision to enforce is written into izi with the numbers, as every
@@ -233,6 +237,15 @@ Changed: `mt5/Experts/XauAssistant.mq5` (inputs, wiring, paint), `Strategy.mqh`,
 ## Increments
 
 1. Engine + boxes on all three surfaces + report-only column. No trading
-   change. (This is the first implementation plan.)
-2. Replay flag + sweep + izi write-up of the numbers.
-3. Enforcement inputs/override — only if increment 2 earns it.
+   change. (This is the first implementation plan.) — **DONE 2026-09-05.**
+2. Replay flag + sweep + izi write-up of the numbers. — **DONE 2026-09-06.**
+   Shipped as `--sr-zone-tiers` / `--sr-zone-room-atr` / `--sr-zone-report`
+   / `--sr-zone-params` (the `sr-zone-` prefix keeps them apart from the
+   older `--sr-lookback` headroom study). Result
+   (`docs/studies/2026-09-06-sr-zone-wall-sweep.md`): the M5 lane PASSES
+   with `M15 @ 0.5` (fixed-lot +58% net, dd −28%, both halves, on a
+   0.25–0.75 plateau); the M15 lane FAILS everywhere — its wall entries are
+   its best trades.
+3. Enforcement inputs/override — only if increment 2 earns it. **Earned for
+   the M5 lane only**, with tiers `M15` and room `0.5`, never for the M15
+   lane.
