@@ -150,6 +150,7 @@ public:
                         string &mode, string &entryMode_out, string &cmd,
                         long &cmdId, string &cmdDir, string &htfEnforce_out,
                         string &ema200Enforce_out,
+                        string &rsiEnforce_out, string &m15Adds_out,
                         double daily_loss_pct = 0.0, bool brake_reset = false,
                         string newsJson = "", int newsBlackoutMin = 0)
      {
@@ -226,6 +227,11 @@ public:
       // than no toggle.
       htfEnforce_out    = ExtractString(body, "htf_enforce");
       ema200Enforce_out = ExtractString(body, "ema200_enforce");
+      // 2026-09-07: RSI 70/30 enforcement (M15 lane) and the M15 adds
+      // switch ride the same heartbeat. An old service that sends neither
+      // leaves them "" and the EA inputs stay in charge.
+      rsiEnforce_out    = ExtractString(body, "rsi_enforce");
+      m15Adds_out       = ExtractString(body, "m15_adds");
       cmd = ""; cmdId = 0; cmdDir = "";
       int cpos = StringFind(body, "\"command\":{");
       if(cpos >= 0)

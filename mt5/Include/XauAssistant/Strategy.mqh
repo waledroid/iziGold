@@ -51,6 +51,17 @@ public:
    // never blocks anything; it exists so live trades accumulate evidence.
    // 1 agreed, 0 refused, -1 not evaluated / strategy has no RSI module.
    virtual int LastRsiAgree() const { return -1; }
+   // Runtime toggle for a strategy's RSI 70/30 enforcement (owner "go"
+   // 2026-09-07; sweep: M15+RSI-70 +7% net at -33% dd, both halves; FAILS
+   // on M5). "" follow the EA input, "off" report only, "on" enforce. A
+   // lane that is not eligible (the M5 lane) ignores it. No-op by default.
+   virtual void SetRsiOverride(string v) {}
+   // May TradeManager pyramid-add into this lane's basket right now? The
+   // EA asks the ACTIVE strategy before every Manage() pass. Default yes;
+   // the M15 lane answers from its M15EnableAdds input / service override
+   // (every trusted M15 result was a pure ride, no adds).
+   virtual bool AllowsAdds() { return true; }
+   virtual void SetAddsOverride(string v) {}
 
    // S/R zone verdict behind the current signal (owner 2026-09-05,
    // spec 2026-09-05-sr-zones-design.md): 1 = clear room ahead, 0 = the

@@ -527,8 +527,12 @@ def _format_agree(app) -> tuple:
     on = cur != "off"
     e200 = db.ema200_enforce()
     e200_on = e200 == "on"
+    rsi = db.rsi_enforce()
+    rsi_on = rsi == "on"
+    adds = db.m15_adds()
+    adds_on = adds == "on"
     body = (
-        "What confirms a trade\n\n"
+        "What confirms and shapes a trade\n\n"
         "Higher-timeframe agreement (M5 only)\n"
         f"Currently: {'ENFORCING on ' + cur if on else 'CHECK ONLY (off)'}\n"
         "Runs on EVERY M5 entry either way and is reported on the trade "
@@ -543,13 +547,29 @@ def _format_agree(app) -> tuple:
         "in the E200 column.\n"
         "Enforcing means it may also BLOCK an entry — no chop exception, "
         "it's on or off all day.\n"
-        "Off = report only, the trade decision is untouched.")
+        "Off = report only, the trade decision is untouched.\n\n"
+        "RSI 70/30 agreement (M15 lane only)\n"
+        f"Currently: {'ENFORCING' if rsi_on else 'CHECK ONLY (off)'}\n"
+        "A BUY needs RSI(14) below 70, a SELL above 30 at the confirm. "
+        "Sweep: +7% net at −33% drawdown on M15, better in both halves; "
+        "it fails on M5, so the M5 lane only reports it.\n\n"
+        "Pyramid adds on the M15 lane\n"
+        f"Currently: {'ON (ADR adds)' if adds_on else 'OFF (pure ride)'}\n"
+        "Every trusted M15 result was a pure ride: one position, no adds, "
+        "no stop ratchet. Off keeps the M15 lane on that recipe; the M5 "
+        "lane's adds are untouched either way.")
     row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
             f"agree:{c}") for c in db.HTF_CHOICES]
     e200_row = [(("● " if e200 == c else "")
                 + ("Off (report only)" if c == "off" else "Enforcing"),
                 f"e200:{c}") for c in db.EMA200_CHOICES]
-    return (body, kb([row[:2], row[2:], e200_row]))
+    rsi_row = [(("● " if rsi == c else "")
+               + ("RSI off (report only)" if c == "off" else "RSI enforcing"),
+               f"rsi:{c}") for c in db.RSI_CHOICES]
+    adds_row = [(("● " if adds == c else "")
+                + ("M15 adds off (ride)" if c == "off" else "M15 adds on"),
+                f"adds:{c}") for c in db.ADDS_CHOICES]
+    return (body, kb([row[:2], row[2:], e200_row, rsi_row, adds_row]))
 
 
 def _format_config(app, redacted=False) -> str:
@@ -570,6 +590,7 @@ def _format_config(app, redacted=False) -> str:
         f"window open: {hb.window_open if hb else '?'}\n"
         f"spread: {hb.spread_points if hb else '?'}pt\n"
         f"confirms — HTF: {db.htf_enforce()} | EMA200: {db.ema200_enforce()}"
+        f" | RSI(M15): {db.rsi_enforce()} | M15 adds: {db.m15_adds()}"
         f" (/agree to change)")
 
 
@@ -902,6 +923,33 @@ def _cb_e200(parts, app, db, message_id):
     return (None, "unknown")
 
 
+def _cb_rsi(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in db.RSI_CHOICES:
+        db.set_rsi_enforce(parts[1])
+        if parts[1] == "off":
+            return ("RSI 70/30 agreement → CHECK ONLY. It is still evaluated "
+                    "and reported on every entry, but will not block one.",
+                    "rsi: off")
+        return ("RSI 70/30 agreement → ENFORCING on the M15 lane. An "
+                "overbought BUY or oversold SELL is now refused there; the "
+                "M5 lane keeps reporting only.", "rsi: on")
+    return (None, "unknown")
+
+
+def _cb_adds(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in db.ADDS_CHOICES:
+        db.set_m15_adds(parts[1])
+        if parts[1] == "off":
+            return ("M15 pyramid adds → OFF. The M15 lane rides one position "
+                    "to the reversal or its stop (the validated recipe); an "
+                    "open basket keeps its legs, it just gets no new ones.",
+                    "m15 adds: off")
+        return ("M15 pyramid adds → ON. The M15 lane adds and ratchets like "
+                "ADR again — note this was never part of its measured edge.",
+                "m15 adds: on")
+    return (None, "unknown")
+
+
 def _cb_strat(parts, app, db, message_id):
     if len(parts) > 1:
         sid = parts[1]
@@ -1046,6 +1094,8 @@ CALLBACKS = {
     "tmode": _cb_tmode,
     "agree": _cb_agree,
     "e200": _cb_e200,
+    "rsi": _cb_rsi,
+    "adds": _cb_adds,
     "strat": _cb_strat,
     "prop": _cb_prop,
     "exitnow": _cb_exitnow,

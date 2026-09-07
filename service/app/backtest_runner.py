@@ -38,7 +38,10 @@ STRATEGIES = {
                          "flags": ["--tf", "M15", "--confirm", "1",
                                    "--stop-buffer", "1.75",
                                    "--ema-len", "50",
-                                   "--confirm-clear-atr", "0.3"]},
+                                   "--confirm-clear-atr", "0.3",
+                                   # RSI 70/30 enforced on the M15 lane
+                                   # since 2026-09-07 (owner "go")
+                                   "--rsi-filter", "70"]},
 }
 
 # S/R zone wall filter (spec 2026-09-05, increment 2): the replay half of

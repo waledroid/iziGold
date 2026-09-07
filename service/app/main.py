@@ -774,6 +774,8 @@ async def heartbeat(hb: HeartbeatRequest):
         entry_mode=app.state.db.entry_mode(),
         htf_enforce=app.state.db.htf_enforce(),
         ema200_enforce=app.state.db.ema200_enforce(),
+        rsi_enforce=app.state.db.rsi_enforce(),
+        m15_adds=app.state.db.m15_adds(),
         command=command
     )
 
@@ -938,7 +940,9 @@ def ui_rules(body: dict):
     db = app.state.db
     setters = {"entry_mode": db.set_entry_mode,
                "htf_enforce": db.set_htf_enforce,
-               "ema200_enforce": db.set_ema200_enforce}
+               "ema200_enforce": db.set_ema200_enforce,
+               "rsi_enforce": db.set_rsi_enforce,
+               "m15_adds": db.set_m15_adds}
     if key not in setters:
         raise HTTPException(status_code=400, detail="unknown rule key")
     try:
@@ -998,7 +1002,9 @@ def ui_state():
             "mode": app.state.db.exec_mode(),
             "rules": {"entry_mode": app.state.db.entry_mode(),
                       "htf_enforce": app.state.db.htf_enforce(),
-                      "ema200_enforce": app.state.db.ema200_enforce()},
+                      "ema200_enforce": app.state.db.ema200_enforce(),
+                      "rsi_enforce": app.state.db.rsi_enforce(),
+                      "m15_adds": app.state.db.m15_adds()},
             "proposal": proposal,
             "stats": app.state.db.stats()}
 

@@ -79,6 +79,12 @@ class _KvDb:
     def ema200_enforce(self):
         return self.kv.get("ema200_enforce") or "off"
 
+    def rsi_enforce(self):
+        return self.kv.get("rsi_enforce") or "on"
+
+    def m15_adds(self):
+        return self.kv.get("m15_adds") or "off"
+
     def get_kv(self, key):
         return self.kv.get(key)
 

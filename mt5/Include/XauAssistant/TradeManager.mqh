@@ -13,6 +13,11 @@ private:
    CTradeEventSink  *m_sink;
    long          m_magic;
    bool          m_pyramid;
+   // Per-lane add permission (2026-09-07): the EA sets this from the
+   // ACTIVE strategy's AllowsAdds() before every Manage() pass, so the M15
+   // lane can ride without adds while the M5 lane keeps its ADR adds.
+   // Global EnablePyramiding (m_pyramid) still wins when false.
+   bool          m_addsAllowed;
    int           m_maxPos;
    double        m_addTriggerAtr, m_targetPct, m_stopAtrMult;
    double        m_trailLockPct, m_trailActivateR;
@@ -249,6 +254,7 @@ public:
       m_addTriggerAtr = addAtr; m_targetPct = targetPct; m_stopAtrMult = stopAtrMult;
       m_trailLockPct = trailLockPct; m_trailActivateR = trailActivateR;
       m_sink = sink;
+      m_addsAllowed = true;
       m_trade.SetExpertMagicNumber(magic);
       m_ratios[0] = 1.0; m_ratios[1] = 0.7; m_ratios[2] = 0.4;
      }
@@ -277,6 +283,9 @@ public:
    // repeat tap can only ever lock MORE, never give back. Returns true when
    // at least one leg moved; `detail` carries the human-readable outcome
    // either way (rendered verbatim into the Telegram edit).
+   // Called by the EA before each Manage() with the active lane's answer.
+   void SetAddsAllowed(bool v) { m_addsAllowed = v; }
+
    bool MoveStopsTight(string &detail)
      {
       long ptype = OwnType();
@@ -477,7 +486,7 @@ public:
            { CloseAll("profit lock"); return; }
         }
       // pyramid: add only in profit, only while condition true, shrinking size
-      if(!m_pyramid || !conditionStillTrue || n >= m_maxPos) return;
+      if(!m_pyramid || !m_addsAllowed || !conditionStillTrue || n >= m_maxPos) return;
       if(BasketProfit() <= 0) return;               // never add in loss
       long ptype = -1;
       for(int i = PositionsTotal() - 1; i >= 0; i--)

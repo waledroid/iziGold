@@ -49,6 +49,8 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
     # clearance (2026-09-01) -- the page replays what the EA trades
     assert "--ema-len 50" in s15 and "--confirm-clear-atr 0.3" in s15
     assert "--ema-len" not in s
+    # RSI 70/30 is enforced on the M15 lane only (2026-09-07)
+    assert "--rsi-filter 70" in s15 and "--rsi-filter" not in s
 
     # S/R wall filter (2026-09-05 increment 2): same flags on both lanes,
     # absent when off

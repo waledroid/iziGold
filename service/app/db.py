@@ -794,6 +794,34 @@ class SignalDb:
     def set_ema200_enforce(self, value: str) -> None:
         self.set_choice("ema200_enforce", value, self.EMA200_CHOICES)
 
+    # --- RSI(14) 70/30 agreement, M15 lane only (owner "go" 2026-09-07) ---
+    # Sweep 2026-09-02: M15+RSI-70 nets +7% at -33% max dd, better in BOTH
+    # halves -- the one indicator filter that passed; on M5 it FAILS both
+    # halves, so the EA's M5 lane is not eligible and ignores this rule.
+    # Default "on": evidence-earned, and it would have refused the
+    # 2026-09-07 oversold SELL (RSI 26) that lost the day.
+    RSI_CHOICES = ("off", "on")
+
+    def rsi_enforce(self) -> str:
+        return self.get_choice("rsi_enforce", self.RSI_CHOICES, "on")
+
+    def set_rsi_enforce(self, value: str) -> None:
+        self.set_choice("rsi_enforce", value, self.RSI_CHOICES)
+
+    # --- Pyramid adds on the M15 lane (owner "go" 2026-09-07) --------------
+    # Every M15 result the house trusts was measured as a pure ride (FIXED,
+    # no adds). Live ADR mode adds and ratchets: on 2026-09-07 an add at a
+    # spike low moved the shared stop from 4444 to 4422 and a wick took
+    # both legs out for -$56 where the ride exits at -$16. Default "off" =
+    # no adds on the M15 lane; the M5 lane's adds are untouched either way.
+    ADDS_CHOICES = ("off", "on")
+
+    def m15_adds(self) -> str:
+        return self.get_choice("m15_adds", self.ADDS_CHOICES, "off")
+
+    def set_m15_adds(self, value: str) -> None:
+        self.set_choice("m15_adds", value, self.ADDS_CHOICES)
+
     def create_proposal(self, kind: str, direction: str, strategy_id: str,
                        price: float, signal_id: int | None) -> int:
         with self._lock:

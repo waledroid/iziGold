@@ -967,6 +967,16 @@ tr:hover td {
           <button id="rE200" onclick="toggleE200()">off</button>
         </div>
 
+        <div class="ctrl-cluster">
+          <span class="ctrl-label" title="RSI 70/30 agreement, enforced on the M15 lane only (M5 reports only)">RSI M15</span>
+          <button id="rRsi" onclick="toggleRule('rsi_enforce','rRsi')">off</button>
+        </div>
+
+        <div class="ctrl-cluster">
+          <span class="ctrl-label" title="Pyramid adds on the M15 lane: off = pure ride (the validated recipe)">M15 adds</span>
+          <button id="rAdds" onclick="toggleRule('m15_adds','rAdds')">off</button>
+        </div>
+
         <div class="ctrl-cluster cell-span2">
           <span class="ctrl-label">Emergency</span>
           <button id="closeAll" class="btn-danger" onclick="closeAllPos()">✖ Close All</button>
@@ -1086,6 +1096,12 @@ async function state(){
       const isE200 = _rules.ema200_enforce==='on';
       $('rE200').textContent = isE200 ? 'ON' : 'off';
       $('rE200').className = isE200 ? 'btn-active-gold' : '';
+      const isRsi = _rules.rsi_enforce==='on';
+      $('rRsi').textContent = isRsi ? 'ON' : 'off';
+      $('rRsi').className = isRsi ? 'btn-active-gold' : '';
+      const isAdds = _rules.m15_adds==='on';
+      $('rAdds').textContent = isAdds ? 'ON' : 'off';
+      $('rAdds').className = isAdds ? 'btn-active-gold' : '';
     }
     
     renderProposal(s.proposal);
@@ -1486,6 +1502,12 @@ async function setRule(key,value){
 
 function toggleE200(){
   setRule('ema200_enforce', _rules&&_rules.ema200_enforce==='on'?'off':'on');
+}
+
+// Generic off/on rule toggle (RSI M15, M15 adds): flips the stored kv the
+// EA reads back on its next heartbeat.
+function toggleRule(key){
+  setRule(key, _rules&&_rules[key]==='on'?'off':'on');
 }
 
 async function decide(pid,action){

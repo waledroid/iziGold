@@ -1261,6 +1261,59 @@ disables that tier rather than matching it.
 **Increment 2 (2026-09-06) — the sweep is done; see the next entry.**
 Enforcement (increment 3) is still NOT wired: nothing blocks on S/R yet.
 
+## M15 hardening after the 09-07 loss: RSI 70/30 enforced, no adds (owner "go", 2026-09-07)
+
+**The autopsy.** Monday 2026-09-07 was a 54-dollar chop box (4381–4435,
+five M15 HalfTrend flips). The lane's one trade: SELL 0.01 @ 4399.85 at
+04:15 server, confirmed at **RSI 26** ("DISAGREES … report-only, entering
+anyway"), 35 dollars into a drop. Price dipped 12 more; at 09:05 an ADR
+pyramid add fired on an M5-bar spike low (4387.65) and the halfway
+ratchet moved the shared stop 4444 → 4422; the 11:15 bar's wick (4423.55)
+took both legs out for −$56. Without the add the original stop survives
+the whole day (post-entry high 4423.81) and the ride exits at the 17:45
+reversal for about −$16. Two later confirms (13:45 SELL, 18:00 BUY) were
+blocked by the 6 h exposure cap — replayed, both lose too; the cap earned
+its keep. Also checked and NOT useful: the S/R wall filter (fails on M15,
+see below), and the replay's chop gate (never fires on the M15 lane at
+any flips/box setting).
+
+**Two rules, both in the EMA-200 module shape (EA input + service
+override on the heartbeat + /agree buttons + dashboard button):**
+
+- **RSI 70/30 enforcement, M15 lane only.** EA input `M15RsiConfirm =
+  true`; service rule `rsi_enforce` (`off`/`on`, default **on** —
+  evidence-earned: sweep 2026-09-02, +7% net at −33% max dd, better in
+  BOTH halves). `CHalfTrendEmaStrategy` gained `m_rsiConfirm /
+  m_rsiEligible / m_rsiOverride`, `RsiEnforced()`, `SetRsiOverride()`;
+  the gate sits after the EMA-200 gate in `Evaluate()` and refuses with
+  "refused — RSI(14) at X … the 70/30 rule is enforcing on this lane".
+  **The M5 lane is constructed ineligible** (`rsiEligible=false`): the
+  same filter FAILS both halves there, so whatever the service override
+  says the M5 lane keeps reporting only (its log says "not eligible to
+  enforce"). Heartbeat field `rsi_enforce`; `/api/rules` key
+  `rsi_enforce`; Telegram `/agree` rows `rsi:off|on`; dashboard button
+  "RSI M15". The backtest page's M15 recipe now carries `--rsi-filter 70`.
+- **Pyramid adds switch, M15 lane only.** EA input `M15EnableAdds =
+  false`; service rule `m15_adds` (`off`/`on`, default **off** = pure
+  ride, the recipe every trusted M15 number was measured on).
+  `CStrategy::AllowsAdds()` (default true) / `SetAddsOverride()`; the EA
+  calls `g_trades.SetAddsAllowed(active.AllowsAdds())` before EVERY
+  `Manage()` (both the AUTO and the MANUAL-basket call sites), and
+  `CTradeManager` gates adds on `m_addsAllowed` alongside the global
+  `EnablePyramiding`. An open basket keeps its legs; it just gets no new
+  ones. The M5 lane is constructed `addsEligible=false` and keeps its ADR
+  adds regardless of the override. Heartbeat field `m15_adds`;
+  `/api/rules` key `m15_adds`; `/agree` rows `adds:off|on`; dashboard
+  button "M15 adds". NOTE the replay has no "ADR without adds" mode —
+  FIXED mode is the proxy for the ride (that is what all M15 sweeps used).
+
+**Deploy facts.** Service side rides the watchdog. The EA inputs are
+DEFAULTS, so they need a fresh attach (MT5 restart with
+`mt5-start.ini`), verified by the init fingerprint plus the first
+heartbeat's "RSI 70/30 agreement -> ENFORCING" and "pyramid adds -> OFF
+(pure ride)" lines from `halftrend_m15_v1`. `/status` shows
+`RSI(M15): on | M15 adds: off`.
+
 ## S/R wall sweep — M5 keeps it, M15 must never get it (2026-09-06)
 
 Increment 2 of the S/R spec: the replay half of the evidence. Full tables

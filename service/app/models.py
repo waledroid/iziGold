@@ -109,6 +109,12 @@ class HeartbeatResponse(BaseModel):
     # EMA-200 (own-timeframe) agreement module, same idea, simpler shape --
     # no timeframe choice, just "off" (report only) or "on" (enforce).
     ema200_enforce: str = "off"
+    # RSI(14) 70/30 agreement -- the EA applies it on its M15 lane only
+    # (the M5 lane is not eligible: the filter fails both halves there).
+    rsi_enforce: str = "on"
+    # Pyramid adds on the M15 lane: "off" = pure ride (the validated
+    # recipe), "on" = ADR adds as before. The M5 lane is unaffected.
+    m15_adds: str = "off"
     command: dict | None = None
 
 

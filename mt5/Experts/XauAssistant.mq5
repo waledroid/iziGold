@@ -89,6 +89,8 @@ input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal
 // lane's only confirmation is its own EMA200 below -- the M15Htf* inputs
 // that used to sit here are gone rather than left wired to nothing.
 input bool   M15Ema200Confirm = false;   // EMA-200 (own timeframe) agreement, same rule as M5's Ema200Confirm above; default off
+input bool   M15RsiConfirm    = true;    // RSI(14) 70/30 agreement may BLOCK an M15 entry (owner "go" 2026-09-07). Sweep 2026-09-02: +7% net at -33% max dd, better in BOTH halves; the 2026-09-07 oversold SELL (RSI 26) that lost the day would have been refused. The M5 lane is NOT eligible (fails both halves) and only reports. Service /agree override wins over this input.
+input bool   M15EnableAdds    = false;   // pyramid adds on the M15 lane (owner "go" 2026-09-07). false = pure ride, the recipe every trusted M15 number was measured on; the live ADR add + halfway ratchet turned a -$16 ride exit into -$56 on 2026-09-07. Global EnablePyramiding still applies. Service /agree override wins.
 
 input group "BollStochRsi (boll_stochrsi)"
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
@@ -293,7 +295,9 @@ int OnInit()
                        M15ConfirmCloses, M15StopBufferATR,
                        M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
                        false, PERIOD_H1, 55, 0.0, false, 48, 0.08, M15Ema200Confirm,
-                       M15ConfirmClearATR);
+                       M15ConfirmClearATR,
+                       M15RsiConfirm, true,      // RSI 70/30: eligible to enforce (sweep-earned)
+                       M15EnableAdds, true);     // adds switchable on this lane only
    laneM15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
    g_registry.Register(laneM15);
    g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
@@ -440,6 +444,7 @@ void OnTimer()
    SampleSpread(spreadPts);
 
    string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "", ema200Enforce = "";
+   string rsiEnforce = "", m15Adds = "";
    long cmdId = 0;
    bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
    string entryModeStr = (g_entryMode == ENTRY_FIXED) ? "fixed" : "adr";
@@ -448,6 +453,7 @@ void OnTimer()
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
                                   mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce, ema200Enforce,
+                                  rsiEnforce, m15Adds,
                                   g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday(),
                                   g_news.UpcomingJson(), NewsBlackoutMin);
    // Push the /agree settings to every strategy (shadows included, so their
@@ -463,6 +469,20 @@ void OnTimer()
         {
          CStrategy *st2 = g_registry.Get(si2);
          if(st2 != NULL) st2.SetEma200Override(ema200Enforce);
+        }
+   // RSI 70/30 enforcement + M15 adds switch (2026-09-07): pushed to every
+   // lane; ineligible lanes (M5) ignore them by construction.
+   if(rsiEnforce != "")
+      for(int si3 = 0; si3 < g_registry.Count(); si3++)
+        {
+         CStrategy *st3 = g_registry.Get(si3);
+         if(st3 != NULL) st3.SetRsiOverride(rsiEnforce);
+        }
+   if(m15Adds != "")
+      for(int si4 = 0; si4 < g_registry.Count(); si4++)
+        {
+         CStrategy *st4 = g_registry.Get(si4);
+         if(st4 != NULL) st4.SetAddsOverride(m15Adds);
         }
    if(sw != "") g_pendingSwitch = sw;
 
@@ -741,6 +761,9 @@ void ProcessBar()
          g_ui.PostNotify("🚫 AUTO " + SignalToString(sig) + " not executed: " + why);
         }
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
+      // The active lane decides whether pyramid adds are allowed this bar
+      // (2026-09-07: the M15 lane rides without adds by default).
+      g_trades.SetAddsAllowed(active.AllowsAdds());
       g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
      }
    // MANUAL-mode baskets (opened via a Telegram-approved "execute" command
@@ -751,6 +774,7 @@ void ProcessBar()
    // existing, accepted Manage() behavior, not new risk introduced here.
    else if(g_execMode == EXEC_MANUAL && g_trades.OpenCount() > 0 && atrVal > 0)
      {
+      g_trades.SetAddsAllowed(active.AllowsAdds());
       g_trades.Manage(atrVal, active.ConditionStillTrue(g_trades.BasketDirection()));
      }
 

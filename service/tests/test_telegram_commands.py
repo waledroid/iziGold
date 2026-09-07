@@ -86,6 +86,12 @@ class FakeDb:
     def ema200_enforce(self):
         return self._e200
 
+    def rsi_enforce(self):
+        return getattr(self, "_rsi", "on")
+
+    def m15_adds(self):
+        return getattr(self, "_adds", "off")
+
     def strategy_ids(self):
         return self._strategies
 
@@ -1100,6 +1106,46 @@ def test_e200_callback_sets_and_clears_enforcement(client):
     assert "reported" in reply, "off must still promise the check is reported"
     # unrelated to the HTF toggle
     assert app.state.db.htf_enforce() == "off"
+
+
+def test_agree_menu_offers_rsi_and_m15_adds_toggles(client):
+    """The RSI 70/30 gate (M15 only) and the M15 adds switch ride the same
+    /agree menu as the other modules; defaults are on / off (2026-09-07)."""
+    from app.telegram import handle_command
+    text, markup = handle_command("/agree", client.app)
+    assert "RSI 70/30" in text and "M15 lane only" in text
+    assert "Pyramid adds on the M15 lane" in text and "pure ride" in text
+    labels = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    for choice in ("rsi:off", "rsi:on", "adds:off", "adds:on"):
+        assert choice in labels
+    texts = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert "● RSI enforcing" in texts and "● M15 adds off (ride)" in texts
+
+
+def test_rsi_and_adds_callbacks_set_and_clear(client):
+    from app.telegram import handle_callback
+    app = client.app
+    reply, toast = handle_callback("rsi:off", app)
+    assert app.state.db.rsi_enforce() == "off" and "CHECK ONLY" in reply
+    reply, toast = handle_callback("rsi:on", app)
+    assert app.state.db.rsi_enforce() == "on" and "M15 lane" in reply
+    reply, toast = handle_callback("adds:on", app)
+    assert app.state.db.m15_adds() == "on" and "never part" in reply
+    reply, toast = handle_callback("adds:off", app)
+    assert app.state.db.m15_adds() == "off" and "ride" in reply
+    # unrelated modules untouched
+    assert app.state.db.ema200_enforce() == "off"
+
+
+def test_heartbeat_carries_rsi_and_m15_adds(client):
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["rsi_enforce"] == "on" and body["m15_adds"] == "off"
+    client.app.state.db.set_rsi_enforce("off")
+    client.app.state.db.set_m15_adds("on")
+    body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert body["rsi_enforce"] == "off" and body["m15_adds"] == "on"
 
 
 def test_heartbeat_carries_the_ema200_agree_setting(client):

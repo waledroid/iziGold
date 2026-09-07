@@ -97,6 +97,23 @@ private:
    int      m_rsiHandle;
    double   m_confirmRsi;      // RSI at the confirm bar; -1 = none yet
    int      m_lastRsiAgree;    // 1 agreed / 0 refused / -1 not evaluated
+   // RSI 70/30 ENFORCEMENT (owner "go" 2026-09-07, after the 09-07 loss:
+   // the day's SELL confirmed at RSI 26 and lost; the 09-02 sweep had
+   // already shown M15+RSI-70 nets +7% at -33% dd, both halves). Same
+   // input/override split as EMA-200. m_rsiEligible is false on the M5
+   // lane, where the same filter FAILS both halves -- that lane keeps
+   // reporting only, whatever the service override says.
+   bool     m_rsiConfirm;      // EA input: may the RSI verdict block?
+   bool     m_rsiEligible;     // lane may enforce at all (M15 yes, M5 no)
+   string   m_rsiOverride;     // "" follow input, "off", "on"
+   // Pyramid adds for this lane (owner "go" 2026-09-07). Every trusted M15
+   // number was a pure ride; the live ADR add + halfway ratchet turned a
+   // -$16 ride exit into -$56 on 09-07. m_addsEligible false on the M5
+   // lane (its adds are part of its validated recipe): the override is a
+   // no-op there.
+   bool     m_allowAdds;       // EA input
+   bool     m_addsEligible;
+   string   m_addsOverride;    // "" follow input, "off", "on"
 
    // S/R zone verdict (owner 2026-09-05) — report-only. The engine is the
    // EA-owned CSrZoneSet shared by every lane (zones are not lane-specific);
@@ -370,7 +387,9 @@ public:
                          bool htfConfirm, ENUM_TIMEFRAMES htfTf, int htfEmaLen,
                          double htfBufferAtr, bool chopOnly, int chopBars,
                          double chopEffMax, bool ema200Confirm,
-                         double confirmClearAtr = 0.0)
+                         double confirmClearAtr = 0.0,
+                         bool rsiConfirm = false, bool rsiEligible = false,
+                         bool allowAdds = true, bool addsEligible = false)
       : m_id(id), m_amplitude(amplitude), m_emaLen(emaLen), m_confirm(confirmCloses),
         m_confirmClearAtr(confirmClearAtr),
         m_warmupBars(600), m_stopBufferAtr(stopBufferAtr), m_trend(-1), m_nextTrend(0),
@@ -385,6 +404,8 @@ public:
         m_ema200Confirm(ema200Confirm), m_lastEma200Agree(-1),
         m_confirmEma200(0), m_ema200Override(""),
         m_rsiHandle(INVALID_HANDLE), m_confirmRsi(-1), m_lastRsiAgree(-1),
+        m_rsiConfirm(rsiConfirm), m_rsiEligible(rsiEligible), m_rsiOverride(""),
+        m_allowAdds(allowAdds), m_addsEligible(addsEligible), m_addsOverride(""),
         m_srZones(NULL), m_srTiers(""), m_srRoomAtr(0.0), m_lastSrAgree(-1), m_lastSrTier(""),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
@@ -533,6 +554,48 @@ public:
 
    virtual int LastEma200Agree() const override { return m_lastEma200Agree; }
 
+   // May the RSI 70/30 verdict BLOCK an entry? Service override wins over
+   // the EA input; an ineligible lane (M5) never enforces.
+   bool RsiEnforced()
+     {
+      if(!m_rsiEligible) return false;
+      if(m_rsiOverride == "off") return false;
+      if(m_rsiOverride == "on")  return true;
+      return m_rsiConfirm;
+     }
+
+   virtual void SetRsiOverride(string v) override
+     {
+      if(v == "off" || v == "on" || v == "")
+        {
+         if(v != m_rsiOverride && v != "")
+            Print(m_id + ": RSI 70/30 agreement -> ",
+                  !m_rsiEligible ? "CHECK ONLY (this lane is not eligible to enforce)"
+                  : (v == "off" ? "CHECK ONLY (will not block)" : "ENFORCING"));
+         m_rsiOverride = v;
+        }
+     }
+
+   // Pyramid adds: the input decides unless the service override says
+   // otherwise; an ineligible lane (M5) always answers from its input.
+   virtual bool AllowsAdds() override
+     {
+      if(!m_addsEligible) return m_allowAdds;
+      if(m_addsOverride == "off") return false;
+      if(m_addsOverride == "on")  return true;
+      return m_allowAdds;
+     }
+
+   virtual void SetAddsOverride(string v) override
+     {
+      if(v == "off" || v == "on" || v == "")
+        {
+         if(v != m_addsOverride && v != "" && m_addsEligible)
+            Print(m_id + ": pyramid adds -> ", v == "off" ? "OFF (pure ride)" : "ON");
+         m_addsOverride = v;
+        }
+     }
+
    virtual string Id() { return m_id; }
    virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
    virtual int LastRsiAgree() const { return m_lastRsiAgree; }
@@ -606,7 +669,7 @@ public:
             m_lastRsiAgree = (m_confirmRsi < 70.0) ? 1 : 0;
          else
             m_lastRsiAgree = (m_confirmRsi > 30.0) ? 1 : 0;
-         if(m_lastRsiAgree == 0)
+         if(m_lastRsiAgree == 0 && !RsiEnforced())
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
                   " DISAGREES (", (wanted == SIGNAL_BUY ? ">=70 overbought" : "<=30 oversold"),
@@ -650,6 +713,18 @@ public:
                   " refused — EMA200 disagrees (price ",
                   DoubleToString(m_confirmClose, 2), " on the wrong side of EMA200 ",
                   DoubleToString(m_confirmEma200, 2), ")");
+            return SIGNAL_NONE;
+           }
+         // RSI 70/30 gate (owner "go" 2026-09-07): enforced on the M15 lane
+         // by default; the verdict above is already recorded for the report
+         // whether or not this refuses. Refusal spends the flip like every
+         // other gate (m_fired is already true).
+         if(m_lastRsiAgree == 0 && RsiEnforced())
+           {
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " refused — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
+                  (wanted == SIGNAL_BUY ? " (>=70 overbought)" : " (<=30 oversold)"),
+                  " — the 70/30 rule is enforcing on this lane");
             return SIGNAL_NONE;
            }
          if(m_trend == 0)
