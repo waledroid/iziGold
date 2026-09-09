@@ -1,0 +1,237 @@
+# Review package: cb0ea1e..HEAD
+
+## Commits
+39caf21 feat(backtest): qf_signals() computes QuickFlip setups as pure price geometry
+
+## Files changed
+ scripts/backtest.py              | 102 +++++++++++++++++++++++++++++++++++++++
+ service/tests/test_qf_signals.py |  93 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 195 insertions(+)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index a480e5f..e1ff4ce 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -720,20 +720,122 @@ def atr_adx(c, period=14):
+                 dxs[i] = 100 * abs(pdi - ndi) / (pdi + ndi)
+     adx = wilder(dxs, period)
+     return atr, adx
+ 
+ 
+ def hhmm(t):
+     d = dt.datetime.fromtimestamp(t, dt.UTC)   # candle t is server wall-clock
+     return d, d.hour, d.minute
+ 
+ 
++# --- quickflip_ny_v1: the second lane (spec 2026-08-20-quickflip-ny-design) --
++# Box the first M15 candle of QF_HOUR:QF_MINUTE, qualify it against daily
++# ATR(14), then trade the sweep-and-reverse back to the far side of the box.
++# Candle t is SERVER wall-clock -- never add an offset (a +3h shift is what
++# invalidated the original analysis).
++QF_HOUR = 13           # server; 13:30 had the best win% + both halves positive
++QF_MINUTE = 30
++QF_ATR_PCT = 5.0       # box range as % of daily ATR(14). Measured at 13:30
++                        # server over 17mo with quickflip_probe.py: >=10%
++                        # leaves only 35 trades whose older half is
++                        # indistinguishable from zero and earns LESS total
++                        # than a looser gate; >=5% is the best-performing cut
++                        # (165 trades, +75.55 total, older half +0.23/oz).
++                        # The published "25% of daily ATR" opening-range rule
++                        # does not transfer to gold and was never authoritative
++                        # here -- do not "restore" 10 or 25 believing otherwise.
++QF_WINDOW_MIN = 90
++QF_RISK_PCT = 0.25     # reduced size: a paid experiment, not a proven edge
++QF_ATR_DAYS = 14
++
++
++def qf_daily_atr(candles):
++    """server-day -> ATR(QF_ATR_DAYS) over the PRIOR days only."""
++    days = {}
++    for x in candles:
++        d = days.setdefault(x["t"] // 86400,
++                            {"h": x["h"], "l": x["l"], "c": x["c"]})
++        d["h"] = max(d["h"], x["h"])
++        d["l"] = min(d["l"], x["l"])
++        d["c"] = x["c"]
++    keys = sorted(days)
++    out = {}
++    for i, k in enumerate(keys):
++        # Eligibility starts one day past the raw QF_ATR_DAYS warm-up so that
++        # the inner loop's `j - 1` never hits index 0: at i == QF_ATR_DAYS,
++        # j == 0 would make keys[j - 1] wrap around to keys[-1] -- the LAST
++        # day in the whole dataset -- leaking months of future close into
++        # the first computed ATR (mirrors the fix in quickflip_probe.py's
++        # daily_atr(), commit 63defbc). Requiring i > QF_ATR_DAYS keeps j >= 1.
++        if i <= QF_ATR_DAYS:
++            continue
++        s = 0.0
++        for j in range(i - QF_ATR_DAYS, i):
++            dj, pc = days[keys[j]], days[keys[j - 1]]["c"]
++            s += max(dj["h"] - dj["l"], abs(dj["h"] - pc), abs(dj["l"] - pc))
++        out[k] = s / QF_ATR_DAYS
++    return out
++
++
++def qf_signals(candles):
++    """Every QuickFlip setup, as pure price geometry (no account state)."""
++    atr = qf_daily_atr(candles)
++    idx_of = {}
++    by_day = {}
++    for i, x in enumerate(candles):
++        idx_of[x["t"]] = i
++        by_day.setdefault(x["t"] // 86400, []).append(x)
++    out = []
++    for k in sorted(by_day):
++        if k not in atr:
++            continue
++        rows = by_day[k]
++        if len(rows) < 100:
++            continue
++        box = [x for x in rows
++               if hhmm(x["t"])[1] == QF_HOUR
++               and QF_MINUTE <= hhmm(x["t"])[2] < QF_MINUTE + 15]
++        if len(box) != 3:
++            continue
++        hi = max(x["h"] for x in box)
++        lo = min(x["l"] for x in box)
++        if (hi - lo) < QF_ATR_PCT / 100.0 * atr[k]:
++            continue
++        green = box[-1]["c"] >= box[0]["o"]
++        t_end = box[-1]["t"] + 300
++        expire = t_end + QF_WINDOW_MIN * 60
++        swept, ext = False, None
++        for x in [r for r in rows if t_end <= r["t"] < expire]:
++            if not swept:
++                if green and x["h"] > hi:
++                    swept, ext = True, x["h"]
++                elif not green and x["l"] < lo:
++                    swept, ext = True, x["l"]
++                continue
++            ext = max(ext, x["h"]) if green else min(ext, x["l"])
++            if green and x["c"] < hi:
++                out.append({"i": idx_of[x["t"]], "entry_t": x["t"],
++                            "dir": "SELL", "entry": x["c"], "stop": ext,
++                            "tp": lo, "expire_t": expire,
++                            "ratio": (hi - lo) / atr[k],
++                            "box_hi": hi, "box_lo": lo})
++                break
++            if not green and x["c"] > lo:
++                out.append({"i": idx_of[x["t"]], "entry_t": x["t"],
++                            "dir": "BUY", "entry": x["c"], "stop": ext,
++                            "tp": hi, "expire_t": expire,
++                            "ratio": (hi - lo) / atr[k],
++                            "box_hi": hi, "box_lo": lo})
++                break
++    return out
++
++
+ def run(candles, start_balance, verbose):
+     closes = [x["c"] for x in candles]
+     ema55 = ema(closes, EMA_LEN)
+     ht = halftrend(
+         [type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+     atr, adx = atr_adx(candles)
+     sr_ctx = sr_context(candles) if SR_LOOKBACK > 0 else None
+     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
+         else None
+ 
+diff --git a/service/tests/test_qf_signals.py b/service/tests/test_qf_signals.py
+new file mode 100644
+index 0000000..c771cb2
+--- /dev/null
++++ b/service/tests/test_qf_signals.py
+@@ -0,0 +1,93 @@
++"""QuickFlip setups are pure geometry: they depend on candles only, never on
++the account. That is what lets the lane be precomputed and then executed
++inside the existing balance-aware loop."""
++import json
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def _sigs():
++    bt = _load_bt()
++    return bt, bt.qf_signals(json.loads(BARS.read_text()))
++
++
++def test_defaults_match_the_spec():
++    bt = _load_bt()
++    assert (bt.QF_HOUR, bt.QF_MINUTE) == (13, 30)
++    assert bt.QF_ATR_PCT == 5.0
++    assert bt.QF_WINDOW_MIN == 90
++    assert bt.QF_RISK_PCT == 0.25
++
++
++def test_signals_are_pure_of_the_account():
++    """Called twice, the same candles must give identical setups."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    assert bt.qf_signals(candles) == bt.qf_signals(candles)
++
++
++def test_stop_sits_beyond_entry_and_target_on_the_other_side():
++    _bt, sigs = _sigs()
++    for s in sigs:
++        if s["dir"] == "SELL":
++            assert s["stop"] > s["entry"] and s["tp"] < s["entry"]
++        else:
++            assert s["stop"] < s["entry"] and s["tp"] > s["entry"]
++
++
++def test_entry_index_points_at_the_entry_bar():
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    for s in bt.qf_signals(candles):
++        assert candles[s["i"]]["t"] == s["entry_t"]
++
++
++def test_expiry_is_within_the_window_of_the_box():
++    _bt, sigs = _sigs()
++    for s in sigs:
++        assert s["expire_t"] > s["entry_t"]
++
++
++def test_one_setup_per_server_day():
++    _bt, sigs = _sigs()
++    days = [s["entry_t"] // 86400 for s in sigs]
++    assert len(days) == len(set(days))
++
++
++def test_threshold_filters_setups_out():
++    """A 90% ATR threshold must leave far fewer setups than a 0% one --
++    proof the qualifier is actually applied."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.QF_ATR_PCT = 0.0
++    loose = len(bt.qf_signals(candles))
++    bt.QF_ATR_PCT = 90.0
++    strict = len(bt.qf_signals(candles))
++    assert strict < loose
++
++
++def test_atr_boundary_does_not_leak_the_last_days_close():
++    """Regression for the wraparound bug in the brief's qf_daily_atr(): with
++    the off-by-one bug, keys[j - 1] hits j == 0 on the first eligible day and
++    Python wraps to keys[-1] -- the LAST server day in the whole dataset --
++    so the first computed ATR silently depends on the final candle's close.
++    Mutating ONLY the last candle's close must leave the FIRST computed ATR
++    unchanged. A bare `> 0` assertion would not catch this: the leaked value
++    is wrong but still positive.
++    """
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    atr_before = bt.qf_daily_atr(candles)
++    first_day_before = sorted(atr_before)[0]
++    value_before = atr_before[first_day_before]
++
++    mutated = [dict(x) for x in candles]
++    mutated[-1] = dict(mutated[-1])
++    mutated[-1]["c"] = mutated[-1]["c"] + 10_000.0
++
++    atr_after = bt.qf_daily_atr(mutated)
++    first_day_after = sorted(atr_after)[0]
++    value_after = atr_after[first_day_after]
++
++    assert first_day_after == first_day_before
++    assert value_after == value_before

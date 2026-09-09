@@ -1,0 +1,2296 @@
+# Review package: 02eaf3a..HEAD
+
+## Commits
+dfc5472 feat(backtest): per-lane reporting and a golden pin for the combined run
+
+## Files changed
+ scripts/backtest.py                          |  76 ++++-
+ service/tests/data/golden_trades.json        | 114 ++++++++
+ service/tests/data/golden_trades_both.json   | 411 +++++++++++++++++++++++++++
+ service/tests/data/golden_trades_strict.json |  43 +++
+ service/tests/test_backtest_golden.py        |  19 +-
+ service/tests/test_qf_report.py              |  44 +++
+ 6 files changed, 692 insertions(+), 15 deletions(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index 26ac9f7..1af6b52 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -1278,20 +1278,51 @@ def run(candles, start_balance, verbose):
+     run.sizing = {
+         "entries": n,
+         "clamped": sizing["clamped"],
+         "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
+         "risk_median": round(r[len(r) // 2], 2) if r else None,
+         "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
+     }
+     return trades, bal, max_dd, max_valley
+ 
+ 
++def _lane_stats(trades):
++    """Per-lane breakdown plus how many bars both lanes were open together.
++    A blended net hides which strategy earned it, and a combined equity curve
++    hides that exposure can be doubled."""
++    out = {}
++    for lane in ("ht", "qf"):
++        rows = [t for t in trades if t.get("lane", "ht") == lane]
++        wins = sum(1 for t in rows if t["pl"] > 0)
++        out[lane] = {
++            "trades": len(rows),
++            "wins": wins,
++            "losses": sum(1 for t in rows if t["pl"] < 0),
++            "win_rate": round(100.0 * wins / len(rows), 1) if rows else 0.0,
++            "net": round(sum(t["pl"] for t in rows), 2),
++            "best": round(max((t["pl"] for t in rows), default=0.0), 2),
++            "worst": round(min((t["pl"] for t in rows), default=0.0), 2),
++        }
++    ht = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
++          if t.get("lane", "ht") == "ht"]
++    qf = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
++          if t.get("lane") == "qf"]
++    overlap = 0
++    for a0, a1 in qf:
++        for b0, b1 in ht:
++            if a0 < b1 and b0 < a1:
++                overlap += 1
++                break
++    out["both_open_bars"] = overlap
++    return out
++
++
+ def build_run_json(candles, trades, args, res):
+     """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
+     per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
+     halves the payload with no loss of detail."""
+     closes = [x["c"] for x in candles]
+     ht = halftrend([type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+     r2 = lambda v: None if v is None else round(v, 2)   # noqa: E731
+     sizing = getattr(run, "sizing", {}) or {}
+     n = len(trades)
+     wins = sum(1 for t in trades if t["pl"] > 0)
+@@ -1315,37 +1346,39 @@ def build_run_json(candles, trades, args, res):
+             "start_balance": round(args.balance, 2),
+             "end_balance": round(res["bal"], 2),
+             "max_dd": round(res["max_dd"], 2),
+             "max_valley": round(res["valley"], 2),
+             "best": round(max((t["pl"] for t in trades), default=0.0), 2),
+             "worst": round(min((t["pl"] for t in trades), default=0.0), 2),
+             # null when no entry was risk-sized -- the page renders "n/a"
+             "clamp_pct": sizing.get("clamp_pct"),
+             "risk_median": sizing.get("risk_median"),
+             "risk_p90": sizing.get("risk_p90"),
++            "lanes": _lane_stats(trades),
+         },
+         "candles": {
+             "t": [int(x["t"]) for x in candles],
+             "o": [r2(x["o"]) for x in candles],
+             "h": [r2(x["h"]) for x in candles],
+             "l": [r2(x["l"]) for x in candles],
+             "c": [r2(x["c"]) for x in candles],
+         },
+         "ind": {
+             "ema9": [r2(v) for v in ema(closes, 9)],
+             "ema21": [r2(v) for v in ema(closes, 21)],
+             "ema55": [r2(v) for v in ema(closes, 55)],
+             "ema200": [r2(v) for v in ema(closes, 200)],
+             "ht": {"v": [r2(p[0]) if p else None for p in ht],
+                    "trend": [p[1] if p else None for p in ht]},
+         },
+         "trades": [{
++            "lane": t.get("lane", "ht"),
+             "dir": t["dir"],
+             "legs": [{"t": leg["t"], "px": r2(leg["px"]), "oz": leg["oz"]}
+                      for leg in t["legs"]],
+             "tp": r2(t.get("tp")),
+             "stop_history": [{"t": h["t"], "stop": r2(h["stop"])}
+                              for h in t["stop_history"]],
+             "exit": r2(t["exit"]), "exit_t": t["exit_t"], "why": t["why"],
+             "pl": round(t["pl"], 2), "bal_after": round(t["bal_after"], 2),
+             "regime": t.get("regime"),
+         } for t in trades],
+@@ -1679,20 +1712,27 @@ def main():
+              if SR_LOOKBACK > 0 else "")
+           + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
+              if BIAS_EMA > 0 else "")
+           + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
+           + (f" | TF {TF}" if TF != "M5" else "")
+           + (f" | profit target {PROFIT_TARGET_PCT:g}%"
+              if PROFIT_TARGET_PCT != 2.0 else "")
+           + "\n")
+ 
+     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
++    # Several report blocks below read keys only HalfTrend's baskets carry
++    # (orig_dist/orig_oz, regime, chop, bias, floor). A QuickFlip trade
++    # reaching them would raise KeyError or silently pollute a per-regime
++    # table, so those blocks read ht_trades instead of the full list. The
++    # overall net/balance/drawdown lines below still read `trades` -- those
++    # describe the ACCOUNT, which both lanes share.
++    ht_trades = [t for t in trades if t.get("lane", "ht") == "ht"]
+ 
+     # floor guarantee check: once armed, a trade may never realize less than
+     # its floor amount — the only allowed leaks are the close-based forced
+     # exits (pre-break flatten / end-of-data), which fill at bar close and
+     # may sit one bar's move below the floor price.
+     floor_leaks = []
+     for t in trades:
+         if t.get("floor") is not None and t["pl"] < t["floor"] - 1e-6:
+             if t["why"] in ("flatten", "eod-open"):
+                 floor_leaks.append(t)
+@@ -1716,113 +1756,113 @@ def main():
+             fl = f"  floor {t['floor']:+.2f}" if t.get("floor") is not None else ""
+             print(f"  {t['when']:%m-%d %H:%M} {t['dir']:4} [{legs}] -> "
+                   f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}{fl}")
+     tdays = len({hhmm(x["t"])[0].date() for x in candles})
+     print(f"trading days {tdays}  trades/day {len(trades) / max(1, tdays):.2f}  "
+           f"win% {100 * len(wins) / max(1, len(trades)):.1f}  "
+           f"avg winner {sum(t['pl'] for t in wins) / max(1, len(wins)):+.2f}  "
+           f"avg loser {sum(t['pl'] for t in losses) / max(1, len(losses)):+.2f}")
+     print("entry regime breakdown (service classifier on the 300-bar window):")
+     for rg in ("trend", "range", "high_volatility"):
+-        sub = [t for t in trades if t.get("regime") == rg]
++        sub = [t for t in ht_trades if t.get("regime") == rg]
+         w = [t for t in sub if t["pl"] > 0]
+         print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+               f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+     print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
+     for r in ATR_SPIKE_BUCKETS:
+-        sub = [t for t in trades if (t.get("atr_ratio") or 0) > r]
++        sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
+         w = [t for t in sub if t["pl"] > 0]
+         print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+               f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+     sk = getattr(run, "skipped", [])
+     if REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0:
+         from collections import Counter
+         cnt = Counter(r for _, _, r in sk)
+         print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
+               f"refused {len(sk)} entries "
+               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
+     if CHOP_FLIPS > 0:
+-        ch = [t for t in trades if t.get("chop")]
+-        nc = [t for t in trades if not t.get("chop")]
++        ch = [t for t in ht_trades if t.get("chop")]
++        nc = [t for t in ht_trades if not t.get("chop")]
+         for lab, sub in (("chop-tagged", ch), ("not chop", nc)):
+             w = [t for t in sub if t["pl"] > 0]
+             l = [t for t in sub if t["pl"] <= 0]
+             print(f"chop {lab:12} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                   f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                   f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+                   f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}")
+         nchop = sum(1 for _, _, r in sk if r == "chop")
+         print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
+-              f"soft-sized {sum(1 for t in trades if t.get('soft'))} baskets")
++              f"soft-sized {sum(1 for t in ht_trades if t.get('soft'))} baskets")
+     if STRICT_WINDOW:
+         dd = getattr(run, "dead_signals", [])
+         print(f"strict window: {len(dd)} flips died at the decision bar "
+               f"(entry bar would open on the wrong side of the EMA); "
+               f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
+     if MIN_STOP_ATR > 0:
+-        fl = [t for t in trades if t.get("floored")]
++        fl = [t for t in ht_trades if t.get("floored")]
+         saved = [t for t in fl if t.get("orig_hit_bar") is not None
+                  and t["orig_hit_bar"] <= NOISE_BARS]
+         surv = [t for t in saved if not (t["why"] == "stop"
+                                          and t["bars_open"] <= NOISE_BARS)]
+         later = [t for t in fl if t.get("orig_hit_bar") is not None
+                  and t["orig_hit_bar"] > NOISE_BARS]
+         never = [t for t in fl if t.get("orig_hit_bar") is None]
+         w = [t for t in fl if t["pl"] > 0]
+         print(f"min-stop floor {MIN_STOP_ATR:g} ATR: floored {len(fl)} of "
+-              f"{len(trades)} entries; floored net {sum(t['pl'] for t in fl):+.2f}"
++              f"{len(ht_trades)} entries; floored net {sum(t['pl'] for t in fl):+.2f}"
+               f"  win% {100 * len(w) / max(1, len(fl)):.1f}")
+         print(f"  original stop would have hit within {NOISE_BARS} bars: "
+               f"{len(saved)} (of which {len(surv)} survived past bar "
+               f"{NOISE_BARS} under the floor; their eventual net "
+               f"{sum(t['pl'] for t in saved):+.2f}; the old stop would have "
+               f"realized {sum(-(t['orig_dist'] + SPREAD_USD) * t['orig_oz'] for t in saved):+.2f})")
+         print(f"  original stop would have hit later (bar > {NOISE_BARS}): "
+               f"{len(later)}  net {sum(t['pl'] for t in later):+.2f}"
+               f"  |  never touched while open: {len(never)}  "
+               f"net {sum(t['pl'] for t in never):+.2f}")
+         for t in fl:
+             print(f"    {t['opened']:%m-%d %H:%M} {t['dir']:4} "
+                   f"{t['legs'][0]['oz']}oz (was {t['orig_oz']}oz) "
+                   f"stop {t['entry_stop']:.2f} (was {t['orig_stop']:.2f}, "
+                   f"{t['dist_atr']:.2f} ATR) old-stop hit bar "
+                   f"{t['orig_hit_bar']} -> {t['why']} {t['pl']:+.2f}")
+     if BIAS_EMA > 0:
+         print(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE} "
+               f"(with = BUY above / SELL below the EMA at entry):")
+         for lab in ("with", "counter"):
+-            sub = [t for t in trades if t.get("bias") == lab]
++            sub = [t for t in ht_trades if t.get("bias") == lab]
+             w = [t for t in sub if t["pl"] > 0]
+             l = [t for t in sub if t["pl"] <= 0]
+             worst = min((t["pl"] for t in sub), default=0.0)
+             print(f"  {lab:8} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                   f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                   f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+                   f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}"
+                   f"  worst {worst:+.2f}")
+-        untag = [t for t in trades if t.get("bias") is None]
++        untag = [t for t in ht_trades if t.get("bias") is None]
+         if untag:
+             print(f"  (untagged {len(untag)}: entered before the bias EMA warmed up)")
+         nb = sum(1 for _, _, r in sk if r == "counter-trend")
+         if BIAS_MODE == "skip":
+             print(f"  skip: refused {nb} counter-trend entries")
+         bf = getattr(run, "bias_flips", None) or {}
+         for tf in ("M5", "M15"):
+             if tf in bf:
+                 per, tot, nd = bf[tf]
+                 print(f"  bias flips/day on {tf}: {per:.2f} ({tot} flips over {nd} days)")
+     if HOUR_TABLE:
+         print("entry-hour breakdown (server time; trade attributed to the "
+               "hour its first leg opened):")
+         print("  hour  trades   win%        net        avg      worst")
+         for hr in range(24):
+-            sub = [t for t in trades
++            sub = [t for t in ht_trades
+                    if t.get("opened") is not None and t["opened"].hour == hr]
+             if not sub:
+                 continue
+             w = [t for t in sub if t["pl"] > 0]
+             net = sum(t["pl"] for t in sub)
+             print(f"  {hr:02d}    {len(sub):6}  {100 * len(w) / len(sub):5.1f}"
+                   f"  {net:+10.2f} {net / len(sub):+10.2f} "
+                   f"{min(t['pl'] for t in sub):+10.2f}")
+     if SR_LOOKBACK > 0:
+         b1, b2, b3 = SR_BUCKETS
+@@ -1830,64 +1870,72 @@ def main():
+               f"over {SR_LOOKBACK} bars + prev-day H/L + session H/L, "
+               f"deduped {SR_DEDUP_ATR:g} ATR):")
+         print("  bucket        trades   win%        net        avg"
+               "   winners $   losers $")
+         rows = [(f"<{b1:g} ATR", lambda v: v is not None and v < b1),
+                 (f"{b1:g}-{b2:g} ATR", lambda v: v is not None and b1 <= v < b2),
+                 (f"{b2:g}-{b3:g} ATR", lambda v: v is not None and b2 <= v < b3),
+                 (f">{b3:g} ATR", lambda v: v is not None and v >= b3),
+                 ("clear", lambda v: v is None)]
+         for lab, pred in rows:
+-            sub = [t for t in trades if pred(t.get("headroom"))]
++            sub = [t for t in ht_trades if pred(t.get("headroom"))]
+             if not sub:
+                 continue
+             w = [t for t in sub if t["pl"] > 0]
+             l = [t for t in sub if t["pl"] <= 0]
+             net = sum(t["pl"] for t in sub)
+             print(f"  {lab:12} {len(sub):7}  {100 * len(w) / len(sub):5.1f}"
+                   f"  {net:+10.2f} {net / len(sub):+10.2f}"
+                   f"  {sum(t['pl'] for t in w):+10.2f}"
+                   f" {sum(t['pl'] for t in l):+10.2f}")
+         print("  opportunity cost of a headroom floor (from THESE trades; "
+               "path effects not modelled):")
+         for x in (b1, b2, 1.5):
+-            sub = [t for t in trades
++            sub = [t for t in ht_trades
+                    if t.get("headroom") is not None and t["headroom"] < x]
+             w = sum(t["pl"] for t in sub if t["pl"] > 0)
+             l = sum(t["pl"] for t in sub if t["pl"] <= 0)
+             print(f"    floor {x:g} ATR would skip {len(sub):4} trades: "
+                   f"winners {w:+10.2f} forgone, losers {l:+10.2f} avoided, "
+                   f"net effect {-(w + l):+10.2f}")
+         nsr = sum(1 for _, _, r in sk if str(r).startswith("headroom<"))
+         if SR_MIN_HEADROOM > 0 and not SR_REPORT:
+             print(f"  filter: refused {nsr} entries below "
+                   f"{SR_MIN_HEADROOM:g} ATR of headroom")
+-        untag = [t for t in trades if t.get("headroom") is None]
++        untag = [t for t in ht_trades if t.get("headroom") is None]
+         if untag:
+             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
+                   f"trades; these are never refused)")
+     if CONFIRM_MODE == "open":
+         od = getattr(run, "open_diff_bars", [])
+         print(f"confirm-mode open: {len(od)} decision bars where the next "
+               f"open sat on a different side of the EMA than the close")
++    ls = _lane_stats(trades)
++    if ls["ht"]["trades"] and ls["qf"]["trades"]:
++        for lane, label in (("ht", "halftrend"), ("qf", "quickflip")):
++            d = ls[lane]
++            print(f"lane {label:<10} trades {d['trades']:>5}  win% "
++                  f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
++        print(f"           quickflip trades overlapping a halftrend position: "
++              f"{ls['both_open_bars']}")
+     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
+           f"({100 * (bal / args.balance - 1):+.2f}%)")
+     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
+           f"max open-equity valley {max_valley:.2f}")
+     s = getattr(run, "sizing", None)
+     if s and s["entries"]:
+         flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
+         print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
+               f"0.01 minimum lot{flag}")
+         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
+               f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
+-    armed = [t for t in trades if t.get("floor") is not None]
++    armed = [t for t in ht_trades if t.get("floor") is not None]
+     if EXIT_SCHEME != "target-exit":
+         print(f"floor armed on {len(armed)} trades; "
+               f"{len(floor_leaks)} realized below their floor "
+               f"({', '.join(t['why'] for t in floor_leaks) or 'none'})")
+     if args.chart:
+         plot(candles, trades, args.balance, args.chart)
+         print(f"chart      {args.chart}")
+     art = None
+     if args.json:
+         art = build_run_json(candles, trades, args,
+diff --git a/service/tests/data/golden_trades.json b/service/tests/data/golden_trades.json
+index 86a9f3b..c6aba3f 100644
+--- a/service/tests/data/golden_trades.json
++++ b/service/tests/data/golden_trades.json
+@@ -1,917 +1,1031 @@
+ {
+  "trades": [
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3978.76,
+    "legs": 2,
+    "exit": 3983.49,
+    "why": "stop",
+    "pl": -42.75
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3985.94,
+    "legs": 1,
+    "exit": 3979.79,
+    "why": "stop",
+    "pl": -38.12
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3971.38,
+    "legs": 2,
+    "exit": 3955.08,
+    "why": "profit target",
+    "pl": 108.7
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3971.36,
+    "legs": 2,
+    "exit": 3965.43,
+    "why": "stop",
+    "pl": -39.21
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3960.58,
+    "legs": 2,
+    "exit": 3966.41,
+    "why": "stop",
+    "pl": -42.22
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3978.21,
+    "legs": 3,
+    "exit": 3997.02,
+    "why": "profit target",
+    "pl": 84.21
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3987.18,
+    "legs": 2,
+    "exit": 3991.24,
+    "why": "stop",
+    "pl": -36.72
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4080.82,
+    "legs": 2,
+    "exit": 4078.17,
+    "why": "stop",
+    "pl": -45.06
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4074.77,
+    "legs": 1,
+    "exit": 4079.86,
+    "why": "stop",
+    "pl": -37.04
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4086.07,
+    "legs": 2,
+    "exit": 4082.43,
+    "why": "stop",
+    "pl": -45.62
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4099.91,
+    "legs": 2,
+    "exit": 4104.61,
+    "why": "stop",
+    "pl": -40.0
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4105.84,
+    "legs": 2,
+    "exit": 4112.1,
+    "why": "flatten",
+    "pl": 56.18
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4140.72,
+    "legs": 2,
+    "exit": 4132.81,
+    "why": "stop",
+    "pl": -30.05
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4120.54,
+    "legs": 2,
+    "exit": 4139.24,
+    "why": "stop",
+    "pl": -58.69
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4140.72,
+    "legs": 1,
+    "exit": 4131.22,
+    "why": "reversal",
+    "pl": -9.7
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4191.92,
+    "legs": 2,
+    "exit": 4201.82,
+    "why": "stop",
+    "pl": -27.5
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4202.48,
+    "legs": 1,
+    "exit": 4194.98,
+    "why": "stop",
+    "pl": -38.51
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4182.81,
+    "legs": 1,
+    "exit": 4192.02,
+    "why": "stop",
+    "pl": -37.62
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4201.62,
+    "legs": 2,
+    "exit": 4195.29,
+    "why": "reversal",
+    "pl": -26.95
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4195.29,
+    "legs": 2,
+    "exit": 4201.11,
+    "why": "stop",
+    "pl": -49.95
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4227.28,
+    "legs": 2,
+    "exit": 4204.87,
+    "why": "profit target",
+    "pl": 77.33
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4226.69,
+    "legs": 1,
+    "exit": 4217.44,
+    "why": "stop",
+    "pl": -28.36
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4336.82,
+    "legs": 2,
+    "exit": 4290.73,
+    "why": "profit target",
+    "pl": 77.64
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4337.55,
+    "legs": 3,
+    "exit": 4362.12,
+    "why": "profit lock",
+    "pl": 33.31
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4350.85,
+    "legs": 3,
+    "exit": 4334.14,
+    "why": "profit lock",
+    "pl": 12.83
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4239.62,
+    "legs": 1,
+    "exit": 4213.86,
+    "why": "reversal",
+    "pl": -25.96
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4213.86,
+    "legs": 1,
+    "exit": 4231.85,
+    "why": "stop",
+    "pl": -36.37
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4252.36,
+    "legs": 1,
+    "exit": 4267.19,
+    "why": "stop",
+    "pl": -30.05
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4251.32,
+    "legs": 3,
+    "exit": 4241.13,
+    "why": "profit lock",
+    "pl": 18.85
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4259.13,
+    "legs": 1,
+    "exit": 4247.92,
+    "why": "stop",
+    "pl": -34.22
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4330.93,
+    "legs": 3,
+    "exit": 4346.65,
+    "why": "profit lock",
+    "pl": 27.55
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4351.53,
+    "legs": 3,
+    "exit": 4321.72,
+    "why": "profit target",
+    "pl": 90.05
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4111.25,
+    "legs": 3,
+    "exit": 4120.22,
+    "why": "stop",
+    "pl": -19.53
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4133.05,
+    "legs": 2,
+    "exit": 4102.48,
+    "why": "profit target",
+    "pl": 75.74
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4066.45,
+    "legs": 2,
+    "exit": 4039.79,
+    "why": "stop",
+    "pl": -68.04
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4036.14,
+    "legs": 2,
+    "exit": 4045.64,
+    "why": "stop",
+    "pl": -42.46
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4054.88,
+    "legs": 3,
+    "exit": 4093.02,
+    "why": "profit target",
+    "pl": 82.61
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4085.2,
+    "legs": 2,
+    "exit": 4099.63,
+    "why": "profit target",
+    "pl": 81.17
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4100.13,
+    "legs": 1,
+    "exit": 4116.37,
+    "why": "reversal",
+    "pl": -16.44
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4116.37,
+    "legs": 2,
+    "exit": 4110.4,
+    "why": "stop",
+    "pl": -44.34
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4109.6,
+    "legs": 2,
+    "exit": 4114.89,
+    "why": "stop",
+    "pl": -43.79
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4127.87,
+    "legs": 2,
+    "exit": 4146.74,
+    "why": "profit target",
+    "pl": 78.87
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4128.52,
+    "legs": 1,
+    "exit": 4142.8,
+    "why": "reversal",
+    "pl": -28.96
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4142.8,
+    "legs": 1,
+    "exit": 4136.76,
+    "why": "stop",
+    "pl": -37.45
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4115.85,
+    "legs": 2,
+    "exit": 4122.04,
+    "why": "stop",
+    "pl": -44.37
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4122.32,
+    "legs": 1,
+    "exit": 4117.9,
+    "why": "stop",
+    "pl": -36.99
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4104.74,
+    "legs": 1,
+    "exit": 4111.2,
+    "why": "stop",
+    "pl": -33.31
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4117.02,
+    "legs": 1,
+    "exit": 4108.02,
+    "why": "stop",
+    "pl": -36.79
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4095.32,
+    "legs": 3,
+    "exit": 4092.39,
+    "why": "stop",
+    "pl": -6.68
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4064.71,
+    "legs": 2,
+    "exit": 4046.44,
+    "why": "profit target",
+    "pl": 150.22
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4090.41,
+    "legs": 3,
+    "exit": 4119.35,
+    "why": "profit lock",
+    "pl": 23.63
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4094.16,
+    "legs": 1,
+    "exit": 4084.0,
+    "why": "reversal",
+    "pl": -10.36
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4084.0,
+    "legs": 2,
+    "exit": 4076.69,
+    "why": "profit lock",
+    "pl": 27.38
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4074.29,
+    "legs": 2,
+    "exit": 4078.76,
+    "why": "profit lock",
+    "pl": 15.76
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4071.63,
+    "legs": 2,
+    "exit": 4058.45,
+    "why": "profit target",
+    "pl": 112.2
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4044.79,
+    "legs": 1,
+    "exit": 4029.78,
+    "why": "stop",
+    "pl": -30.42
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4025.49,
+    "legs": 2,
+    "exit": 3992.98,
+    "why": "profit target",
+    "pl": 81.82
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4005.22,
+    "legs": 1,
+    "exit": 3999.48,
+    "why": "reversal",
+    "pl": -5.94
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3999.53,
+    "legs": 3,
+    "exit": 3989.3,
+    "why": "profit lock",
+    "pl": 35.64
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3922.87,
+    "legs": 2,
+    "exit": 3914.1,
+    "why": "stop",
+    "pl": -33.0
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3911.03,
+    "legs": 1,
+    "exit": 3920.88,
+    "why": "stop",
+    "pl": -40.2
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3934.05,
+    "legs": 3,
+    "exit": 3952.8,
+    "why": "profit target",
+    "pl": 99.4
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3948.37,
+    "legs": 1,
+    "exit": 3950.24,
+    "why": "flatten",
+    "pl": -4.14
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3955.69,
+    "legs": 1,
+    "exit": 3969.07,
+    "why": "stop",
+    "pl": -40.75
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3971.35,
+    "legs": 1,
+    "exit": 3963.09,
+    "why": "stop",
+    "pl": -33.84
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3956.14,
+    "legs": 1,
+    "exit": 3968.87,
+    "why": "stop",
+    "pl": -38.8
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3968.88,
+    "legs": 3,
+    "exit": 3984.03,
+    "why": "profit target",
+    "pl": 100.98
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4014.96,
+    "legs": 3,
+    "exit": 4000.85,
+    "why": "profit lock",
+    "pl": 29.91
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3937.47,
+    "legs": 3,
+    "exit": 3928.85,
+    "why": "profit lock",
+    "pl": 8.87
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3941.48,
+    "legs": 3,
+    "exit": 3969.29,
+    "why": "profit target",
+    "pl": 84.94
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3950.46,
+    "legs": 1,
+    "exit": 3963.78,
+    "why": "stop",
+    "pl": -40.55
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3972.96,
+    "legs": 2,
+    "exit": 3994.96,
+    "why": "profit target",
+    "pl": 98.52
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3979.58,
+    "legs": 3,
+    "exit": 3975.56,
+    "why": "stop",
+    "pl": -14.86
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3997.86,
+    "legs": 2,
+    "exit": 3991.83,
+    "why": "stop",
+    "pl": -55.33
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4006.73,
+    "legs": 3,
+    "exit": 4012.64,
+    "why": "profit lock",
+    "pl": 6.61
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4006.68,
+    "legs": 2,
+    "exit": 4010.46,
+    "why": "stop",
+    "pl": -49.03
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4010.85,
+    "legs": 1,
+    "exit": 4024.5,
+    "why": "profit target",
+    "pl": 107.6
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4014.6,
+    "legs": 1,
+    "exit": 4025.24,
+    "why": "stop",
+    "pl": -32.51
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4006.62,
+    "legs": 1,
+    "exit": 4000.44,
+    "why": "reversal",
+    "pl": -19.14
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4000.44,
+    "legs": 2,
+    "exit": 4004.45,
+    "why": "stop",
+    "pl": -58.18
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3999.76,
+    "legs": 1,
+    "exit": 4007.74,
+    "why": "stop",
+    "pl": -40.88
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4016.24,
+    "legs": 1,
+    "exit": 4011.27,
+    "why": "stop",
+    "pl": -41.35
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4013.63,
+    "legs": 1,
+    "exit": 4019.83,
+    "why": "stop",
+    "pl": -38.41
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4006.43,
+    "legs": 2,
+    "exit": 4018.26,
+    "why": "profit target",
+    "pl": 94.02
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4010.11,
+    "legs": 2,
+    "exit": 4009.18,
+    "why": "reversal",
+    "pl": -8.07
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4009.18,
+    "legs": 1,
+    "exit": 3996.56,
+    "why": "stop",
+    "pl": -38.45
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4000.72,
+    "legs": 1,
+    "exit": 4006.0,
+    "why": "stop",
+    "pl": -38.38
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4011.47,
+    "legs": 1,
+    "exit": 4007.21,
+    "why": "stop",
+    "pl": -40.16
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3991.18,
+    "legs": 2,
+    "exit": 3986.17,
+    "why": "stop",
+    "pl": -40.4
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3985.64,
+    "legs": 2,
+    "exit": 3980.61,
+    "why": "profit lock",
+    "pl": 16.42
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3984.72,
+    "legs": 3,
+    "exit": 3991.72,
+    "why": "profit lock",
+    "pl": 25.15
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3988.85,
+    "legs": 1,
+    "exit": 3994.27,
+    "why": "stop",
+    "pl": -39.35
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3969.77,
+    "legs": 1,
+    "exit": 3961.83,
+    "why": "reversal",
+    "pl": -16.28
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3961.83,
+    "legs": 3,
+    "exit": 3943.63,
+    "why": "profit target",
+    "pl": 134.81
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3976.31,
+    "legs": 2,
+    "exit": 3982.27,
+    "why": "profit lock",
+    "pl": 17.96
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3970.92,
+    "legs": 3,
+    "exit": 3965.66,
+    "why": "profit lock",
+    "pl": 19.8
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3968.01,
+    "legs": 2,
+    "exit": 3973.11,
+    "why": "profit lock",
+    "pl": 22.88
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3971.05,
+    "legs": 1,
+    "exit": 3977.46,
+    "why": "stop",
+    "pl": -39.64
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3981.75,
+    "legs": 2,
+    "exit": 3982.11,
+    "why": "reversal",
+    "pl": -10.82
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4012.23,
+    "legs": 2,
+    "exit": 4014.85,
+    "why": "profit lock",
+    "pl": 11.66
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4008.56,
+    "legs": 2,
+    "exit": 4011.05,
+    "why": "stop",
+    "pl": -51.32
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4015.55,
+    "legs": 1,
+    "exit": 4010.72,
+    "why": "stop",
+    "pl": -40.27
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4002.15,
+    "legs": 2,
+    "exit": 3999.68,
+    "why": "profit lock",
+    "pl": -0.56
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3988.16,
+    "legs": 2,
+    "exit": 3984.56,
+    "why": "reversal",
+    "pl": -32.94
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3984.56,
+    "legs": 3,
+    "exit": 3977.19,
+    "why": "flatten",
+    "pl": 74.8
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3991.78,
+    "legs": 1,
+    "exit": 3998.18,
+    "why": "reversal",
+    "pl": -26.4
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3998.18,
+    "legs": 1,
+    "exit": 3994.34,
+    "why": "stop",
+    "pl": -40.4
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4004.41,
+    "legs": 1,
+    "exit": 4010.71,
+    "why": "stop",
+    "pl": -39.02
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4007.77,
+    "legs": 1,
+    "exit": 4002.9,
+    "why": "stop",
+    "pl": -40.52
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3992.31,
+    "legs": 1,
+    "exit": 4001.38,
+    "why": "stop",
+    "pl": -37.06
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4005.73,
+    "legs": 1,
+    "exit": 3999.55,
+    "why": "stop",
+    "pl": -38.3
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3990.95,
+    "legs": 1,
+    "exit": 3998.69,
+    "why": "stop",
+    "pl": -31.75
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3999.32,
+    "legs": 2,
+    "exit": 4018.13,
+    "why": "profit target",
+    "pl": 181.31
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4000.95,
+    "legs": 2,
+    "exit": 4005.74,
+    "why": "stop",
+    "pl": -43.4
+   }
+  ],
+  "final_balance": 3906.3,
+  "max_dd": 468.06
+diff --git a/service/tests/data/golden_trades_both.json b/service/tests/data/golden_trades_both.json
+new file mode 100644
+index 0000000..9e7c6c2
+--- /dev/null
++++ b/service/tests/data/golden_trades_both.json
+@@ -0,0 +1,411 @@
++{
++ "trades": [
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3984.22,
++   "legs": 1,
++   "exit": 3980.8,
++   "why": "stop",
++   "pl": -39.84
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3982.9,
++   "legs": 1,
++   "exit": 3978.68,
++   "why": "stop",
++   "pl": -39.8
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3969.23,
++   "legs": 3,
++   "exit": 3948.05,
++   "why": "profit target",
++   "pl": 123.09
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3958.94,
++   "legs": 1,
++   "exit": 3972.55,
++   "why": "stop",
++   "pl": -27.63
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3988.08,
++   "legs": 3,
++   "exit": 3990.52,
++   "why": "stop",
++   "pl": -10.6
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4009.33,
++   "legs": 1,
++   "exit": 3982.37,
++   "why": "stop",
++   "pl": -27.16
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4081.05,
++   "legs": 1,
++   "exit": 4075.54,
++   "why": "stop",
++   "pl": -39.99
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4087.45,
++   "legs": 2,
++   "exit": 4083.16,
++   "why": "stop",
++   "pl": -34.69
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4108.67,
++   "legs": 1,
++   "exit": 4112.1,
++   "why": "flatten",
++   "pl": 16.15
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4146.44,
++   "legs": 3,
++   "exit": 4159.24,
++   "why": "profit lock",
++   "pl": 19.13
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4146.2,
++   "legs": 2,
++   "exit": 4139.19,
++   "why": "stop",
++   "pl": -25.75
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4201.43,
++   "legs": 1,
++   "exit": 4195.31,
++   "why": "stop",
++   "pl": -37.89
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4208.48,
++   "legs": 1,
++   "exit": 4195.35,
++   "why": "reversal",
++   "pl": -13.33
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4336.78,
++   "legs": 3,
++   "exit": 4362.12,
++   "why": "profit lock",
++   "pl": 34.08
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4216.66,
++   "legs": 1,
++   "exit": 4231.82,
++   "why": "stop",
++   "pl": -30.72
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4332.46,
++   "legs": 3,
++   "exit": 4346.65,
++   "why": "profit lock",
++   "pl": 24.49
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4102.48,
++   "legs": 3,
++   "exit": 4087.58,
++   "why": "profit lock",
++   "pl": -2.15
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4023.52,
++   "legs": 1,
++   "exit": 4055.42,
++   "why": "stop",
++   "pl": -32.1
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4096.09,
++   "legs": 3,
++   "exit": 4127.15,
++   "why": "profit target",
++   "pl": 86.75
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4116.37,
++   "legs": 2,
++   "exit": 4110.5,
++   "why": "stop",
++   "pl": -43.82
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4129.34,
++   "legs": 3,
++   "exit": 4134.7,
++   "why": "stop",
++   "pl": -7.87
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4140.26,
++   "legs": 1,
++   "exit": 4132.65,
++   "why": "stop",
++   "pl": -39.05
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4106.65,
++   "legs": 1,
++   "exit": 4111.13,
++   "why": "stop",
++   "pl": -37.45
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4083.58,
++   "legs": 3,
++   "exit": 4065.25,
++   "why": "profit lock",
++   "pl": 24.63
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4057.09,
++   "legs": 2,
++   "exit": 4063.78,
++   "why": "stop",
++   "pl": -31.31
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4076.36,
++   "legs": 3,
++   "exit": 4063.82,
++   "why": "profit lock",
++   "pl": 27.55
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4069.28,
++   "legs": 2,
++   "exit": 4061.98,
++   "why": "profit lock",
++   "pl": 20.94
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 4018.57,
++   "legs": 3,
++   "exit": 3998.99,
++   "why": "profit lock",
++   "pl": 20.56
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3989.26,
++   "legs": 1,
++   "exit": 3980.16,
++   "why": "flatten",
++   "pl": 17.8
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3997.64,
++   "legs": 3,
++   "exit": 3989.3,
++   "why": "profit lock",
++   "pl": 19.94
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3912.84,
++   "legs": 1,
++   "exit": 3920.85,
++   "why": "stop",
++   "pl": -32.83
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3969.91,
++   "legs": 1,
++   "exit": 3963.42,
++   "why": "stop",
++   "pl": -33.44
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3936.66,
++   "legs": 3,
++   "exit": 3928.85,
++   "why": "profit lock",
++   "pl": 6.52
++  },
++  {
++   "lane": "qf",
++   "dir": "BUY",
++   "entry": 3974.38,
++   "legs": 1,
++   "exit": 3980.18,
++   "why": "qf expired",
++   "pl": 5.6
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4011.13,
++   "legs": 3,
++   "exit": 4024.68,
++   "why": "flatten",
++   "pl": 21.04
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3994.27,
++   "legs": 1,
++   "exit": 4003.0,
++   "why": "reversal",
++   "pl": -17.86
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4013.98,
++   "legs": 2,
++   "exit": 4015.41,
++   "why": "profit lock",
++   "pl": -20.3
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3983.63,
++   "legs": 3,
++   "exit": 3975.6,
++   "why": "profit lock",
++   "pl": 27.99
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3959.34,
++   "legs": 3,
++   "exit": 3935.24,
++   "why": "profit target",
++   "pl": 112.17
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3982.27,
++   "legs": 1,
++   "exit": 3969.58,
++   "why": "stop",
++   "pl": -38.68
++  },
++  {
++   "lane": "qf",
++   "dir": "SELL",
++   "entry": 4014.85,
++   "legs": 1,
++   "exit": 4009.51,
++   "why": "qf target",
++   "pl": 10.28
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4015.89,
++   "legs": 1,
++   "exit": 4007.54,
++   "why": "stop",
++   "pl": -34.21
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 4012.17,
++   "legs": 1,
++   "exit": 4009.73,
++   "why": "stop",
++   "pl": -42.24
++  },
++  {
++   "lane": "ht",
++   "dir": "SELL",
++   "entry": 3983.75,
++   "legs": 3,
++   "exit": 3977.19,
++   "why": "flatten",
++   "pl": 58.34
++  },
++  {
++   "lane": "ht",
++   "dir": "BUY",
++   "entry": 3997.96,
++   "legs": 1,
++   "exit": 3994.48,
++   "why": "stop",
++   "pl": -40.5
++  }
++ ],
++ "final_balance": 3895.85,
++ "max_dd": 236.27
++}
+\ No newline at end of file
+diff --git a/service/tests/data/golden_trades_strict.json b/service/tests/data/golden_trades_strict.json
+index 5c61238..f065b04 100644
+--- a/service/tests/data/golden_trades_strict.json
++++ b/service/tests/data/golden_trades_strict.json
+@@ -1,349 +1,392 @@
+ {
+  "trades": [
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3984.22,
+    "legs": 1,
+    "exit": 3980.8,
+    "why": "stop",
+    "pl": -39.84
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3982.9,
+    "legs": 1,
+    "exit": 3978.68,
+    "why": "stop",
+    "pl": -39.8
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3969.23,
+    "legs": 3,
+    "exit": 3948.05,
+    "why": "profit target",
+    "pl": 123.09
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3958.94,
+    "legs": 1,
+    "exit": 3972.55,
+    "why": "stop",
+    "pl": -27.63
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3988.08,
+    "legs": 3,
+    "exit": 3990.52,
+    "why": "stop",
+    "pl": -10.6
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4009.33,
+    "legs": 1,
+    "exit": 3982.37,
+    "why": "stop",
+    "pl": -27.16
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4081.05,
+    "legs": 1,
+    "exit": 4075.54,
+    "why": "stop",
+    "pl": -39.99
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4087.45,
+    "legs": 2,
+    "exit": 4083.16,
+    "why": "stop",
+    "pl": -34.69
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4108.67,
+    "legs": 1,
+    "exit": 4112.1,
+    "why": "flatten",
+    "pl": 16.15
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4146.44,
+    "legs": 3,
+    "exit": 4159.24,
+    "why": "profit lock",
+    "pl": 19.13
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4146.2,
+    "legs": 2,
+    "exit": 4139.19,
+    "why": "stop",
+    "pl": -25.75
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4201.43,
+    "legs": 1,
+    "exit": 4195.31,
+    "why": "stop",
+    "pl": -37.89
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4208.48,
+    "legs": 1,
+    "exit": 4195.35,
+    "why": "reversal",
+    "pl": -13.33
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4336.78,
+    "legs": 3,
+    "exit": 4362.12,
+    "why": "profit lock",
+    "pl": 34.08
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4216.66,
+    "legs": 1,
+    "exit": 4231.82,
+    "why": "stop",
+    "pl": -30.72
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4332.46,
+    "legs": 3,
+    "exit": 4346.65,
+    "why": "profit lock",
+    "pl": 24.49
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4102.48,
+    "legs": 3,
+    "exit": 4087.58,
+    "why": "profit lock",
+    "pl": -2.15
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4023.52,
+    "legs": 1,
+    "exit": 4055.42,
+    "why": "stop",
+    "pl": -32.1
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4096.09,
+    "legs": 3,
+    "exit": 4127.15,
+    "why": "profit target",
+    "pl": 86.75
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4116.37,
+    "legs": 2,
+    "exit": 4110.5,
+    "why": "stop",
+    "pl": -43.82
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4129.34,
+    "legs": 3,
+    "exit": 4134.7,
+    "why": "stop",
+    "pl": -7.87
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4140.26,
+    "legs": 1,
+    "exit": 4132.65,
+    "why": "stop",
+    "pl": -39.05
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4106.65,
+    "legs": 1,
+    "exit": 4111.13,
+    "why": "stop",
+    "pl": -37.45
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4083.58,
+    "legs": 3,
+    "exit": 4065.25,
+    "why": "profit lock",
+    "pl": 24.63
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4057.09,
+    "legs": 2,
+    "exit": 4063.78,
+    "why": "stop",
+    "pl": -31.31
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4076.36,
+    "legs": 3,
+    "exit": 4063.82,
+    "why": "profit lock",
+    "pl": 27.55
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4069.28,
+    "legs": 2,
+    "exit": 4061.98,
+    "why": "profit lock",
+    "pl": 20.94
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 4018.57,
+    "legs": 3,
+    "exit": 3998.99,
+    "why": "profit lock",
+    "pl": 20.56
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3989.26,
+    "legs": 1,
+    "exit": 3980.16,
+    "why": "flatten",
+    "pl": 17.8
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3997.64,
+    "legs": 3,
+    "exit": 3989.3,
+    "why": "profit lock",
+    "pl": 19.94
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3912.84,
+    "legs": 1,
+    "exit": 3920.85,
+    "why": "stop",
+    "pl": -32.83
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3969.91,
+    "legs": 1,
+    "exit": 3963.42,
+    "why": "stop",
+    "pl": -33.44
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3936.66,
+    "legs": 3,
+    "exit": 3928.85,
+    "why": "profit lock",
+    "pl": 6.52
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4011.13,
+    "legs": 3,
+    "exit": 4024.68,
+    "why": "flatten",
+    "pl": 21.04
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3994.27,
+    "legs": 1,
+    "exit": 4003.0,
+    "why": "reversal",
+    "pl": -17.86
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4013.98,
+    "legs": 2,
+    "exit": 4015.41,
+    "why": "profit lock",
+    "pl": -20.3
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3983.63,
+    "legs": 3,
+    "exit": 3975.6,
+    "why": "profit lock",
+    "pl": 27.99
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3959.34,
+    "legs": 3,
+    "exit": 3935.24,
+    "why": "profit target",
+    "pl": 112.17
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3982.27,
+    "legs": 1,
+    "exit": 3969.58,
+    "why": "stop",
+    "pl": -38.68
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4015.89,
+    "legs": 1,
+    "exit": 4007.54,
+    "why": "stop",
+    "pl": -34.21
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 4012.17,
+    "legs": 1,
+    "exit": 4009.73,
+    "why": "stop",
+    "pl": -42.24
+   },
+   {
++   "lane": "ht",
+    "dir": "SELL",
+    "entry": 3983.75,
+    "legs": 3,
+    "exit": 3977.19,
+    "why": "flatten",
+    "pl": 58.34
+   },
+   {
++   "lane": "ht",
+    "dir": "BUY",
+    "entry": 3997.96,
+    "legs": 1,
+    "exit": 3994.48,
+    "why": "stop",
+    "pl": -40.5
+   }
+  ],
+  "final_balance": 3879.97,
+  "max_dd": 236.27
+diff --git a/service/tests/test_backtest_golden.py b/service/tests/test_backtest_golden.py
+index bc234e9..2eefaeb 100644
+--- a/service/tests/test_backtest_golden.py
++++ b/service/tests/test_backtest_golden.py
+@@ -45,21 +45,22 @@ def _load_bt():
+     argparse/main call is guarded by __name__ == '__main__')."""
+     spec = importlib.util.spec_from_file_location(
+         "bt", ROOT / "scripts" / "backtest.py")
+     mod = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(mod)
+     return mod
+ 
+ 
+ def _digest(trades):
+     """Compact, human-diffable summary of a trade list."""
+-    return [{"dir": t["dir"],
++    return [{"lane": t.get("lane", "ht"),
++             "dir": t["dir"],
+              "entry": round(t["legs"][0]["px"], 2),
+              "legs": len(t["legs"]),
+              "exit": round(t["exit"], 2),
+              "why": t["why"],
+              "pl": round(t["pl"], 2)} for t in trades]
+ 
+ 
+ def _replay():
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
+@@ -115,10 +116,26 @@ def test_strict_replay_matches_golden():
+     strict path -- and strict is what every plain run now takes."""
+     _assert_matches(*_replay_strict(), GOLDEN_STRICT)
+ 
+ 
+ def test_the_two_pins_really_pin_different_runs():
+     """Guards against a copy-paste that made both goldens the same file."""
+     loose = json.loads(GOLDEN.read_text())
+     strict = json.loads(GOLDEN_STRICT.read_text())
+     assert len(strict["trades"]) < len(loose["trades"]), (
+         "strict can only ever refuse entries loose would take")
++
++
++GOLDEN_BOTH = DATA / "golden_trades_both.json"
++
++
++def _replay_both():
++    """Both lanes on one balance -- the configuration that ships."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    assert bt.STRATEGY == "both", "both-lane is supposed to be the default"
++    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
++    return _digest(trades), round(bal, 2), round(max_dd, 2)
++
++
++def test_both_lane_replay_matches_golden():
++    _assert_matches(*_replay_both(), GOLDEN_BOTH)
+diff --git a/service/tests/test_qf_report.py b/service/tests/test_qf_report.py
+new file mode 100644
+index 0000000..b32f19b
+--- /dev/null
++++ b/service/tests/test_qf_report.py
+@@ -0,0 +1,44 @@
++"""A combined run must report the lanes separately -- a blended number hides
++which strategy actually made the money."""
++import json
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def _artifact(balance=10000.0):
++    bt = _load_bt()
++    bt.STRATEGY = "both"
++    candles = json.loads(BARS.read_text())
++    trades, bal, dd, valley = bt.run(candles, balance, False)
++    args = bt.build_parser().parse_args(["--balance", str(balance)])
++    return bt, bt.build_run_json(candles, trades, args,
++                                 {"bal": bal, "max_dd": dd, "valley": valley})
++
++
++def test_every_trade_in_the_artifact_carries_its_lane():
++    _bt, art = _artifact()
++    assert art["trades"]
++    assert all(t["lane"] in ("ht", "qf") for t in art["trades"])
++
++
++def test_stats_break_down_by_lane():
++    _bt, art = _artifact()
++    lanes = art["stats"]["lanes"]
++    for key in ("ht", "qf"):
++        assert key in lanes
++        for field in ("trades", "wins", "net"):
++            assert field in lanes[key]
++
++
++def test_lane_nets_sum_to_the_total():
++    _bt, art = _artifact()
++    lanes = art["stats"]["lanes"]
++    total = round(lanes["ht"]["net"] + lanes["qf"]["net"], 2)
++    assert abs(total - art["stats"]["net"]) < 0.02
++
++
++def test_concurrency_is_reported():
++    """How often both lanes held a position at once -- the thing a combined
++    equity curve hides, and the reason exposure can exceed one lane's."""
++    _bt, art = _artifact()
++    assert "both_open_bars" in art["stats"]["lanes"]

@@ -1,20 +1,7 @@
+# Only these exclusions remain (2026-09-09, "full push"). Repo is PUBLIC.
+# - service/.env: live secrets (feed key, ngrok token).
+# - *.db: the SQLite files store the Telegram bot token in plaintext (verified 2026-09-09).
+# - service/.venv: 1.3 GB with a >100 MB torch binary that GitHub refuses.
 .venv/
-__pycache__/
-*.pyc
-*.db
-# WAL sidecars (SignalDb sets journal_mode=WAL, 2026-08-24)
-*.db-wal
-*.db-shm
-*.log
-*.log.1
 .env
-.pytest_cache/
-mt5/**/*.ex5
-.claude/*
-!.claude/agents/
-!.claude/agents/**
-!.claude/settings.json
-week.json
-bars_max.json
-.run/
-service/data/backtests/
+*.db

@@ -1,0 +1,296 @@
+# Review package: f3b2cdf..HEAD
+
+## Commits
+bdf29b7 docs(izi): backtest defaults, balance floors, --json/--web report
+52459d6 feat(backtest): report discloses which trades' pyramid-add markers are hidden
+
+## Files changed
+ .claude/agents/izi.md                              | 49 +++++++++++++++++++---
+ .../plans/2026-08-20-backtest-report.md            | 12 +++---
+ .../specs/2026-08-20-backtest-report-design.md     | 15 +++++--
+ service/app/static/backtest_report.html            | 10 ++++-
+ 4 files changed, 70 insertions(+), 16 deletions(-)
+
+## Diff
+diff --git a/.claude/agents/izi.md b/.claude/agents/izi.md
+index 806864c..b679e33 100644
+--- a/.claude/agents/izi.md
++++ b/.claude/agents/izi.md
+@@ -533,42 +533,62 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
+   for the 08-11 blackout (see §7) — confirms an offline close is never lost
+   silently again.
+ - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
+   [--verbose]` replays halftrend + the full current money rulebook over the
+   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
+   on service restart). Validated against reality (reproduced the +$94.81
+   live basket within $0.35). Simplifications: bar-close granularity, own
+   Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
+   the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
+   the news blackout (NewsGuard) — replay results are slightly optimistic vs
+-  the live rulebook around losing days and high-impact events. `--source
++  the live rulebook around losing days and high-impact events; both
++  omissions are now named in `--help` and on every report's caveats line
++  (2026-08-20), so the limitation travels with the output instead of living
++  only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
++  → wait one closed bar → enter only if the next bar opens beyond EMA-55,
++  else the signal is dead until the next flip — this has been the live EA's
++  law since 2026-08-16 (`767497a`). `--loose-window` restores the pre-2026-08-20
++  replay behaviour (enter on the flip bar itself) for reproducing old
++  studies — **every dated report under `.superpowers/` from before
++  2026-08-20 is a LOOSE run**; re-running one with today's default gets
++  different trades and different P/L. `--balance` refuses below $500 (the
++  result would be fiction) and warns below $2,000; the binding constraint is
++  the 0.01-minimum-lot floor, not spread — measured over 12 months of M5
++  (`bars_max.json`, 365 days): entries clamp to that floor 88.7% of the time
++  at $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000. Every run now
++  reports its own clamp rate and the realized risk actually taken (median /
++  p90 vs the 1% target), in stdout, `--json`, and the `--web` page (a
++  `>10%` clamp rate renders an on-page warning). `--source
+   PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
+   `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
+   every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
+   Experiments default OFF and are study-only. **`--json PATH`** writes the
+   full run artifact (meta/stats/candles/indicators/every trade, parallel
+   arrays not per-bar objects — 12mo of M5 is ~74k bars). **`--web PATH`**
+   (2026-08-20) writes ONE self-contained HTML report from that same artifact
+   via `scripts/backtest_report.py:write_report()` — inlines the vendored
+   Lightweight Charts lib (`service/app/static/vendor/`), the page template
+   (`service/app/static/backtest_report.html` — same file the Mini App tab is
+   planned to reuse later so the drawing code isn't duplicated), and the JSON,
+   so it opens from disk with no server/network. Shows candles + EMA9/21/55/200
+   + HalfTrend (one series, per-point colour, matching the Mini App's MT5-style
+   render) + a stepped stop-loss line + a canvas overlay drawing each trade's
+   red risk / green reward zone (green zone omitted when `tp` is null, e.g.
+   `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
+-  A real 12-month run is ~1,210 trades / 6.4 MB; above 300 trades the page
+-  thins pyramid-add chart markers (entry/exit markers always draw; the trade
+-  table is never thinned) to keep Lightweight Charts responsive — this is a
+-  report-rendering thinning only, it does not touch replay logic or the
+-  artifact JSON. `--web` and `--json` share one artifact build when both are
++  A real 365-day M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
++  6.4 MB `--web`; above 300 trades the page thins pyramid-add chart markers
++  (entry/exit markers always draw; the trade table's Legs column is never
++  thinned) to keep Lightweight Charts responsive — this is a report-rendering
++  thinning only, it does not touch replay logic or the artifact JSON. The page
++  now discloses this on-page (a `.warn` line naming how many trades' add
++  markers it hid, e.g. "638 of 1,210" for that run) so the limit travels with
++  the report instead of silently vanishing markers. `--web` and `--json` share one artifact build when both are
+   passed together. `--json`/`--web` output is unvalidated by eye beyond the
+   automated tests (`service/tests/test_backtest_web.py`,
+   `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
+   hand-rolled DOM/canvas/LightweightCharts stubs since no npm/browser deps
+   were added) — a human should open a generated report at least once after
+   any further change to the template or writer.
+ 
+ # 7. History worth knowing (why rules exist)
+ 
+ - $200 EU demo couldn't margin 0.01 lots (ESMA 1:20) → balance topped to $4.2k.
+@@ -683,20 +703,37 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
+   very thing that would have healed all of it, for hours, with the owner
+   seeing only a dead chart. Two fixes, both in this commit: (1) the port is
+   configurable (`MINIAPP_PORT`, default **9101**) and read from `.env` by
+   every component (§8), with setup.sh naming the squatter before it even
+   tries to bind; (2) setup.sh distinguishes CRITICAL from NON-CRITICAL
+   phases — non-critical ones `soft_fail` and the run CONTINUES, ending in a
+   per-phase OK/SKIP/FAILED summary (§6). Rule of the house: **an optional
+   component must never be able to cost the trader the components after it,
+   and least of all the watchdog.**
+ 
++- **2026-08-20 first measured cost of the strict-entry fix** — the backtester
++  flipped its default to the strict 3-bar entry window (§3 above), matching
++  what the live EA has done since 2026-08-16. Run head-to-head over the same
++  12 months (`bars_max.json`, 365 days, $4,000 start): **loose (old replay
++  behaviour) net −$1,998.59 (−49.96%), final balance $2,001.41, max drawdown
++  $2,576.96** vs **strict (live EA's actual rule) net −$2,874.96 (−71.87%),
++  final balance $1,125.04, max drawdown $3,035.57**. Strict is *worse* on
++  this window — both deeper loss and deeper drawdown — and it stays the
++  default anyway because it is what the EA actually does; a backtester that
++  quietly modelled the easier rule would be lying about live risk. This is
++  not a verdict on the strategy, it is the first real evidence of what the
++  08-16 entry-window fix costs over a year. Strict enters more often than the
++  live EA is observed to (4.69 trades/day over the 365-day run vs ~3/day
++  observed live on 2026-08-19) — most likely the daily-loss brake, kill
++  switch and news blackout this replay still does not model (hypothesis, not
++  confirmed; see §3 above and re-check once more live days accumulate).
++
+ # 7b. Watchdog — the chart chain (and service processes) self-heal
+ 
+ `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
+ idempotent via pgrep; log `/tmp/xau-watchdog.log`). **Singleton via
+ `flock -n` on `/tmp/xau-watchdog.lock`** (2026-08-19): setup.sh's pgrep
+ guard loses a race — two runs seconds apart left TWO supervisors alive,
+ each restarting the same link and each able to alarm. A second instance
+ now logs `another watchdog holds ...` and exits 0, so launching the
+ launcher twice can never fan out into duplicate supervisors. Verify with
+ `ps -eo pid,args | grep xau-watch` (expect exactly one). Every 30 s it checks
+diff --git a/docs/superpowers/plans/2026-08-20-backtest-report.md b/docs/superpowers/plans/2026-08-20-backtest-report.md
+index 87712f5..a222230 100644
+--- a/docs/superpowers/plans/2026-08-20-backtest-report.md
++++ b/docs/superpowers/plans/2026-08-20-backtest-report.md
+@@ -1065,21 +1065,21 @@ Expected: 6 passed.
+ ```bash
+ cd /mnt/c/Users/aatanda/Desktop/xau
+ service/.venv/bin/python scripts/backtest.py --source bars_max.json --days 365 \
+     --balance 4000 --json /tmp/run12m.json 2>&1 | tail -4
+ service/.venv/bin/python -c "
+ import json; a=json.load(open('/tmp/run12m.json'))
+ print('bars', len(a['candles']['t']), 'trades', len(a['trades']))
+ print('stats', a['stats'])"
+ ```
+ 
+-Expected: ~74,000 bars, a few hundred trades, and a file in the 5–7 MB range. Record the actual size — Task 7 embeds it.
++Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (365-day M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md.
+ 
+ - [ ] **Step 7: Commit**
+ 
+ ```bash
+ git add scripts/backtest.py service/tests/test_backtest_json.py
+ git commit -m "feat(backtest): --json writes the full run artifact (candles, indicators, trades, stats)"
+ ```
+ 
+ ---
+ 
+@@ -1522,43 +1522,43 @@ git commit -m "feat(backtest): --web writes a self-contained report with MT5-sty
+ ---
+ 
+ ### Task 8: Documentation — izi.md and the README line
+ 
+ `CLAUDE.md` makes this law: behaviour changes update `.claude/agents/izi.md`.
+ 
+ **Files:**
+ - Modify: `.claude/agents/izi.md`
+ - Modify: `docs/superpowers/plans/2026-08-20-backtest-report.md` (tick the boxes)
+ 
+-- [ ] **Step 1: Find the backtest section**
++- [x] **Step 1: Find the backtest section**
+ 
+ ```bash
+ grep -n -i 'backtest' .claude/agents/izi.md | head -20
+ ```
+ 
+-- [ ] **Step 2: Document the new behaviour**
++- [x] **Step 2: Document the new behaviour**
+ 
+ Update (or add) the backtest section to state, in izi.md's voice:
+ 
+ - `scripts/backtest.py` now defaults to the **strict 3-bar entry window** — the live EA's law since 2026-08-16. `--loose-window` reproduces studies run before 2026-08-20; every pre-2026-08-20 study in `.superpowers/` was a LOOSE run.
+ - `--balance` refuses below $500 and warns below $2,000. The binding constraint is the 0.01 minimum lot, not spread: measured over 12 months of M5, entries clamp 88.7% at $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000. Every run reports its clamp rate and the risk actually taken.
+ - `--json PATH` writes the run artifact; `--web PATH` writes a self-contained HTML report (chart + trade boxes + stepped stop). The template is `service/app/static/backtest_report.html`, shared with the Mini App tab planned in spec §4.
+ - The replay does NOT model the daily-loss brake, the kill switch, or the news blackout — and now says so in `--help` and on every report.
+ - `service/tests/test_backtest_golden.py` pins replay behaviour over a fixed slice; if it fails and you did not intend to change a rule, you broke one.
+ 
+-- [ ] **Step 3: Record the headline result**
++- [x] **Step 3: Record the headline result**
+ 
+ Add the strict-vs-loose 12-month comparison measured in Task 3 Step 8 to izi.md's history section — this is the first evidence of what the strict-entry fix is worth over a year.
+ 
+-- [ ] **Step 4: Commit**
++- [x] **Step 4: Commit**
+ 
+ ```bash
+ git add .claude/agents/izi.md docs/superpowers/plans/2026-08-20-backtest-report.md
+ git commit -m "docs(izi): backtest defaults, balance floors, --json/--web report"
+ ```
+ 
+ ---
+ 
+ ## Later phases (not this plan)
+ 
+-- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 5–7 MB over the wire.
++- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire (measured for a 365-day, 70,707-bar, 1,210-trade run).
+ - **Spec §6 — day/month report views.** Refactor `_report_month()` / `_report_day()` in `service/app/miniapp.py` to take a list of baskets instead of a sqlite connection, capture a golden test of today's live output first, then feed them backtest trades so the live and backtest reports share one shaper and one renderer.
+diff --git a/docs/superpowers/specs/2026-08-20-backtest-report-design.md b/docs/superpowers/specs/2026-08-20-backtest-report-design.md
+index 78e2fb4..61fd1a1 100644
+--- a/docs/superpowers/specs/2026-08-20-backtest-report-design.md
++++ b/docs/superpowers/specs/2026-08-20-backtest-report-design.md
+@@ -88,22 +88,24 @@ One JSON object, the only interface between engine and page:
+              max_dd, max_valley, best, worst,
+              clamp_pct, risk_median, risk_p90},
+   "candles": {"t":[...], "o":[...], "h":[...], "l":[...], "c":[...]},
+   "ind":     {"ema9":[...], "ema21":[...], "ema55":[...], "ema200":[...],
+               "ht":{"v":[...], "trend":[...]}},
+   "trades": [{dir, legs:[{t,px,oz}], tp, stop_history:[{t,stop}],
+               exit, exit_t, why, pl, bal_after, regime}] }
+ ```
+ 
+ Candles and indicators are **parallel arrays**, not per-bar objects: 12 months
+-of M5 is ~74k bars, and the array form keeps the payload near 3–4 MB instead
++of M5 is ~74k bars, and the array form keeps the payload near 6–7 MB instead
+ of ~12 MB with no loss of detail. `null` marks an unwarmed indicator bar.
++Measured: a 365-day M5 run (70,707 bars, 1,210 trades) writes a 6.3 MB `--json`
++artifact and a 6.4 MB `--web` report.
+ 
+ Indicators come from `app.indicators.ema/halftrend` (amplitude 4) — the same
+ functions the Mini App and the EA port use. The page never computes a rule or
+ an indicator itself.
+ 
+ ## 3. `--web PATH` — the report page
+ 
+ A single self-contained HTML file: no server, no network, opens anywhere,
+ keeps as an artifact for comparison. Data embedded as the §2 JSON.
+ 
+@@ -250,14 +252,21 @@ time, running balance, regime are all present), rather than being retrofitted.
+ - **Report parity** (phase 6): the refactored shaping functions, fed the
+   same baskets, produce byte-identical output to today's live report —
+   captured as a golden test before the refactor.
+ - Existing service suite (437 tests) stays green.
+ 
+ ## Risks
+ 
+ - **Silent behaviour change while editing a 1,429-line engine.** Mitigated by
+   the golden-run test captured first.
+ - **Page weight.** 74k bars is the owner's explicit choice; parallel arrays and
+-  a single indicator pass keep it near 3–4 MB. If the browser struggles, the
+-  fallback is a timeframe switcher, not a change of default.
++  a single indicator pass keep it near 6–7 MB (measured: 6.3 MB JSON / 6.4 MB
++  HTML for a 365-day, 70,707-bar, 1,210-trade run). What actually shipped for
++  a struggling browser is not a timeframe switcher: candles, indicators, the
++  stepped stop and every trade's entry/exit markers still draw in full at any
++  trade count, and the trade table is never thinned; above 300 trades the page
++  drops only the pyramid-add ("+") chart markers, and discloses on-page how
++  many trades' add markers it hid (the Legs column in the table still shows
++  every add). A timeframe switcher was considered and rejected — it would
++  change what the replay tests, not just how it renders.
+ - **Reports read as truth.** Every report and `--help` carries the caveat block
+   naming the unmodelled brake and news blackout.
+diff --git a/service/app/static/backtest_report.html b/service/app/static/backtest_report.html
+index 0b95f5f..1ca5199 100644
+--- a/service/app/static/backtest_report.html
++++ b/service/app/static/backtest_report.html
+@@ -77,27 +77,35 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
+     ["Trades", String(s.trades), ""],
+     ["Win rate", s.win_rate.toFixed(1) + "%", ""],
+     ["Max drawdown", "$" + s.max_dd.toFixed(2), "neg"],
+     ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
+     ["Risk taken", s.risk_median.toFixed(2) + "% / p90 " + s.risk_p90.toFixed(2) + "%", ""]
+   ];
+   document.getElementById("stats").innerHTML = cells.map(function (c) {
+     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
+   }).join("");
+   if (s.clamp_pct > 10) {
+-    document.getElementById("warnbox").innerHTML =
++    document.getElementById("warnbox").innerHTML +=
+       '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
+       "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
+       "balance the 1% risk rule is often not obeyed — this run measures " +
+       "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
+       "meaningful results; $10,000+ for a clean test.</div>";
+   }
++  var addTrades = RUN.trades.filter(function (t) { return t.legs.length > 1; }).length;
++  if (RUN.trades.length > 300 && addTrades > 0) {
++    document.getElementById("warnbox").innerHTML +=
++      '<div class="warn">Chart is thinned: pyramid-add ("+") markers are ' +
++      "hidden for " + addTrades + " of " + RUN.trades.length + " trades (runs " +
++      "over 300 trades drop them to keep the chart responsive). Entry/exit " +
++      "markers and the table's Legs column below are unaffected.</div>";
++  }
+   document.getElementById("caveats").textContent = "Not modelled: " + m.caveats.join(" · ");
+ })();
+ 
+ // ---- chart --------------------------------------------------------------
+ var chart = LightweightCharts.createChart(document.getElementById("chart"), {
+   layout: { background: { color: "#0e1116" }, textColor: "#8b95a5" },
+   grid: { vertLines: { color: "#171b24" }, horzLines: { color: "#171b24" } },
+   rightPriceScale: { borderColor: "#232833" },
+   timeScale: { borderColor: "#232833", timeVisible: true, secondsVisible: false },
+   crosshair: { mode: 0 }

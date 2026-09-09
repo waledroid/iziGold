@@ -1,0 +1,243 @@
+# Review package: 24291f2..HEAD
+
+## Commits
+bf3b7e4 feat(backtest): record leg times, stop history, TP price and running balance
+
+## Files changed
+ scripts/backtest.py                    | 23 +++++++++++--
+ service/tests/test_backtest_records.py | 59 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 80 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index 72f9459..888d212 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -668,20 +668,25 @@ def run(candles, start_balance, verbose):
+         s = 1 if basket["dir"] == "BUY" else -1
+         return sum((px - l["px"]) * s * l["oz"] for l in basket["legs"]) \
+             - SPREAD_USD * sum(l["oz"] for l in basket["legs"])
+ 
+     def close_basket(px, when, why):
+         nonlocal bal, basket, peak_bal, max_dd
+         pl = basket_pl(px)
+         bal += pl
+         trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
+                        "exit": px, "when": when, "why": why, "pl": pl,
++                       "opened_t": basket.get("opened_t"),
++                       "exit_t": int(when.timestamp()),
++                       "stop_history": list(basket.get("stop_history", [])),
++                       "tp": basket.get("tp"),
++                       "bal_after": bal,
+                        "opened": basket.get("opened"),
+                        "regime": basket.get("regime"),
+                        "atr_ratio": basket.get("atr_ratio"),
+                        "floor": basket.get("floor"),
+                        "chop": basket.get("chop"),
+                        "chop_flips": basket.get("chop_flips"),
+                        "chop_box": basket.get("chop_box"),
+                        "soft": basket.get("soft", False),
+                        "flip_t": basket.get("flip_t"),
+                        "entry_offset": basket.get("entry_offset"),
+@@ -698,20 +703,26 @@ def run(candles, start_balance, verbose):
+                        "headroom": basket.get("headroom"),
+                        "cycle_bal": basket["cycle_bal"]})
+         peak_bal = max(peak_bal, bal)
+         max_dd = max(max_dd, peak_bal - bal)
+         if verbose:
+             legs = "+".join(f"{l['oz']}oz@{l['px']:.2f}" for l in basket["legs"])
+             print(f"  close {when:%m-%d %H:%M} {basket['dir']} [{legs}] "
+                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
+         basket = None
+ 
++    def note_stop(bk, t, stop):
++        """Append to the basket's stop history when the stop actually moved."""
++        hist = bk["stop_history"]
++        if not hist or hist[-1]["stop"] != stop:
++            hist.append({"t": int(t), "stop": stop})
++
+     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
+         x = candles[i]
+         when, h, m = hhmm(x["t"])
+         px, e, a = x["c"], ema55[i], atr[i]
+         if e is None or a is None or ht[i] is None:
+             continue
+         trend = ht[i][1]
+         if last_flip is None or (ht[i - 1] and trend != ht[i - 1][1]):
+             last_flip, extreme = i, (x["l"] if trend == 0 else x["h"])
+             consec_above = consec_below = 0   # flip re-arms the filter
+@@ -781,20 +792,22 @@ def run(candles, start_balance, verbose):
+                         basket["stop"] * s >= basket["floor_px"] * s - 1e-9:
+                     why = "floor stop"
+                 close_basket(basket["stop"], when, why)
+             else:
+                 pl = basket_pl(px)
+                 basket["peak"] = max(basket["peak"], pl)
+                 risk_budget = basket["cycle_bal"] * RISK_PCT / 100 \
+                     * basket.get("lock_mult", 1.0)
+                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
+                     * basket.get("target_mult", 1.0)
++                if basket.get("tp") is None and ENTRY_MODE != "fixed":
++                    basket["tp"] = floor_price(basket["legs"], s, target)
+                 closed = False
+                 if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
+                     pass   # pure ride: no profit target / floor (EA: 0 = off)
+                 elif EXIT_SCHEME == "target-exit":
+                     if pl >= target:
+                         close_basket(px, when, "profit target")
+                         closed = True
+                 elif basket.get("floor") is None:
+                     # arm the floor instead of closing at target
+                     tot_oz = sum(l["oz"] for l in basket["legs"])
+@@ -804,20 +817,21 @@ def run(candles, start_balance, verbose):
+                         arm = target - FLOOR_ARM_ATR * a * tot_oz
+                     elif EXIT_SCHEME == "floor-b" \
+                             and pl >= target + FLOOR_ARM_ATR * a * tot_oz:
+                         arm = target
+                     if arm is not None:
+                         fpx = floor_price(basket["legs"], s, arm)
+                         basket["floor"], basket["floor_px"] = arm, fpx
+                         # pure ratchet: the floor may only tighten the stop
+                         if fpx * s > basket["stop"] * s:
+                             basket["stop"] = fpx
++                            note_stop(basket, x["t"], fpx)
+                         if verbose:
+                             print(f"  floor {when:%m-%d %H:%M} armed "
+                                   f"${arm:+.2f} stop->{basket['stop']:.2f}")
+                 if closed:
+                     pass
+                 elif (ENTRY_MODE != "fixed"
+                       and basket["peak"] >= TRAIL_ACTIVATE_R * risk_budget
+                       and pl <= basket["peak"] * TRAIL_LOCK_PCT / 100):
+                     close_basket(px, when, "profit lock")
+                 elif signal and signal != basket["dir"]:
+@@ -828,34 +842,36 @@ def run(candles, start_balance, verbose):
+                     frozen = (basket.get("floor") is not None
+                               and EXIT_SCHEME != "floor-a-adds") \
+                         or basket.get("soft", False)
+                     cond = (basket["dir"] == "BUY" and trend == 0 and px > e) or \
+                            (basket["dir"] == "SELL" and trend == 1 and px < e)
+                     adv = (px - basket["legs"][-1]["px"]) * s
+                     if (not frozen and cond and pl > 0
+                             and len(basket["legs"]) < MAX_POSITIONS
+                             and adv >= ADD_TRIGGER_ATR * a):
+                         oz = max(MIN_OZ, int(basket["legs"][-1]["oz"] * ADD_SHRINK))
+-                        basket["legs"].append({"px": px, "oz": oz})
++                        basket["legs"].append({"px": px, "oz": oz, "t": int(x["t"])})
+                         n_adds = len(basket["legs"]) - 1
+                         e0 = basket["legs"][0]["px"]
+                         if n_adds == 1:      # halfway current stop -> entry
+                             ladder = (basket["stop"] + e0) / 2
+                         else:                # lagging ladder: mid of two prior entries
+                             ladder = (basket["legs"][-3]["px"]
+                                       + basket["legs"][-2]["px"]) / 2
+                         if basket.get("floor") is not None:
+                             # armed: ladder may tighten the stop, never loosen
+                             if ladder * s > basket["stop"] * s:
+                                 basket["stop"] = ladder
++                                note_stop(basket, x["t"], ladder)
+                         else:
+                             basket["stop"] = ladder
++                            note_stop(basket, x["t"], ladder)
+                         if verbose:
+                             print(f"  add   {when:%m-%d %H:%M} {oz}oz @ {px:.2f} "
+                                   f"stop->{basket['stop']:.2f}")
+ 
+         # ---- entries
+         if basket is None and signal:
+             in_window = WINDOW[0] <= h < WINDOW[1]
+             trending = adx[i] is not None and adx[i] >= ADX_MIN
+             expo_ok = EXPO_MIN <= 0 or expo.get(day, 0) < EXPO_MIN
+             if in_window and trending and expo_ok:
+@@ -922,22 +938,25 @@ def run(candles, start_balance, verbose):
+                         oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
+                         orig_oz = oz
+                     else:
+                         rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
+                         if bias == "counter" and BIAS_MODE == "size_target":
+                             rp *= BIAS_RISK_MULT
+                         risk = bal * rp / 100
+                         oz = max(MIN_OZ, int(risk / dist))
+                         orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
+                             if orig_dist > 0 else oz
+-                    basket = {"dir": signal, "legs": [{"px": px, "oz": oz}],
++                    basket = {"dir": signal,
++                              "legs": [{"px": px, "oz": oz, "t": int(x["t"])}],
+                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
++                              "stop_history": [{"t": int(x["t"]), "stop": stop}],
++                              "opened_t": int(x["t"]),
+                               "dist_atr": (orig_dist / a) if a else None,
+                               "floored": floored, "orig_stop": orig_stop,
+                               "orig_dist": orig_dist, "orig_oz": orig_oz,
+                               "entry_stop": stop, "bars_open": 0,
+                               "orig_hit_bar": None,
+                               "opened": when, "regime": regime,
+                               "atr_ratio": aratio, "chop": chop,
+                               "chop_flips": nfl, "chop_box": boxr,
+                               "soft": soft,
+                               "headroom": hr,
+diff --git a/service/tests/test_backtest_records.py b/service/tests/test_backtest_records.py
+new file mode 100644
+index 0000000..2269ceb
+--- /dev/null
++++ b/service/tests/test_backtest_records.py
+@@ -0,0 +1,59 @@
++"""The chart cannot draw what the engine does not record: entry times, the
++stop as it actually moved, and the target price."""
++import json
++import pathlib
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def _trades():
++    bt = _load_bt()
++    return bt.run(json.loads(BARS.read_text()), 4000.0, False)[0]
++
++
++def test_every_leg_carries_its_bar_time():
++    for t in _trades():
++        for leg in t["legs"]:
++            assert isinstance(leg["t"], int) and leg["t"] > 0
++        # legs fill in chronological order
++        times = [leg["t"] for leg in t["legs"]]
++        assert times == sorted(times)
++
++
++def test_opened_t_mirrors_first_leg():
++    for t in _trades():
++        assert t["opened_t"] == t["legs"][0]["t"]
++
++
++def test_stop_history_starts_at_entry_and_never_goes_backwards_in_time():
++    for t in _trades():
++        hist = t["stop_history"]
++        assert hist, "every basket places a stop at entry"
++        assert hist[0]["t"] == t["legs"][0]["t"]
++        assert [h["t"] for h in hist] == sorted(h["t"] for h in hist)
++
++
++def test_a_trade_with_adds_records_more_stop_moves_than_a_single_leg_trade():
++    trades = _trades()
++    multi = [t for t in trades if len(t["legs"]) > 1]
++    assert multi, "the slice must contain at least one pyramided basket"
++    # every add ladders the shared stop, so history grows past the initial one
++    assert any(len(t["stop_history"]) > 1 for t in multi)
++
++
++def test_tp_is_a_price_on_the_profitable_side_of_entry():
++    for t in _trades():
++        if t["tp"] is None:
++            continue
++        entry = t["legs"][0]["px"]
++        if t["dir"] == "BUY":
++            assert t["tp"] > entry
++        else:
++            assert t["tp"] < entry
++
++
++def test_bal_after_chains_to_the_final_balance():
++    bt = _load_bt()
++    trades, bal, _dd, _v = bt.run(json.loads(BARS.read_text()), 4000.0, False)
++    assert trades
++    assert round(trades[-1]["bal_after"], 2) == round(bal, 2)

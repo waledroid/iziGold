@@ -1,0 +1,108 @@
+# Review package: 639417d..HEAD
+
+## Commits
+d815890 test(backtest): cover the --loose-window -> STRICT_WINDOW wiring
+
+## Files changed
+ scripts/backtest.py                          | 12 ++++++++++--
+ service/tests/test_backtest_strict_window.py | 19 +++++++++++++++++++
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index d8333fb..ade0018 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -1160,39 +1160,47 @@ def build_parser():
+                          "budget and the trading-window hours keep their "
+                          "wall-clock meaning")
+     ap.add_argument("--profit-target", type=float, default=None,
+                     help="override ProfitTargetPct, the basket's bank-at "
+                          "percent of cycle balance (default 2.0; <= 0 turns "
+                          "the target off exactly like the EA input, leaving "
+                          "the lock / stop / reversal to close the basket)")
+     return ap
+ 
+ 
++def apply_window_args(args):
++    """Wire --loose-window (and the suppressed --strict-window no-op) into
++    the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
++    drive the real CLI-to-global path without running a whole backtest."""
++    global STRICT_WINDOW
++    STRICT_WINDOW = not args.loose_window
++
++
+ def main():
+     args = build_parser().parse_args()
+     global TF, BAR_MIN, FLATTEN_HM
+     TF = args.tf
+     BAR_MIN = TF_SEC[TF] // 60
+     FLATTEN_HM = FLATTEN_BY_TF[TF]
+     if args.profit_target is not None:
+         global PROFIT_TARGET_PCT
+         PROFIT_TARGET_PCT = args.profit_target
+     global WINDOW, HOUR_TABLE
+     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
+               WINDOW[1] if args.window_end is None else args.window_end)
+     HOUR_TABLE = args.hour_table
+     global BIAS_EMA, BIAS_MODE, BIAS_TF
+     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
+     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
+     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+-    global STRICT_WINDOW, MIN_STOP_ATR
+-    STRICT_WINDOW = not args.loose_window
++    global MIN_STOP_ATR
++    apply_window_args(args)
+     MIN_STOP_ATR = args.min_stop_atr
+     global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
+     SR_LOOKBACK = args.sr_lookback
+     SR_MIN_HEADROOM = args.sr_min_headroom
+     SR_REPORT = args.sr_report
+     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
+     CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
+     CONFIRM_MODE = args.confirm_mode
+     if args.ema_len is not None:
+         global EMA_LEN
+diff --git a/service/tests/test_backtest_strict_window.py b/service/tests/test_backtest_strict_window.py
+index 12a13c4..d61607c 100644
+--- a/service/tests/test_backtest_strict_window.py
++++ b/service/tests/test_backtest_strict_window.py
+@@ -16,19 +16,38 @@ def test_loose_window_flag_turns_it_off():
+     args = bt.build_parser().parse_args(["--loose-window"])
+     assert args.loose_window is True
+ 
+ 
+ def test_strict_window_flag_still_parses_as_a_noop():
+     bt = _load_bt()
+     args = bt.build_parser().parse_args(["--strict-window"])
+     assert args.loose_window is False
+ 
+ 
++def test_apply_window_args_wires_the_cli_flag_to_the_runtime_flag():
++    """Drives the real main()-path (parse -> apply_window_args -> global),
++    not just the parsed Namespace or a hand-set module global. This is the
++    only test that would catch a broken `not` on that assignment."""
++    bt = _load_bt()
++
++    bt.STRICT_WINDOW = False   # start from a known-wrong value
++    bt.apply_window_args(bt.build_parser().parse_args([]))
++    assert bt.STRICT_WINDOW is True, "no flag must leave STRICT_WINDOW True"
++
++    bt.STRICT_WINDOW = False
++    bt.apply_window_args(bt.build_parser().parse_args(["--loose-window"]))
++    assert bt.STRICT_WINDOW is False, "--loose-window must turn it off"
++
++    bt.STRICT_WINDOW = False
++    bt.apply_window_args(bt.build_parser().parse_args(["--strict-window"]))
++    assert bt.STRICT_WINDOW is True, "--strict-window must leave it on (no-op)"
++
++
+ def test_strict_takes_fewer_entries_than_loose():
+     """Strict can only ever refuse entries loose would take, never add any."""
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
+     bt.STRICT_WINDOW = True
+     strict = bt.run(candles, 4000.0, False)[0]
+     bt.STRICT_WINDOW = False
+     loose = bt.run(candles, 4000.0, False)[0]
+     assert len(strict) < len(loose), "strict must filter something in this slice"

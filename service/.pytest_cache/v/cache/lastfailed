@@ -1,0 +1,7 @@
+{
+  "tests/test_forecaster.py::test_chronos_real": true,
+  "tests/test_api.py::test_shadows_logged_active_alerted_once": true,
+  "tests/test_render.py::test_trade_event_close_sends_render_photo_when_telegram_configured": true,
+  "tests/test_render.py::test_final_close_after_non_final_leg_sends_render_and_pl_message": true,
+  "tests/test_entry_mode.py::test_mode_command_shows_both_states_and_four_buttons": true
+}

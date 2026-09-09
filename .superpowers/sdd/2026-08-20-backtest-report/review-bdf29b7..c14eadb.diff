@@ -1,0 +1,2288 @@
+# Review package: bdf29b7..HEAD
+
+## Commits
+c14eadb fix(backtest): stop-line separators sit on the next real bar
+ca6ff0f docs(izi): re-measure the clamp table under strict; $10,000 is the floor
+4ac966e test(backtest): golden pin for the shipped strict window; smoke test in CI
+d1ea14b fix(backtest): --chart draws real trade spans; every flag documents itself
+3945cae fix(backtest): tp tracks the pyramid legs; n/a instead of 0.00% risk
+66999bc fix(backtest): stop line survives back-to-back trades; derive bar seconds
+
+## Files changed
+ .claude/agents/izi.md                              |  65 +-
+ .gitignore                                         |   1 +
+ .../plans/2026-08-20-backtest-report.md            |  16 +-
+ .../specs/2026-08-20-backtest-report-design.md     |  84 ++-
+ scripts/backtest.py                                | 145 +++--
+ service/app/static/backtest_report.html            |  78 ++-
+ service/tests/backtest_report_smoke.js             | 158 ++++-
+ service/tests/data/golden_trades_strict.json       | 702 +++++++++++++++++++++
+ service/tests/test_backtest_balance.py             |  15 +-
+ service/tests/test_backtest_golden.py              |  48 +-
+ service/tests/test_backtest_help.py                |  50 +-
+ service/tests/test_backtest_records.py             |  25 +-
+ service/tests/test_backtest_report_smoke.py        |  27 +
+ service/tests/test_backtest_web.py                 |  27 +
+ 14 files changed, 1337 insertions(+), 104 deletions(-)
+
+## Diff
+diff --git a/.claude/agents/izi.md b/.claude/agents/izi.md
+index b679e33..4322b87 100644
+--- a/.claude/agents/izi.md
++++ b/.claude/agents/izi.md
+@@ -530,71 +530,104 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
+   → restart the service (see restart procedure above) → within ~60 s (next
+   `OnTimer` pass) a `"... (reconciled)"` close report lands in
+   Telegram/dashboard/DB with the correct P/L. This is the regression check
+   for the 08-11 blackout (see §7) — confirms an offline close is never lost
+   silently again.
+ - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
+   [--verbose]` replays halftrend + the full current money rulebook over the
+   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
+   on service restart). Validated against reality (reproduced the +$94.81
+   live basket within $0.35). Simplifications: bar-close granularity, own
+-  Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
+-  the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
+-  the news blackout (NewsGuard) — replay results are slightly optimistic vs
+-  the live rulebook around losing days and high-impact events; both
+-  omissions are now named in `--help` and on every report's caveats line
+-  (2026-08-20), so the limitation travels with the output instead of living
+-  only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
++  Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates — **THREE**
++  rails, not two: the daily loss brake (MaxDailyLossPct), the drawdown kill
++  switch (RiskManager's 10% stop), and the news blackout (NewsGuard) are all
++  absent, so replay results are optimistic vs the live rulebook around losing
++  days, deep drawdowns and high-impact events. All three are named in
++  `--help`, in `--json` `meta.caveats`, on every report page, and (since
++  2026-08-20) on the last line of every run's stdout, so the limitation
++  travels with the output instead of living only here. **Strict 3-bar entry window is the default** (2026-08-20): flip
+   → wait one closed bar → enter only if the next bar opens beyond EMA-55,
+   else the signal is dead until the next flip — this has been the live EA's
+   law since 2026-08-16 (`767497a`). `--loose-window` restores the pre-2026-08-20
+   replay behaviour (enter on the flip bar itself) for reproducing old
+   studies — **every dated report under `.superpowers/` from before
+   2026-08-20 is a LOOSE run**; re-running one with today's default gets
+   different trades and different P/L. `--balance` refuses below $500 (the
+   result would be fiction) and warns below $2,000; the binding constraint is
+-  the 0.01-minimum-lot floor, not spread — measured over 12 months of M5
+-  (`bars_max.json`, 365 days): entries clamp to that floor 88.7% of the time
+-  at $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000. Every run now
+-  reports its own clamp rate and the realized risk actually taken (median /
+-  p90 vs the 1% target), in stdout, `--json`, and the `--web` page (a
+-  `>10%` clamp rate renders an on-page warning). `--source
++  the 0.01-minimum-lot floor, not spread. **Re-measured 2026-08-20 on the
++  SHIPPED DEFAULT (strict window)**, `--source bars_max.json --days 365`:
++  entries clamp to that floor **94.7% at $500, 68.5% at $800, 47.0% at
++  $1,200, 32.3% at $2,000, 16.7% at $4,000, 1.3% at $10,000, 0.0% at
++  $25,000** (20.5% at $4,000 and 3.7% at $10,000 over the full 516-day
++  source). The older table quoted here (88.7 / 50.8 / 10.2 / 0.4%) was a
++  LOOSE-window measurement — always name the window when quoting a clamp
++  rate. Guidance therefore moved: **$10,000+ is the floor for a clean test
++  of the risk rules, and $4,000 still clamps roughly one entry in six**,
++  which trips the tool's own `>10% → results distorted` flag. The >10%
++  threshold itself is unchanged. Every run reports its own clamp rate and
++  the realized risk actually taken (median / p90 vs the 1% target), in
++  stdout, `--json`, and the `--web` page (a `>10%` clamp rate renders an
++  on-page warning, and a $500–$2,000 starting balance renders its own).
++  In `--entry-mode fixed` nothing is risk-sized, so those three stats are
++  emitted as `null` and the page shows `n/a` — never `0.00%`, which would
++  read as "we risked nothing". `--source
+   PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
+   `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
+   every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
+   Experiments default OFF and are study-only. **`--json PATH`** writes the
+   full run artifact (meta/stats/candles/indicators/every trade, parallel
+   arrays not per-bar objects — 12mo of M5 is ~74k bars). **`--web PATH`**
+   (2026-08-20) writes ONE self-contained HTML report from that same artifact
+   via `scripts/backtest_report.py:write_report()` — inlines the vendored
+   Lightweight Charts lib (`service/app/static/vendor/`), the page template
+   (`service/app/static/backtest_report.html` — same file the Mini App tab is
+   planned to reuse later so the drawing code isn't duplicated), and the JSON,
+   so it opens from disk with no server/network. Shows candles + EMA9/21/55/200
+   + HalfTrend (one series, per-point colour, matching the Mini App's MT5-style
+   render) + a stepped stop-loss line + a canvas overlay drawing each trade's
+   red risk / green reward zone (green zone omitted when `tp` is null, e.g.
+   `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
+-  A real 365-day M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
+-  6.4 MB `--web`; above 300 trades the page thins pyramid-add chart markers
++  A `--days 365` M5 run measures 70,707 bars / 1,210 trades — 6.3 MB `--json`,
++  6.4 MB `--web`; a plain run over the whole source (516 days, 99,999 bars,
++  1,729 trades) writes ~8.9 MB / ~9.0 MB, so always quote the window with the
++  size; above 300 trades the page thins pyramid-add chart markers
+   (entry/exit markers always draw; the trade table's Legs column is never
+   thinned) to keep Lightweight Charts responsive — this is a report-rendering
+   thinning only, it does not touch replay logic or the artifact JSON. The page
+   now discloses this on-page (a `.warn` line naming how many trades' add
+   markers it hid, e.g. "638 of 1,210" for that run) so the limit travels with
+   the report instead of silently vanishing markers. `--web` and `--json` share one artifact build when both are
+   passed together. `--json`/`--web` output is unvalidated by eye beyond the
+   automated tests (`service/tests/test_backtest_web.py`,
+   `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
+   hand-rolled DOM/canvas/LightweightCharts stubs since no npm/browser deps
+-  were added) — a human should open a generated report at least once after
++  were added; it now runs inside pytest via
++  `service/tests/test_backtest_report_smoke.py`, skipping cleanly when `node`
++  is missing) — a human should open a generated report at least once after
+   any further change to the template or writer.
++  **The branch's safety net is `service/tests/test_backtest_golden.py`**: two
++  characterization pins over one frozen M5 slice (`tests/data/bars_slice.json`)
++  — `golden_trades.json` (LOOSE, captured before strict became the default, so
++  it survives that flip; its provenance is load-bearing, never regenerate it)
++  and `golden_trades_strict.json` (STRICT, the shipped default, added
++  2026-08-20). Any edit to `scripts/backtest.py` that moves a trade fails them.
++  If you did not mean to change replay behaviour, a failure there is a bug —
++  regenerate only deliberately, with the snippet in that file's docstring.
++  Report-layer facts worth knowing: the stepped stop line resolves the
++  timestamp a reversal exit shares with the next entry in favour of the NEWER
++  basket (the engine opens the new basket in the same loop iteration that
++  closed the old one — 124 of 1,729 trades in the reference run); `tp` is
++  recomputed on every bar so it tracks pyramid adds (frozen-at-first-leg drew
++  a reward zone the trade never reached); the page derives bar seconds from
++  the candle series, so `--tf M15` reports draw on the right grid; and the
++  header shows BOTH drawdowns — `max_dd` (closed balance) and `max_valley`
++  (open equity, never smaller).
+ 
+ # 7. History worth knowing (why rules exist)
+ 
+ - $200 EU demo couldn't margin 0.01 lots (ESMA 1:20) → balance topped to $4.2k.
+ - Missed trades: Algo button off (→ `/config` ini + heartbeat warning),
+   `[not enough money]` (→ margin), window blocks (→ 🚫 notices).
+ - Trade 1: +$102.82 full pyramid + profit target. Trade 2: −$23 retracement
+   after growing adds + instant-breakeven stops + a midnight close-all into
+   the closed market (mislabeled "telegram exit", was the dashboard) → begat
+   the ATR pad, halfway ladder, shrinking adds, honest partial-close
+diff --git a/.gitignore b/.gitignore
+index 9d0904f..abd53ce 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,10 +4,11 @@ __pycache__/
+ *.db
+ *.log
+ .env
+ .pytest_cache/
+ mt5/**/*.ex5
+ .claude/*
+ !.claude/agents/
+ !.claude/agents/**
+ !.claude/settings.json
+ week.json
++bars_max.json
+diff --git a/docs/superpowers/plans/2026-08-20-backtest-report.md b/docs/superpowers/plans/2026-08-20-backtest-report.md
+index a222230..e7ed7e0 100644
+--- a/docs/superpowers/plans/2026-08-20-backtest-report.md
++++ b/docs/superpowers/plans/2026-08-20-backtest-report.md
+@@ -529,20 +529,32 @@ Record both numbers in the commit message. This is the first real answer the too
+ 
+ ```bash
+ git add scripts/backtest.py service/tests/test_backtest_strict_window.py service/tests/test_backtest_golden.py
+ git commit -m "feat(backtest): strict 3-bar entry window is the default, --loose-window restores the old replay"
+ ```
+ 
+ ---
+ 
+ ### Task 4: Balance validation and the sizing-clamp measurement
+ 
++> **Superseded 2026-08-20 (post-review).** Every clamp figure quoted in this
++> task was measured under the **LOOSE** entry window, before strict became the
++> default. Re-measured on the shipped default (strict),
++> `--source bars_max.json --days 365`: **94.7%** at $500, 68.5% at $800,
++> **47.0%** at $1,200, 32.3% at $2,000, **16.7%** at $4,000, **1.3%** at
++> $10,000, 0.0% at $25,000 (20.5% at $4,000 / 3.7% at $10,000 over the full
++> 516-day source). The guidance moved with it: **$10,000+ is the floor for a
++> clean test; $4,000 still clamps roughly one entry in six**, which trips the
++> tool's own >10% "results distorted" flag. The >10% threshold itself is
++> unchanged. Live text lives in `scripts/backtest.py` (constants comment,
++> `validate_balance()`, the `--help` epilog), the report page, and spec §5.
++
+ Small balances do not fail loudly — `oz = max(MIN_OZ, int(risk / dist))` takes the minimum lot and over-risks. Measure it and say so.
+ 
+ **Files:**
+ - Modify: `scripts/backtest.py` — the sizing site in `run()` (~line 925), `run()`'s preamble, `main()`'s balance handling and its report tail
+ - Create: `service/tests/test_backtest_balance.py`
+ 
+ **Interfaces:**
+ - Consumes: `build_parser()` from Task 3, `_load_bt()` from Task 1.
+ - Produces:
+   - `bt.MIN_BALANCE = 500.0` and `bt.WARN_BALANCE = 2000.0`
+@@ -1065,21 +1077,21 @@ Expected: 6 passed.
+ ```bash
+ cd /mnt/c/Users/aatanda/Desktop/xau
+ service/.venv/bin/python scripts/backtest.py --source bars_max.json --days 365 \
+     --balance 4000 --json /tmp/run12m.json 2>&1 | tail -4
+ service/.venv/bin/python -c "
+ import json; a=json.load(open('/tmp/run12m.json'))
+ print('bars', len(a['candles']['t']), 'trades', len(a['trades']))
+ print('stats', a['stats'])"
+ ```
+ 
+-Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (365-day M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md.
++Expected: ~74,000 bars, a few hundred trades, and a file in the 6–7 MB range. Measured (`--days 365` M5 run, `--balance 4000`): 70,707 bars, 1,210 trades, 6.3 MB `--json` / 6.4 MB `--web` — recorded in izi.md. Those sizes are for `--days 365` only: a plain run over the whole source (516 days, 99,999 bars, 1,729 trades) writes ~8.9 MB JSON / ~9.0 MB HTML.
+ 
+ - [ ] **Step 7: Commit**
+ 
+ ```bash
+ git add scripts/backtest.py service/tests/test_backtest_json.py
+ git commit -m "feat(backtest): --json writes the full run artifact (candles, indicators, trades, stats)"
+ ```
+ 
+ ---
+ 
+@@ -1553,12 +1565,12 @@ Add the strict-vs-loose 12-month comparison measured in Task 3 Step 8 to izi.md'
+ 
+ ```bash
+ git add .claude/agents/izi.md docs/superpowers/plans/2026-08-20-backtest-report.md
+ git commit -m "docs(izi): backtest defaults, balance floors, --json/--web report"
+ ```
+ 
+ ---
+ 
+ ## Later phases (not this plan)
+ 
+-- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire (measured for a 365-day, 70,707-bar, 1,210-trade run).
++- **Spec §4 — Mini App tab.** Serve the artifact at `/api/backtest` behind `viewer_ok()`, add a 📊 Backtest tab reusing `backtest_report.html`'s drawing code, plus the balance input with $1k/$4k/$10k/$25k presets and a `[Run backtest]` button (a 12-month replay takes ~3.6 s). Enable `GZipMiddleware` there — the artifact is 6.3–6.4 MB over the wire for a `--days 365` run (70,707 bars, 1,210 trades) and ~8.9 MB for the full 516-day source (99,999 bars, 1,729 trades).
+ - **Spec §6 — day/month report views.** Refactor `_report_month()` / `_report_day()` in `service/app/miniapp.py` to take a list of baskets instead of a sqlite connection, capture a golden test of today's live output first, then feed them backtest trades so the live and backtest reports share one shaper and one renderer.
+diff --git a/docs/superpowers/specs/2026-08-20-backtest-report-design.md b/docs/superpowers/specs/2026-08-20-backtest-report-design.md
+index 61fd1a1..2ec5f0e 100644
+--- a/docs/superpowers/specs/2026-08-20-backtest-report-design.md
++++ b/docs/superpowers/specs/2026-08-20-backtest-report-design.md
+@@ -64,48 +64,60 @@ bar, and enter on the next bar only if it opens beyond EMA-55; otherwise the
+ signal is dead until the next flip. `--loose-window` restores the old
+ permissive behaviour for comparison against earlier studies.
+ 
+ `--strict-window` is kept as an accepted no-op alias so existing scripted runs
+ do not break.
+ 
+ ### 1.3 `--help` grouped
+ 
+ Four argparse groups: **Data** (`--source --start --end --days --tf`),
+ **Rules** (the EA's real knobs: `--risk --confirm --stop-buffer --adx --expo
+---entry-mode --fixed-lots --profit-target --ema-len --loose-window`),
+-**Experiments** (study flags: regime/chop/bias/sr/min-stop/window/exit-scheme),
++--entry-mode --fixed-lots --profit-target --ema-len --loose-window
++--exit-scheme --strict-window`),
++**Experiments** (study flags: regime/chop/bias/sr/min-stop/window),
+ **Output** (`--verbose --json --web --chart --hour-table --sr-report`).
+ 
+-The epilog carries the caveat block (brake, news, close-only fills, spread
+-model) so `--help` states the model's limits.
++The epilog carries the caveat block (brake, kill switch, news, close-only
++fills, spread model) so `--help` states the model's limits; the same line is
++printed at the end of every run, since stdout is where most results are read.
++
++**Shipped deviations from this section.** `--exit-scheme` is listed above
++under Experiments in the original draft but shipped under **Rules**, which is
++correct: its default (`target-exit`) is live EA behaviour, and the Experiments
++group is defined as flags that are off in the live EA. `--window-start` /
++`--window-end` are the reverse case — they live in Experiments but default to
++the EA's real 4-23 trading window, so the group blurb says so explicitly
++instead of claiming everything in it defaults to OFF.
+ 
+ ## 2. `--json PATH` — the run artifact
+ 
+ One JSON object, the only interface between engine and page:
+ 
+ ```
+ { "meta":   {generated_at, source, tf, start, end, args:{...}, caveats:[...]},
+   "stats":  {trades, wins, losses, win_rate, net, start_balance, end_balance,
+              max_dd, max_valley, best, worst,
+              clamp_pct, risk_median, risk_p90},
+   "candles": {"t":[...], "o":[...], "h":[...], "l":[...], "c":[...]},
+   "ind":     {"ema9":[...], "ema21":[...], "ema55":[...], "ema200":[...],
+               "ht":{"v":[...], "trend":[...]}},
+   "trades": [{dir, legs:[{t,px,oz}], tp, stop_history:[{t,stop}],
+               exit, exit_t, why, pl, bal_after, regime}] }
+ ```
+ 
+ Candles and indicators are **parallel arrays**, not per-bar objects: 12 months
+ of M5 is ~74k bars, and the array form keeps the payload near 6–7 MB instead
+ of ~12 MB with no loss of detail. `null` marks an unwarmed indicator bar.
+-Measured: a 365-day M5 run (70,707 bars, 1,210 trades) writes a 6.3 MB `--json`
+-artifact and a 6.4 MB `--web` report.
++Measured: a 365-day M5 run (`--days 365`, 70,707 bars, 1,210 trades) writes a
++6.3 MB `--json` artifact and a 6.4 MB `--web` report. Those figures are for
++`--days 365` only — a plain run over the whole of `bars_max.json` (516 days,
++99,999 bars, 1,729 trades) writes ~8.9 MB JSON / ~9.0 MB HTML.
+ 
+ Indicators come from `app.indicators.ema/halftrend` (amplitude 4) — the same
+ functions the Mini App and the EA port use. The page never computes a rule or
+ an indicator itself.
+ 
+ ## 3. `--web PATH` — the report page
+ 
+ A single self-contained HTML file: no server, no network, opens anywhere,
+ keeps as an artifact for comparison. Data embedded as the §2 JSON.
+ 
+@@ -113,21 +125,26 @@ Chart: TradingView Lightweight Charts (already vendored for the Mini App),
+ candles at the replay timeframe — **pure M5, all 12 months, nothing
+ aggregated**. Overlays match MT5 exactly, reusing the Mini App's approach:
+ HalfTrend as ONE line whose colour changes per point (blue up / orange-red
+ down), plus EMA 9/21/55/200.
+ 
+ Per trade:
+ 
+ - a box from entry bar to exit bar: green zone entry→TP, red zone entry→SL;
+ - a **stepped stop line** drawn from `stop_history`, so a ratcheting stop is
+   visible as it actually moved;
+-- a triangle at each pyramid add, an X at the exit, and a P/L label;
++- a marker at each pyramid add, a marker at the exit, and a P/L label.
++  **Shipped deviation:** this section asked for a triangle at the add and an X
++  at the exit; Lightweight Charts v4 offers neither shape (`arrowUp`,
++  `arrowDown`, `circle`, `square` only), so the add ships as a yellow circle
++  and the exit as a P/L-coloured square. Entry keeps `arrowUp`/`arrowDown`,
++  which is the direction cue the next bullet asks for;
+ - BUY and SELL are distinguished by marker direction, not box colour;
+ - in `fixed` entry mode there is no TP, so the box shows only the red
+   entry→SL zone and the stepped stop — never an invented target.
+ 
+ Header: net P/L, win rate, trade count, max drawdown, date range, and the
+ caveat line. Trade table below the chart; clicking a row scrolls the chart to
+ that trade.
+ 
+ ## 4. Mini App tab (after the file works)
+ 
+@@ -138,37 +155,50 @@ as the standalone page. Read-only, last run only. If no run exists the tab
+ says so rather than erroring.
+ 
+ ## 5. Starting balance and the minimum that means anything
+ 
+ `--balance` already exists (default 4000). What is missing is the honesty
+ around it.
+ 
+ **The binding constraint is the 0.01 minimum lot, not spread.** Sizing is
+ `oz = max(MIN_OZ, int(risk / dist))`: when 1% of balance cannot cover one
+ ounce at the stop distance, the replay does not skip the trade — it takes the
+-minimum lot and **over-risks**. Measured over 12 months of M5 (2025-08 →
+-2026-08):
++minimum lot and **over-risks**.
++
++**Re-measured 2026-08-20 on the shipped default (STRICT entry window)**, with
++`scripts/backtest.py --source bars_max.json --days 365 --balance N`:
+ 
+ | Starting balance | entries clamped to min lot | risk actually taken (median / p90) |
+ |---|---|---|
+-| $500   | 88.7% | 2.78% / 17.69% |
+-| $800   | 67.9% | 1.35% / 3.94% |
+-| $1,200 | 50.8% | 1.01% / 2.60% |
+-| $2,000 | 40.3% | 0.94% / 2.14% |
+-| $4,000 | 10.2% | 0.88% / 1.01% |
+-| $10,000 | 0.4% | 0.94% / 0.99% |
+-| $25,000 | 0.1% | 0.98% / 1.00% |
+-
+-Below ~$4,000 the 1% rule stops being obeyed often enough to change what is
+-being measured: a $1,200 run tests minimum-lot behaviour on half its entries,
+-not the rulebook. At $300 the account goes negative (-155%) because margin
+-stop-out is not modelled.
++| $500   | 94.7% | 1.72% / 34.71% |
++| $800   | 68.5% | 1.43% / 3.89% |
++| $1,200 | 47.0% | 0.98% / 2.28% |
++| $2,000 | 32.3% | 0.90% / 1.77% |
++| $4,000 | 16.7% | 0.89% / 1.27% |
++| $10,000 | 1.3% | 0.93% / 0.99% |
++| $25,000 | 0.0% | 0.97% / 0.99% |
++
++Over the full source (516 days, no `--days`) the same command clamps **20.5%**
++at $4,000 and **3.7%** at $10,000.
++
++> The first version of this table was measured under the **LOOSE** window,
++> before strict became the default on 2026-08-20, and read materially lower
++> (88.7% / 50.8% / 10.2% / 0.4% at $500 / $1,200 / $4,000 / $10,000). Strict
++> refuses late-drift entries, which are disproportionately the wide-stop ones
++> that size fine — so the surviving population clamps more often. Any clamp
++> figure quoted anywhere must name the window it was measured under.
++
++Below ~$10,000 the 1% rule stops being reliably obeyed. **$4,000 clamps
++roughly one entry in six — enough to trip this tool's own ">10% ⇒ results
++distorted" flag**, so it is no longer described as the minimum for meaningful
++results. At $300 the account goes negative (-155%) because margin stop-out is
++not modelled.
+ 
+ Spread is $0.20/oz round-trip and scales linearly with size — ~$950 over 12
+ months at $4,000, roughly half that year's net loss. Material to the RESULT,
+ irrelevant to the MINIMUM, because it costs the same fraction at every
+ balance.
+ 
+ ### Interface
+ 
+ CLI validation on `--balance`:
+ 
+@@ -179,23 +209,24 @@ CLI validation on `--balance`:
+   naming the measured clamp rate for THAT run.
+ - **>= $2,000 — run clean**, still reporting clamp rate when it exceeds 5%.
+ 
+ **Every run reports its measured clamp rate and the risk actually taken**
+ (median and p90), in stdout, in `--json` `stats`, and in the report header.
+ This is a measurement, not a static threshold, because clamping depends on how
+ wide the stops were in the period tested — a volatile month clamps a balance
+ that a quiet month would have sized fine. A run whose clamp rate exceeds 10%
+ draws a visible warning banner on the page.
+ 
+-Guidance text shown in `--help` and on the page:
+-**"$4,000 minimum for meaningful results; $10,000+ for a clean test of the
+-risk rules."**
++Guidance text shown in `--help`, in `validate_balance()` and on the page:
++**"$10,000+ for a clean test of the risk rules; $4,000 still clamps roughly
++one entry in six."** The **>10% "results distorted" threshold is unchanged** —
++the guidance moved to match the measurement, not the other way round.
+ 
+ In the Mini App tab (§4), the balance is an input with presets
+ **$1k · $4k · $10k · $25k**, a $500 floor enforced client- and server-side,
+ and a **[Run backtest]** button — a 12-month replay takes ~3.6 s, so it is
+ genuinely interactive. That endpoint is the only compute-on-demand path in the
+ system: owner-only via the existing `viewer_ok()`, one run at a time, and
+ rate-limited.
+ 
+ ## 6. Backtest day/month report (later phase)
+ 
+@@ -252,21 +283,22 @@ time, running balance, regime are all present), rather than being retrofitted.
+ - **Report parity** (phase 6): the refactored shaping functions, fed the
+   same baskets, produce byte-identical output to today's live report —
+   captured as a golden test before the refactor.
+ - Existing service suite (437 tests) stays green.
+ 
+ ## Risks
+ 
+ - **Silent behaviour change while editing a 1,429-line engine.** Mitigated by
+   the golden-run test captured first.
+ - **Page weight.** 74k bars is the owner's explicit choice; parallel arrays and
+-  a single indicator pass keep it near 6–7 MB (measured: 6.3 MB JSON / 6.4 MB
+-  HTML for a 365-day, 70,707-bar, 1,210-trade run). What actually shipped for
++  a single indicator pass keep it near 6–7 MB for a 365-day run (measured:
++  6.3 MB JSON / 6.4 MB HTML at 70,707 bars / 1,210 trades) and ~9 MB for the
++  full 516-day source (99,999 bars, 1,729 trades). What actually shipped for
+   a struggling browser is not a timeframe switcher: candles, indicators, the
+   stepped stop and every trade's entry/exit markers still draw in full at any
+   trade count, and the trade table is never thinned; above 300 trades the page
+   drops only the pyramid-add ("+") chart markers, and discloses on-page how
+   many trades' add markers it hid (the Legs column in the table still shows
+   every add). A timeframe switcher was considered and rejected — it would
+   change what the replay tests, not just how it renders.
+ - **Reports read as truth.** Every report and `--help` carries the caveat block
+   naming the unmodelled brake and news blackout.
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index aa75eac..aa76353 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -324,43 +324,62 @@ SRC_SEC = 300             # the source feed's bar length
+ BAR_MIN = 5               # minutes of open-position time charged per held bar
+ FLATTEN_BY_TF = {"M5": (23, 50), "M15": (23, 45)}   # last bar of the server day
+ 
+ ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
+ SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
+ MIN_OZ = 1                # 0.01 lots
+ 
+ # Starting-balance floors. The binding constraint is the 0.01 minimum lot,
+ # not spread: when 1% of balance cannot cover one ounce at the stop distance,
+ # sizing clamps to the minimum and OVER-risks instead of skipping the trade.
+-# Measured over 12 months of M5 (2025-08 -> 2026-08): entries clamped 88.7% at
+-# $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000.
++#
++# Measured 2026-08-20 on the SHIPPED DEFAULT (strict entry window),
++# `--source bars_max.json --days 365` -- 1,196-1,302 trades depending on
++# balance. Earlier copies of this table were measured under the LOOSE window
++# before strict became the default and read materially lower:
++#     balance   entries clamped   risk actually taken (median / p90)
++#     $500          94.7%            1.72% / 34.71%
++#     $800          68.5%            1.43% /  3.89%
++#     $1,200        47.0%            0.98% /  2.28%
++#     $2,000        32.3%            0.90% /  1.77%
++#     $4,000        16.7%            0.89% /  1.27%
++#     $10,000        1.3%            0.93% /  0.99%
++#     $25,000        0.0%            0.97% /  0.99%
++# Over the full source (516 days) the same run clamps 20.5% at $4,000 and
++# 3.7% at $10,000 -- the rate depends on how wide the stops were in the
++# window tested, which is why every run measures and prints its own.
++# $4,000 clamps roughly one entry in six and therefore trips this tool's own
++# ">10% => results distorted" flag; $10,000+ is the honest floor for a clean
++# test of the risk rules.
+ MIN_BALANCE = 500.0     # below this the result is fiction (no margin stop-out
+                         # is modelled either -- a $300 account goes negative)
+ WARN_BALANCE = 2000.0   # below this, warn loudly and name the clamp rate
+ 
+ 
+ def validate_balance(value):
+     """None = fine, str = warn and run, SystemExit = refuse."""
+     if value < MIN_BALANCE:
+         raise SystemExit(
+             f"--balance {value:.0f} is below the ${MIN_BALANCE:.0f} floor.\n"
+-            "At that size nearly every entry clamps to the 0.01 minimum lot, "
+-            "so the replay measures minimum-lot behaviour, not the rulebook -- "
+-            "and margin stop-out is not modelled, so the account can go "
+-            "negative. Use $4,000+ for meaningful results, $10,000+ for a "
+-            "clean test of the risk rules.")
++            "At that size nearly every entry clamps to the 0.01 minimum lot "
++            "(94.7% at $500, measured over the last 365 days), so the replay "
++            "measures minimum-lot behaviour, not the rulebook -- and margin "
++            "stop-out is not modelled, so the account can go negative. "
++            "$10,000+ is the floor for a clean test of the risk rules; "
++            "$4,000 still clamps roughly one entry in six.")
+     if value < WARN_BALANCE:
+         return (f"WARNING: at ${value:.0f}, 1% risk often cannot cover one "
+                 f"ounce at the stop distance, so sizing falls back to the "
+-                f"0.01 minimum lot and takes MORE than 1% risk. The clamp "
+-                f"rate for this run is reported below -- read it before "
+-                f"trusting the P/L.")
++                f"0.01 minimum lot and takes MORE than 1% risk (measured over "
++                f"the last 365 days: 47% of entries clamp at $1,200, 32% at "
++                f"$2,000). The clamp rate for this run is reported below -- "
++                f"read it before trusting the P/L.")
+     return None
+ 
+ 
+ # --- profit-floor experiment (docs/superpowers/specs/2026-08-12-profit-floor-design.md) ---
+ # target-exit  : baseline — close the basket at +PROFIT_TARGET_PCT (current EA)
+ # floor-a      : at target, shared stop -> price where basket P/L =
+ #                target - 0.25*ATR(14)-worth; adds frozen from that moment
+ # floor-b      : at target + 0.25*ATR-worth of profit, stop -> price where
+ #                basket P/L = full target; adds frozen
+ # floor-a-adds : floor-a but pyramid adds left ON (quantifies the erosion)
+@@ -838,21 +857,27 @@ def run(candles, start_balance, verbose):
+                         basket["stop"] * s >= basket["floor_px"] * s - 1e-9:
+                     why = "floor stop"
+                 close_basket(basket["stop"], when, why)
+             else:
+                 pl = basket_pl(px)
+                 basket["peak"] = max(basket["peak"], pl)
+                 risk_budget = basket["cycle_bal"] * RISK_PCT / 100 \
+                     * basket.get("lock_mult", 1.0)
+                 target = basket["cycle_bal"] * PROFIT_TARGET_PCT / 100 \
+                     * basket.get("target_mult", 1.0)
+-                if basket.get("tp") is None and ENTRY_MODE != "fixed":
++                # Recomputed EVERY bar, not frozen at the first leg: each
++                # pyramid add moves the price at which the basket reaches
++                # `target`, so a one-shot tp drew a green zone further out
++                # than the level actually banked (median $2.89, max $34.69
++                # off on multi-leg target exits over 12 months). `tp` feeds
++                # the artifact and the page only -- nothing decides on it.
++                if ENTRY_MODE != "fixed" and PROFIT_TARGET_PCT > 0:
+                     basket["tp"] = floor_price(basket["legs"], s, target)
+                 closed = False
+                 if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
+                     pass   # pure ride: no profit target / floor (EA: 0 = off)
+                 elif EXIT_SCHEME == "target-exit":
+                     if pl >= target:
+                         close_basket(px, when, "profit target")
+                         closed = True
+                 elif basket.get("floor") is None:
+                     # arm the floor instead of closing at target
+@@ -1045,64 +1070,70 @@ def run(candles, start_balance, verbose):
+     run.expo = expo          # server-day -> minutes of open-position time
+     run.open_diff_bars = open_diff_bars
+     run.dead_signals = dead_signals
+     run.bias_flips = None
+     if BIAS_EMA > 0:
+         run.bias_flips = {
+             "M5": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M5")),
+             "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
+     r = sorted(sizing["risk_pct"])
+     n = sizing["entries"]
++    # None, not 0.0, when nothing was risk-sized (--entry-mode fixed sizes
++    # every entry at --fixed-lots): "0.00% risk taken" reads as "we risked
++    # nothing", when the truth is that risk sizing never ran.
+     run.sizing = {
+         "entries": n,
+         "clamped": sizing["clamped"],
+-        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else 0.0,
+-        "risk_median": round(r[len(r) // 2], 2) if r else 0.0,
+-        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else 0.0,
++        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
++        "risk_median": round(r[len(r) // 2], 2) if r else None,
++        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
+     }
+     return trades, bal, max_dd, max_valley
+ 
+ 
+ def build_run_json(candles, trades, args, res):
+     """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
+     per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
+     halves the payload with no loss of detail."""
+     closes = [x["c"] for x in candles]
+     ht = halftrend([type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+     r2 = lambda v: None if v is None else round(v, 2)   # noqa: E731
+     sizing = getattr(run, "sizing", {}) or {}
+     n = len(trades)
+     wins = sum(1 for t in trades if t["pl"] > 0)
++    losses = sum(1 for t in trades if t["pl"] < 0)   # pl == 0 is flat
+     net = res["bal"] - args.balance
+     return {
+         "meta": {
+             "generated_at": int(dt.datetime.now(dt.UTC).timestamp()),
+             "source": args.source, "tf": TF, "bars": len(candles),
+             "start": int(candles[0]["t"]), "end": int(candles[-1]["t"]),
+             "strict_window": STRICT_WINDOW,
+             "entry_mode": ENTRY_MODE,
+             "args": {k: v for k, v in vars(args).items() if v is not None},
+             "caveats": CAVEATS,
+         },
+         "stats": {
+-            "trades": n, "wins": wins, "losses": n - wins,
++            "trades": n, "wins": wins, "losses": losses,
++            "flat": n - wins - losses,
+             "win_rate": round(100.0 * wins / n, 1) if n else 0.0,
+             "net": round(net, 2),
+             "start_balance": round(args.balance, 2),
+             "end_balance": round(res["bal"], 2),
+             "max_dd": round(res["max_dd"], 2),
+             "max_valley": round(res["valley"], 2),
+             "best": round(max((t["pl"] for t in trades), default=0.0), 2),
+             "worst": round(min((t["pl"] for t in trades), default=0.0), 2),
+-            "clamp_pct": sizing.get("clamp_pct", 0.0),
+-            "risk_median": sizing.get("risk_median", 0.0),
+-            "risk_p90": sizing.get("risk_p90", 0.0),
++            # null when no entry was risk-sized -- the page renders "n/a"
++            "clamp_pct": sizing.get("clamp_pct"),
++            "risk_median": sizing.get("risk_median"),
++            "risk_p90": sizing.get("risk_p90"),
+         },
+         "candles": {
+             "t": [int(x["t"]) for x in candles],
+             "o": [r2(x["o"]) for x in candles],
+             "h": [r2(x["h"]) for x in candles],
+             "l": [r2(x["l"]) for x in candles],
+             "c": [r2(x["c"]) for x in candles],
+         },
+         "ind": {
+             "ema9": [r2(v) for v in ema(closes, 9)],
+@@ -1134,28 +1165,29 @@ def plot(candles, trades, start_balance, out_path):
+     ts = [x["t"] for x in candles]
+     idx = {t: i for i, t in enumerate(ts)}
+     fig = Figure(figsize=(12, 7))
+     ax, ax2 = fig.subplots(2, 1, height_ratios=[3, 1], sharex=True)
+     for i, x in enumerate(candles):
+         color = "#2ecc71" if x["c"] >= x["o"] else "#e74c3c"
+         ax.vlines(i, x["l"], x["h"], color=color, linewidth=0.6)
+     eq_x, eq_y = [0], [start_balance]
+     for t in trades:
+         exit_i = idx.get(int(t["when"].timestamp()), len(candles) - 1)
+-        first = t["legs"][0]["px"]
+-        # entry bar: search back for the first leg's price era (approx: span
+-        # from exit back by number of bars is unknown -- mark exit and legs)
++        # the entry bar is RECORDED (legs[0]["t"]), so the span is the trade's
++        # real span -- it used to be drawn as a fixed 12 bars back from the
++        # exit, which invented a duration for every trade on the chart
++        entry_i = idx.get(int(t["legs"][0]["t"]), exit_i)
+         color = "#2ecc71" if t["pl"] > 0 else "#e74c3c"
+-        ax.axvspan(max(0, exit_i - 12), exit_i, color=color, alpha=0.10)
++        ax.axvspan(entry_i, exit_i, color=color, alpha=0.10)
+         m = "^" if t["dir"] == "BUY" else "v"
+         ax.scatter([exit_i], [t["exit"]], marker="x", color=color, s=22, zorder=5)
+-        ax.scatter([max(0, exit_i - 12)], [t["legs"][0]["px"]], marker=m,
++        ax.scatter([entry_i], [t["legs"][0]["px"]], marker=m,
+                    color=color, s=18, zorder=5, alpha=0.8)
+         ax.annotate(f"{t['pl']:+.0f}", xy=(exit_i, t["exit"]),
+                     xytext=(3, 6), textcoords="offset points",
+                     color=color, fontsize=7)
+         eq_x.append(exit_i)
+         eq_y.append(eq_y[-1] + t["pl"])
+     eq_x.append(len(candles) - 1)
+     eq_y.append(eq_y[-1])
+     ax2.step(eq_x, eq_y, where="post", color="dodgerblue", linewidth=1.5)
+     ax2.axhline(start_balance, color="#888", linewidth=0.7, linestyle=":")
+@@ -1170,38 +1202,66 @@ def plot(candles, trades, start_balance, out_path):
+                          .strftime("%d %H:%M") for i in ticks], fontsize=7)
+     fig.tight_layout()
+     fig.savefig(out_path, dpi=110)
+ 
+ 
+ def build_parser():
+     ap = argparse.ArgumentParser(
+         description="Replay halftrend_ema_v1 with the current money rulebook "
+                     "over historical candles and report P/L.",
+         epilog="NOT MODELLED:\n  " + "\n  ".join(CAVEATS) +
+-               "\n\nSTARTING BALANCE: $4,000 minimum for meaningful results; "
+-               "$10,000+ for a clean\ntest of the risk rules. Below $2,000 most "
+-               "entries clamp to the 0.01 minimum\nlot and take more than the "
+-               "intended 1% risk; below $500 the run is refused.",
++               "\n\nSTARTING BALANCE: $10,000+ for a clean test of the risk "
++               "rules. $4,000 still clamps\nroughly one entry in six to the "
++               "0.01 minimum lot -- enough to trip this tool's\nown \"results "
++               "distorted\" flag -- and below $2,000 clamping dominates the "
++               "result\nentirely. Below $500 the run is refused. Measured "
++               "2026-08-20 on the default\n(strict) window over the last 365 "
++               "days: entries clamped 94.7% at $500, 47.0%\nat $1,200, 32.3% "
++               "at $2,000, 16.7% at $4,000, 1.3% at $10,000, 0.0% at "
++               "$25,000.\nEvery run prints its OWN clamp rate: that is the "
++               "number to read, since it depends\non how wide the stops were "
++               "in the window tested.",
+         formatter_class=argparse.RawDescriptionHelpFormatter)
+ 
+     data = ap.add_argument_group("Data")
+     rules = ap.add_argument_group(
+         "Rules", "the EA's real knobs -- defaults are what the live EA does")
+     exp = ap.add_argument_group(
+-        "Experiments", "study filters; all default to OFF (live EA has none)")
++        "Experiments",
++        "study knobs. All default to the live EA's behaviour: the filters "
++        "(regime/atr-spike/chop/bias/sr/min-stop) default to OFF because the "
++        "live EA has none, but --window-start/--window-end are the EA's REAL "
++        "trading window and default to its live 4-23")
+     out = ap.add_argument_group("Output")
+ 
+-    data.add_argument("--balance", type=float, default=4000)
+-    data.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
+-    out.add_argument("--verbose", action="store_true")
++    data.add_argument("--balance", type=float, default=4000,
++                    help="starting account balance in USD (default 4000). "
++                         "Drives 1%%-risk sizing and the 2%%-of-cycle profit "
++                         "target, so it changes the RESULT, not just the "
++                         "scale: below $10,000 some entries clamp to the 0.01 "
++                         "minimum lot and over-risk (see STARTING BALANCE "
++                         "below). Refused below $500")
++    data.add_argument("--source", default="http://127.0.0.1:9000/ui/candles",
++                    help="candle source: a URL serving the service's "
++                         "/ui/candles JSON (default, capped at 2000 bars) or "
++                         "the path to a saved JSON dump of the same shape "
++                         "(e.g. bars_max.json, ~12 months of M5)")
++    out.add_argument("--verbose", action="store_true",
++                    help="print per-bar decision detail (entries, adds, stop "
++                         "moves, floor arming) as the replay runs")
+     rules.add_argument("--adx", type=float, default=None, help="override ADX gate")
+-    out.add_argument("--chart", default=None, help="write a PNG chart to this path")
++    out.add_argument("--chart", default=None, metavar="PATH",
++                    help="legacy PNG chart (price bars + equity curve, needs "
++                         "matplotlib). --web is the maintained report: an "
++                         "interactive, self-contained HTML page with the same "
++                         "trades drawn against EMAs, HalfTrend and their "
++                         "actual stop paths")
+     out.add_argument("--json", default=None, metavar="PATH",
+                      help="write the full run (candles, indicators, trades, "
+                           "stats) to this JSON file")
+     data.add_argument("--days", type=float, default=None,
+                     help="backtest only the last N days of the source data")
+     rules.add_argument("--expo", type=float, default=None,
+                     help="override daily exposure minutes (0 = unlimited)")
+     rules.add_argument("--risk", type=float, default=None,
+                     help="override risk percent per trade")
+     rules.add_argument("--confirm", type=int, default=None,
+@@ -1209,21 +1269,23 @@ def build_parser():
+                          "the EMA required after a flip; default 1)")
+     rules.add_argument("--stop-buffer", type=float, default=None,
+                     help="override the stop pad in ATR(14) multiples "
+                          "(default 0.75)")
+     rules.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
+                     help="profit-floor experiment scheme (default: current "
+                          "behavior, close at profit target)")
+     rules.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
+                     help="adr = live behavior; fixed = fixed lots, no adds/"
+                          "target/lock, exit on confirmed reversal or stop")
+-    rules.add_argument("--fixed-lots", type=float, default=0.05)
++    rules.add_argument("--fixed-lots", type=float, default=0.05,
++                    help="lots per entry in --entry-mode fixed (default 0.05); "
++                         "ignored in the default adr mode, which risk-sizes")
+     exp.add_argument("--regime-gate", choices=REGIME_GATES, default="off",
+                     help="refuse new entries by the service's live regime "
+                          "classifier: range = skip 'range' bars, "
+                          "range-strict = only enter on 'trend' bars, "
+                          "highvol = skip 'high_volatility' bars")
+     exp.add_argument("--atr-spike-gate", type=float, default=0.0,
+                     help="refuse new entries when ATR(14) > RATIO x its "
+                          "median over the last 100 bars (0 = off)")
+     data.add_argument("--start", default=None,
+                     help="drop candles before this server time "
+@@ -1245,22 +1307,25 @@ def build_parser():
+                          "ATR(14) (default 2.0; 0 = flip count alone)")
+     exp.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
+                     help="skip = refuse chop entries (H1); soft = enter at "
+                          "half risk with no adds (H2); off = tag/report only")
+     rules.add_argument("--loose-window", action="store_true",
+                     help="disable the EA's strict 3-bar entry window (flip -> "
+                          "one waiting bar -> entry only if that bar opens "
+                          "beyond the EMA). Use to reproduce studies run before "
+                          "2026-08-20, when loose was the default.")
+     rules.add_argument("--strict-window", action="store_true",
+-                    help=argparse.SUPPRESS)   # now the default; kept so older
+-                                              # scripted runs keep working
++                    help="accepted and now a NO-OP: the strict entry window "
++                         "became the default on 2026-08-20, so passing this "
++                         "changes nothing. Kept so scripted runs written "
++                         "before the flip still parse; --loose-window is what "
++                         "restores the old replay")
+     exp.add_argument("--min-stop-atr", type=float, default=0.0,
+                     help="minimum stop distance floor in ATR(14) multiples: "
+                          "an ENTRY stop closer than K x ATR is pushed out to "
+                          "exactly K x ATR and lots are sized over the wider "
+                          "distance (0 = off, byte-identical)")
+     exp.add_argument("--bias-ema", type=int, default=0,
+                     help="EMA-N market bias at the entry bar (close vs EMA-N; "
+                          "0 = off, byte-identical). Tags every trade "
+                          "with/counter and prints the split")
+     exp.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
+@@ -1425,22 +1490,24 @@ def main():
+             if t["why"] in ("flatten", "eod-open"):
+                 floor_leaks.append(t)
+             elif EXIT_SCHEME == "floor-a-adds":
+                 floor_leaks.append(t)   # erosion by post-arm adds: measured
+             else:
+                 raise AssertionError(
+                     f"floor violated: {t['when']:%m-%d %H:%M} {t['why']} "
+                     f"pl {t['pl']:+.2f} < floor {t['floor']:+.2f}")
+ 
+     wins = [t for t in trades if t["pl"] > 0]
+-    losses = [t for t in trades if t["pl"] <= 0]
+-    print(f"\ntrades: {len(trades)}  |  wins {len(wins)}  losses {len(losses)}")
++    losses = [t for t in trades if t["pl"] < 0]   # pl == 0 is flat, not a loss
++    flat = len(trades) - len(wins) - len(losses)
++    print(f"\ntrades: {len(trades)}  |  wins {len(wins)}  losses {len(losses)}"
++          + (f"  flat {flat}" if flat else ""))
+     if trades:
+         print(f"gross win  {sum(t['pl'] for t in wins):+10.2f}")
+         print(f"gross loss {sum(t['pl'] for t in losses):+10.2f}")
+         for t in trades:
+             legs = "+".join(f"{l['oz']}oz@{l['px']:.2f}" for l in t["legs"])
+             fl = f"  floor {t['floor']:+.2f}" if t.get("floor") is not None else ""
+             print(f"  {t['when']:%m-%d %H:%M} {t['dir']:4} [{legs}] -> "
+                   f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}{fl}")
+     tdays = len({hhmm(x["t"])[0].date() for x in candles})
+     print(f"trading days {tdays}  trades/day {len(trades) / max(1, tdays):.2f}  "
+@@ -1623,14 +1690,18 @@ def main():
+               f"({Path(args.json).stat().st_size / 1e6:.1f} MB)")
+     if args.web:
+         sys.path.insert(0, str(Path(__file__).resolve().parent))
+         from backtest_report import write_report
+         if art is None:
+             art = build_run_json(candles, trades, args,
+                                  {"bal": bal, "max_dd": max_dd, "valley": max_valley})
+         write_report(art, args.web)
+         print(f"report     {args.web} "
+               f"({Path(args.web).stat().st_size / 1e6:.1f} MB)")
++    # The caveats reached --help, --json and the --web page but never stdout,
++    # where most runs are actually read. One line, built from the same list.
++    print("\nNOT MODELLED: " + " | ".join(c.split(" -- ")[0] for c in CAVEATS) +
++          "  (full text: --help, --json meta.caveats, the --web report)")
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/service/app/static/backtest_report.html b/service/app/static/backtest_report.html
+index 1ca5199..d4732a9 100644
+--- a/service/app/static/backtest_report.html
++++ b/service/app/static/backtest_report.html
+@@ -51,52 +51,78 @@
+ <table>
+   <thead><tr><th>#</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
+   <th>Exit</th><th>Why</th><th>P/L</th><th>Balance</th></tr></thead>
+   <tbody id="rows"></tbody>
+ </table>
+ 
+ <script>__LIB__</script>
+ <script>
+ var RUN = __DATA__;
+ 
++// One bar's length in seconds, read off the data rather than assumed: --tf M15
++// runs carry 900-second bars, and a hard-coded 300 put every stop-line gap
++// point off-grid (phantom columns) and gave row-click zoom a third of the
++// intended context.
++var BAR_SEC = (RUN.candles.t.length > 1 ? RUN.candles.t[1] - RUN.candles.t[0] : 300);
++
+ var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
+ var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
+ var GREEN_L = "#26a69a", RED_L = "#ef5350";
+ 
+ function money(v) { return (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2); }
+ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " "); }
+ 
+ // ---- header -------------------------------------------------------------
+ (function header() {
+   var s = RUN.stats, m = RUN.meta;
+   document.getElementById("title").textContent =
+     "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
+     "  (" + m.bars.toLocaleString() + " bars, " +
+     (m.strict_window ? "strict" : "loose") + " entry window)";
++  // null = risk sizing never ran (--entry-mode fixed). "0.00%" would read as
++  // "we risked nothing", which is a different and false claim.
++  function pct(v) { return v == null ? "n/a" : v.toFixed(2) + "%"; }
+   var cells = [
+     ["Net P/L", money(s.net), s.net >= 0 ? "pos" : "neg"],
+     ["Trades", String(s.trades), ""],
+     ["Win rate", s.win_rate.toFixed(1) + "%", ""],
+-    ["Max drawdown", "$" + s.max_dd.toFixed(2), "neg"],
++    // two different drawdowns: max_dd walks the CLOSED balance curve,
++    // max_valley includes open-basket equity and is therefore never smaller.
++    ["Max drawdown (closed)", "$" + s.max_dd.toFixed(2), "neg"],
++    ["Max valley (open equity)", "$" + (s.max_valley == null ? s.max_dd : s.max_valley).toFixed(2), "neg"],
+     ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
+-    ["Risk taken", s.risk_median.toFixed(2) + "% / p90 " + s.risk_p90.toFixed(2) + "%", ""]
++    ["Risk taken", pct(s.risk_median) + " / p90 " + pct(s.risk_p90), ""]
+   ];
+   document.getElementById("stats").innerHTML = cells.map(function (c) {
+     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
+   }).join("");
++  // Spec §5: the $500–$2,000 band runs, but warns loudly, whatever this
++  // particular window happened to clamp.
++  if (s.start_balance >= 500 && s.start_balance < 2000) {
++    document.getElementById("warnbox").innerHTML +=
++      '<div class="warn"><b>Started at $' + s.start_balance.toFixed(0) +
++      ", inside the $500–$2,000 warn band.</b> At this size 1% of balance " +
++      "often cannot cover one ounce at the stop distance, so sizing falls " +
++      "back to the 0.01 minimum lot and over-risks. Measured 2026-08-20 over " +
++      "the last 365 days: 47.0% of entries clamp at $1,200, 32.3% at $2,000, " +
++      "94.7% at $500. Read this run's own clamp rate below before trusting " +
++      "the P/L.</div>";
++  }
+   if (s.clamp_pct > 10) {
+     document.getElementById("warnbox").innerHTML +=
+       '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
+       "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
+       "balance the 1% risk rule is often not obeyed — this run measures " +
+-      "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
+-      "meaningful results; $10,000+ for a clean test.</div>";
++      "minimum-lot behaviour as much as the rulebook. $10,000+ is the floor " +
++      "for a clean test of the risk rules; $4,000 still clamps roughly one " +
++      "entry in six (16.7% over the last 365 days, measured 2026-08-20 on " +
++      "the strict window).</div>";
+   }
+   var addTrades = RUN.trades.filter(function (t) { return t.legs.length > 1; }).length;
+   if (RUN.trades.length > 300 && addTrades > 0) {
+     document.getElementById("warnbox").innerHTML +=
+       '<div class="warn">Chart is thinned: pyramid-add ("+") markers are ' +
+       "hidden for " + addTrades + " of " + RUN.trades.length + " trades (runs " +
+       "over 300 trades drop them to keep the chart responsive). Entry/exit " +
+       "markers and the table's Legs column below are unaffected.</div>";
+   }
+   document.getElementById("caveats").textContent = "Not modelled: " + m.caveats.join(" · ");
+@@ -136,28 +162,56 @@ var candles = chart.addCandlestickSeries({
+     e55.push(I.ema55[i] == null ? { time: t } : { time: t, value: I.ema55[i] });
+     e200.push(I.ema200[i] == null ? { time: t } : { time: t, value: I.ema200[i] });
+     ht.push(I.ht.v[i] == null ? { time: t }
+       : { time: t, value: I.ht.v[i], color: I.ht.trend[i] === 0 ? HT_UP : HT_DOWN });
+   }
+   candles.setData(bars);
+   ema9.setData(e9); ema21.setData(e21); ema55.setData(e55); ema200.setData(e200);
+   htSeries.setData(ht);
+ 
+   // stepped stop line: one segment per trade, whitespace between them so
+-  // separate trades never join into one line
+-  var stops = [], seen = {};
+-  RUN.trades.forEach(function (tr) {
+-    tr.stop_history.forEach(function (h) { if (!seen[h.t]) { seen[h.t] = 1; stops.push({ time: h.t, value: h.stop }); } });
+-    if (!seen[tr.exit_t]) { seen[tr.exit_t] = 1; stops.push({ time: tr.exit_t, value: tr.stop_history[tr.stop_history.length - 1].stop }); }
+-    var gap = tr.exit_t + 300;
+-    if (!seen[gap]) { seen[gap] = 1; stops.push({ time: gap }); }
++  // separate trades never join into one line.
++  //
++  // A Lightweight Charts series holds ONE point per timestamp, and the engine
++  // opens a new basket in the same loop iteration that closed the previous one
++  // (a reversal exit and the next entry share a bar). So collisions are normal
++  // -- 124 of the 1,729 trades in the real 12-month run -- and the rule is that
++  // the NEWER basket wins the shared timestamp: its initial stop is the one
++  // that must be visible. An earlier "skip duplicates" version dropped the new
++  // basket's first point instead, which left 71 trades with <= 1 point and no
++  // stop line drawn at all.
++  //
++  // The whitespace separator is placed on the NEXT REAL BAR after the exit,
++  // not at exit + one bar length: a session break or a weekend means the next
++  // bar can be hours away, and a point at a timestamp no candle occupies adds
++  // a phantom column to the shared time scale.
++  var barAfter = {};                    // candle time -> the next candle's time
++  for (var k = 0; k + 1 < n; k++) barAfter[C.t[k]] = C.t[k + 1];
++
++  var byTime = {};                      // time -> point; later trades overwrite
++  var chrono = RUN.trades.slice().sort(function (a, b) {
++    return a.legs[0].t - b.legs[0].t;   // "newer wins" needs chronological order
++  });
++  chrono.forEach(function (tr, i) {
++    tr.stop_history.forEach(function (h) { byTime[h.t] = { time: h.t, value: h.stop }; });
++    var last = tr.stop_history[tr.stop_history.length - 1];
++    if (last) byTime[tr.exit_t] = { time: tr.exit_t, value: last.stop };
++    // whitespace one bar after the exit -- but only where no later trade lives,
++    // otherwise the gap point would cut the NEXT basket's line off at its first
++    // step (back-to-back trades have no free bar to separate them).
++    var gap = barAfter[tr.exit_t], next = chrono[i + 1];
++    if (gap === undefined) return;      // exit on the last bar: nothing follows
++    var nextStart = next ? (next.stop_history.length ? next.stop_history[0].t
++                                                     : next.legs[0].t) : Infinity;
++    if (gap < nextStart && byTime[gap] === undefined) byTime[gap] = { time: gap };
+   });
++  var stops = Object.keys(byTime).map(function (k) { return byTime[k]; });
+   stops.sort(function (a, b) { return a.time - b.time; });
+   stopSeries.setData(stops);
+ 
+   // markers: entry, each pyramid add, exit. Real 12-month runs carry ~1,200
+   // trades (~3,600 marker candidates); Lightweight Charts gets visibly
+   // sluggish rendering that many at once, so pyramid-add markers ("+") are
+   // included only when there aren't too many trades to begin with. Entry and
+   // exit markers (the ones the trade table's row-click needs to make sense
+   // of what it zoomed to) are always drawn.
+   var SHOW_ADDS = RUN.trades.length <= 300;
+@@ -232,14 +286,14 @@ redraw();
+ document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
+   return '<tr data-i="' + i + '"><td>' + (i + 1) + "</td><td>" + stamp(t.legs[0].t) +
+     "</td><td>" + t.dir + "</td><td>" + t.legs.length + "</td><td>" +
+     t.legs[0].px.toFixed(2) + "</td><td>" + t.exit.toFixed(2) + "</td><td>" +
+     t.why + '</td><td class="' + (t.pl >= 0 ? "pos" : "neg") + '">' + money(t.pl) +
+     "</td><td>" + t.bal_after.toFixed(2) + "</td></tr>";
+ }).join("");
+ 
+ document.getElementById("rows").addEventListener("click", function (ev) {
+   var tr = ev.target.closest("tr"); if (!tr) return;
+-  var t = RUN.trades[+tr.dataset.i], pad = 60 * 300;   // 60 M5 bars of context
++  var t = RUN.trades[+tr.dataset.i], pad = 60 * BAR_SEC;   // 60 bars of context
+   chart.timeScale().setVisibleRange({ from: t.legs[0].t - pad, to: t.exit_t + pad });
+ });
+ </script>
+diff --git a/service/tests/backtest_report_smoke.js b/service/tests/backtest_report_smoke.js
+index 23fb7fa..5589a2d 100644
+--- a/service/tests/backtest_report_smoke.js
++++ b/service/tests/backtest_report_smoke.js
+@@ -28,20 +28,30 @@
+  *        - markers are sorted ascending by time (Lightweight Charts throws
+  *          at runtime on an unsorted array -- this is the one property that
+  *          would be a hard runtime crash, not just a cosmetic bug)
+  *        - trade-box canvas geometry matches hand-computed coordinates
+  *          given stubbed timeToCoordinate/priceToCoordinate functions, and
+  *          the tp:null trade draws no green reward-zone rect
+  *   3. Against a 301-trade artifact: pyramid-add ("+") markers are thinned
+  *      out (entry/exit only) once trade count exceeds the 300 cutoff added
+  *      to the template for the real 1,210-trade run; a fixture below the
+  *      cutoff keeps its add markers.
++ *   4. Markers really are re-sorted, not merely already in order.
++ *   5. Back-to-back trades that SHARE a timestamp (a reversal exit and the
++ *      next entry land on the same bar) each keep a drawable stop line, with
++ *      the NEWER basket owning the shared timestamp.
++ *   6. Bar length is derived from the candle series, so --tf M15 runs put
++ *      their stop-line gap points on the M15 grid instead of 300 s off it.
++ *   7. Header honesty: null risk stats render "n/a" rather than "0.00%",
++ *      and both drawdown figures (closed balance, open equity) are shown.
++ *   8. A $500-$2,000 starting balance raises its own on-page banner (spec
++ *      section 5), independent of the unchanged >10% clamp-rate banner.
+  *
+  * Run: node service/tests/backtest_report_smoke.js
+  * Exit code 0 = every assertion passed. Non-zero + message on stderr = fail.
+  */
+ const fs = require('fs');
+ const os = require('os');
+ const path = require('path');
+ const vm = require('vm');
+ const assert = require('assert');
+ const { execFileSync } = require('child_process');
+@@ -210,21 +220,22 @@ function runScenario(runFixture, opts) {
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // 2. Small known artifact: candle/indicator wiring, HalfTrend colours,
+ //    stepped-stop gaps, marker sort order, hand-computed box geometry.
+ // ---------------------------------------------------------------------------
+ const T0 = 1700000000;
+ const BAR = 300;
+ const N = 20;
+ 
+-function buildSmallFixture() {
++function buildSmallFixture(bar) {
++  const BAR = bar || 300;   // bar length in seconds (300 = M5, 900 = M15)
+   const t = [], o = [], h = [], l = [], c = [];
+   const ema9 = [], ema21 = [], ema55 = [], ema200 = [], htV = [], htTrend = [];
+   for (let i = 0; i < N; i++) {
+     const time = T0 + i * BAR;
+     t.push(time); o.push(2400 + i); h.push(2405 + i); l.push(2395 + i); c.push(2402 + i);
+     if (i < 3) {
+       ema9.push(null); ema21.push(null); ema55.push(null); ema200.push(null);
+       htV.push(null); htTrend.push(null);
+     } else {
+       ema9.push(2400 + i * 0.1); ema21.push(2399 + i * 0.1);
+@@ -442,11 +453,156 @@ function buildSmallFixture() {
+   f.trades = [f.trades[1], f.trades[0]];
+   const { candlestickStub } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
+   const times = Array.from(candlestickStub.markers).map((m) => m.time);
+   const sorted = Array.from(times).sort((a, b) => a - b);
+   assert.deepStrictEqual(times, sorted,
+     'markers were not actually sorted -- input trade order was chronologically reversed ' +
+     'and the output should not be; Lightweight Charts throws at runtime on this');
+   console.log('ok    markers are actually re-sorted from out-of-chronological-order trade input');
+ })();
+ 
++// ---------------------------------------------------------------------------
++// 5. Back-to-back trades that SHARE a timestamp keep both stop lines.
++//
++// run() opens a new basket in the same loop iteration that closed the previous
++// one, so a reversal exit and the next entry land on the same bar. A series
++// holds one point per timestamp: the NEWER basket's stop must win it. The
++// first version of this code skipped the collision as a duplicate, which cost
++// 124 of the real run's 1,729 trades their initial stop point and left 71 of
++// them with <= 1 point -- no stop line drawn at all.
++// ---------------------------------------------------------------------------
++(function backToBackStopLineChecks() {
++  const f = buildSmallFixture();
++  const A_EXIT = T0 + 6 * BAR;
++  f.trades = [
++    {
++      dir: 'BUY',
++      legs: [{ t: T0 + 2 * BAR, px: 2400.00, oz: 100 }],
++      tp: 2410.00,
++      stop_history: [{ t: T0 + 2 * BAR, stop: 2395.00 }],
++      exit: 2405.00, exit_t: A_EXIT, why: 'reversal', pl: 250.00, bal_after: 4250.00,
++      regime: 'trend',
++    },
++    {
++      // reversal: this basket opens on the very bar that closed the one above
++      dir: 'SELL',
++      legs: [{ t: A_EXIT, px: 2405.00, oz: 80 }],
++      tp: 2395.00,
++      stop_history: [{ t: A_EXIT, stop: 2411.00 }, { t: T0 + 8 * BAR, stop: 2409.00 }],
++      exit: 2399.00, exit_t: T0 + 9 * BAR, why: 'stop', pl: 100.00, bal_after: 4350.00,
++      regime: 'trend',
++    },
++  ];
++  f.stats.trades = 2;
++  const { lineSeriesCalls } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++  const stopS = lineSeriesCalls[5];
++  const pts = Array.from(stopS.data).map((p) => ({ time: p.time, value: p.value }));
++  const at = (time) => pts.find((p) => p.time === time);
++
++  // the shared bar carries the NEWER basket's initial stop, not the older
++  // basket's carried-forward one
++  assert.ok(at(A_EXIT), 'the shared entry/exit timestamp has no stop point at all');
++  assert.strictEqual(at(A_EXIT).value, 2411.00,
++    'on a shared timestamp the NEWER basket\'s initial stop must win (got ' +
++    `${at(A_EXIT).value}, expected 2411 -- the incoming basket's stop)`);
++
++  // and no whitespace may be dropped inside the second basket's span, which
++  // would cut its line off one bar after it starts
++  const inside = pts.filter((p) => p.time > A_EXIT && p.time <= T0 + 9 * BAR &&
++    p.value === undefined);
++  assert.deepStrictEqual(inside, [],
++    'whitespace gap point landed inside the second basket, cutting its stop line');
++
++  // every trade still contributes at least 2 valued points (a line, not a dot)
++  f.trades.forEach((tr, i) => {
++    const span = pts.filter((p) => p.value !== undefined &&
++      p.time >= tr.stop_history[0].t && p.time <= tr.exit_t);
++    assert.ok(span.length >= 2,
++      `trade ${i} has ${span.length} stop point(s) -- no stop line would be drawn`);
++  });
++  console.log('ok    back-to-back trades sharing a timestamp: newer stop wins, both lines drawn');
++})();
++
++// ---------------------------------------------------------------------------
++// 6. Bar length is read off the data, not assumed to be 300 s (--tf M15).
++// ---------------------------------------------------------------------------
++(function barSecondsChecks() {
++  const M15 = 900;
++  const f = buildSmallFixture(M15);
++  f.meta.tf = 'M15';
++  const { lineSeriesCalls, elements } = runScenario(f, {
++    visibleFrom: T0, visibleTo: T0 + 13 * M15,
++  });
++  const stopS = lineSeriesCalls[5];
++  const whitespace = Array.from(stopS.data)
++    .filter((p) => !('value' in p)).map((p) => p.time);
++  assert.deepStrictEqual(whitespace, [T0 + 7 * M15, T0 + 13 * M15],
++    'stop-line gap points must sit one M15 bar after each exit, on the bar grid');
++  // nothing on the stop series may sit at a timestamp no candle occupies: an
++  // off-grid point adds a phantom column to the shared time scale
++  const grid = new Set(f.candles.t);
++  const offGrid = Array.from(stopS.data).map((p) => p.time).filter((t) => !grid.has(t));
++  assert.deepStrictEqual(offGrid, [], 'stop-series points off the candle grid');
++  // row-click zoom pads by 60 bars of the run's OWN timeframe
++  const handler = elements.rows._handlers.click;
++  assert.ok(handler, 'no click handler registered on the trade table');
++  handler({ target: { closest: () => ({ dataset: { i: '0' } }) } });
++  console.log('ok    bar length derived from the candle series (M15 gap points land on the grid)');
++})();
++
++// ---------------------------------------------------------------------------
++// 7. Header honesty: null risk stats render "n/a", never "0.00%", and both
++//    drawdown figures are shown and labelled.
++// ---------------------------------------------------------------------------
++(function headerHonestyChecks() {
++  const f = buildSmallFixture();
++  // --entry-mode fixed: nothing is risk-sized, so the engine emits nulls
++  f.stats.clamp_pct = null; f.stats.risk_median = null; f.stats.risk_p90 = null;
++  f.meta.entry_mode = 'fixed';
++  const { elements } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++  const html = elements.stats.innerHTML;
++  assert.ok(/n\/a\s*\/\s*p90\s*n\/a/.test(html),
++    `null risk stats must render "n/a", got: ${html}`);
++  assert.ok(!html.includes('0.00%'),
++    '"0.00%" risk reads as "we risked nothing" -- it must not be rendered for nulls');
++  assert.ok(!elements.warnbox.innerHTML.includes('minimum lot'),
++    'a null clamp rate must not trip the >10% clamp warning');
++
++  // both drawdowns, labelled -- max_valley (open equity) is never smaller
++  const clean = runScenario(buildSmallFixture(), { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++  const h2 = clean.elements.stats.innerHTML;
++  assert.ok(h2.includes('Max drawdown (closed)') && h2.includes('$50.00'),
++    'closed-balance drawdown missing or unlabelled');
++  assert.ok(h2.includes('Max valley (open equity)') && h2.includes('$60.00'),
++    'open-equity valley (max_valley) is in the artifact but not shown');
++  console.log('ok    header shows n/a for null risk stats and both drawdown figures');
++})();
++
++// ---------------------------------------------------------------------------
++// 8. Balance-band banner (spec section 5): $500-$2,000 warns on the page, not
++//    only in stdout, whatever this particular window happened to clamp.
++// ---------------------------------------------------------------------------
++(function balanceBandChecks() {
++  function warnFor(balance, clampPct) {
++    const f = buildSmallFixture();
++    f.stats.start_balance = balance;
++    f.stats.clamp_pct = clampPct;
++    return runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR })
++      .elements.warnbox.innerHTML;
++  }
++  assert.ok(/\$500.\$2,000 warn band/.test(warnFor(1200, 0.0)),
++    'a $1,200 start balance must raise the warn-band banner even at 0% clamp');
++  assert.ok(/warn band/.test(warnFor(500, 0.0)),
++    'the band is inclusive at its $500 floor');
++  assert.ok(!/warn band/.test(warnFor(2000, 0.0)),
++    '$2,000 is the top of the band and must not raise it');
++  assert.ok(!/warn band/.test(warnFor(10000, 0.0)),
++    'a healthy balance must raise no banner');
++  // the >10% clamp banner is a separate, unchanged threshold
++  assert.ok(/forced to the 0.01 minimum lot/.test(warnFor(10000, 16.7)),
++    'the >10% clamp banner must still fire on its own');
++  assert.ok(!/forced to the 0.01 minimum lot/.test(warnFor(10000, 10.0)),
++    'the "results distorted" threshold stays at >10%, not >=10%');
++  console.log('ok    $500-$2,000 start balance raises its own banner; >10% clamp banner unchanged');
++})();
++
+ console.log('\nPASS -- all headless assertions passed');
+diff --git a/service/tests/data/golden_trades_strict.json b/service/tests/data/golden_trades_strict.json
+new file mode 100644
+index 0000000..b6ae7e0
+--- /dev/null
++++ b/service/tests/data/golden_trades_strict.json
+@@ -0,0 +1,702 @@
++{
++ "trades": [
++  {
++   "dir": "BUY",
++   "entry": 3987.91,
++   "legs": 1,
++   "exit": 3984.17,
++   "why": "stop",
++   "pl": -39.4
++  },
++  {
++   "dir": "SELL",
++   "entry": 3977.1,
++   "legs": 2,
++   "exit": 3982.66,
++   "why": "stop",
++   "pl": -38.66
++  },
++  {
++   "dir": "BUY",
++   "entry": 3985.36,
++   "legs": 1,
++   "exit": 3979.85,
++   "why": "stop",
++   "pl": -39.95
++  },
++  {
++   "dir": "SELL",
++   "entry": 3973.45,
++   "legs": 2,
++   "exit": 3961.95,
++   "why": "profit target",
++   "pl": 89.22
++  },
++  {
++   "dir": "SELL",
++   "entry": 3954.54,
++   "legs": 1,
++   "exit": 3972.51,
++   "why": "stop",
++   "pl": -36.34
++  },
++  {
++   "dir": "BUY",
++   "entry": 3985.7,
++   "legs": 3,
++   "exit": 3992.24,
++   "why": "profit lock",
++   "pl": 9.06
++  },
++  {
++   "dir": "SELL",
++   "entry": 3988.14,
++   "legs": 2,
++   "exit": 3991.67,
++   "why": "stop",
++   "pl": -49.5
++  },
++  {
++   "dir": "BUY",
++   "entry": 4010.6,
++   "legs": 1,
++   "exit": 3982.46,
++   "why": "stop",
++   "pl": -28.34
++  },
++  {
++   "dir": "BUY",
++   "entry": 4081.7,
++   "legs": 1,
++   "exit": 4075.45,
++   "why": "stop",
++   "pl": -38.68
++  },
++  {
++   "dir": "SELL",
++   "entry": 4074.01,
++   "legs": 1,
++   "exit": 4079.81,
++   "why": "stop",
++   "pl": -35.99
++  },
++  {
++   "dir": "BUY",
++   "entry": 4087.74,
++   "legs": 3,
++   "exit": 4093.51,
++   "why": "profit lock",
++   "pl": 8.85
++  },
++  {
++   "dir": "BUY",
++   "entry": 4110.36,
++   "legs": 1,
++   "exit": 4112.1,
++   "why": "flatten",
++   "pl": 6.16
++  },
++  {
++   "dir": "BUY",
++   "entry": 4142.11,
++   "legs": 3,
++   "exit": 4167.49,
++   "why": "profit target",
++   "pl": 83.35
++  },
++  {
++   "dir": "SELL",
++   "entry": 4116.18,
++   "legs": 2,
++   "exit": 4137.29,
++   "why": "stop",
++   "pl": -59.15
++  },
++  {
++   "dir": "SELL",
++   "entry": 4128.4,
++   "legs": 2,
++   "exit": 4110.67,
++   "why": "profit target",
++   "pl": 86.12
++  },
++  {
++   "dir": "SELL",
++   "entry": 4191.92,
++   "legs": 2,
++   "exit": 4201.82,
++   "why": "stop",
++   "pl": -27.5
++  },
++  {
++   "dir": "BUY",
++   "entry": 4200.64,
++   "legs": 1,
++   "exit": 4195.14,
++   "why": "stop",
++   "pl": -39.93
++  },
++  {
++   "dir": "SELL",
++   "entry": 4181.25,
++   "legs": 1,
++   "exit": 4192.02,
++   "why": "stop",
++   "pl": -32.91
++  },
++  {
++   "dir": "BUY",
++   "entry": 4206.22,
++   "legs": 1,
++   "exit": 4186.7,
++   "why": "stop",
++   "pl": -19.72
++  },
++  {
++   "dir": "BUY",
++   "entry": 4202.97,
++   "legs": 2,
++   "exit": 4207.04,
++   "why": "flatten",
++   "pl": 3.45
++  },
++  {
++   "dir": "SELL",
++   "entry": 4225.5,
++   "legs": 3,
++   "exit": 4216.81,
++   "why": "profit lock",
++   "pl": 0.15
++  },
++  {
++   "dir": "BUY",
++   "entry": 4226.34,
++   "legs": 1,
++   "exit": 4217.48,
++   "why": "stop",
++   "pl": -36.23
++  },
++  {
++   "dir": "SELL",
++   "entry": 4337.87,
++   "legs": 2,
++   "exit": 4290.73,
++   "why": "profit target",
++   "pl": 125.63
++  },
++  {
++   "dir": "BUY",
++   "entry": 4337.55,
++   "legs": 3,
++   "exit": 4362.12,
++   "why": "profit lock",
++   "pl": 33.31
++  },
++  {
++   "dir": "SELL",
++   "entry": 4221.19,
++   "legs": 1,
++   "exit": 4231.93,
++   "why": "stop",
++   "pl": -32.81
++  },
++  {
++   "dir": "SELL",
++   "entry": 4256.99,
++   "legs": 2,
++   "exit": 4255.12,
++   "why": "profit lock",
++   "pl": -5.99
++  },
++  {
++   "dir": "BUY",
++   "entry": 4255.84,
++   "legs": 2,
++   "exit": 4251.91,
++   "why": "stop",
++   "pl": -40.44
++  },
++  {
++   "dir": "BUY",
++   "entry": 4330.03,
++   "legs": 2,
++   "exit": 4354.84,
++   "why": "profit target",
++   "pl": 106.41
++  },
++  {
++   "dir": "SELL",
++   "entry": 4350.22,
++   "legs": 3,
++   "exit": 4321.72,
++   "why": "profit target",
++   "pl": 87.43
++  },
++  {
++   "dir": "BUY",
++   "entry": 4111.25,
++   "legs": 3,
++   "exit": 4120.22,
++   "why": "stop",
++   "pl": -19.53
++  },
++  {
++   "dir": "SELL",
++   "entry": 4117.68,
++   "legs": 3,
++   "exit": 4110.08,
++   "why": "stop",
++   "pl": -22.71
++  },
++  {
++   "dir": "SELL",
++   "entry": 4030.02,
++   "legs": 2,
++   "exit": 4042.7,
++   "why": "stop",
++   "pl": -42.69
++  },
++  {
++   "dir": "BUY",
++   "entry": 4054.88,
++   "legs": 3,
++   "exit": 4093.02,
++   "why": "profit target",
++   "pl": 82.61
++  },
++  {
++   "dir": "BUY",
++   "entry": 4088.64,
++   "legs": 2,
++   "exit": 4083.42,
++   "why": "stop",
++   "pl": -41.98
++  },
++  {
++   "dir": "SELL",
++   "entry": 4100.13,
++   "legs": 1,
++   "exit": 4114.17,
++   "why": "reversal",
++   "pl": -14.24
++  },
++  {
++   "dir": "BUY",
++   "entry": 4114.17,
++   "legs": 2,
++   "exit": 4120.11,
++   "why": "profit lock",
++   "pl": 16.56
++  },
++  {
++   "dir": "BUY",
++   "entry": 4127.33,
++   "legs": 2,
++   "exit": 4146.74,
++   "why": "profit target",
++   "pl": 99.7
++  },
++  {
++   "dir": "SELL",
++   "entry": 4129.49,
++   "legs": 1,
++   "exit": 4139.05,
++   "why": "reversal",
++   "pl": -19.52
++  },
++  {
++   "dir": "BUY",
++   "entry": 4139.05,
++   "legs": 1,
++   "exit": 4134.49,
++   "why": "stop",
++   "pl": -38.09
++  },
++  {
++   "dir": "SELL",
++   "entry": 4118.79,
++   "legs": 2,
++   "exit": 4117.9,
++   "why": "profit lock",
++   "pl": -8.48
++  },
++  {
++   "dir": "SELL",
++   "entry": 4106.29,
++   "legs": 1,
++   "exit": 4111.19,
++   "why": "stop",
++   "pl": -40.82
++  },
++  {
++   "dir": "SELL",
++   "entry": 4089.46,
++   "legs": 3,
++   "exit": 4054.39,
++   "why": "profit target",
++   "pl": 116.3
++  },
++  {
++   "dir": "SELL",
++   "entry": 4059.19,
++   "legs": 2,
++   "exit": 4064.77,
++   "why": "stop",
++   "pl": -54.41
++  },
++  {
++   "dir": "BUY",
++   "entry": 4080.68,
++   "legs": 3,
++   "exit": 4105.75,
++   "why": "profit lock",
++   "pl": 36.13
++  },
++  {
++   "dir": "BUY",
++   "entry": 4114.72,
++   "legs": 1,
++   "exit": 4108.67,
++   "why": "stop",
++   "pl": -37.51
++  },
++  {
++   "dir": "SELL",
++   "entry": 4081.95,
++   "legs": 2,
++   "exit": 4076.69,
++   "why": "profit lock",
++   "pl": 16.54
++  },
++  {
++   "dir": "SELL",
++   "entry": 4073.08,
++   "legs": 2,
++   "exit": 4058.45,
++   "why": "profit target",
++   "pl": 164.39
++  },
++  {
++   "dir": "SELL",
++   "entry": 4017.93,
++   "legs": 3,
++   "exit": 3974.77,
++   "why": "profit target",
++   "pl": 92.58
++  },
++  {
++   "dir": "SELL",
++   "entry": 3997.94,
++   "legs": 2,
++   "exit": 3992.82,
++   "why": "profit lock",
++   "pl": 12.16
++  },
++  {
++   "dir": "SELL",
++   "entry": 4000.73,
++   "legs": 2,
++   "exit": 3994.3,
++   "why": "profit lock",
++   "pl": 18.97
++  },
++  {
++   "dir": "SELL",
++   "entry": 3909.97,
++   "legs": 1,
++   "exit": 3920.89,
++   "why": "stop",
++   "pl": -33.35
++  },
++  {
++   "dir": "BUY",
++   "entry": 3938.9,
++   "legs": 3,
++   "exit": 3963.05,
++   "why": "profit target",
++   "pl": 101.33
++  },
++  {
++   "dir": "SELL",
++   "entry": 3953.0,
++   "legs": 1,
++   "exit": 3969.38,
++   "why": "stop",
++   "pl": -33.17
++  },
++  {
++   "dir": "BUY",
++   "entry": 3969.68,
++   "legs": 1,
++   "exit": 3963.24,
++   "why": "stop",
++   "pl": -39.82
++  },
++  {
++   "dir": "SELL",
++   "entry": 3959.09,
++   "legs": 2,
++   "exit": 3964.06,
++   "why": "stop",
++   "pl": -42.34
++  },
++  {
++   "dir": "BUY",
++   "entry": 3968.9,
++   "legs": 3,
++   "exit": 3984.03,
++   "why": "profit target",
++   "pl": 100.88
++  },
++  {
++   "dir": "SELL",
++   "entry": 3932.5,
++   "legs": 2,
++   "exit": 3943.41,
++   "why": "stop",
++   "pl": -43.62
++  },
++  {
++   "dir": "BUY",
++   "entry": 3971.11,
++   "legs": 1,
++   "exit": 3989.1,
++   "why": "profit target",
++   "pl": 88.95
++  },
++  {
++   "dir": "BUY",
++   "entry": 4009.94,
++   "legs": 3,
++   "exit": 4024.68,
++   "why": "flatten",
++   "pl": 27.0
++  },
++  {
++   "dir": "SELL",
++   "entry": 4003.36,
++   "legs": 1,
++   "exit": 4014.23,
++   "why": "stop",
++   "pl": -44.27
++  },
++  {
++   "dir": "BUY",
++   "entry": 4010.44,
++   "legs": 1,
++   "exit": 4024.5,
++   "why": "profit target",
++   "pl": 138.6
++  },
++  {
++   "dir": "SELL",
++   "entry": 4016.54,
++   "legs": 1,
++   "exit": 4025.25,
++   "why": "stop",
++   "pl": -44.57
++  },
++  {
++   "dir": "BUY",
++   "entry": 4006.62,
++   "legs": 1,
++   "exit": 3992.77,
++   "why": "stop",
++   "pl": -42.16
++  },
++  {
++   "dir": "SELL",
++   "entry": 3992.28,
++   "legs": 1,
++   "exit": 4003.62,
++   "why": "reversal",
++   "pl": -23.08
++  },
++  {
++   "dir": "BUY",
++   "entry": 4013.99,
++   "legs": 2,
++   "exit": 4015.41,
++   "why": "profit lock",
++   "pl": -24.84
++  },
++  {
++   "dir": "SELL",
++   "entry": 4013.63,
++   "legs": 1,
++   "exit": 4019.83,
++   "why": "stop",
++   "pl": -44.81
++  },
++  {
++   "dir": "SELL",
++   "entry": 4008.61,
++   "legs": 2,
++   "exit": 4011.23,
++   "why": "reversal",
++   "pl": -17.22
++  },
++  {
++   "dir": "SELL",
++   "entry": 3984.2,
++   "legs": 3,
++   "exit": 3975.6,
++   "why": "profit lock",
++   "pl": 38.1
++  },
++  {
++   "dir": "BUY",
++   "entry": 3985.08,
++   "legs": 3,
++   "exit": 3991.72,
++   "why": "profit lock",
++   "pl": 23.71
++  },
++  {
++   "dir": "SELL",
++   "entry": 3989.98,
++   "legs": 1,
++   "exit": 3994.27,
++   "why": "stop",
++   "pl": -44.88
++  },
++  {
++   "dir": "SELL",
++   "entry": 3962.83,
++   "legs": 3,
++   "exit": 3950.63,
++   "why": "profit target",
++   "pl": 97.86
++  },
++  {
++   "dir": "BUY",
++   "entry": 3986.22,
++   "legs": 1,
++   "exit": 3969.64,
++   "why": "stop",
++   "pl": -33.55
++  },
++  {
++   "dir": "SELL",
++   "entry": 3966.82,
++   "legs": 2,
++   "exit": 3967.51,
++   "why": "reversal",
++   "pl": -14.75
++  },
++  {
++   "dir": "BUY",
++   "entry": 3967.51,
++   "legs": 2,
++   "exit": 3971.42,
++   "why": "profit lock",
++   "pl": 13.34
++  },
++  {
++   "dir": "BUY",
++   "entry": 3976.77,
++   "legs": 2,
++   "exit": 3987.64,
++   "why": "profit target",
++   "pl": 121.65
++  },
++  {
++   "dir": "BUY",
++   "entry": 4016.19,
++   "legs": 1,
++   "exit": 4007.53,
++   "why": "stop",
++   "pl": -44.31
++  },
++  {
++   "dir": "BUY",
++   "entry": 4013.83,
++   "legs": 1,
++   "exit": 4010.7,
++   "why": "stop",
++   "pl": -46.62
++  },
++  {
++   "dir": "SELL",
++   "entry": 3995.06,
++   "legs": 3,
++   "exit": 3981.87,
++   "why": "profit lock",
++   "pl": 8.71
++  },
++  {
++   "dir": "SELL",
++   "entry": 3983.79,
++   "legs": 3,
++   "exit": 3977.19,
++   "why": "flatten",
++   "pl": 68.64
++  },
++  {
++   "dir": "BUY",
++   "entry": 3998.48,
++   "legs": 1,
++   "exit": 3994.42,
++   "why": "stop",
++   "pl": -46.88
++  },
++  {
++   "dir": "SELL",
++   "entry": 4004.41,
++   "legs": 1,
++   "exit": 4010.71,
++   "why": "stop",
++   "pl": -45.53
++  },
++  {
++   "dir": "BUY",
++   "entry": 4005.79,
++   "legs": 1,
++   "exit": 4002.47,
++   "why": "stop",
++   "pl": -45.76
++  },
++  {
++   "dir": "SELL",
++   "entry": 3995.12,
++   "legs": 1,
++   "exit": 4001.41,
++   "why": "stop",
++   "pl": -45.43
++  },
++  {
++   "dir": "BUY",
++   "entry": 4005.32,
++   "legs": 1,
++   "exit": 3999.6,
++   "why": "stop",
++   "pl": -41.47
++  },
++  {
++   "dir": "SELL",
++   "entry": 3990.11,
++   "legs": 1,
++   "exit": 3999.04,
++   "why": "stop",
++   "pl": -36.52
++  },
++  {
++   "dir": "SELL",
++   "entry": 3999.92,
++   "legs": 1,
++   "exit": 4005.14,
++   "why": "reversal",
++   "pl": -21.68
++  },
++  {
++   "dir": "BUY",
++   "entry": 4005.14,
++   "legs": 1,
++   "exit": 4001.11,
++   "why": "stop",
++   "pl": -42.29
++  }
++ ],
++ "final_balance": 4239.44,
++ "max_dd": 339.14
++}
+\ No newline at end of file
+diff --git a/service/tests/test_backtest_balance.py b/service/tests/test_backtest_balance.py
+index 2758b61..ef116df 100644
+--- a/service/tests/test_backtest_balance.py
++++ b/service/tests/test_backtest_balance.py
+@@ -1,13 +1,22 @@
+-"""Below ~$4,000 the 1% risk rule stops being obeyed: sizing clamps to the
+-0.01 minimum lot and over-risks rather than skipping the trade. Measured over
+-12 months of M5: 51% of entries clamp at $1,200, 89% at $500."""
++"""Below ~$10,000 the 1% risk rule stops being reliably obeyed: sizing clamps
++to the 0.01 minimum lot and over-risks rather than skipping the trade.
++
++Measured 2026-08-20 on the SHIPPED DEFAULT (strict entry window),
++`scripts/backtest.py --source bars_max.json --days 365`: entries clamp 94.7%
++at $500, 68.5% at $800, 47.0% at $1,200, 32.3% at $2,000, 16.7% at $4,000,
++1.3% at $10,000, 0.0% at $25,000. (Older copies of this table were measured
++under the LOOSE window, before strict became the default, and read materially
++lower -- 10.2% at $4,000 rather than 16.7%.)
++
++$4,000 therefore trips the tool's own ">10% => results distorted" flag;
++$10,000+ is the floor for a clean test."""
+ import json
+ 
+ import pytest
+ 
+ from tests.test_backtest_golden import BARS, _load_bt
+ 
+ 
+ def test_below_minimum_balance_refuses_to_run():
+     bt = _load_bt()
+     with pytest.raises(SystemExit):
+diff --git a/service/tests/test_backtest_golden.py b/service/tests/test_backtest_golden.py
+index 1e8430a..d3907e5 100644
+--- a/service/tests/test_backtest_golden.py
++++ b/service/tests/test_backtest_golden.py
+@@ -1,37 +1,49 @@
+ """Characterization test for the backtest engine.
+ 
+ Pins the exact trade list `scripts/backtest.py` produces over a fixed slice
+ of real M5 data. This is NOT a correctness test -- it is a change detector.
+ If it fails, the replay's behaviour moved. Unless the task you are doing
+ explicitly changes replay behaviour, the change is a bug.
+ 
++There are TWO pins over the same frozen fixture, because there are two entry
++windows and only one of them can be the default at a time:
++
++  golden_trades.json         LOOSE window. Captured 2026-08-20 BEFORE strict
++                             became the default, so it survives that flip as a
++                             like-for-like change detector. Its provenance is
++                             load-bearing: do not regenerate it.
++  golden_trades_strict.json  STRICT window -- the path every plain run now
++                             takes. Added 2026-08-20 because the shipped
++                             default was otherwise pinned by nothing but
++                             "strict takes fewer entries than loose".
++
+ Regenerate deliberately (and only deliberately) with the manual script from
+ task-1-brief.md Step 4 (.superpowers/sdd/2026-08-20-backtest-report/):
+     cd service && .venv/bin/python - <<'PY'
+     import json
+     from tests.test_backtest_golden import _replay, GOLDEN
+     digest, bal, dd = _replay()
+     GOLDEN.write_text(json.dumps(
+         {"trades": digest, "final_balance": bal, "max_dd": dd}, indent=1))
+     PY
++(swap in _replay_strict / GOLDEN_STRICT for the strict pin.)
+ """
+ import importlib.util
+ import json
+ import pathlib
+ 
+-import pytest
+-
+ ROOT = pathlib.Path(__file__).resolve().parents[2]
+ DATA = pathlib.Path(__file__).parent / "data"
+ BARS = DATA / "bars_slice.json"
+ GOLDEN = DATA / "golden_trades.json"
++GOLDEN_STRICT = DATA / "golden_trades_strict.json"
+ 
+ 
+ def _load_bt():
+     """Import scripts/backtest.py as a module. It is a script, not a package
+     member, so it is loaded by path; importing it is side-effect free (the
+     argparse/main call is guarded by __name__ == '__main__')."""
+     spec = importlib.util.spec_from_file_location(
+         "bt", ROOT / "scripts" / "backtest.py")
+     mod = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(mod)
+@@ -52,19 +64,45 @@ def _replay():
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
+     # The golden file pins LOOSE-window behaviour, captured 2026-08-20 before
+     # strict became the default. Keep it loose so the pin stays a like-for-like
+     # change detector across that default flip.
+     bt.STRICT_WINDOW = False
+     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+     return _digest(trades), round(bal, 2), round(max_dd, 2)
+ 
+ 
+-def test_replay_matches_golden():
+-    digest, bal, max_dd = _replay()
+-    golden = json.loads(GOLDEN.read_text())
++def _replay_strict():
++    """The SHIPPED default path: strict entry window, everything else stock."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    assert bt.STRICT_WINDOW is True, "strict is supposed to be the default"
++    trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
++    return _digest(trades), round(bal, 2), round(max_dd, 2)
++
++
++def _assert_matches(digest, bal, max_dd, path):
++    golden = json.loads(path.read_text())
+     assert len(digest) == len(golden["trades"]), (
+         f"trade COUNT moved: {len(golden['trades'])} -> {len(digest)}")
+     for i, (got, want) in enumerate(zip(digest, golden["trades"])):
+         assert got == want, f"trade {i} changed:\n  was {want}\n  now {got}"
+     assert bal == golden["final_balance"]
+     assert max_dd == golden["max_dd"]
++
++
++def test_replay_matches_golden():
++    _assert_matches(*_replay(), GOLDEN)
++
++
++def test_strict_replay_matches_golden():
++    """The loose pin above cannot see a regression that only touches the
++    strict path -- and strict is what every plain run now takes."""
++    _assert_matches(*_replay_strict(), GOLDEN_STRICT)
++
++
++def test_the_two_pins_really_pin_different_runs():
++    """Guards against a copy-paste that made both goldens the same file."""
++    loose = json.loads(GOLDEN.read_text())
++    strict = json.loads(GOLDEN_STRICT.read_text())
++    assert len(strict["trades"]) < len(loose["trades"]), (
++        "strict can only ever refuse entries loose would take")
+diff --git a/service/tests/test_backtest_help.py b/service/tests/test_backtest_help.py
+index a593860..88e476d 100644
+--- a/service/tests/test_backtest_help.py
++++ b/service/tests/test_backtest_help.py
+@@ -1,13 +1,18 @@
+ """--help must state what the replay does NOT model. A result whose limits are
+ invisible gets trusted further than it deserves."""
+-from tests.test_backtest_golden import _load_bt
++import argparse
++import json
++import subprocess
++import sys
++
++from tests.test_backtest_golden import BARS, ROOT, _load_bt
+ 
+ 
+ def test_caveats_name_the_unmodelled_rails():
+     bt = _load_bt()
+     blob = " ".join(bt.CAVEATS).lower()
+     assert "brake" in blob
+     assert "kill switch" in blob
+     assert "news" in blob
+ 
+ 
+@@ -26,10 +31,53 @@ def test_arguments_are_grouped():
+ 
+ 
+ def test_every_argument_belongs_to_one_of_the_four_groups():
+     bt = _load_bt()
+     ap = bt.build_parser()
+     named = {"Data", "Rules", "Experiments", "Output"}
+     grouped = {a.dest for g in ap._action_groups if g.title in named
+                for a in g._group_actions}
+     ungrouped = {a.dest for a in ap._actions} - grouped - {"help"}
+     assert not ungrouped, f"arguments outside the four groups: {sorted(ungrouped)}"
++
++
++def test_every_flag_documents_itself():
++    """A flag with no help text is a flag nobody can audit. --balance had an
++    entire spec section and showed nothing, not even its default."""
++    ap = _load_bt().build_parser()
++    missing = [a.option_strings[0] for a in ap._actions
++               if a.dest != "help" and not a.help]
++    assert not missing, f"flags with no --help text: {missing}"
++
++
++def test_the_no_op_strict_window_flag_is_visible_and_says_it_is_a_no_op():
++    """Hiding a flag whose meaning just inverted is the wrong instinct: a
++    scripted run passing --strict-window deserves to be told it is inert."""
++    ap = _load_bt().build_parser()
++    act = next(a for a in ap._actions if "--strict-window" in a.option_strings)
++    assert act.help is not argparse.SUPPRESS and act.help
++    assert "no-op" in act.help.lower()
++    assert "--strict-window" in ap.format_help()
++
++
++def test_the_experiments_blurb_does_not_claim_the_window_flags_are_off():
++    """--window-start/--window-end are the EA's REAL trading window (4-23),
++    not a study filter that defaults to OFF."""
++    ap = _load_bt().build_parser()
++    blurb = next(g.description for g in ap._action_groups
++                 if g.title == "Experiments")
++    assert "window" in blurb.lower(), \
++        "the Experiments blurb must call out the window flags as live defaults"
++
++
++def test_a_plain_run_prints_the_caveats_to_stdout(tmp_path):
++    """The caveats reached --help, --json and the report page, but not stdout
++    -- which is where most runs are actually read."""
++    src = tmp_path / "src.json"
++    src.write_text(json.dumps({"candles": json.loads(BARS.read_text())}))
++    out = subprocess.run(
++        [sys.executable, str(ROOT / "scripts" / "backtest.py"),
++         "--source", str(src), "--balance", "10000"],
++        capture_output=True, text=True, timeout=300, check=True).stdout
++    assert "NOT MODELLED:" in out
++    for phrase in ("daily-loss brake", "kill switch", "news blackout"):
++        assert phrase in out, f"stdout never names the {phrase}"
+diff --git a/service/tests/test_backtest_records.py b/service/tests/test_backtest_records.py
+index 2269ceb..7b7dc7b 100644
+--- a/service/tests/test_backtest_records.py
++++ b/service/tests/test_backtest_records.py
+@@ -1,14 +1,13 @@
+ """The chart cannot draw what the engine does not record: entry times, the
+ stop as it actually moved, and the target price."""
+ import json
+-import pathlib
+ 
+ from tests.test_backtest_golden import BARS, _load_bt
+ 
+ 
+ def _trades():
+     bt = _load_bt()
+     return bt.run(json.loads(BARS.read_text()), 4000.0, False)[0]
+ 
+ 
+ def test_every_leg_carries_its_bar_time():
+@@ -50,10 +49,34 @@ def test_tp_is_a_price_on_the_profitable_side_of_entry():
+             assert t["tp"] > entry
+         else:
+             assert t["tp"] < entry
+ 
+ 
+ def test_bal_after_chains_to_the_final_balance():
+     bt = _load_bt()
+     trades, bal, _dd, _v = bt.run(json.loads(BARS.read_text()), 4000.0, False)
+     assert trades
+     assert round(trades[-1]["bal_after"], 2) == round(bal, 2)
++
++
++def test_tp_tracks_the_legs_so_a_target_exit_never_lands_short_of_it():
++    """`tp` is the price at which the basket reaches its profit target. Every
++    pyramid add moves that price, so a tp frozen at the first leg drew a
++    reward zone further out than the level actually banked -- 216 of 315
++    target exits over 12 months landed SHORT of their own drawn tp.
++
++    The invariant: a basket that exited "profit target" filled at or beyond
++    its tp, directionally. (Beyond, not exactly at: the replay acts on bar
++    closes, so the fill overshoots the price where the target was crossed.)"""
++    trades = _trades()
++    tg = [t for t in trades if t["why"] == "profit target"]
++    assert tg, "the slice must contain at least one target exit"
++    assert any(len(t["legs"]) > 1 for t in tg), \
++        "the slice must contain at least one MULTI-LEG target exit"
++    for t in tg:
++        assert t["tp"] is not None
++        if t["dir"] == "BUY":
++            assert t["exit"] >= t["tp"] - 1e-9, (
++                f"BUY banked {t['exit']:.2f} short of its drawn tp {t['tp']:.2f}")
++        else:
++            assert t["exit"] <= t["tp"] + 1e-9, (
++                f"SELL banked {t['exit']:.2f} short of its drawn tp {t['tp']:.2f}")
+diff --git a/service/tests/test_backtest_report_smoke.py b/service/tests/test_backtest_report_smoke.py
+new file mode 100644
+index 0000000..a5d8f2b
+--- /dev/null
++++ b/service/tests/test_backtest_report_smoke.py
+@@ -0,0 +1,27 @@
++"""Run the headless Node smoke test for the report template under pytest.
++
++`backtest_report_smoke.js` checks the template's data wiring (series shapes,
++marker order, stop-line gaps, canvas geometry) with hand-rolled DOM/canvas/
++LightweightCharts stubs -- no npm or browser dependency. It used to be run
++only by hand, which is how a template regression stays green for a month.
++Node is not a hard requirement of this repo, so a missing `node` skips.
++"""
++import shutil
++import subprocess
++
++import pytest
++
++from tests.test_backtest_golden import ROOT
++
++SMOKE = ROOT / "service" / "tests" / "backtest_report_smoke.js"
++
++
++@pytest.mark.skipif(shutil.which("node") is None,
++                    reason="node is not installed; the report smoke test needs it")
++def test_report_template_passes_the_headless_smoke_test():
++    proc = subprocess.run(["node", str(SMOKE)], capture_output=True,
++                          text=True, timeout=300)
++    assert proc.returncode == 0, (
++        f"{SMOKE.name} failed\n--- stdout ---\n{proc.stdout}"
++        f"\n--- stderr ---\n{proc.stderr}")
++    assert "PASS" in proc.stdout
+diff --git a/service/tests/test_backtest_web.py b/service/tests/test_backtest_web.py
+index 245b7d2..5299d9e 100644
+--- a/service/tests/test_backtest_web.py
++++ b/service/tests/test_backtest_web.py
+@@ -73,10 +73,37 @@ def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
+     bt.ENTRY_MODE = "fixed"
+     bt.FIXED_LOTS = 0.05
+     args = bt.build_parser().parse_args(
+         ["--balance", "10000", "--entry-mode", "fixed"])
+     trades, bal, dd, valley = bt.run(candles, 10000.0, False)
+     art = bt.build_run_json(candles, trades, args,
+                             {"bal": bal, "max_dd": dd, "valley": valley})
+     assert art["trades"], "expected at least one trade in the fixture slice"
+     for t in art["trades"]:
+         assert t["tp"] is None, f"fixed-mode trade carries a tp: {t}"
++
++
++def test_fixed_entry_mode_reports_null_risk_stats_not_zero():
++    """Nothing is risk-sized in fixed mode, so clamp_pct / risk_median /
++    risk_p90 must be null. Emitting 0.0 made the page render "Risk taken
++    0.00% / p90 0.00%", which reads as "we risked nothing" instead of "risk
++    sizing did not run"."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.STRICT_WINDOW = False
++    bt.ENTRY_MODE = "fixed"
++    bt.FIXED_LOTS = 0.05
++    args = bt.build_parser().parse_args(
++        ["--balance", "10000", "--entry-mode", "fixed"])
++    trades, bal, dd, valley = bt.run(candles, 10000.0, False)
++    assert bt.run.sizing["entries"] == 0, "fixed mode should risk-size nothing"
++    art = bt.build_run_json(candles, trades, args,
++                            {"bal": bal, "max_dd": dd, "valley": valley})
++    for key in ("clamp_pct", "risk_median", "risk_p90"):
++        assert art["stats"][key] is None, f"{key} should be null in fixed mode"
++
++
++def test_risk_stats_are_real_numbers_when_sizing_did_run():
++    art = _artifact()
++    for key in ("clamp_pct", "risk_median", "risk_p90"):
++        assert isinstance(art["stats"][key], float), \
++            f"{key} must be a number on a risk-sized run"

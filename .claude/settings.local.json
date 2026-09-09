@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash /home/aatanda/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/sdd-workspace docs/superpowers/plans/2026-08-01-setup-script.md)",
+      "Bash(git checkout *)",
+      "Bash(.venv/bin/python -c ' *)"
+    ]
+  }
+}

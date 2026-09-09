@@ -1,0 +1,370 @@
+# Review package: 39caf21..HEAD
+
+## Commits
+02eaf3a feat(backtest): QuickFlip lane trades alongside HalfTrend on one balance
+
+## Files changed
+ scripts/backtest.py                   | 73 ++++++++++++++++++++++++++++++-
+ service/tests/test_backtest_golden.py |  6 +++
+ service/tests/test_backtest_web.py    |  4 ++
+ service/tests/test_qf_lane.py         | 81 +++++++++++++++++++++++++++++++++++
+ 4 files changed, 163 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index e1ff4ce..26ac9f7 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -312,20 +312,22 @@ MAX_POSITIONS = 3
+ ADD_SHRINK = 0.7
+ PROFIT_TARGET_PCT = 2.0
+ TRAIL_LOCK_PCT = 50.0
+ TRAIL_ACTIVATE_R = 1.0
+ WINDOW = (4, 23)          # server hours (EA TradingWindowStart/EndHour);
+                           # gates NEW ENTRIES only, never exits
+ HOUR_TABLE = False        # --hour-table: print the entry-hour breakdown
+ EXPO_MIN = 360            # daily open-position minutes budget; 0 = unlimited
+ FLATTEN_HM = (23, 50)     # last acted bar before the 23:59 break
+ 
++STRATEGY = "both"      # ht | qf | both
++
+ # --- trading timeframe (EA input TradeTimeframe; M15 study 2026-08-19) ---
+ # The source JSON is always M5; --tf M15 aggregates it before anything else
+ # runs, so every BAR-based parameter above is read in M15 bars while every
+ # TIME-based one (EXPO_MIN, WINDOW, the flatten) keeps its wall-clock meaning.
+ TFS = ("M5", "M15")
+ TF = "M5"
+ TF_SEC = {"M5": 300, "M15": 900}
+ SRC_SEC = 300             # the source feed's bar length
+ BAR_MIN = 5               # minutes of open-position time charged per held bar
+ FLATTEN_BY_TF = {"M5": (23, 50), "M15": (23, 45)}   # last bar of the server day
+@@ -839,40 +841,51 @@ def run(candles, start_balance, verbose):
+     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
+         else None
+ 
+     bal = start_balance
+     basket = None          # dict: dir, legs[{px,oz}], stop, peak, cycle_bal
+     fired_flip = None      # flip index already traded
+     last_flip = None
+     extreme = None
+     consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
+     trades = []
++
++    # --- QuickFlip lane: independent positions, shared balance -------------
++    # Precomputed because setups are pure geometry; executed here so sizing
++    # sees the balance both lanes have produced so far.
++    qf_by_i = {}
++    if STRATEGY in ("qf", "both"):
++        for s in qf_signals(candles):
++            qf_by_i[s["i"]] = s
++    qf_pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
++
+     sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
+     peak_bal, max_dd = bal, 0.0
+     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
+     expo = {}              # server-day -> minutes of open-position time
+     skipped = []           # entries a gate refused: (when, dir, reason)
+     open_diff_bars = []    # confirm-mode open: bars where open[i+1] vs EMA
+                            # landed on a different side than close[i]
+     dead_signals = []      # strict window: (when, dir) flips whose decision
+                            # bar closed on the wrong side -> no entry ever
+ 
+     def basket_pl(px):
+         s = 1 if basket["dir"] == "BUY" else -1
+         return sum((px - l["px"]) * s * l["oz"] for l in basket["legs"]) \
+             - SPREAD_USD * sum(l["oz"] for l in basket["legs"])
+ 
+     def close_basket(px, when, why):
+         nonlocal bal, basket, peak_bal, max_dd
+         pl = basket_pl(px)
+         bal += pl
+-        trades.append({"dir": basket["dir"], "legs": list(basket["legs"]),
++        trades.append({"lane": "ht",
++                       "dir": basket["dir"], "legs": list(basket["legs"]),
+                        "exit": px, "when": when, "why": why, "pl": pl,
+                        "opened_t": basket.get("opened_t"),
+                        "exit_t": int(when.timestamp()),
+                        "stop_history": list(basket.get("stop_history", [])),
+                        "tp": basket.get("tp"),
+                        "bal_after": bal,
+                        "opened": basket.get("opened"),
+                        "regime": basket.get("regime"),
+                        "atr_ratio": basket.get("atr_ratio"),
+                        "floor": basket.get("floor"),
+@@ -902,20 +915,72 @@ def run(candles, start_balance, verbose):
+                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
+         basket = None
+ 
+     def note_stop(bk, t, stop):
+         """Append to the basket's stop history when the stop actually moved."""
+         hist = bk["stop_history"]
+         if not hist or hist[-1]["stop"] != stop:
+             hist.append({"t": int(t), "stop": stop})
+ 
+     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
++        # ---- QuickFlip lane (independent of everything below) -------------
++        if qf_pos is not None:
++            qx = candles[i]
++            hit = None
++            if qf_pos["dir"] == "SELL":
++                if qx["h"] >= qf_pos["stop"]:
++                    hit = (qf_pos["stop"], "qf stop")
++                elif qx["l"] <= qf_pos["tp"]:
++                    hit = (qf_pos["tp"], "qf target")
++            else:
++                if qx["l"] <= qf_pos["stop"]:
++                    hit = (qf_pos["stop"], "qf stop")
++                elif qx["h"] >= qf_pos["tp"]:
++                    hit = (qf_pos["tp"], "qf target")
++            if hit is None and qx["t"] >= qf_pos["expire_t"]:
++                hit = (qx["c"], "qf expired")
++            if hit is not None:
++                exit_px, why = hit
++                sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
++                pl = (exit_px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
++                    - SPREAD_USD * qf_pos["oz"]
++                bal += pl
++                peak_bal = max(peak_bal, bal)
++                max_dd = max(max_dd, peak_bal - bal)
++                trades.append({
++                    "lane": "qf", "dir": qf_pos["dir"],
++                    "legs": [{"px": qf_pos["entry"], "oz": qf_pos["oz"],
++                              "t": qf_pos["entry_t"]}],
++                    "exit": exit_px, "when": hhmm(qx["t"])[0],
++                    "exit_t": int(qx["t"]), "why": why, "pl": pl,
++                    "opened_t": qf_pos["entry_t"],
++                    "stop_history": [{"t": qf_pos["entry_t"],
++                                      "stop": qf_pos["stop"]}],
++                    "tp": qf_pos["tp"], "bal_after": bal,
++                    "regime": None, "legs_count": 1})
++                if verbose:
++                    print(f"  qf    {hhmm(qx['t'])[0]:%m-%d %H:%M} "
++                          f"{qf_pos['dir']} {qf_pos['oz']}oz "
++                          f"@ {qf_pos['entry']:.2f} -> {exit_px:.2f} "
++                          f"{why:>12}  P/L {pl:+8.2f}  bal {bal:9.2f}")
++                qf_pos = None
++        if qf_pos is None and i in qf_by_i:
++            s = qf_by_i[i]
++            dist = abs(s["entry"] - s["stop"])
++            if dist > 0:
++                oz = max(MIN_OZ, int(bal * QF_RISK_PCT / 100 / dist))
++                qf_pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
++                          "stop": s["stop"], "tp": s["tp"],
++                          "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
++        if STRATEGY == "qf":
++            continue
++
+         x = candles[i]
+         when, h, m = hhmm(x["t"])
+         px, e, a = x["c"], ema55[i], atr[i]
+         if e is None or a is None or ht[i] is None:
+             continue
+         trend = ht[i][1]
+         if last_flip is None or (ht[i - 1] and trend != ht[i - 1][1]):
+             last_flip, extreme = i, (x["l"] if trend == 0 else x["h"])
+             consec_above = consec_below = 0   # flip re-arms the filter
+         else:
+@@ -1494,20 +1559,24 @@ def build_parser():
+                          "byte-identical) or M15 (the M5 source aggregated to "
+                          "15-minute bars before anything else runs). Bar-based "
+                          "parameters are then read in M15 bars; the exposure "
+                          "budget and the trading-window hours keep their "
+                          "wall-clock meaning")
+     rules.add_argument("--profit-target", type=float, default=None,
+                     help="override ProfitTargetPct, the basket's bank-at "
+                          "percent of cycle balance (default 2.0; <= 0 turns "
+                          "the target off exactly like the EA input, leaving "
+                          "the lock / stop / reversal to close the basket)")
++    rules.add_argument("--strategy", choices=("ht", "qf", "both"), default="both",
++                       help="which lanes trade: ht = halftrend only (reproduces "
++                            "every study before 2026-08-20), qf = quickflip "
++                            "only, both = what runs live")
+     out.add_argument("--web", default=None, metavar="PATH",
+                      help="write a self-contained HTML report (chart with "
+                           "HalfTrend/EMA overlays and every trade drawn with "
+                           "its SL/TP and stop path) to this file")
+     return ap
+ 
+ 
+ def apply_window_args(args):
+     """Wire --loose-window (and the suppressed --strict-window no-op) into
+     the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
+@@ -1529,20 +1598,22 @@ def main():
+         global PROFIT_TARGET_PCT
+         PROFIT_TARGET_PCT = args.profit_target
+     global WINDOW, HOUR_TABLE
+     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
+               WINDOW[1] if args.window_end is None else args.window_end)
+     HOUR_TABLE = args.hour_table
+     global BIAS_EMA, BIAS_MODE, BIAS_TF
+     global BIAS_BUFFER_ATR
+     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
+     BIAS_BUFFER_ATR = args.bias_buffer_atr
++    global STRATEGY
++    STRATEGY = args.strategy
+     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
+     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+     global MIN_STOP_ATR
+     apply_window_args(args)
+     MIN_STOP_ATR = args.min_stop_atr
+     global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
+     SR_LOOKBACK = args.sr_lookback
+     SR_MIN_HEADROOM = args.sr_min_headroom
+     SR_REPORT = args.sr_report
+     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
+diff --git a/service/tests/test_backtest_golden.py b/service/tests/test_backtest_golden.py
+index d73cca0..bc234e9 100644
+--- a/service/tests/test_backtest_golden.py
++++ b/service/tests/test_backtest_golden.py
+@@ -67,29 +67,35 @@ def _replay():
+     # strict became the default. Keep it loose so the pin stays a like-for-like
+     # change detector across that default flip.
+     bt.STRICT_WINDOW = False
+     # Same reason for CONFIRM_CLOSES: this pin was captured at 1, before the
+     # owner moved the default to 2 on 2026-08-20. Pinning it here keeps the
+     # loose golden a like-for-like detector across BOTH default changes.
+     bt.CONFIRM_CLOSES = 1
+     # Same again for the M15 agreement filter, which became a default on
+     # 2026-08-20, after this pin was captured. Off here = like-for-like.
+     bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF = 0, "tag", "M5"
++    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
++    # 2026-08-20, after this pin was captured.
++    bt.STRATEGY = "ht"
+     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+     return _digest(trades), round(bal, 2), round(max_dd, 2)
+ 
+ 
+ def _replay_strict():
+     """The SHIPPED default path: strict entry window, everything else stock."""
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
+     assert bt.STRICT_WINDOW is True, "strict is supposed to be the default"
++    # The golden pins HalfTrend alone; QuickFlip is a separate lane added
++    # 2026-08-20, after this pin was captured.
++    bt.STRATEGY = "ht"
+     assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
+     assert (bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF) == (55, "skip", "M15"), \
+         "M15 EMA-55 agreement is supposed to be the default"
+     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+     return _digest(trades), round(bal, 2), round(max_dd, 2)
+ 
+ 
+ def _assert_matches(digest, bal, max_dd, path):
+     golden = json.loads(path.read_text())
+     assert len(digest) == len(golden["trades"]), (
+diff --git a/service/tests/test_backtest_web.py b/service/tests/test_backtest_web.py
+index 5299d9e..64c8060 100644
+--- a/service/tests/test_backtest_web.py
++++ b/service/tests/test_backtest_web.py
+@@ -65,20 +65,24 @@ def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
+     carrying a target, else it would draw a bogus green reward zone.
+ 
+     bt.run() reads the ENTRY_MODE/FIXED_LOTS globals directly (they are only
+     wired from args inside main(), which this test bypasses), so set them the
+     same way test_backtest_golden.py sets STRICT_WINDOW."""
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
+     bt.STRICT_WINDOW = False
+     bt.ENTRY_MODE = "fixed"
+     bt.FIXED_LOTS = 0.05
++    # ENTRY_MODE is a HalfTrend-only concept; the QuickFlip lane (default
++    # STRATEGY "both") always sets a tp and would otherwise sneak an
++    # unrelated trade into this assertion. Isolate the lane under test.
++    bt.STRATEGY = "ht"
+     args = bt.build_parser().parse_args(
+         ["--balance", "10000", "--entry-mode", "fixed"])
+     trades, bal, dd, valley = bt.run(candles, 10000.0, False)
+     art = bt.build_run_json(candles, trades, args,
+                             {"bal": bal, "max_dd": dd, "valley": valley})
+     assert art["trades"], "expected at least one trade in the fixture slice"
+     for t in art["trades"]:
+         assert t["tp"] is None, f"fixed-mode trade carries a tp: {t}"
+ 
+ 
+diff --git a/service/tests/test_qf_lane.py b/service/tests/test_qf_lane.py
+new file mode 100644
+index 0000000..7fa2680
+--- /dev/null
++++ b/service/tests/test_qf_lane.py
+@@ -0,0 +1,81 @@
++"""Two lanes, one balance, neither able to touch the other's position."""
++import json
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def _run(strategy, balance=10000.0):
++    bt = _load_bt()
++    bt.STRATEGY = strategy
++    trades, bal, dd, valley = bt.run(json.loads(BARS.read_text()), balance, False)
++    return bt, trades, bal
++
++
++def test_ht_only_produces_no_qf_trades():
++    _bt, trades, _bal = _run("ht")
++    assert trades
++    assert all(t["lane"] == "ht" for t in trades)
++
++
++def test_qf_only_produces_no_ht_trades():
++    _bt, trades, _bal = _run("qf")
++    assert trades, "the fixture must contain at least one QuickFlip setup"
++    assert all(t["lane"] == "qf" for t in trades)
++
++
++def test_both_runs_both_lanes():
++    _bt, trades, _bal = _run("both")
++    lanes = {t["lane"] for t in trades}
++    assert lanes == {"ht", "qf"}
++
++
++def test_lanes_close_only_their_own_positions():
++    """The real independence property: neither lane can close the other's
++    position. A QuickFlip trade may only end for a QuickFlip reason, and a
++    HalfTrend trade may never end for one."""
++    _bt, trades, _bal = _run("both")
++    qf_reasons = {"qf target", "qf stop", "qf expired"}
++    for t in trades:
++        if t["lane"] == "qf":
++            assert t["why"] in qf_reasons, f"qf trade closed by {t['why']!r}"
++        else:
++            assert t["why"] not in qf_reasons, f"ht trade closed by {t['why']!r}"
++
++
++def test_ht_decisions_match_until_the_first_qf_close():
++    """Before any QuickFlip trade has resolved, the balance is untouched, so
++    HalfTrend's decisions must be bit-identical to running it alone. After
++    that point they may legitimately diverge -- the profit target is a dollar
++    amount off a balance both lanes now share."""
++    _b1, ht_only, _x = _run("ht")
++    _b2, both, _y = _run("both")
++    qf_closes = [t["exit_t"] for t in both if t["lane"] == "qf"]
++    if not qf_closes:
++        return                      # nothing to compare against
++    first_qf_close = min(qf_closes)
++    early_alone = [t for t in ht_only if t["exit_t"] <= first_qf_close]
++    early_both = [t for t in both
++                  if t["lane"] == "ht" and t["exit_t"] <= first_qf_close]
++    assert early_alone, "fixture must contain a HalfTrend trade before the first qf close"
++    assert len(early_alone) == len(early_both)
++    for a, b in zip(early_alone, early_both):
++        assert a["dir"] == b["dir"]
++        assert round(a["legs"][0]["px"], 2) == round(b["legs"][0]["px"], 2)
++        assert round(a["exit"], 2) == round(b["exit"], 2)
++        assert a["why"] == b["why"]
++
++
++def test_qf_trades_carry_the_full_record_shape():
++    """Downstream (--json, --web, the report page) reads these keys."""
++    _bt, trades, _bal = _run("qf")
++    for t in trades:
++        assert t["legs"] and "t" in t["legs"][0] and "oz" in t["legs"][0]
++        assert t["stop_history"] and t["tp"] is not None
++        assert t["exit_t"] > t["legs"][0]["t"]
++        assert t["why"] in ("qf target", "qf stop", "qf expired")
++
++
++def test_balances_chain_across_both_lanes():
++    _bt, trades, bal = _run("both")
++    ordered = sorted(trades, key=lambda t: t["exit_t"])
++    assert round(ordered[-1]["bal_after"], 2) == round(bal, 2)

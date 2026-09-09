@@ -1,0 +1,315 @@
+# Review package: bf3b7e4..HEAD
+
+## Commits
+639417d feat(backtest): strict 3-bar entry window is the default, --loose-window restores the old replay
+
+## Files changed
+ scripts/backtest.py                          | 56 +++++++++++++++++-----------
+ service/tests/test_backtest_golden.py        | 15 +++++++-
+ service/tests/test_backtest_strict_window.py | 34 +++++++++++++++++
+ 3 files changed, 81 insertions(+), 24 deletions(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index 888d212..d8333fb 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -22,21 +22,21 @@ Simplifications (documented, keep in mind when reading results):
+ 
+ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
+                    [--exit-scheme target-exit|floor-a|floor-b|floor-a-adds]
+                    [--adx N] [--expo MIN] [--risk PCT] [--days N]
+                    [--confirm N] [--stop-buffer ATR]
+                    [--entry-mode adr|fixed] [--fixed-lots L]
+                    [--regime-gate off|range|range-strict|highvol]
+                    [--atr-spike-gate RATIO] [--ema-len N]
+                    [--confirm-mode close|open] [--start T] [--end T]
+                    [--chop-flips F] [--chop-bars N] [--chop-box-atr X]
+-                   [--chop-mode skip|soft|off] [--strict-window]
++                   [--chop-mode skip|soft|off] [--loose-window]
+                    [--min-stop-atr K] [--bias-ema N]
+                    [--sr-lookback N] [--sr-min-headroom X] [--sr-report]
+                    [--bias-mode tag|target|target_lock|size_target|skip]
+                    [--bias-tf M5|M15]
+                    [--window-start H] [--window-end H] [--hour-table]
+                    [--tf M5|M15] [--profit-target PCT]
+ 
+ --confirm overrides ConfirmCloses (consecutive closes beyond the EMA after a
+ HalfTrend flip before the entry fires — EA fake-out filter semantics: the
+ counter resets on every flip and whenever a close lands back on the wrong
+@@ -105,35 +105,37 @@ identical baseline. Every entry is tagged chop/not-chop with its flip count and
+ box/ATR ratio, and the summary breaks P/L down by tag so a --chop-mode off run
+ shows exactly what the rule WOULD have skipped or shrunk (opportunity cost).
+ --chop-mode: skip (default, H1) refuses NEW entries on chop bars; soft (H2)
+ still enters but sizes at HALF the risk percent (--risk / 2) and takes NO
+ pyramid adds for that basket — target, lock, stop, reversal unchanged (the
+ lock still arms at TRAIL_ACTIVATE_R x the FULL risk budget, as the EA's
+ TradeManager reads m_risk.RiskPct(), so a half-size basket needs twice the
+ move to arm it); off = tag and report only, nothing refused or resized.
+ Adds/exits are otherwise untouched; the rule lives only in the entry block.
+ 
+---strict-window (entry-window correctness fix, 2026-08-17 owner's rule):
++--loose-window (entry-window correctness fix, 2026-08-17 owner's rule; strict
++is now the DEFAULT as of 2026-08-20 -- this flag restores the old replay):
+ the TRUE halftrend_ema_v1 entry is "arrow on bar 1; wait bar 2; ENTER at
+ bar 3's OPEN if bar 3 opens on the trend's side of the EMA (= bar 2 CLOSED
+-there); otherwise the signal is DEAD until the next HalfTrend flip". Off
+-(default, byte-identical) reproduces what the EA did until today: fire on
+-the FIRST close beyond the EMA after a flip, whenever that came (the arrow
+-bar itself, bar 2, or a late drift 20 bars on). On: exactly one decision
+-per flip, at the close of the bar CONFIRM_CLOSES bars after the arrow bar
+-(default 1 = bar 2): pass -> signal on that closed bar (fill at its close,
+-which IS bar 3's open barring the tick gap — the replay's usual entry-at-close
+-convention, unchanged); fail -> no entry for that flip, ever. Same for the
+-reversal exit, since a reversal is the opposite direction's entry. Every
+-trade is tagged with its entry offset in bars after the arrow (0 = arrow
+-bar, 1 = strict bar, >=2 = late drift) so a baseline run can be diffed
+-against a strict run per flip.
++there); otherwise the signal is DEAD until the next HalfTrend flip". Default
++(strict): exactly one decision per flip, at the close of the bar
++CONFIRM_CLOSES bars after the arrow bar (default 1 = bar 2): pass -> signal
++on that closed bar (fill at its close, which IS bar 3's open barring the
++tick gap — the replay's usual entry-at-close convention, unchanged); fail ->
++no entry for that flip, ever. Same for the reversal exit, since a reversal
++is the opposite direction's entry. --loose-window reproduces what the EA
++did before 2026-08-16: fire on the FIRST close beyond the EMA after a flip,
++whenever that came (the arrow bar itself, bar 2, or a late drift 20 bars
++on). Every trade is tagged with its entry offset in bars after the arrow
++(0 = arrow bar, 1 = strict bar, >=2 = late drift) so a loose run can be
++diffed against a strict run per flip. --strict-window still parses (no-op;
++strict is already the default) so older scripted runs keep working.
+ 
+ --min-stop-atr K (minimum-stop-distance floor, 2026-08-18 noise-stop autopsy:
+ a $2.99 stop on a BUY at 4399.06 with ATR ~ $4-5 put 0.15 lots on and
+ ordinary noise took it out in 13 minutes): after the strategy stop is
+ computed as usual (HalfTrend wick extreme +/- STOP_BUFFER_ATR x ATR(14) —
+ that logic is untouched, this is a FLOOR only), if |entry - stop| <
+ K x ATR(14) the ENTRY stop is pushed out to exactly K x ATR(14) from the
+ fill, directionally; lots are then sized from the widened distance exactly as
+ before (1% risk over the ACTUAL distance -> fewer lots). Pyramid adds are
+ untouched: their ladder stop is derived from the current shared stop / entry
+@@ -365,21 +367,24 @@ CONFIRM_MODE = "close"
+ CHOP_FLIPS = 0
+ CHOP_BARS = 24
+ CHOP_BOX_ATR = 2.0
+ CHOP_MODES = ("skip", "soft", "off")
+ CHOP_MODE = "skip"
+ CHOP_SOFT_RISK_DIV = 2.0   # soft mode: risk percent divided by this
+ 
+ # --- strict entry window (owner's rule 2026-08-17) ---
+ # False: legacy latch (first close beyond the EMA after the flip, any bar).
+ # True : one-shot decision at bar (flip + CONFIRM_CLOSES) close; miss = dead.
+-STRICT_WINDOW = False
++STRICT_WINDOW = True      # EA law since 2026-08-16: flip -> wait one closed
++                          # bar -> enter only if the next bar OPENS beyond the
++                          # EMA, else the signal is dead until the next flip.
++                          # --loose-window restores the pre-2026-08-16 replay.
+ 
+ # --- minimum stop distance floor (2026-08-18 noise-stop autopsy) ---
+ # 0 = off. K > 0: entry stop may not sit closer than K x ATR(14) from the
+ # fill; sizing rescales over the widened distance. Entry stop only.
+ MIN_STOP_ATR = 0.0
+ NOISE_BARS = 3            # "stopped in the first N bars" = noise stop
+ 
+ # --- support/resistance proximity experiment (2026-08-18) ---
+ # SR_LOOKBACK 0 = off. N > 0: build the level set (fractal pivots over the
+ # last N bars + previous day's H/L + session H/L before the entry bar), then
+@@ -1041,21 +1046,21 @@ def plot(candles, trades, start_balance, out_path):
+     n = len(candles)
+     ticks = list(range(0, n, max(1, n // 8)))
+     import datetime as dt
+     ax2.set_xticks(ticks)
+     ax2.set_xticklabels([dt.datetime.fromtimestamp(candles[i]["t"], dt.UTC)
+                          .strftime("%d %H:%M") for i in ticks], fontsize=7)
+     fig.tight_layout()
+     fig.savefig(out_path, dpi=110)
+ 
+ 
+-def main():
++def build_parser():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--balance", type=float, default=4000)
+     ap.add_argument("--source", default="http://127.0.0.1:9000/ui/candles")
+     ap.add_argument("--verbose", action="store_true")
+     ap.add_argument("--adx", type=float, default=None, help="override ADX gate")
+     ap.add_argument("--chart", default=None, help="write a PNG chart to this path")
+     ap.add_argument("--days", type=float, default=None,
+                     help="backtest only the last N days of the source data")
+     ap.add_argument("--expo", type=float, default=None,
+                     help="override daily exposure minutes (0 = unlimited)")
+@@ -1096,25 +1101,28 @@ def main():
+                     help="chop filter: HalfTrend flips within --chop-bars "
+                          "that mark a bar as chop (0 = off)")
+     ap.add_argument("--chop-bars", type=int, default=24,
+                     help="chop filter lookback in closed bars (default 24)")
+     ap.add_argument("--chop-box-atr", type=float, default=2.0,
+                     help="chop filter: box over the lookback must be < X x "
+                          "ATR(14) (default 2.0; 0 = flip count alone)")
+     ap.add_argument("--chop-mode", choices=CHOP_MODES, default="skip",
+                     help="skip = refuse chop entries (H1); soft = enter at "
+                          "half risk with no adds (H2); off = tag/report only")
++    ap.add_argument("--loose-window", action="store_true",
++                    help="disable the EA's strict 3-bar entry window (flip -> "
++                         "one waiting bar -> entry only if that bar opens "
++                         "beyond the EMA). Use to reproduce studies run before "
++                         "2026-08-20, when loose was the default.")
+     ap.add_argument("--strict-window", action="store_true",
+-                    help="owner's entry rule: arrow bar, wait --confirm "
+-                         "bar(s), enter at the next bar's open only if that "
+-                         "bar opens on the trend's side of the EMA; else the "
+-                         "flip is dead (default off = legacy first-close latch)")
++                    help=argparse.SUPPRESS)   # now the default; kept so older
++                                              # scripted runs keep working
+     ap.add_argument("--min-stop-atr", type=float, default=0.0,
+                     help="minimum stop distance floor in ATR(14) multiples: "
+                          "an ENTRY stop closer than K x ATR is pushed out to "
+                          "exactly K x ATR and lots are sized over the wider "
+                          "distance (0 = off, byte-identical)")
+     ap.add_argument("--bias-ema", type=int, default=0,
+                     help="EMA-N market bias at the entry bar (close vs EMA-N; "
+                          "0 = off, byte-identical). Tags every trade "
+                          "with/counter and prints the split")
+     ap.add_argument("--bias-mode", choices=BIAS_MODES, default="tag",
+@@ -1149,38 +1157,42 @@ def main():
+                          "byte-identical) or M15 (the M5 source aggregated to "
+                          "15-minute bars before anything else runs). Bar-based "
+                          "parameters are then read in M15 bars; the exposure "
+                          "budget and the trading-window hours keep their "
+                          "wall-clock meaning")
+     ap.add_argument("--profit-target", type=float, default=None,
+                     help="override ProfitTargetPct, the basket's bank-at "
+                          "percent of cycle balance (default 2.0; <= 0 turns "
+                          "the target off exactly like the EA input, leaving "
+                          "the lock / stop / reversal to close the basket)")
+-    args = ap.parse_args()
++    return ap
++
++
++def main():
++    args = build_parser().parse_args()
+     global TF, BAR_MIN, FLATTEN_HM
+     TF = args.tf
+     BAR_MIN = TF_SEC[TF] // 60
+     FLATTEN_HM = FLATTEN_BY_TF[TF]
+     if args.profit_target is not None:
+         global PROFIT_TARGET_PCT
+         PROFIT_TARGET_PCT = args.profit_target
+     global WINDOW, HOUR_TABLE
+     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
+               WINDOW[1] if args.window_end is None else args.window_end)
+     HOUR_TABLE = args.hour_table
+     global BIAS_EMA, BIAS_MODE, BIAS_TF
+     BIAS_EMA, BIAS_MODE, BIAS_TF = args.bias_ema, args.bias_mode, args.bias_tf
+     global EXIT_SCHEME, ENTRY_MODE, FIXED_LOTS, REGIME_GATE, ATR_SPIKE_RATIO
+     global CONFIRM_MODE, CHOP_FLIPS, CHOP_BARS, CHOP_BOX_ATR, CHOP_MODE
+     global STRICT_WINDOW, MIN_STOP_ATR
+-    STRICT_WINDOW = args.strict_window
++    STRICT_WINDOW = not args.loose_window
+     MIN_STOP_ATR = args.min_stop_atr
+     global SR_LOOKBACK, SR_MIN_HEADROOM, SR_REPORT
+     SR_LOOKBACK = args.sr_lookback
+     SR_MIN_HEADROOM = args.sr_min_headroom
+     SR_REPORT = args.sr_report
+     CHOP_FLIPS, CHOP_BARS = args.chop_flips, args.chop_bars
+     CHOP_BOX_ATR, CHOP_MODE = args.chop_box_atr, args.chop_mode
+     CONFIRM_MODE = args.confirm_mode
+     if args.ema_len is not None:
+         global EMA_LEN
+diff --git a/service/tests/test_backtest_golden.py b/service/tests/test_backtest_golden.py
+index 914ab67..1e8430a 100644
+--- a/service/tests/test_backtest_golden.py
++++ b/service/tests/test_backtest_golden.py
+@@ -1,19 +1,26 @@
+ """Characterization test for the backtest engine.
+ 
+ Pins the exact trade list `scripts/backtest.py` produces over a fixed slice
+ of real M5 data. This is NOT a correctness test -- it is a change detector.
+ If it fails, the replay's behaviour moved. Unless the task you are doing
+ explicitly changes replay behaviour, the change is a bug.
+ 
+-Regenerate deliberately (and only deliberately) with:
+-    cd service && .venv/bin/python -m pytest tests/test_backtest_golden.py --regen-golden
++Regenerate deliberately (and only deliberately) with the manual script from
++task-1-brief.md Step 4 (.superpowers/sdd/2026-08-20-backtest-report/):
++    cd service && .venv/bin/python - <<'PY'
++    import json
++    from tests.test_backtest_golden import _replay, GOLDEN
++    digest, bal, dd = _replay()
++    GOLDEN.write_text(json.dumps(
++        {"trades": digest, "final_balance": bal, "max_dd": dd}, indent=1))
++    PY
+ """
+ import importlib.util
+ import json
+ import pathlib
+ 
+ import pytest
+ 
+ ROOT = pathlib.Path(__file__).resolve().parents[2]
+ DATA = pathlib.Path(__file__).parent / "data"
+ BARS = DATA / "bars_slice.json"
+@@ -37,20 +44,24 @@ def _digest(trades):
+              "entry": round(t["legs"][0]["px"], 2),
+              "legs": len(t["legs"]),
+              "exit": round(t["exit"], 2),
+              "why": t["why"],
+              "pl": round(t["pl"], 2)} for t in trades]
+ 
+ 
+ def _replay():
+     bt = _load_bt()
+     candles = json.loads(BARS.read_text())
++    # The golden file pins LOOSE-window behaviour, captured 2026-08-20 before
++    # strict became the default. Keep it loose so the pin stays a like-for-like
++    # change detector across that default flip.
++    bt.STRICT_WINDOW = False
+     trades, bal, max_dd, _valley = bt.run(candles, 4000.0, False)
+     return _digest(trades), round(bal, 2), round(max_dd, 2)
+ 
+ 
+ def test_replay_matches_golden():
+     digest, bal, max_dd = _replay()
+     golden = json.loads(GOLDEN.read_text())
+     assert len(digest) == len(golden["trades"]), (
+         f"trade COUNT moved: {len(golden['trades'])} -> {len(digest)}")
+     for i, (got, want) in enumerate(zip(digest, golden["trades"])):
+diff --git a/service/tests/test_backtest_strict_window.py b/service/tests/test_backtest_strict_window.py
+new file mode 100644
+index 0000000..12a13c4
+--- /dev/null
++++ b/service/tests/test_backtest_strict_window.py
+@@ -0,0 +1,34 @@
++"""The EA's law: after a HalfTrend flip, wait one closed bar, and enter on the
++next bar only if it opens beyond EMA-55. Otherwise the signal is dead until
++the next flip. The replay must default to that law."""
++import json
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def test_strict_window_is_the_default():
++    bt = _load_bt()
++    assert bt.STRICT_WINDOW is True
++
++
++def test_loose_window_flag_turns_it_off():
++    bt = _load_bt()
++    args = bt.build_parser().parse_args(["--loose-window"])
++    assert args.loose_window is True
++
++
++def test_strict_window_flag_still_parses_as_a_noop():
++    bt = _load_bt()
++    args = bt.build_parser().parse_args(["--strict-window"])
++    assert args.loose_window is False
++
++
++def test_strict_takes_fewer_entries_than_loose():
++    """Strict can only ever refuse entries loose would take, never add any."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.STRICT_WINDOW = True
++    strict = bt.run(candles, 4000.0, False)[0]
++    bt.STRICT_WINDOW = False
++    loose = bt.run(candles, 4000.0, False)[0]
++    assert len(strict) < len(loose), "strict must filter something in this slice"

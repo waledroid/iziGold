@@ -1,0 +1,113 @@
+# Review package: dfc5472..HEAD
+
+## Commits
+2eafa90 fix(backtest): pin the overlap count and name it for what it counts
+
+## Files changed
+ scripts/backtest.py             | 10 +++++-----
+ service/tests/test_qf_report.py |  9 ++++++---
+ 2 files changed, 11 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index 1af6b52..5d2502a 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -1279,23 +1279,23 @@ def run(candles, start_balance, verbose):
+         "entries": n,
+         "clamped": sizing["clamped"],
+         "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
+         "risk_median": round(r[len(r) // 2], 2) if r else None,
+         "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
+     }
+     return trades, bal, max_dd, max_valley
+ 
+ 
+ def _lane_stats(trades):
+-    """Per-lane breakdown plus how many bars both lanes were open together.
+-    A blended net hides which strategy earned it, and a combined equity curve
+-    hides that exposure can be doubled."""
++    """Per-lane breakdown plus how many QuickFlip trades overlapped a
++    HalfTrend position. A blended net hides which strategy earned it, and a
++    combined equity curve hides that exposure can be doubled."""
+     out = {}
+     for lane in ("ht", "qf"):
+         rows = [t for t in trades if t.get("lane", "ht") == lane]
+         wins = sum(1 for t in rows if t["pl"] > 0)
+         out[lane] = {
+             "trades": len(rows),
+             "wins": wins,
+             "losses": sum(1 for t in rows if t["pl"] < 0),
+             "win_rate": round(100.0 * wins / len(rows), 1) if rows else 0.0,
+             "net": round(sum(t["pl"] for t in rows), 2),
+@@ -1305,21 +1305,21 @@ def _lane_stats(trades):
+     ht = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+           if t.get("lane", "ht") == "ht"]
+     qf = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+           if t.get("lane") == "qf"]
+     overlap = 0
+     for a0, a1 in qf:
+         for b0, b1 in ht:
+             if a0 < b1 and b0 < a1:
+                 overlap += 1
+                 break
+-    out["both_open_bars"] = overlap
++    out["qf_trades_overlapping_ht"] = overlap
+     return out
+ 
+ 
+ def build_run_json(candles, trades, args, res):
+     """The run artifact (spec 2026-08-20 section 2). Parallel arrays, not
+     per-bar objects: 12 months of M5 is ~74k bars, and the array form roughly
+     halves the payload with no loss of detail."""
+     closes = [x["c"] for x in candles]
+     ht = halftrend([type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+     r2 = lambda v: None if v is None else round(v, 2)   # noqa: E731
+@@ -1909,21 +1909,21 @@ def main():
+         od = getattr(run, "open_diff_bars", [])
+         print(f"confirm-mode open: {len(od)} decision bars where the next "
+               f"open sat on a different side of the EMA than the close")
+     ls = _lane_stats(trades)
+     if ls["ht"]["trades"] and ls["qf"]["trades"]:
+         for lane, label in (("ht", "halftrend"), ("qf", "quickflip")):
+             d = ls[lane]
+             print(f"lane {label:<10} trades {d['trades']:>5}  win% "
+                   f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
+         print(f"           quickflip trades overlapping a halftrend position: "
+-              f"{ls['both_open_bars']}")
++              f"{ls['qf_trades_overlapping_ht']}")
+     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
+           f"({100 * (bal / args.balance - 1):+.2f}%)")
+     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
+           f"max open-equity valley {max_valley:.2f}")
+     s = getattr(run, "sizing", None)
+     if s and s["entries"]:
+         flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
+         print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
+               f"0.01 minimum lot{flag}")
+         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
+diff --git a/service/tests/test_qf_report.py b/service/tests/test_qf_report.py
+index b32f19b..617dcdf 100644
+--- a/service/tests/test_qf_report.py
++++ b/service/tests/test_qf_report.py
+@@ -31,14 +31,17 @@ def test_stats_break_down_by_lane():
+ 
+ 
+ def test_lane_nets_sum_to_the_total():
+     _bt, art = _artifact()
+     lanes = art["stats"]["lanes"]
+     total = round(lanes["ht"]["net"] + lanes["qf"]["net"], 2)
+     assert abs(total - art["stats"]["net"]) < 0.02
+ 
+ 
+ def test_concurrency_is_reported():
+-    """How often both lanes held a position at once -- the thing a combined
+-    equity curve hides, and the reason exposure can exceed one lane's."""
++    """How many QuickFlip trades overlapped a HalfTrend position -- the
++    thing a combined equity curve hides, and the reason exposure can exceed
++    one lane's. Pinned against the frozen fixture so a broken overlap check
++    (e.g. an equality test instead of interval intersection, or a constant
++    0) cannot slip through unnoticed."""
+     _bt, art = _artifact()
+-    assert "both_open_bars" in art["stats"]["lanes"]
++    assert art["stats"]["lanes"]["qf_trades_overlapping_ht"] == 1

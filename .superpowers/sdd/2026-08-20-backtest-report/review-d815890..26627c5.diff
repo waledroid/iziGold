@@ -1,0 +1,249 @@
+# Review package: d815890..HEAD
+
+## Commits
+26627c5 feat(backtest): --balance floor at $500, warn under $2000, report min-lot clamp rate and realized risk
+
+## Files changed
+ scripts/backtest.py                    | 56 +++++++++++++++++++++++++++++++++-
+ service/tests/test_backtest_balance.py | 46 ++++++++++++++++++++++++++++
+ 2 files changed, 101 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index ade0018..c877630 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -310,20 +310,49 @@ TFS = ("M5", "M15")
+ TF = "M5"
+ TF_SEC = {"M5": 300, "M15": 900}
+ SRC_SEC = 300             # the source feed's bar length
+ BAR_MIN = 5               # minutes of open-position time charged per held bar
+ FLATTEN_BY_TF = {"M5": (23, 50), "M15": (23, 45)}   # last bar of the server day
+ 
+ ADX_MIN = 10.0  # matches EA AdxTrendThreshold; overridable via --adx
+ SPREAD_USD = 0.20         # per oz, per round trip (typical 18-25 points)
+ MIN_OZ = 1                # 0.01 lots
+ 
++# Starting-balance floors. The binding constraint is the 0.01 minimum lot,
++# not spread: when 1% of balance cannot cover one ounce at the stop distance,
++# sizing clamps to the minimum and OVER-risks instead of skipping the trade.
++# Measured over 12 months of M5 (2025-08 -> 2026-08): entries clamped 88.7% at
++# $500, 50.8% at $1,200, 10.2% at $4,000, 0.4% at $10,000.
++MIN_BALANCE = 500.0     # below this the result is fiction (no margin stop-out
++                        # is modelled either -- a $300 account goes negative)
++WARN_BALANCE = 2000.0   # below this, warn loudly and name the clamp rate
++
++
++def validate_balance(value):
++    """None = fine, str = warn and run, SystemExit = refuse."""
++    if value < MIN_BALANCE:
++        raise SystemExit(
++            f"--balance {value:.0f} is below the ${MIN_BALANCE:.0f} floor.\n"
++            "At that size nearly every entry clamps to the 0.01 minimum lot, "
++            "so the replay measures minimum-lot behaviour, not the rulebook -- "
++            "and margin stop-out is not modelled, so the account can go "
++            "negative. Use $4,000+ for meaningful results, $10,000+ for a "
++            "clean test of the risk rules.")
++    if value < WARN_BALANCE:
++        return (f"WARNING: at ${value:.0f}, 1% risk often cannot cover one "
++                f"ounce at the stop distance, so sizing falls back to the "
++                f"0.01 minimum lot and takes MORE than 1% risk. The clamp "
++                f"rate for this run is reported below -- read it before "
++                f"trusting the P/L.")
++    return None
++
++
+ # --- profit-floor experiment (docs/superpowers/specs/2026-08-12-profit-floor-design.md) ---
+ # target-exit  : baseline — close the basket at +PROFIT_TARGET_PCT (current EA)
+ # floor-a      : at target, shared stop -> price where basket P/L =
+ #                target - 0.25*ATR(14)-worth; adds frozen from that moment
+ # floor-b      : at target + 0.25*ATR-worth of profit, stop -> price where
+ #                basket P/L = full target; adds frozen
+ # floor-a-adds : floor-a but pyramid adds left ON (quantifies the erosion)
+ # The floor stop is a pure ratchet (only tightens, directionally); profit
+ # lock (50% of peak once >= 1R) and the reversal exit stay unchanged.
+ EXIT_SCHEMES = ("target-exit", "floor-a", "floor-b", "floor-a-adds")
+@@ -653,20 +682,21 @@ def run(candles, start_balance, verbose):
+     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
+         else None
+ 
+     bal = start_balance
+     basket = None          # dict: dir, legs[{px,oz}], stop, peak, cycle_bal
+     fired_flip = None      # flip index already traded
+     last_flip = None
+     extreme = None
+     consec_above = consec_below = 0   # EA fake-out counters (ConfirmCloses)
+     trades = []
++    sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
+     peak_bal, max_dd = bal, 0.0
+     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
+     expo = {}              # server-day -> minutes of open-position time
+     skipped = []           # entries a gate refused: (when, dir, reason)
+     open_diff_bars = []    # confirm-mode open: bars where open[i+1] vs EMA
+                            # landed on a different side than close[i]
+     dead_signals = []      # strict window: (when, dir) flips whose decision
+                            # bar closed on the wrong side -> no entry ever
+ 
+     def basket_pl(px):
+@@ -940,21 +970,26 @@ def run(candles, start_balance, verbose):
+                     floored = True
+                 if dist > 0:
+                     if ENTRY_MODE == "fixed":
+                         oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
+                         orig_oz = oz
+                     else:
+                         rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
+                         if bias == "counter" and BIAS_MODE == "size_target":
+                             rp *= BIAS_RISK_MULT
+                         risk = bal * rp / 100
+-                        oz = max(MIN_OZ, int(risk / dist))
++                        want = int(risk / dist)
++                        oz = max(MIN_OZ, want)
++                        sizing["entries"] += 1
++                        if want < MIN_OZ:
++                            sizing["clamped"] += 1
++                        sizing["risk_pct"].append(100.0 * oz * dist / bal)
+                         orig_oz = max(MIN_OZ, int(risk / orig_dist)) \
+                             if orig_dist > 0 else oz
+                     basket = {"dir": signal,
+                               "legs": [{"px": px, "oz": oz, "t": int(x["t"])}],
+                               "stop": stop, "peak": 0.0, "cycle_bal": bal,
+                               "stop_history": [{"t": int(x["t"]), "stop": stop}],
+                               "opened_t": int(x["t"]),
+                               "dist_atr": (orig_dist / a) if a else None,
+                               "floored": floored, "orig_stop": orig_stop,
+                               "orig_dist": orig_dist, "orig_oz": orig_oz,
+@@ -997,20 +1032,29 @@ def run(candles, start_balance, verbose):
+         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
+     run.skipped = skipped
+     run.expo = expo          # server-day -> minutes of open-position time
+     run.open_diff_bars = open_diff_bars
+     run.dead_signals = dead_signals
+     run.bias_flips = None
+     if BIAS_EMA > 0:
+         run.bias_flips = {
+             "M5": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M5")),
+             "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
++    r = sorted(sizing["risk_pct"])
++    n = sizing["entries"]
++    run.sizing = {
++        "entries": n,
++        "clamped": sizing["clamped"],
++        "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else 0.0,
++        "risk_median": round(r[len(r) // 2], 2) if r else 0.0,
++        "risk_p90": round(r[int(0.9 * len(r))], 2) if r else 0.0,
++    }
+     return trades, bal, max_dd, max_valley
+ 
+ 
+ def plot(candles, trades, start_balance, out_path):
+     """Two-panel PNG: price with trade spans/markers, and the equity curve."""
+     import matplotlib
+     matplotlib.use("Agg")
+     from matplotlib.figure import Figure
+     ts = [x["t"] for x in candles]
+     idx = {t: i for i, t in enumerate(ts)}
+@@ -1170,20 +1214,23 @@ def build_parser():
+ def apply_window_args(args):
+     """Wire --loose-window (and the suppressed --strict-window no-op) into
+     the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
+     drive the real CLI-to-global path without running a whole backtest."""
+     global STRICT_WINDOW
+     STRICT_WINDOW = not args.loose_window
+ 
+ 
+ def main():
+     args = build_parser().parse_args()
++    warning = validate_balance(args.balance)
++    if warning:
++        print(warning)
+     global TF, BAR_MIN, FLATTEN_HM
+     TF = args.tf
+     BAR_MIN = TF_SEC[TF] // 60
+     FLATTEN_HM = FLATTEN_BY_TF[TF]
+     if args.profit_target is not None:
+         global PROFIT_TARGET_PCT
+         PROFIT_TARGET_PCT = args.profit_target
+     global WINDOW, HOUR_TABLE
+     WINDOW = (WINDOW[0] if args.window_start is None else args.window_start,
+               WINDOW[1] if args.window_end is None else args.window_end)
+@@ -1447,20 +1494,27 @@ def main():
+             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
+                   f"trades; these are never refused)")
+     if CONFIRM_MODE == "open":
+         od = getattr(run, "open_diff_bars", [])
+         print(f"confirm-mode open: {len(od)} decision bars where the next "
+               f"open sat on a different side of the EMA than the close")
+     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
+           f"({100 * (bal / args.balance - 1):+.2f}%)")
+     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
+           f"max open-equity valley {max_valley:.2f}")
++    s = getattr(run, "sizing", None)
++    if s and s["entries"]:
++        flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
++        print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
++              f"0.01 minimum lot{flag}")
++        print(f"           risk actually taken: median {s['risk_median']:.2f}% "
++              f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
+     armed = [t for t in trades if t.get("floor") is not None]
+     if EXIT_SCHEME != "target-exit":
+         print(f"floor armed on {len(armed)} trades; "
+               f"{len(floor_leaks)} realized below their floor "
+               f"({', '.join(t['why'] for t in floor_leaks) or 'none'})")
+     if args.chart:
+         plot(candles, trades, args.balance, args.chart)
+         print(f"chart      {args.chart}")
+ 
+ 
+diff --git a/service/tests/test_backtest_balance.py b/service/tests/test_backtest_balance.py
+new file mode 100644
+index 0000000..2758b61
+--- /dev/null
++++ b/service/tests/test_backtest_balance.py
+@@ -0,0 +1,46 @@
++"""Below ~$4,000 the 1% risk rule stops being obeyed: sizing clamps to the
++0.01 minimum lot and over-risks rather than skipping the trade. Measured over
++12 months of M5: 51% of entries clamp at $1,200, 89% at $500."""
++import json
++
++import pytest
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++
++def test_below_minimum_balance_refuses_to_run():
++    bt = _load_bt()
++    with pytest.raises(SystemExit):
++        bt.validate_balance(300.0)
++
++
++def test_small_balance_warns_but_runs():
++    bt = _load_bt()
++    msg = bt.validate_balance(1200.0)
++    assert msg is not None and "0.01" in msg
++
++
++def test_healthy_balance_is_silent():
++    bt = _load_bt()
++    assert bt.validate_balance(10000.0) is None
++
++
++def test_sizing_stats_are_recorded_after_a_run():
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.run(candles, 10000.0, False)
++    s = bt.run.sizing
++    assert s["entries"] > 0
++    assert 0.0 <= s["clamp_pct"] <= 100.0
++    assert s["risk_median"] > 0.0
++
++
++def test_a_small_account_clamps_far_more_than_a_large_one():
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.run(candles, 800.0, False)
++    small = bt.run.sizing["clamp_pct"]
++    bt.run(candles, 25000.0, False)
++    large = bt.run.sizing["clamp_pct"]
++    assert small > large + 20.0, (
++        f"expected a large clamp gap, got {small:.1f}% vs {large:.1f}%")

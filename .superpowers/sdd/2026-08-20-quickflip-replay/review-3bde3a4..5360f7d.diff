@@ -1,0 +1,1901 @@
+# Review package: 3bde3a4..HEAD
+
+## Commits
+5360f7d docs(izi): correct the QuickFlip evidence to the numbers that ship
+e112c05 feat(backtest-report): the HTML page tells the two lanes apart
+ef80505 fix(backtest): say which strategy ran, and stop reporting rows of zeros
+f129d7a test(backtest): pin the open-equity valley to both lanes
+c983942 test(backtest): pin --strategy's CLI default, and stop over-claiming leakage
+cc40b2d fix(quickflip-probe): pin the twin's defaults, and disclose what it drops
+506bbd7 fix(backtest): the valley counts QuickFlip, and its stop still beats its target
+
+## Files changed
+ .claude/agents/izi.md                              | 149 ++++++++--
+ .../specs/2026-08-20-quickflip-ny-design.md        |  57 +++-
+ scripts/backtest.py                                | 329 ++++++++++++++++-----
+ scripts/backtest_report.py                         |  11 +-
+ scripts/quickflip_probe.py                         |  49 ++-
+ service/app/static/backtest_report.html            |  39 ++-
+ service/tests/backtest_report_smoke.js             |  47 +++
+ service/tests/test_backtest_strict_window.py       |   4 +
+ service/tests/test_qf_lane.py                      |  73 ++++-
+ service/tests/test_qf_report.py                    |  54 +++-
+ service/tests/test_qf_signals.py                   |  61 ++++
+ service/tests/test_quickflip_probe.py              |  41 +++
+ 12 files changed, 793 insertions(+), 121 deletions(-)
+
+## Diff
+diff --git a/.claude/agents/izi.md b/.claude/agents/izi.md
+index 3227cbe..90154f3 100644
+--- a/.claude/agents/izi.md
++++ b/.claude/agents/izi.md
+@@ -939,65 +939,96 @@ HalfTrend's 1%, because this lane is unproven (see below).
+ hammer/engulfing candle patterns of the strategy as published.** Those
+ reversal-candle patterns are unmeasured here — the expectancy quoted below
+ belongs entirely to the close-back-inside trigger. Don't "restore" the
+ patterns believing them more authoritative; nobody has measured them on this
+ data.
+ 
+ **The published 25%-of-daily-ATR box qualifier does not transfer to gold.**
+ That threshold presumes an overnight session gap (a different market's
+ opening range); on XAUUSD the 13:30 opening-range-to-daily-ATR ratio is
+ median ~6-7%, so a 25% gate fires on only 1-5% of days. `QF_ATR_PCT` was
+-ruled to **5%** on measurement, at 13:30 over 17 months
+-(`scripts/quickflip_probe.py`):
++ruled to **5%** on measurement, at 13:30 over 17 months. These are the
++**ENGINE's** numbers (`backtest.py --strategy qf`, expectancy per ounce),
++which is what ships:
+ 
+-| gate | trades | total | older-half /oz |
+-|---|---|---|---|
+-| no gate | 245 | +91.01 | +0.07 |
+-| **>=5%** | **165** | **+75.55** | **+0.23** |
+-| >=10% | 35 | +57.37 | +0.06 |
+-| >=15% | 7 | -24.86 | -1.76 |
++| gate | trades | exp $/oz | older half | newer half |
++|---|---|---|---|---|
++| no gate | 257 | +0.229 | -0.015 | +0.472 |
++| **>=5% (shipped)** | **177** | **+0.246** | **+0.189** | **+0.302** |
++| >=10% | 43 | +0.979 | -0.583 | +2.470 |
++| >=15% | 9 | -2.532 | +2.675 | -6.698 |
++
++**The 10% -> 5% decision gets STRONGER on engine numbers, not weaker.** On
++the probe's numbers 10% merely earned less in total; on the engine's, 10%'s
++older half FLIPS to -0.583/oz, and **5% is the only gate positive in BOTH
++halves**. 10%'s headline +0.979/oz is one regime (+2.470 newer, -0.583
++older) across 43 trades.
++
++**Why the engine's numbers and not the probe's** (corrected 2026-08-20):
++`quickflip_probe.py` emits only setups that RESOLVE inside the 90-minute
++window (`if pl is not None`). Setups that expire unresolved are dropped --
++and the engine TRADES them, closing at the window's last bar. At the
++shipped 5% gate that is probe **+$0.458/oz on 165 rows** vs engine
++**+$0.246/oz on 177 trades**: the 12 expired trades net **-$52.27** and the
++probe never sees them, a **1.9x** overstatement of the lane. The probe now
++says so in its own output and docstring. Quote the engine.
+ 
+ **Measured performance** (`--source bars_max.json --days 365 --balance
+ 10000`, re-run and confirmed this session):
+ 
+-| lane | net P/L | trades | win% |
+-|---|---|---|---|
+-| `ht` alone | **+3,255.92** | 578 | 38.2 |
+-| `qf` alone | **+354.56** | 118 | 50.0 |
+-| `both` | **+3,551.61** | 578 ht + 118 qf | ht 37.9 / qf 50.0 |
++| lane | net P/L | trades | win% | account max dd | open-equity valley |
++|---|---|---|---|---|---|
++| `ht` alone | **+3,255.92** | 579 | 38.2 | 2,674.01 | 2,686.25 |
++| `qf` alone | **+354.56** | 118 | 50.0 | 250.82 | 273.78 |
++| `both` | **+3,551.61** | 578 ht + 118 qf | ht 37.9 / qf 50.0 | 2,892.35 | 2,902.73 |
++
++(`ht` alone is **579** trades. 578 is the HalfTrend count INSIDE the `both`
++run -- the shared balance moves one basket's fate. An earlier version of
++this section quoted 578 for both, which is wrong.)
+ 
+ Both lanes together beat HalfTrend alone. 17 of the 118 QuickFlip trades
+ overlapped a live HalfTrend position (report's `lane` breakdown, "quickflip
+ trades overlapping a halftrend position: 17") — allowed, see coupling note
+-below. QuickFlip is not free to HalfTrend, though: HalfTrend nets
+-+3,246.37 *inside* the `both` run vs +3,255.92 alone — QuickFlip costs
+-HalfTrend **$9.55** through the shared balance (see below).
++below. **Coexistence costs BOTH lanes, not just HalfTrend**: sum-of-parts
++3,255.92 + 354.56 = **3,610.48** against `both`'s **3,551.61** — the two
++lanes together are **$58.87** worse than running them separately.
++HalfTrend loses $9.55 (3,255.92 -> 3,246.37) and QuickFlip loses **$49.32**
++(354.56 -> 305.24). An earlier version of this section quoted only the
++$9.55 and framed it as one-directional; the real figure is roughly 6x that
++and runs both ways, through the shared balance (see below).
+ 
+ **This is a paid experiment, not a validated edge — that is why the size is
+ 0.25%, a quarter of HalfTrend's.** 46 half-hour slots were searched before
+ 13:30 was chosen; the slots that pass a split test (positive in both the
+ older and newer half) pass by hundredths of a dollar per ounce in the older
+ half — the same recent-half-only shape seen in every study this week
+ (M15 gate, entry-timing, chop filter). Review after ~2 months of live logs
+ and remove the lane if the live log does not reproduce a positive
+ expectancy.
+ 
+ **Independence and its limits.** Each lane owns its own positions; a
+ QuickFlip trade can only be closed for a QuickFlip reason (stop, target,
+ window expiry) and vice versa — neither lane's exit logic touches the
+ other's basket. But the two DO couple through the **shared balance**:
+ HalfTrend's profit target is a dollar amount taken from the account
+ balance, so every QuickFlip fill shifts that balance and therefore shifts
+ HalfTrend's target and its exit timing. That is expected, not a bug — it's
+-where the $9.55 above comes from. `MaxDailyExposureMin` stays deliberately
+-**per-lane** so neither lane's exposure budget can block the other's
+-entries.
++where the $58.87 above comes from, and it runs in both directions
++(QuickFlip's own sizing reads the same moving balance).
++
++**Exposure accounting, as actually implemented in the replay:** there is
++none for QuickFlip. `EXPO_MIN` (`MaxDailyExposureMin`) charges held-bar
++minutes and refuses entries **only in the HalfTrend block**; the QuickFlip
++lane is neither charged nor gated by it. So the replay does not model
++"per-lane budgets" — it models one budget on one lane. If the EA is meant
++to give QuickFlip a budget of its own, the replay does not yet say what
++that costs.
+ 
+ **The server-time trap, again, prominently.** Candle `t` is SERVER
+ wall-clock; `hhmm()` (`scripts/backtest.py`) reads it with **no offset**;
+ server hour 00 is empty because it's the daily market break — a real probe
+ of that emptiness is the guard. A +3h shift invalidated an earlier version
+ of this analysis, mislabelled every session by three hours, and came within
+ one decision of putting a mislabelled strategy into live trading (correction
+ commit `b097057`, "the NY open" was really server 13:30 and the true NY open
+ fails the split test). This is now a permanent regression test:
+ `service/tests/test_quickflip_probe.py::test_server_hour_zero_is_the_market_break`
+@@ -1006,40 +1037,112 @@ fails loudly if anyone reintroduces an offset.
+ **The three golden pins, and what each guards**
+ (`service/tests/test_backtest_golden.py`, one frozen M5 slice
+ `bars_slice.json`):
+ - `golden_trades.json` — LOOSE entry window, HalfTrend alone. Captured
+   before strict became the default; never regenerate, its provenance is
+   load-bearing.
+ - `golden_trades_strict.json` — the shipped STRICT window, HalfTrend alone.
+ - `golden_trades_both.json` — both lanes on the same fixture: **45 trades =
+   43 ht + 2 qf** (confirmed by direct count this session).
+ 
+-Plus `scripts/quickflip_probe.py` as the standalone evidence tool (the
+-source of the ATR-gate table above) and its twin relationship with
+-`qf_signals()` in `backtest.py` — both compute the same setup geometry
+-independently; a divergence between them is a bug in one or the other.
++Plus `scripts/quickflip_probe.py` as the standalone evidence tool and its
++twin relationship with `qf_signals()` in `backtest.py` — both compute the
++same setup geometry independently. **One divergence is BY DESIGN**: the
++probe reports only setups that resolve inside the window, the engine also
++trades the ones that expire (worth 1.9x at the shipped gate — see above).
++Do not "fix" that by making the probe trade expiries; quote the engine.
++Everything they DO share is now pinned equal by
++`test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`
++(WINDOW_MIN, ATR_DAYS, SPREAD_USD and the probe's argparse --hour/--minute
++defaults). Before that test existed the probe pinned nothing: WINDOW_MIN =
++45 plus --hour 10 left all 505 tests passing, in the only file the spec's
++numbers came from.
+ 
+ **A future-data leak found and fixed during this work**, worth remembering
+ as a class of bug: `qf_daily_atr()`'s inner loop indexes `keys[j - 1]` for
+ the previous day's close; at `i == QF_ATR_DAYS` (the first day meant to be
+ eligible), `j` hits 0 and `keys[j - 1]` wraps around to `keys[-1]` — the
+ **LAST** day in the whole dataset — leaking months of future closes into
+ what should be the first computed ATR. Harmless in `quickflip_probe.py`
+ (the leaked value was unused metadata there) but load-bearing in
+ `qf_signals()`, where the ATR gates trade selection. Both were fixed the
+ same way: eligibility now starts one day later than the raw warm-up
+ (`i <= QF_ATR_DAYS: continue`, requiring `j >= 1`), regression-pinned by
+ `test_atr_boundary_does_not_leak_the_last_days_close()` in
+ `service/tests/test_qf_signals.py` (mutates only the last candle's close and
+ asserts the first computed ATR is unchanged — a bare `> 0` check would not
+ have caught this).
+ 
++### The honesty pass on the QuickFlip replay (2026-08-20, whole-branch review)
++
++A review of the whole `feat/quickflip-strategy` branch found the tool
++**lying or unguarded** in several places. All fixed; each is now pinned.
++
++- **The open-equity valley was fabricated.** It was marked inside the
++  HalfTrend section, BELOW the `--strategy qf` short-circuit, and the equity
++  it marked never included QuickFlip's floating P/L. A 365-day `qf` run
++  printed `max open-equity valley 0.00` across 118 trades; `both`
++  understated the account's real peak-to-trough. One `mark_equity()` helper
++  now runs in every mode and counts BOTH lanes' open P/L. Corrected
++  figures are in the table above.
++- **Stop-before-target on the same bar is now pinned.** When one M5 bar
++  covers both the stop and the target, OHLC cannot say which came first and
++  the replay books the LOSS. Nothing tested that: reversing it to
++  target-first left all 28 QF/golden tests green while the 365-day
++  QuickFlip net moved +354.56 -> **+427.66 (+21%)**. It is now a pure
++  function `qf_resolve()` with unit tests for a bar covering both levels,
++  long and short. Class of bug worth remembering: **the frozen fixture had
++  no `qf stop` trade at all**, though 48 of 118 real trades exit that way —
++  a golden pin only guards the paths its fixture happens to take.
++- **QuickFlip has NO minimum stop distance, and now it is visible.** Size is
++  `0.25% of balance / (entry - sweep extreme)` and the stop is the sweep
++  extreme itself. Measured minimum over 365 days: **$0.57**, which sizes a
++  **44 oz** position — **$182,333 notional, 18.2x** a $10,000 balance.
++  HalfTrend is protected by `MIN_STOP_ATR` plus its ATR-buffered stop;
++  QuickFlip has neither. **No floor was added** (it would change measured
++  results and the value is an owner decision) — instead every run now prints
++  the largest QuickFlip position, its notional, and the tightest/median stop
++  distance. **This is an open owner decision.**
++- **QuickFlip's clamps were counted nowhere.** `sizing["clamped"]` was
++  incremented only in the HalfTrend block. QuickFlip is now reported on its
++  own line at its own 0.25% target: over 365 days 3.4% of its 118 entries
++  are overruled upward by the minimum lot, and 16 of 118 (**13.6%**) end at
++  the 0.01 floor. Both numbers print, because they are different readings.
++- **The run header names the strategy.** It printed exit scheme, gates, EMA,
++  confirm, bias, window and profit target but never `--strategy` — so a `qf`
++  run advertised HalfTrend's entire parameter set for a run in which
++  HalfTrend never traded. HalfTrend's parameters are now suppressed when it
++  does not run, QuickFlip's are printed when it does, and HalfTrend-only
++  tables (regime, ATR-spike, bias, strict-window, hour, S/R, chop, min-stop)
++  are silent when HalfTrend took no trades.
++- **`--tf M15 --strategy both` silently dropped the QuickFlip lane** —
++  `qf_signals()` needs THREE M5 bars to box a 15-minute range, so on M15
++  there is one bar at 13:30 and zero setups, always. It now WARNS.
++- **Per-lane max drawdown** is reported (spec asked for it; it shipped
++  without). It walks each lane's OWN realized curve, so the two do not add
++  up to the account's joint drawdown, and are not meant to.
++- **The HTML report distinguishes the lanes**: lane column per trade row,
++  QuickFlip markers in the lane colour labelled `QF#n`, QuickFlip trade
++  boxes outlined in it, a per-lane header breakdown, and the split named in
++  the page title. Before this, `both` being the default meant every shared
++  report blended two strategies unlabelled.
++- **`--strategy`'s CLI default is now pinned** by
++  `test_cli_defaults_match_the_module_defaults` — the test that exists
++  because this exact class of bug (module constant != argparse default)
++  shipped once already.
++
++**Known and NOT fixed** (needs an owner decision):
++`--entry-mode fixed` and `--risk` do not reach QuickFlip. A
++`--entry-mode fixed` study therefore still contains one risk-sized lane, and
++`--risk 2` changes HalfTrend only. Left alone deliberately: whether
++QuickFlip should honour those flags is a rules question, not a bug fix.
++
+ # 7b. Watchdog — the chart chain (and service processes) self-heal
+ 
+ `scripts/xau-watchdog.sh` (2026-08-17; setup.sh phase 8 starts it,
+ idempotent via pgrep; log `/tmp/xau-watchdog.log`). **Singleton via
+ `flock -n` on `/tmp/xau-watchdog.lock`** (2026-08-19): setup.sh's pgrep
+ guard loses a race — two runs seconds apart left TWO supervisors alive,
+ each restarting the same link and each able to alarm. A second instance
+ now logs `another watchdog holds ...` and exits 0, so launching the
+ launcher twice can never fan out into duplicate supervisors. Verify with
+ `ps -eo pid,args | grep xau-watch` (expect exactly one). Every 30 s it checks
+diff --git a/docs/superpowers/specs/2026-08-20-quickflip-ny-design.md b/docs/superpowers/specs/2026-08-20-quickflip-ny-design.md
+index 1eafa9a..e26820f 100644
+--- a/docs/superpowers/specs/2026-08-20-quickflip-ny-design.md
++++ b/docs/superpowers/specs/2026-08-20-quickflip-ny-design.md
+@@ -41,40 +41,74 @@ Also true, and stated plainly because it bounds what this can claim:
+ - **The published 25%-of-daily-ATR qualifier is inapplicable to gold.** It
+   presumes an overnight session gap; XAUUSD's opening-range/daily-ATR ratio is
+   median ~7%, so the rule fires on 1–5% of days. Adapted threshold: **10%**.
+ - **46 half-hours were searched.** Some looking good is what noise produces.
+   The slots that pass a split test pass it by +$0.03–$0.13/oz in the older
+   half — statistically indistinguishable from zero.
+ - The pattern is the one seen across every study this week: **the newer half is
+   good, the older half is not.** That is consistent with a market regime rather
+   than a durable edge.
+ 
++### Evidence CORRECTED AGAIN, 2026-08-20 (whole-branch review): quote the ENGINE
++
++Everything in the table above came from `scripts/quickflip_probe.py`, which
++reports only setups that **RESOLVE inside the 90-minute window**. Setups that
++expire unresolved are dropped by the probe — and `backtest.py`'s shipped
++`qf_signals()` lane **trades them**, closing at the window's last bar. The
++probe is therefore systematically kinder to the strategy than the code that
++runs. At the shipped 5% ATR gate over 17 months: probe **+$0.458/oz on 165
++rows** vs engine **+$0.246/oz on 177 trades**; the 12 expired trades net
++**−$52.27**. That is a **1.9x** overstatement.
++
++The engine's numbers, which are the ones that ship
++(`backtest.py --source bars_max.json --strategy qf`, expectancy per ounce):
++
++| gate | n | exp $/oz | older half | newer half |
++|---|---|---|---|---|
++| none | 257 | +0.229 | −0.015 | +0.472 |
++| **5% (shipped)** | **177** | **+0.246** | **+0.189** | **+0.302** |
++| 10% | 43 | +0.979 | −0.583 | +2.470 |
++| 15% | 9 | −2.532 | +2.675 | −6.698 |
++
++**The 10% → 5% threshold decision gets STRONGER on these numbers.** On the
++probe's, 10% merely earned less in total. On the engine's, 10%'s older half
++FLIPS to −0.583/oz and **5% is the only gate positive in both halves**. 10%'s
++headline +0.979/oz is one regime across 43 trades. The shipped default is
++therefore **5%**, not the 10% written in the rules and inputs below, which
++this section supersedes.
++
++The probe now states the exclusion in its own output and docstring, and the
++two implementations' shared defaults are pinned equal by
++`test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`.
++
+ **Status: this is a paid experiment, not a validated edge**, entered knowingly
+ by the owner after the correction above was presented. Size is reduced
+ accordingly (see Risk sizing). Review after ~2 months of live logs; if the
+ live log does not reproduce a positive expectancy, remove it.
+ 
+ Default session: **13:30 server** — the best combination of win rate (52.4%),
+ sample size (246) and both-halves-positive. `02:30` and `18:30` also passed;
+ `10:00` had the best headline expectancy but LOSES in the older half.
+ 
+ ## What we build
+ 
+ `quickflip_ny_v1`, a second strategy that trades **its own positions, at the
+ same time as HalfTrend, without either affecting the other**.
+ 
+ Rules — deliberately the rules that were MEASURED, not the ones published:
+ 
+ 1. At `QuickFlipHour:QuickFlipMinute` (default **13:30 server**), box the first
+    M15 candle: high wick to low wick.
+-2. Qualify if `range >= QuickFlipAtrPct × daily ATR(14)` (default **10%**, not
+-   25% — gold's distribution, measured above).
++2. Qualify if `range >= QuickFlipAtrPct × daily ATR(14)` (default **5%** —
++   NOT the published 25%, and no longer the 10% first written here: see the
++   engine table in "Evidence CORRECTED AGAIN" above, where 5% is the only
++   gate positive in both halves).
+ 3. Green opening candle → wait for a sweep **above** the box; red → **below**.
+ 4. Entry when an M5 bar **closes back inside** the box. **Not** a hammer or
+    engulfing pattern: those are untested here, and the measured expectancy
+    belongs to this trigger. Candle-pattern filtering is a later, separately
+    measured question.
+ 5. Stop = the sweep extreme. Target = the far side of the box.
+ 6. `QuickFlipWindowMin` (default **90**) minutes from the box close; after that
+    the setup expires unfired.
+ 7. One trade per server day, maximum.
+ 
+@@ -170,44 +204,55 @@ second lane mirroring the EA:
+ The golden pins must be extended: the existing pins keep `--strategy ht` so
+ they stay like-for-like change detectors, and a new pin captures `both`.
+ 
+ ## Inputs
+ 
+ | input | default |
+ |---|---|
+ | `QuickFlipEnabled` | true |
+ | `QuickFlipMagicOffset` | 1 |
+ | `QuickFlipHour` / `QuickFlipMinute` | 13 / 30 (server) |
+-| `QuickFlipAtrPct` | 10.0 |
++| `QuickFlipAtrPct` | 5.0 (was 10.0 — corrected on engine numbers, see Evidence) |
+ | `QuickFlipWindowMin` | 90 |
+ | `QuickFlipRiskPct` | 0.25 |
+ 
+ ## Non-goals
+ 
+ - No hammer/engulfing detection (unmeasured — see rule 4).
+ - No London/Asia sessions (measured negative / thin).
+ - No third strategy, and no N-lane generalization of either the EA or the
+   replay. Two explicit lanes only.
+ - No change to HalfTrend's rules, sizing, or exits.
+ 
+ ## Testing
+ 
+ - MQL5 cannot be unit-tested here: verify by careful reading, then MetaEditor
+   CLI compile gated at **0 errors, 0 warnings**, and state that the owner must
+   re-attach or re-drag the EA for new inputs to take effect.
+ - `scripts/quickflip_probe.py` promoted with its H1/H2 split as a regression
+-  check on the numbers in this spec.
++  check on the numbers in this spec — but note it is the LOOSER of the two
++  implementations (see Evidence): decisions quote the engine.
+ - Service-side: tests that a second `strategy_id` flows through `/trade-event`
+   and `/analyze` and is tagged correctly in SQLite, and that per-strategy stats
+   separate the two.
+ - A test that the daily-loss brake accounts for BOTH magics — the defect this
+   spec exists to prevent.
+ 
+ ## Risks
+ 
+ - **Biggest: the rails silently covering one lane.** Mitigated by the explicit
+   requirement above plus its own test.
+ - Two concurrent positions double concurrent exposure (accepted).
+-- 63 trades at the 10% threshold is a modest sample; both halves positive is
+-  what earns it a live seat rather than a shadow one.
++- 43 trades at the 10% threshold is a modest sample AND its older half is
++  negative on engine numbers (−0.583/oz); the shipped 5% gate has 177 trades
++  and is positive in both halves, which is what earns a live seat rather than
++  a shadow one.
++- **QuickFlip has no minimum stop distance.** Its stop is the sweep extreme
++  and its size is `0.25% / distance`, so a sweep that barely cleared the box
++  buys a very large position: measured minimum distance $0.57 over 365 days,
++  sizing 44 oz = $182,333 notional, 18.2x a $10,000 balance. HalfTrend is
++  protected by `MIN_STOP_ATR`; QuickFlip is not. The replay now PRINTS the
++  largest position and the tightest stop each run. Whether to add a floor
++  (and at what value) is an open owner decision — adding one would change
++  every measured result above.
+ - The edge is ~$60/month at 0.1 lot. If it costs more attention than that, it
+   is not worth keeping — revisit after a month of live logs.
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index 5d2502a..acb58cc 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -772,21 +772,35 @@ def qf_daily_atr(candles):
+             continue
+         s = 0.0
+         for j in range(i - QF_ATR_DAYS, i):
+             dj, pc = days[keys[j]], days[keys[j - 1]]["c"]
+             s += max(dj["h"] - dj["l"], abs(dj["h"] - pc), abs(dj["l"] - pc))
+         out[k] = s / QF_ATR_DAYS
+     return out
+ 
+ 
+ def qf_signals(candles):
+-    """Every QuickFlip setup, as pure price geometry (no account state)."""
++    """Every QuickFlip setup, as pure price geometry (no account state).
++
++    TWIN WARNING: `scripts/quickflip_probe.py` implements this same
++    sweep-and-reverse geometry independently (it imports nothing from this
++    engine so it can be pointed at any bars JSON). The two are deliberately
++    TWINS, not shared code: if you change the trade logic here, change it
++    there too, and vice versa. The pinned agreement between them lives in
++    `service/tests/test_quickflip_probe.py::test_probe_and_engine_pin_the_
++    same_defaults` -- drift in either direction fails that test.
++
++    One divergence is BY DESIGN and must stay: the probe reports only setups
++    that RESOLVE inside the window, while this engine also trades the ones
++    that expire unresolved (`qf expired`). The engine's numbers are the ones
++    that ship.
++    """
+     atr = qf_daily_atr(candles)
+     idx_of = {}
+     by_day = {}
+     for i, x in enumerate(candles):
+         idx_of[x["t"]] = i
+         by_day.setdefault(x["t"] // 86400, []).append(x)
+     out = []
+     for k in sorted(by_day):
+         if k not in atr:
+             continue
+@@ -824,20 +838,48 @@ def qf_signals(candles):
+             if not green and x["c"] > lo:
+                 out.append({"i": idx_of[x["t"]], "entry_t": x["t"],
+                             "dir": "BUY", "entry": x["c"], "stop": ext,
+                             "tp": hi, "expire_t": expire,
+                             "ratio": (hi - lo) / atr[k],
+                             "box_hi": hi, "box_lo": lo})
+                 break
+     return out
+ 
+ 
++def qf_resolve(pos, bar):
++    """Which exit an open QuickFlip position takes on this bar, or None.
++
++    STOP BEFORE TARGET, deliberately. When one bar's range covers both the
++    stop and the target, OHLC cannot say which price came first, so the
++    replay always books the loss -- the same pessimistic convention the
++    HalfTrend lane uses for its shared stop ("stop beats target/lock/reversal
++    in a bar", see the exit block in run()). It is not a detail: reversing
++    the order to target-first moves the 365-day QuickFlip net from +354.56
++    to +427.66 (+21%) on evidence that is pure bookkeeping fiction.
++    Pinned by service/tests/test_qf_signals.py::
++    test_stop_beats_target_when_one_bar_covers_both_{long,short}.
++    """
++    if pos["dir"] == "SELL":
++        if bar["h"] >= pos["stop"]:
++            return (pos["stop"], "qf stop")
++        if bar["l"] <= pos["tp"]:
++            return (pos["tp"], "qf target")
++    else:
++        if bar["l"] <= pos["stop"]:
++            return (pos["stop"], "qf stop")
++        if bar["h"] >= pos["tp"]:
++            return (pos["tp"], "qf target")
++    if bar["t"] >= pos["expire_t"]:
++        return (bar["c"], "qf expired")
++    return None
++
++
+ def run(candles, start_balance, verbose):
+     closes = [x["c"] for x in candles]
+     ema55 = ema(closes, EMA_LEN)
+     ht = halftrend(
+         [type("C", (), x)() for x in candles], amplitude=AMPLITUDE)
+     atr, adx = atr_adx(candles)
+     sr_ctx = sr_context(candles) if SR_LOOKBACK > 0 else None
+     bias_ema = bias_ema_series(candles, BIAS_EMA, BIAS_TF) if BIAS_EMA > 0 \
+         else None
+ 
+@@ -852,20 +894,31 @@ def run(candles, start_balance, verbose):
+     # --- QuickFlip lane: independent positions, shared balance -------------
+     # Precomputed because setups are pure geometry; executed here so sizing
+     # sees the balance both lanes have produced so far.
+     qf_by_i = {}
+     if STRATEGY in ("qf", "both"):
+         for s in qf_signals(candles):
+             qf_by_i[s["i"]] = s
+     qf_pos = None      # {dir, oz, entry, stop, tp, entry_t, expire_t}
+ 
+     sizing = {"entries": 0, "clamped": 0, "risk_pct": []}
++    # QuickFlip sizes off the same balance but at its own risk percent, so
++    # its clamps are counted separately rather than blended into HalfTrend's
++    # (a 0.25%-risk entry and a 1%-risk entry are not the same measurement).
++    # Blended, they were simply invisible: the clamp line counted only
++    # HalfTrend's entries while QuickFlip clamped 13.6% of its own.
++    # "clamped" keeps HalfTrend's meaning (risk sizing asked for LESS than
++    # one ounce and was overruled upward = risk exceeded). "min_lot" counts
++    # every entry that ended at the broker floor, including the ones where
++    # one ounce is genuinely what 0.25% bought -- a different and much larger
++    # number, reported next to it so neither reading can be mistaken.
++    qf_sizing = {"entries": 0, "clamped": 0, "min_lot": 0, "risk_pct": []}
+     peak_bal, max_dd = bal, 0.0
+     peak_eq, max_valley = bal, 0.0     # open-equity (close-based) valley
+     expo = {}              # server-day -> minutes of open-position time
+     skipped = []           # entries a gate refused: (when, dir, reason)
+     open_diff_bars = []    # confirm-mode open: bars where open[i+1] vs EMA
+                            # landed on a different side than close[i]
+     dead_signals = []      # strict window: (when, dir) flips whose decision
+                            # bar closed on the wrong side -> no entry ever
+ 
+     def basket_pl(px):
+@@ -908,77 +961,100 @@ def run(candles, start_balance, verbose):
+                        "headroom": basket.get("headroom"),
+                        "cycle_bal": basket["cycle_bal"]})
+         peak_bal = max(peak_bal, bal)
+         max_dd = max(max_dd, peak_bal - bal)
+         if verbose:
+             legs = "+".join(f"{l['oz']}oz@{l['px']:.2f}" for l in basket["legs"])
+             print(f"  close {when:%m-%d %H:%M} {basket['dir']} [{legs}] "
+                   f"@ {px:.2f} {why:>14}  P/L {pl:+8.2f}  bal {bal:9.2f}")
+         basket = None
+ 
++    def qf_pl(px):
++        """Unrealized P/L of the open QuickFlip position at this price."""
++        if qf_pos is None:
++            return 0.0
++        sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
++        return (px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
++            - SPREAD_USD * qf_pos["oz"]
++
++    def mark_equity(px):
++        """Mark the open-equity valley at this bar's close, in EVERY mode.
++
++        BOTH lanes' floating P/L counts, because the valley describes the
++        ACCOUNT: an account $300 under water on a QuickFlip position is $300
++        under water whether or not HalfTrend also holds a basket. This used
++        to live inside the HalfTrend section, BELOW the `--strategy qf`
++        short-circuit, so a qf-only run reported a fabricated valley of 0.00
++        across 118 trades and a `both` run understated the real peak-to-
++        trough by whatever QuickFlip was floating.
++        """
++        nonlocal peak_eq, max_valley
++        eq = bal + (basket_pl(px) if basket else 0.0) + qf_pl(px)
++        peak_eq = max(peak_eq, eq)
++        max_valley = max(max_valley, peak_eq - eq)
++
+     def note_stop(bk, t, stop):
+         """Append to the basket's stop history when the stop actually moved."""
+         hist = bk["stop_history"]
+         if not hist or hist[-1]["stop"] != stop:
+             hist.append({"t": int(t), "stop": stop})
+ 
+     for i in range(EMA_LEN + AMPLITUDE + 2, len(candles)):
+         # ---- QuickFlip lane (independent of everything below) -------------
+         if qf_pos is not None:
+             qx = candles[i]
+-            hit = None
+-            if qf_pos["dir"] == "SELL":
+-                if qx["h"] >= qf_pos["stop"]:
+-                    hit = (qf_pos["stop"], "qf stop")
+-                elif qx["l"] <= qf_pos["tp"]:
+-                    hit = (qf_pos["tp"], "qf target")
+-            else:
+-                if qx["l"] <= qf_pos["stop"]:
+-                    hit = (qf_pos["stop"], "qf stop")
+-                elif qx["h"] >= qf_pos["tp"]:
+-                    hit = (qf_pos["tp"], "qf target")
+-            if hit is None and qx["t"] >= qf_pos["expire_t"]:
+-                hit = (qx["c"], "qf expired")
++            hit = qf_resolve(qf_pos, qx)
+             if hit is not None:
+                 exit_px, why = hit
+                 sgn = 1.0 if qf_pos["dir"] == "BUY" else -1.0
+                 pl = (exit_px - qf_pos["entry"]) * sgn * qf_pos["oz"] \
+                     - SPREAD_USD * qf_pos["oz"]
+                 bal += pl
+                 peak_bal = max(peak_bal, bal)
+                 max_dd = max(max_dd, peak_bal - bal)
+                 trades.append({
+                     "lane": "qf", "dir": qf_pos["dir"],
+                     "legs": [{"px": qf_pos["entry"], "oz": qf_pos["oz"],
+                               "t": qf_pos["entry_t"]}],
+                     "exit": exit_px, "when": hhmm(qx["t"])[0],
+                     "exit_t": int(qx["t"]), "why": why, "pl": pl,
+                     "opened_t": qf_pos["entry_t"],
+                     "stop_history": [{"t": qf_pos["entry_t"],
+                                       "stop": qf_pos["stop"]}],
+                     "tp": qf_pos["tp"], "bal_after": bal,
+-                    "regime": None, "legs_count": 1})
++                    "regime": None})
+                 if verbose:
+                     print(f"  qf    {hhmm(qx['t'])[0]:%m-%d %H:%M} "
+                           f"{qf_pos['dir']} {qf_pos['oz']}oz "
+                           f"@ {qf_pos['entry']:.2f} -> {exit_px:.2f} "
+                           f"{why:>12}  P/L {pl:+8.2f}  bal {bal:9.2f}")
+                 qf_pos = None
+         if qf_pos is None and i in qf_by_i:
+             s = qf_by_i[i]
+             dist = abs(s["entry"] - s["stop"])
+             if dist > 0:
+-                oz = max(MIN_OZ, int(bal * QF_RISK_PCT / 100 / dist))
++                want = int(bal * QF_RISK_PCT / 100 / dist)
++                oz = max(MIN_OZ, want)
++                qf_sizing["entries"] += 1
++                if want < MIN_OZ:
++                    qf_sizing["clamped"] += 1
++                if oz == MIN_OZ:
++                    qf_sizing["min_lot"] += 1
++                qf_sizing["risk_pct"].append(100.0 * oz * dist / bal)
+                 qf_pos = {"dir": s["dir"], "oz": oz, "entry": s["entry"],
+                           "stop": s["stop"], "tp": s["tp"],
+                           "entry_t": s["entry_t"], "expire_t": s["expire_t"]}
+         if STRATEGY == "qf":
++            # Same place in the bar as the HalfTrend path's mark below: after
++            # this bar has been fully processed. Nothing under this point
++            # runs in qf-only mode.
++            mark_equity(candles[i]["c"])
+             continue
+ 
+         x = candles[i]
+         when, h, m = hhmm(x["t"])
+         px, e, a = x["c"], ema55[i], atr[i]
+         if e is None or a is None or ht[i] is None:
+             continue
+         trend = ht[i][1]
+         if last_flip is None or (ht[i - 1] and trend != ht[i - 1][1]):
+             last_flip, extreme = i, (x["l"] if trend == 0 else x["h"])
+@@ -1247,65 +1323,89 @@ def run(candles, start_balance, verbose):
+                               f"@ {px:.2f} stop {stop:.2f} (dist {dist:.2f})"
+                               f"{' SOFT (half risk, no adds)' if soft else ''}"
+                               + (f" bias {bias} (ema{BIAS_EMA} {bval:.2f}"
+                                  f"{', target x' + format(BIAS_TARGET_MULT, 'g') if basket.get('target_mult') else ''}"
+                                  f"{', lock x' + format(basket['lock_mult'], 'g') if basket.get('lock_mult') else ''})"
+                                  if bias else "")
+                               + (f" FLOORED from {orig_stop:.2f} "
+                                  f"(dist {orig_dist:.2f}, {orig_oz}oz)"
+                                  if floored else ""))
+ 
+-        # open-equity valley (marked at bar close)
+-        eq = bal + (basket_pl(px) if basket else 0.0)
+-        peak_eq = max(peak_eq, eq)
+-        max_valley = max(max_valley, peak_eq - eq)
++        mark_equity(px)          # open-equity valley, both lanes included
+ 
+     if basket:
+         close_basket(candles[-1]["c"], hhmm(candles[-1]["t"])[0], "eod-open")
+     run.skipped = skipped
+     run.expo = expo          # server-day -> minutes of open-position time
+     run.open_diff_bars = open_diff_bars
+     run.dead_signals = dead_signals
+     run.bias_flips = None
+     if BIAS_EMA > 0:
+         run.bias_flips = {
+             "M5": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M5")),
+             "M15": bias_flips_per_day(candles, bias_ema_series(candles, BIAS_EMA, "M15"), True)}
+     r = sorted(sizing["risk_pct"])
+     n = sizing["entries"]
+     # None, not 0.0, when nothing was risk-sized (--entry-mode fixed sizes
+     # every entry at --fixed-lots): "0.00% risk taken" reads as "we risked
+     # nothing", when the truth is that risk sizing never ran.
++    qr = sorted(qf_sizing["risk_pct"])
++    qn = qf_sizing["entries"]
+     run.sizing = {
+         "entries": n,
+         "clamped": sizing["clamped"],
+         "clamp_pct": round(100.0 * sizing["clamped"] / n, 1) if n else None,
+         "risk_median": round(r[len(r) // 2], 2) if r else None,
+         "risk_p90": round(r[int(0.9 * len(r))], 2) if r else None,
++        # the QuickFlip lane, counted separately (see qf_sizing above)
++        "qf_entries": qn,
++        "qf_clamped": qf_sizing["clamped"],
++        "qf_min_lot": qf_sizing["min_lot"],
++        "qf_clamp_pct": round(100.0 * qf_sizing["clamped"] / qn, 1) if qn else None,
++        "qf_risk_median": round(qr[len(qr) // 2], 2) if qr else None,
++        "qf_risk_p90": round(qr[int(0.9 * len(qr))], 2) if qr else None,
+     }
+     return trades, bal, max_dd, max_valley
+ 
+ 
++def _lane_drawdown(rows):
++    """Max peak-to-trough of ONE lane's own realized P/L curve, in dollars.
++
++    Deliberately the lane's own curve, not the account's: the account
++    drawdown is a joint number and already reported as `max drawdown`. This
++    answers "how deep did THIS strategy dig on its own?" -- so the two lanes'
++    figures do not add up to the account's, and are not meant to.
++    """
++    peak = run_sum = 0.0
++    dd = 0.0
++    for t in sorted(rows, key=lambda t: t["exit_t"]):
++        run_sum += t["pl"]
++        peak = max(peak, run_sum)
++        dd = max(dd, peak - run_sum)
++    return round(dd, 2)
++
++
+ def _lane_stats(trades):
+     """Per-lane breakdown plus how many QuickFlip trades overlapped a
+     HalfTrend position. A blended net hides which strategy earned it, and a
+     combined equity curve hides that exposure can be doubled."""
+     out = {}
+     for lane in ("ht", "qf"):
+         rows = [t for t in trades if t.get("lane", "ht") == lane]
+         wins = sum(1 for t in rows if t["pl"] > 0)
+         out[lane] = {
+             "trades": len(rows),
+             "wins": wins,
+             "losses": sum(1 for t in rows if t["pl"] < 0),
+             "win_rate": round(100.0 * wins / len(rows), 1) if rows else 0.0,
+             "net": round(sum(t["pl"] for t in rows), 2),
++            "max_dd": _lane_drawdown(rows),
+             "best": round(max((t["pl"] for t in rows), default=0.0), 2),
+             "worst": round(min((t["pl"] for t in rows), default=0.0), 2),
+         }
+     ht = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+           if t.get("lane", "ht") == "ht"]
+     qf = [(t["legs"][0]["t"], t["exit_t"]) for t in trades
+           if t.get("lane") == "qf"]
+     overlap = 0
+     for a0, a1 in qf:
+         for b0, b1 in ht:
+@@ -1603,20 +1703,36 @@ def build_parser():
+                        help="which lanes trade: ht = halftrend only (reproduces "
+                             "every study before 2026-08-20), qf = quickflip "
+                             "only, both = what runs live")
+     out.add_argument("--web", default=None, metavar="PATH",
+                      help="write a self-contained HTML report (chart with "
+                           "HalfTrend/EMA overlays and every trade drawn with "
+                           "its SL/TP and stop path) to this file")
+     return ap
+ 
+ 
++def qf_timeframe_warning(tf, strategy):
++    """QuickFlip boxes a 15-minute opening range out of THREE M5 bars
++    (`len(box) != 3: continue` in qf_signals). On any timeframe other than
++    M5 that condition can never be met -- on M15 there is exactly one bar at
++    13:30 -- so the lane produces zero setups, silently, forever. Return the
++    warning a run must print, or None."""
++    if tf == "M5" or strategy not in ("qf", "both"):
++        return None
++    return (f"WARNING: --strategy {strategy} asked for the QuickFlip lane, but "
++            f"QuickFlip boxes its opening range from THREE M5 bars and this "
++            f"run is on {tf}. It will produce ZERO QuickFlip setups"
++            + (" -- this run measures HalfTrend alone."
++               if strategy == "both" else
++               " -- this run measures NOTHING."))
++
++
+ def apply_window_args(args):
+     """Wire --loose-window (and the suppressed --strict-window no-op) into
+     the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
+     drive the real CLI-to-global path without running a whole backtest."""
+     global STRICT_WINDOW
+     STRICT_WINDOW = not args.loose_window
+ 
+ 
+ def main():
+     args = build_parser().parse_args()
+@@ -1687,43 +1803,67 @@ def main():
+     if args.start:
+         t = dt.datetime.fromisoformat(args.start).replace(tzinfo=dt.UTC).timestamp()
+         candles = [c for c in candles if c["t"] >= t]
+     if args.end:
+         t = dt.datetime.fromisoformat(args.end).replace(tzinfo=dt.UTC).timestamp()
+         candles = [c for c in candles if c["t"] <= t]
+     if len(candles) < 100:
+         sys.exit(f"only {len(candles)} candles available - need at least 100")
+ 
+     t0, t1 = hhmm(candles[0]["t"])[0], hhmm(candles[-1]["t"])[0]
+-    mode = (f" | entry mode fixed ({FIXED_LOTS:g} lots)"
+-            if ENTRY_MODE == "fixed" else "")
+-    print(f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> {t1:%m-%d %H:%M} "
+-          f"(server time) | start balance ${args.balance:,.0f} "
+-          f"| exit scheme {EXIT_SCHEME}{mode} | regime gate {REGIME_GATE}"
+-          f" | atr-spike gate {ATR_SPIKE_RATIO:g} | ema {EMA_LEN} "
+-          f"| confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"
+-          + (f" | chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}/X{CHOP_BOX_ATR:g}"
+-             if CHOP_FLIPS > 0 else "")
+-          + (" | STRICT WINDOW" if STRICT_WINDOW else "")
+-          + (f" | min stop {MIN_STOP_ATR:g} ATR" if MIN_STOP_ATR > 0 else "")
+-          + (f" | sr lookback {SR_LOOKBACK}"
+-             + (" report-only" if SR_REPORT else
+-                (f" min-headroom {SR_MIN_HEADROOM:g} ATR"
+-                 if SR_MIN_HEADROOM > 0 else " tag-only"))
+-             if SR_LOOKBACK > 0 else "")
+-          + (f" | bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}"
+-             if BIAS_EMA > 0 else "")
+-          + (f" | window {WINDOW[0]}-{WINDOW[1]}" if WINDOW != (4, 23) else "")
+-          + (f" | TF {TF}" if TF != "M5" else "")
+-          + (f" | profit target {PROFIT_TARGET_PCT:g}%"
+-             if PROFIT_TARGET_PCT != 2.0 else "")
+-          + "\n")
++    # The header is the only place a reader learns what the run measured, and
++    # --strategy was missing from it: a qf run advertised HalfTrend's entire
++    # parameter set for a run in which HalfTrend never traded. Name the lane,
++    # and print each lane's parameters only when that lane actually runs.
++    lane_desc = {"ht": "halftrend only", "qf": "quickflip only",
++                 "both": "halftrend + quickflip"}
++    head = [f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> "
++            f"{t1:%m-%d %H:%M} (server time)",
++            f"start balance ${args.balance:,.0f}",
++            f"strategy {STRATEGY} ({lane_desc[STRATEGY]})"]
++    if STRATEGY in ("ht", "both"):
++        head.append(f"exit scheme {EXIT_SCHEME}")
++        if ENTRY_MODE == "fixed":
++            head.append(f"entry mode fixed ({FIXED_LOTS:g} lots)")
++        head += [f"regime gate {REGIME_GATE}",
++                 f"atr-spike gate {ATR_SPIKE_RATIO:g}",
++                 f"ema {EMA_LEN}",
++                 f"confirm {CONFIRM_CLOSES} ({CONFIRM_MODE})"]
++        if CHOP_FLIPS > 0:
++            head.append(f"chop {CHOP_MODE} F{CHOP_FLIPS}/N{CHOP_BARS}"
++                        f"/X{CHOP_BOX_ATR:g}")
++        if STRICT_WINDOW:
++            head.append("STRICT WINDOW")
++        if MIN_STOP_ATR > 0:
++            head.append(f"min stop {MIN_STOP_ATR:g} ATR")
++        if SR_LOOKBACK > 0:
++            head.append(f"sr lookback {SR_LOOKBACK}"
++                        + (" report-only" if SR_REPORT else
++                           (f" min-headroom {SR_MIN_HEADROOM:g} ATR"
++                            if SR_MIN_HEADROOM > 0 else " tag-only")))
++        if BIAS_EMA > 0:
++            head.append(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}")
++        if WINDOW != (4, 23):
++            head.append(f"window {WINDOW[0]}-{WINDOW[1]}")
++        if PROFIT_TARGET_PCT != 2.0:
++            head.append(f"profit target {PROFIT_TARGET_PCT:g}%")
++    if STRATEGY in ("qf", "both"):
++        head.append(f"quickflip {QF_HOUR:02d}:{QF_MINUTE:02d} server, box >= "
++                    f"{QF_ATR_PCT:g}% daily ATR, {QF_WINDOW_MIN}min window, "
++                    f"{QF_RISK_PCT:g}% risk")
++    if TF != "M5":
++        head.append(f"TF {TF}")
++    print(" | ".join(head))
++    tf_warning = qf_timeframe_warning(TF, STRATEGY)
++    if tf_warning:
++        print(tf_warning)
++    print()
+ 
+     trades, bal, max_dd, max_valley = run(candles, args.balance, args.verbose)
+     # Several report blocks below read keys only HalfTrend's baskets carry
+     # (orig_dist/orig_oz, regime, chop, bias, floor). A QuickFlip trade
+     # reaching them would raise KeyError or silently pollute a per-regime
+     # table, so those blocks read ht_trades instead of the full list. The
+     # overall net/balance/drawdown lines below still read `trades` -- those
+     # describe the ACCOUNT, which both lanes share.
+     ht_trades = [t for t in trades if t.get("lane", "ht") == "ht"]
+ 
+@@ -1754,58 +1894,63 @@ def main():
+         for t in trades:
+             legs = "+".join(f"{l['oz']}oz@{l['px']:.2f}" for l in t["legs"])
+             fl = f"  floor {t['floor']:+.2f}" if t.get("floor") is not None else ""
+             print(f"  {t['when']:%m-%d %H:%M} {t['dir']:4} [{legs}] -> "
+                   f"{t['exit']:.2f} {t['why']:>13} {t['pl']:+9.2f}{fl}")
+     tdays = len({hhmm(x["t"])[0].date() for x in candles})
+     print(f"trading days {tdays}  trades/day {len(trades) / max(1, tdays):.2f}  "
+           f"win% {100 * len(wins) / max(1, len(trades)):.1f}  "
+           f"avg winner {sum(t['pl'] for t in wins) / max(1, len(wins)):+.2f}  "
+           f"avg loser {sum(t['pl'] for t in losses) / max(1, len(losses)):+.2f}")
+-    print("entry regime breakdown (service classifier on the 300-bar window):")
+-    for rg in ("trend", "range", "high_volatility"):
+-        sub = [t for t in ht_trades if t.get("regime") == rg]
+-        w = [t for t in sub if t["pl"] > 0]
+-        print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+-              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+-    print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
+-    for r in ATR_SPIKE_BUCKETS:
+-        sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
+-        w = [t for t in sub if t["pl"] > 0]
+-        print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+-              f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
++    # Every block from here to the lane summary reads HalfTrend-only fields.
++    # With no HalfTrend trade they printed rows of zeros -- and on a qf run
++    # "trend trades 0 net +0.00" reads as "QuickFlip took no trend trades",
++    # which is not a fact about anything. Say nothing instead.
++    if ht_trades:
++        print("entry regime breakdown (service classifier on the 300-bar window):")
++        for rg in ("trend", "range", "high_volatility"):
++            sub = [t for t in ht_trades if t.get("regime") == rg]
++            w = [t for t in sub if t["pl"] > 0]
++            print(f"  {rg:16} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
++                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
++        print("entry ATR-spike breakdown (ATR14 / median of its last 100 values):")
++        for r in ATR_SPIKE_BUCKETS:
++            sub = [t for t in ht_trades if (t.get("atr_ratio") or 0) > r]
++            w = [t for t in sub if t["pl"] > 0]
++            print(f"  ratio > {r:<4} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
++                  f"  win% {100 * len(w) / max(1, len(sub)):5.1f}")
+     sk = getattr(run, "skipped", [])
+-    if REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0:
++    if ht_trades and (REGIME_GATE != "off" or ATR_SPIKE_RATIO > 0):
+         from collections import Counter
+         cnt = Counter(r for _, _, r in sk)
+         print(f"gate (regime {REGIME_GATE}, atr-spike {ATR_SPIKE_RATIO:g}): "
+               f"refused {len(sk)} entries "
+               f"({', '.join(f'{k} {v}' for k, v in cnt.items()) or 'none'})")
+-    if CHOP_FLIPS > 0:
++    if ht_trades and CHOP_FLIPS > 0:
+         ch = [t for t in ht_trades if t.get("chop")]
+         nc = [t for t in ht_trades if not t.get("chop")]
+         for lab, sub in (("chop-tagged", ch), ("not chop", nc)):
+             w = [t for t in sub if t["pl"] > 0]
+             l = [t for t in sub if t["pl"] <= 0]
+             print(f"chop {lab:12} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                   f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                   f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+                   f"  losers {len(l)} {sum(t['pl'] for t in l):+.2f}")
+         nchop = sum(1 for _, _, r in sk if r == "chop")
+         print(f"chop mode {CHOP_MODE}: refused {nchop} entries, "
+               f"soft-sized {sum(1 for t in ht_trades if t.get('soft'))} baskets")
+-    if STRICT_WINDOW:
++    if ht_trades and STRICT_WINDOW:
+         dd = getattr(run, "dead_signals", [])
+         print(f"strict window: {len(dd)} flips died at the decision bar "
+               f"(entry bar would open on the wrong side of the EMA); "
+               f"every entry sits {CONFIRM_CLOSES} bar(s) after its arrow")
+-    if MIN_STOP_ATR > 0:
++    if ht_trades and MIN_STOP_ATR > 0:
+         fl = [t for t in ht_trades if t.get("floored")]
+         saved = [t for t in fl if t.get("orig_hit_bar") is not None
+                  and t["orig_hit_bar"] <= NOISE_BARS]
+         surv = [t for t in saved if not (t["why"] == "stop"
+                                          and t["bars_open"] <= NOISE_BARS)]
+         later = [t for t in fl if t.get("orig_hit_bar") is not None
+                  and t["orig_hit_bar"] > NOISE_BARS]
+         never = [t for t in fl if t.get("orig_hit_bar") is None]
+         w = [t for t in fl if t["pl"] > 0]
+         print(f"min-stop floor {MIN_STOP_ATR:g} ATR: floored {len(fl)} of "
+@@ -1819,21 +1964,21 @@ def main():
+         print(f"  original stop would have hit later (bar > {NOISE_BARS}): "
+               f"{len(later)}  net {sum(t['pl'] for t in later):+.2f}"
+               f"  |  never touched while open: {len(never)}  "
+               f"net {sum(t['pl'] for t in never):+.2f}")
+         for t in fl:
+             print(f"    {t['opened']:%m-%d %H:%M} {t['dir']:4} "
+                   f"{t['legs'][0]['oz']}oz (was {t['orig_oz']}oz) "
+                   f"stop {t['entry_stop']:.2f} (was {t['orig_stop']:.2f}, "
+                   f"{t['dist_atr']:.2f} ATR) old-stop hit bar "
+                   f"{t['orig_hit_bar']} -> {t['why']} {t['pl']:+.2f}")
+-    if BIAS_EMA > 0:
++    if ht_trades and BIAS_EMA > 0:
+         print(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE} "
+               f"(with = BUY above / SELL below the EMA at entry):")
+         for lab in ("with", "counter"):
+             sub = [t for t in ht_trades if t.get("bias") == lab]
+             w = [t for t in sub if t["pl"] > 0]
+             l = [t for t in sub if t["pl"] <= 0]
+             worst = min((t["pl"] for t in sub), default=0.0)
+             print(f"  {lab:8} trades {len(sub):5}  net {sum(t['pl'] for t in sub):+10.2f}"
+                   f"  win% {100 * len(w) / max(1, len(sub)):5.1f}"
+                   f"  winners {len(w)} {sum(t['pl'] for t in w):+.2f}"
+@@ -1843,35 +1988,35 @@ def main():
+         if untag:
+             print(f"  (untagged {len(untag)}: entered before the bias EMA warmed up)")
+         nb = sum(1 for _, _, r in sk if r == "counter-trend")
+         if BIAS_MODE == "skip":
+             print(f"  skip: refused {nb} counter-trend entries")
+         bf = getattr(run, "bias_flips", None) or {}
+         for tf in ("M5", "M15"):
+             if tf in bf:
+                 per, tot, nd = bf[tf]
+                 print(f"  bias flips/day on {tf}: {per:.2f} ({tot} flips over {nd} days)")
+-    if HOUR_TABLE:
++    if ht_trades and HOUR_TABLE:
+         print("entry-hour breakdown (server time; trade attributed to the "
+               "hour its first leg opened):")
+         print("  hour  trades   win%        net        avg      worst")
+         for hr in range(24):
+             sub = [t for t in ht_trades
+                    if t.get("opened") is not None and t["opened"].hour == hr]
+             if not sub:
+                 continue
+             w = [t for t in sub if t["pl"] > 0]
+             net = sum(t["pl"] for t in sub)
+             print(f"  {hr:02d}    {len(sub):6}  {100 * len(w) / len(sub):5.1f}"
+                   f"  {net:+10.2f} {net / len(sub):+10.2f} "
+                   f"{min(t['pl'] for t in sub):+10.2f}")
+-    if SR_LOOKBACK > 0:
++    if ht_trades and SR_LOOKBACK > 0:
+         b1, b2, b3 = SR_BUCKETS
+         print(f"headroom to the nearest opposing level (pivots k={SR_PIVOT_K} "
+               f"over {SR_LOOKBACK} bars + prev-day H/L + session H/L, "
+               f"deduped {SR_DEDUP_ATR:g} ATR):")
+         print("  bucket        trades   win%        net        avg"
+               "   winners $   losers $")
+         rows = [(f"<{b1:g} ATR", lambda v: v is not None and v < b1),
+                 (f"{b1:g}-{b2:g} ATR", lambda v: v is not None and b1 <= v < b2),
+                 (f"{b2:g}-{b3:g} ATR", lambda v: v is not None and b2 <= v < b3),
+                 (f">{b3:g} ATR", lambda v: v is not None and v >= b3),
+@@ -1898,43 +2043,87 @@ def main():
+                   f"winners {w:+10.2f} forgone, losers {l:+10.2f} avoided, "
+                   f"net effect {-(w + l):+10.2f}")
+         nsr = sum(1 for _, _, r in sk if str(r).startswith("headroom<"))
+         if SR_MIN_HEADROOM > 0 and not SR_REPORT:
+             print(f"  filter: refused {nsr} entries below "
+                   f"{SR_MIN_HEADROOM:g} ATR of headroom")
+         untag = [t for t in ht_trades if t.get("headroom") is None]
+         if untag:
+             print(f"  ('clear' = no level ahead of the fill: {len(untag)} "
+                   f"trades; these are never refused)")
+-    if CONFIRM_MODE == "open":
++    if ht_trades and CONFIRM_MODE == "open":
+         od = getattr(run, "open_diff_bars", [])
+         print(f"confirm-mode open: {len(od)} decision bars where the next "
+               f"open sat on a different side of the EMA than the close")
+     ls = _lane_stats(trades)
+-    if ls["ht"]["trades"] and ls["qf"]["trades"]:
+-        for lane, label in (("ht", "halftrend"), ("qf", "quickflip")):
+-            d = ls[lane]
+-            print(f"lane {label:<10} trades {d['trades']:>5}  win% "
+-                  f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}")
++    present = [(k, lab) for k, lab in (("ht", "halftrend"), ("qf", "quickflip"))
++               if ls[k]["trades"]]
++    for lane, label in present:
++        d = ls[lane]
++        print(f"lane {label:<10} trades {d['trades']:>5}  win% "
++              f"{d['win_rate']:>5.1f}  net {d['net']:>10.2f}  "
++              f"max dd {d['max_dd']:>9.2f}")
++    if len(present) > 1:
+         print(f"           quickflip trades overlapping a halftrend position: "
+               f"{ls['qf_trades_overlapping_ht']}")
++    if present:
++        print("           lane max dd walks that lane's OWN realized curve; "
++              "the account's joint drawdown is on the line below.")
+     print(f"\nnet P/L    {bal - args.balance:+10.2f}  "
+           f"({100 * (bal / args.balance - 1):+.2f}%)")
+     print(f"final bal  {bal:10.2f}   max drawdown {max_dd:.2f}   "
+           f"max open-equity valley {max_valley:.2f}")
+     s = getattr(run, "sizing", None)
+     if s and s["entries"]:
+         flag = "  <-- results distorted" if s["clamp_pct"] > 10 else ""
+-        print(f"sizing     {s['clamp_pct']:.1f}% of entries clamped to the "
+-              f"0.01 minimum lot{flag}")
++        lane_tag = " (halftrend lane)" if STRATEGY == "both" else ""
++        print(f"sizing     {s['clamp_pct']:.1f}% of {s['entries']} entries "
++              f"clamped to the 0.01 minimum lot{lane_tag}{flag}")
+         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
+               f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
++    # QuickFlip sizes off the same balance at its own risk percent. Its
++    # clamps used to be counted nowhere: the line above only ever saw
++    # HalfTrend's entries, so a lane clamping 13.6% of its entries looked
++    # like a lane that never clamped.
++    if s and s.get("qf_entries"):
++        qflag = "  <-- results distorted" if s["qf_clamp_pct"] > 10 else ""
++        print(f"sizing     {s['qf_clamp_pct']:.1f}% of {s['qf_entries']} "
++              f"entries clamped to the 0.01 minimum lot (quickflip lane)"
++              f"{qflag}")
++        print(f"           quickflip risk actually taken: median "
++              f"{s['qf_risk_median']:.2f}% p90 {s['qf_risk_p90']:.2f}%  "
++              f"(target {QF_RISK_PCT:.2f}%); "
++              f"{s['qf_min_lot']} of {s['qf_entries']} entries "
++              f"({100.0 * s['qf_min_lot'] / s['qf_entries']:.1f}%) ended at "
++              f"the 0.01 minimum lot")
++    qf_trades = [t for t in trades if t.get("lane") == "qf"]
++    if qf_trades:
++        # QuickFlip's stop is the sweep extreme with no minimum distance, so
++        # a sweep that barely cleared the box divides the risk budget by a
++        # very small number. No floor is applied here on purpose (adding one
++        # would change measured results and the value is an owner decision) --
++        # but the exposure it produces is printed so it cannot hide.
++        big = max(qf_trades, key=lambda t: t["legs"][0]["oz"])
++        boz, bpx = big["legs"][0]["oz"], big["legs"][0]["px"]
++        notional = boz * bpx
++        dists = [abs(t["legs"][0]["px"] - t["stop_history"][0]["stop"])
++                 for t in qf_trades]
++        bdist = abs(bpx - big["stop_history"][0]["stop"])
++        print(f"quickflip  largest position {boz}oz ({boz / 100:.2f} lots) on "
++              f"{hhmm(big['legs'][0]['t'])[0]:%m-%d %H:%M} @ {bpx:.2f} = "
++              f"${notional:,.0f} notional, "
++              f"{notional / args.balance:.1f}x the starting balance "
++              f"(stop distance ${bdist:.2f})")
++        print(f"           tightest quickflip stop this run ${min(dists):.2f}; "
++              f"median ${sorted(dists)[len(dists) // 2]:.2f}. QuickFlip has "
++              f"NO minimum stop distance -- unlike HalfTrend (--min-stop-atr) "
++              f"nothing bounds how large a tight sweep can size it.")
+     armed = [t for t in ht_trades if t.get("floor") is not None]
+     if EXIT_SCHEME != "target-exit":
+         print(f"floor armed on {len(armed)} trades; "
+               f"{len(floor_leaks)} realized below their floor "
+               f"({', '.join(t['why'] for t in floor_leaks) or 'none'})")
+     if args.chart:
+         plot(candles, trades, args.balance, args.chart)
+         print(f"chart      {args.chart}")
+     art = None
+     if args.json:
+diff --git a/scripts/backtest_report.py b/scripts/backtest_report.py
+index ff3bd9d..8242646 100644
+--- a/scripts/backtest_report.py
++++ b/scripts/backtest_report.py
+@@ -15,18 +15,27 @@ from pathlib import Path
+ ROOT = Path(__file__).resolve().parent.parent
+ TEMPLATE = ROOT / "service" / "app" / "static" / "backtest_report.html"
+ LIB = ROOT / "service" / "app" / "static" / "vendor" / \
+     "lightweight-charts.standalone.production.js"
+ 
+ 
+ def write_report(artifact, out_path):
+     """artifact: the dict from backtest.build_run_json(). Writes out_path."""
+     html = TEMPLATE.read_text(encoding="utf-8")
+     meta = artifact.get("meta", {})
++    trades = artifact.get("trades", [])
++    # Name the lanes in the title: the report defaults to --strategy both, and
++    # a bare "N trades" reads as one strategy's record when it is two.
++    lanes = {}
++    for t in trades:
++        lanes[t.get("lane", "ht")] = lanes.get(t.get("lane", "ht"), 0) + 1
++    breakdown = ""
++    if len(lanes) > 1:
++        breakdown = " (" + ", ".join(f"{n} {k}" for k, n in sorted(lanes.items())) + ")"
+     title = f"XAUUSD backtest — {meta.get('bars', 0)} bars, " \
+-            f"{len(artifact.get('trades', []))} trades"
++            f"{len(trades)} trades{breakdown}"
+     # Substitute data LAST: the artifact is arbitrary JSON and must never be
+     # re-scanned for placeholder tokens.
+     html = html.replace("__TITLE__", title)
+     html = html.replace("__LIB__", LIB.read_text(encoding="utf-8"))
+     html = html.replace("__DATA__", json.dumps(artifact, separators=(",", ":")))
+     Path(out_path).write_text(html, encoding="utf-8")
+diff --git a/scripts/quickflip_probe.py b/scripts/quickflip_probe.py
+index bc15b11..4721055 100644
+--- a/scripts/quickflip_probe.py
++++ b/scripts/quickflip_probe.py
+@@ -6,26 +6,39 @@ Box the first M15 candle of a chosen half-hour, qualify it against daily
+ ATR(14), then trade the SWEEP-AND-REVERSE: price leaves the box in the
+ opening candle's direction, comes back inside, and we bet the far side of the
+ box gets hit before the sweep extreme does.
+ 
+ TIME CONVENTION -- read this before editing: candle `t` is SERVER wall-clock
+ already. Read it with dt.datetime.fromtimestamp(t, dt.UTC) and NO offset.
+ Adding one shifts every session by that many hours; a +3h shift is what made
+ an earlier version of this analysis report the wrong sessions entirely.
+ Sanity check: server hour 00 contains zero bars (the daily market break).
+ 
+-NOTE: `scripts/backtest.py` will gain an equivalent `qf_signals()` function
+-that runs this same sweep-and-reverse logic inside the full replay engine.
+-This probe and that function are deliberately TWINS, not shared code -- this
+-file stands alone (imports nothing from the engine) so it can be pointed at
+-any bars JSON directly. If you change the trade logic here, change it there
+-too, and vice versa.
++NOTE: `scripts/backtest.py`'s `qf_signals()` runs this same sweep-and-reverse
++logic inside the full replay engine. This probe and that function are
++deliberately TWINS, not shared code -- this file stands alone (imports nothing
++from the engine) so it can be pointed at any bars JSON directly. If you change
++the trade logic here, change it there too, and vice versa. Every default they
++share is pinned equal by
++`service/tests/test_quickflip_probe.py::test_probe_and_engine_pin_the_same_defaults`,
++so drift fails a test instead of passing silently.
++
++WHAT THIS PROBE LEAVES OUT -- read before quoting a number from it. It reports
++only setups that RESOLVE inside the window: price reaches the stop or the
++target before the 90 minutes are up. Setups that expire unresolved are
++DROPPED here, and the engine TRADES them, closing at the bar price when the
++window ends. So this probe is systematically kinder to the strategy than what
++ships. Measured 2026-08-20 over 17 months at the shipped 5% ATR gate:
++this probe +$0.458/oz on 165 rows, the engine +$0.246/oz on 177 trades -- the
++12 expired trades net -$52.27 and the probe never sees them. That is a 1.9x
++overstatement. THE ENGINE'S NUMBERS ARE THE ONES THAT SHIP; use
++`scripts/backtest.py --strategy qf` for anything that decides money.
+ 
+ Usage:
+     python3 scripts/quickflip_probe.py [--source bars_max.json]
+                                        [--hour 13] [--minute 30]
+                                        [--sweep]     # every half-hour
+ """
+ import argparse
+ import datetime as dt
+ import json
+ 
+@@ -132,51 +145,71 @@ def setups_at(candles, hour, minute, atr, window_min=WINDOW_MIN,
+                 if x["h"] >= tp:
+                     pl = (tp - entry) - spread
+                     break
+         if pl is not None:
+             out.append({"ratio": ratio, "pl": pl, "green": green,
+                         "entry_t": entry_t, "stop": stop, "tp": tp,
+                         "box_hi": hi, "box_lo": lo})
+     return out
+ 
+ 
++EXCLUSION_NOTE = (
++    "NOTE: rows above count only setups that RESOLVED inside the "
++    f"{WINDOW_MIN}-minute window. Setups that expire unresolved are EXCLUDED "
++    "here; scripts/backtest.py's qf_signals() lane TRADES them and books the "
++    "P/L, so the engine's expectancy is LOWER. At the shipped 5% ATR gate "
++    "over 17 months: this probe +$0.458/oz on 165 rows vs the engine "
++    "+$0.246/oz on 177 trades (its 12 expired trades net -$52.27). The "
++    "ENGINE's numbers are what ships -- run `scripts/backtest.py "
++    "--strategy qf` for a decision.")
++
++
+ def report(rows, label):
+     if not rows:
+         print(f"{label:>7}  (no completed trades)")
+         return
+     n = len(rows)
+     wins = sum(1 for r in rows if r["pl"] > 0)
+     tot = sum(r["pl"] for r in rows)
+     half = n // 2
+     h1 = sum(r["pl"] for r in rows[:half]) / max(half, 1)
+     h2 = sum(r["pl"] for r in rows[half:]) / max(n - half, 1)
+     both = "  <== positive in BOTH halves" if h1 > 0 and h2 > 0 else ""
+     print(f"{label:>7} {n:>5} {100*wins/n:>6.1f}% {tot/n:>8.2f} {tot:>9.2f} "
+           f"{h1:>8.2f} {h2:>8.2f}{both}")
+ 
+ 
+-def main():
++def build_parser():
++    """Extracted so a test can read the shipped defaults without running the
++    probe: --hour/--minute ARE the measured session, and a bare run is what
++    every number in the spec came from."""
+     ap = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+     ap.add_argument("--source", default="bars_max.json")
+     ap.add_argument("--hour", type=int, default=13)
+     ap.add_argument("--minute", type=int, default=30)
+     ap.add_argument("--sweep", action="store_true",
+                     help="scan every half-hour instead of one session")
+-    args = ap.parse_args()
++    return ap
++
++
++def main():
++    args = build_parser().parse_args()
+     candles = load(args.source)
+     atr = daily_atr(candles)
+     print(f"{'server':>7} {'n':>5} {'win%':>6} {'exp$/oz':>8} {'total':>9} "
+           f"{'H1':>8} {'H2':>8}")
+     if args.sweep:
+         for h in range(1, 24):
+             for m in (0, 30):
+                 rows = setups_at(candles, h, m, atr)
+                 if len(rows) >= 80:
+                     report(rows, f"{h:02d}:{m:02d}")
+     else:
+         report(setups_at(candles, args.hour, args.minute, atr),
+                f"{args.hour:02d}:{args.minute:02d}")
++    print()
++    print(EXCLUSION_NOTE)
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/service/app/static/backtest_report.html b/service/app/static/backtest_report.html
+index e405873..f6f7421 100644
+--- a/service/app/static/backtest_report.html
++++ b/service/app/static/backtest_report.html
+@@ -52,43 +52,48 @@
+   <button data-z="week">Last week</button>
+   <button data-z="all">Whole run</button>
+ </div>
+ 
+ <div id="wrap">
+   <div id="chart"></div>
+   <canvas id="overlay"></canvas>
+   <div id="legend">
+     <i style="color:#1e90ff">HalfTrend</i><i style="color:#e0e0e0">EMA9</i>
+     <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5">EMA55</i>
+-    <i style="color:#ab47bc">EMA200</i>
++    <i style="color:#ab47bc">EMA200</i><i style="color:#00e5ff">QuickFlip trade</i>
+   </div>
+ </div>
+ 
+ <table>
+-  <thead><tr><th>#</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
++  <thead><tr><th>#</th><th>Lane</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
+   <th>Exit</th><th>Why</th><th>P/L</th><th>Balance</th></tr></thead>
+   <tbody id="rows"></tbody>
+ </table>
+ 
+ <script>__LIB__</script>
+ <script>
+ var RUN = __DATA__;
+ 
+ // One bar's length in seconds, read off the data rather than assumed: --tf M15
+ // runs carry 900-second bars, and a hard-coded 300 put every stop-line gap
+ // point off-grid (phantom columns) and gave row-click zoom a third of the
+ // intended context.
+ var BAR_SEC = (RUN.candles.t.length > 1 ? RUN.candles.t[1] - RUN.candles.t[0] : 300);
+ 
+ var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
+ var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
+ var GREEN_L = "#26a69a", RED_L = "#ef5350";
++// QuickFlip is a second, independent strategy trading the same account. The
++// report defaults to --strategy both, so without a lane marking the page
++// blends two strategies into one undifferentiated list of trades.
++var QF_L = "#00e5ff";
++function lane(t) { return t.lane || "ht"; }
+ 
+ function money(v) { return (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2); }
+ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " "); }
+ 
+ // ---- header -------------------------------------------------------------
+ (function header() {
+   var s = RUN.stats, m = RUN.meta;
+   document.getElementById("title").textContent =
+     "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
+     "  (" + m.bars.toLocaleString() + " bars, " +
+@@ -100,20 +105,30 @@ function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace
+     ["Net P/L", money(s.net), s.net >= 0 ? "pos" : "neg"],
+     ["Trades", String(s.trades), ""],
+     ["Win rate", s.win_rate.toFixed(1) + "%", ""],
+     // two different drawdowns: max_dd walks the CLOSED balance curve,
+     // max_valley includes open-basket equity and is therefore never smaller.
+     ["Max drawdown (closed)", "$" + s.max_dd.toFixed(2), "neg"],
+     ["Max valley (open equity)", "$" + (s.max_valley == null ? s.max_dd : s.max_valley).toFixed(2), "neg"],
+     ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
+     ["Risk taken", pct(s.risk_median) + " / p90 " + pct(s.risk_p90), ""]
+   ];
++  // Two lanes on one balance: a blended net hides which strategy earned it.
++  if (s.lanes && s.lanes.ht.trades && s.lanes.qf.trades) {
++    [["ht", "HalfTrend lane"], ["qf", "QuickFlip lane"]].forEach(function (p) {
++      var d = s.lanes[p[0]];
++      cells.push([p[1], d.trades + " trades \u00b7 " + d.win_rate.toFixed(1) +
++                  "% \u00b7 " + money(d.net) + " \u00b7 dd $" +
++                  (d.max_dd == null ? "n/a" : d.max_dd.toFixed(2)),
++                  d.net >= 0 ? "pos" : "neg"]);
++    });
++  }
+   document.getElementById("stats").innerHTML = cells.map(function (c) {
+     return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
+   }).join("");
+   // Spec §5: the $500–$2,000 band runs, but warns loudly, whatever this
+   // particular window happened to clamp.
+   if (s.start_balance >= 500 && s.start_balance < 2000) {
+     document.getElementById("warnbox").innerHTML +=
+       '<div class="warn"><b>Started at $' + s.start_balance.toFixed(0) +
+       ", inside the $500–$2,000 warn band.</b> At this size 1% of balance " +
+       "often cannot cover one ounce at the stop distance, so sizing falls " +
+@@ -226,32 +241,37 @@ var candles = chart.addCandlestickSeries({
+   // markers: entry, each pyramid add, exit. Real 12-month runs carry ~1,200
+   // trades (~3,600 marker candidates); Lightweight Charts gets visibly
+   // sluggish rendering that many at once, so pyramid-add markers ("+") are
+   // included only when there aren't too many trades to begin with. Entry and
+   // exit markers (the ones the trade table's row-click needs to make sense
+   // of what it zoomed to) are always drawn.
+   var SHOW_ADDS = RUN.trades.length <= 300;
+   var marks = [];
+   RUN.trades.forEach(function (tr, i) {
+     var up = tr.dir === "BUY";
++    var qf = lane(tr) === "qf";
+     marks.push({ time: tr.legs[0].t, position: up ? "belowBar" : "aboveBar",
+-                 color: up ? GREEN_L : RED_L, shape: up ? "arrowUp" : "arrowDown",
+-                 text: "#" + (i + 1) });
++                 color: qf ? QF_L : (up ? GREEN_L : RED_L),
++                 shape: up ? "arrowUp" : "arrowDown",
++                 text: (qf ? "QF#" : "#") + (i + 1) });
+     if (SHOW_ADDS) {
+       tr.legs.slice(1).forEach(function (leg) {
+         marks.push({ time: leg.t, position: up ? "belowBar" : "aboveBar",
+                      color: "#f0c674", shape: "circle", text: "+" });
+       });
+     }
++    // exit keeps the win/loss colour -- that is what the eye reads first --
++    // and changes SHAPE for QuickFlip so the lane is still identifiable.
+     marks.push({ time: tr.exit_t, position: up ? "aboveBar" : "belowBar",
+-                 color: tr.pl >= 0 ? GREEN_L : RED_L, shape: "square",
+-                 text: money(tr.pl) });
++                 color: tr.pl >= 0 ? GREEN_L : RED_L,
++                 shape: qf ? "circle" : "square",
++                 text: (qf ? "QF " : "") + money(tr.pl) });
+   });
+   marks.sort(function (a, b) { return a.time - b.time; });
+   candles.setMarkers(marks);
+ })();
+ 
+ // ---- trade boxes on the overlay canvas ----------------------------------
+ var cv = document.getElementById("overlay"), ctx = cv.getContext("2d");
+ 
+ function sizeCanvas() {
+   var r = document.getElementById("wrap").getBoundingClientRect();
+@@ -279,21 +299,21 @@ function drawBoxes() {
+     ctx.fillStyle = RED;
+     ctx.fillRect(x0, Math.min(entry, stop0), w, Math.abs(stop0 - entry));
+     // reward zone: entry -> target (fixed mode has no target: nothing drawn)
+     if (tr.tp != null) {
+       var tp = candles.priceToCoordinate(tr.tp);
+       if (tp != null) {
+         ctx.fillStyle = GREEN;
+         ctx.fillRect(x0, Math.min(entry, tp), w, Math.abs(tp - entry));
+       }
+     }
+-    ctx.strokeStyle = tr.pl >= 0 ? GREEN_L : RED_L;
++    ctx.strokeStyle = lane(tr) === "qf" ? QF_L : (tr.pl >= 0 ? GREEN_L : RED_L);
+     ctx.lineWidth = 1;
+     ctx.strokeRect(x0 + 0.5, Math.min(entry, stop0) + 0.5, w, Math.abs(stop0 - entry));
+   });
+ }
+ 
+ function redraw() { sizeCanvas(); drawBoxes(); }
+ chart.timeScale().subscribeVisibleTimeRangeChange(drawBoxes);
+ new ResizeObserver(redraw).observe(document.getElementById("wrap"));
+ redraw();
+ 
+@@ -314,21 +334,24 @@ function showRange(kind) {
+   chart.timeScale().setVisibleRange({ from: Math.max(T[0], T[n - 1] - span), to: T[n - 1] });
+ }
+ document.getElementById("zoombar").addEventListener("click", function (ev) {
+   var b = ev.target.closest("button");
+   if (b) showRange(b.dataset.z);
+ });
+ showRange(RUN.trades.length ? "trade" : "all");
+ 
+ // ---- trade table --------------------------------------------------------
+ document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
+-  return '<tr data-i="' + i + '"><td>' + (i + 1) + "</td><td>" + stamp(t.legs[0].t) +
++  var ln = lane(t);
++  return '<tr data-i="' + i + '"><td>' + (i + 1) + '</td><td' +
++    (ln === "qf" ? ' style="color:' + QF_L + '"' : "") + ">" + ln +
++    "</td><td>" + stamp(t.legs[0].t) +
+     "</td><td>" + t.dir + "</td><td>" + t.legs.length + "</td><td>" +
+     t.legs[0].px.toFixed(2) + "</td><td>" + t.exit.toFixed(2) + "</td><td>" +
+     t.why + '</td><td class="' + (t.pl >= 0 ? "pos" : "neg") + '">' + money(t.pl) +
+     "</td><td>" + t.bal_after.toFixed(2) + "</td></tr>";
+ }).join("");
+ 
+ document.getElementById("rows").addEventListener("click", function (ev) {
+   var tr = ev.target.closest("tr"); if (!tr) return;
+   var t = RUN.trades[+tr.dataset.i], pad = 60 * BAR_SEC;   // 60 bars of context
+   chart.timeScale().setVisibleRange({ from: t.legs[0].t - pad, to: t.exit_t + pad });
+diff --git a/service/tests/backtest_report_smoke.js b/service/tests/backtest_report_smoke.js
+index 738efe7..b9836e8 100644
+--- a/service/tests/backtest_report_smoke.js
++++ b/service/tests/backtest_report_smoke.js
+@@ -107,20 +107,21 @@ if (fs.existsSync(REAL_REPORT)) {
+     `run backtest.py --web first; looked at ${REAL_REPORT}) -- the raw-template ` +
+     'check above still covers syntax');
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Stub environment
+ // ---------------------------------------------------------------------------
+ const HT_UP = '#1e90ff', HT_DOWN = '#ff4500';
+ const RED = 'rgba(239,83,80,0.18)', GREEN = 'rgba(38,166,154,0.18)';
+ const GREEN_L = '#26a69a', RED_L = '#ef5350';
++const QF_L = '#00e5ff';   // the QuickFlip lane's marking on the page
+ 
+ function makeCtxStub() {
+   const ops = [];
+   const ctx = {
+     fillStyle: null, strokeStyle: null, lineWidth: null,
+     setTransform(...args) { ops.push({ op: 'setTransform', args }); },
+     clearRect(x, y, w, h) { ops.push({ op: 'clearRect', x, y, w, h }); },
+     fillRect(x, y, w, h) { ops.push({ op: 'fillRect', x, y, w, h, style: ctx.fillStyle }); },
+     strokeRect(x, y, w, h) {
+       ops.push({ op: 'strokeRect', x, y, w, h, style: ctx.strokeStyle, lineWidth: ctx.lineWidth });
+@@ -392,20 +393,66 @@ function buildSmallFixture(bar) {
+   close(rects[3].x, 100, 't2 risk x'); close(rects[3].y, 1150, 't2 risk y');
+   close(rects[3].w, 20, 't2 risk w'); close(rects[3].h, 10, 't2 risk h');
+ 
+   assert.strictEqual(rects[4].op, 'strokeRect'); assert.strictEqual(rects[4].style, GREEN_L);
+   close(rects[4].x, 100.5, 't2 stroke x'); close(rects[4].y, 1150.5, 't2 stroke y');
+   close(rects[4].w, 20, 't2 stroke w'); close(rects[4].h, 10, 't2 stroke h');
+ 
+   console.log('ok    trade-box geometry matches hand-computed coordinates; tp:null trade draws no reward zone');
+ })();
+ 
++// ---------------------------------------------------------------------------
++// 2b. Lane labelling. The page defaults to --strategy both, so QuickFlip and
++//     HalfTrend trades land in one list; without a lane marking the report
++//     blends two independent strategies into an undifferentiated record.
++// ---------------------------------------------------------------------------
++(function laneLabellingChecks() {
++  const fixture = buildSmallFixture();
++  fixture.trades[0].lane = 'ht';
++  fixture.trades[1].lane = 'qf';
++  fixture.stats.lanes = {
++    ht: { trades: 1, wins: 1, losses: 0, win_rate: 100.0, net: 250.0, max_dd: 0.0 },
++    qf: { trades: 1, wins: 1, losses: 0, win_rate: 100.0, net: 100.0, max_dd: 0.0 },
++    qf_trades_overlapping_ht: 0,
++  };
++  const { candlestickStub, ctxStub, elements } =
++    runScenario(fixture, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++
++  // -- the trade table names each trade's lane --------------------------
++  const rows = elements.rows.innerHTML;
++  assert.ok(/<td[^>]*>ht<\/td>/.test(rows), 'trade table does not label the HalfTrend lane');
++  assert.ok(/<td[^>]*>qf<\/td>/.test(rows), 'trade table does not label the QuickFlip lane');
++  console.log('ok    every trade row carries its lane');
++
++  // -- QuickFlip is visually distinct on the chart -----------------------
++  const qfMarks = candlestickStub.markers.filter((m) => /QF/.test(m.text || ''));
++  assert.strictEqual(qfMarks.length, 2, 'QuickFlip entry+exit markers are not marked "QF"');
++  assert.ok(qfMarks.some((m) => m.color === QF_L),
++    'the QuickFlip entry marker does not use the lane colour');
++  const htMarks = candlestickStub.markers.filter((m) => !/QF/.test(m.text || ''));
++  assert.ok(htMarks.every((m) => m.color !== QF_L),
++    'a HalfTrend marker was painted with the QuickFlip lane colour');
++  console.log('ok    QuickFlip markers carry the lane colour and a QF label');
++
++  // -- and its trade box is outlined in the lane colour ------------------
++  const strokes = ctxStub.__ops.filter((o) => o.op === 'strokeRect');
++  assert.ok(strokes.some((o) => o.style === QF_L),
++    'no trade box outlined in the QuickFlip lane colour');
++  console.log('ok    the QuickFlip trade box is outlined in the lane colour');
++
++  // -- the header breaks the two lanes out -------------------------------
++  assert.ok(/HalfTrend lane/.test(elements.stats.innerHTML)
++    && /QuickFlip lane/.test(elements.stats.innerHTML),
++    'header does not break the stats down per lane');
++  console.log('ok    header carries a per-lane breakdown (trades, win%, net, max dd)');
++})();
++
+ // ---------------------------------------------------------------------------
+ // 3. Marker thinning above the 300-trade cutoff (real run has 1,210 trades)
+ // ---------------------------------------------------------------------------
+ (function markerThinningChecks() {
+   function manyTrades(n) {
+     const trades = [];
+     for (let i = 0; i < n; i++) {
+       const base = T0 + i * 3 * BAR;
+       trades.push({
+         dir: i % 2 === 0 ? 'BUY' : 'SELL',
+diff --git a/service/tests/test_backtest_strict_window.py b/service/tests/test_backtest_strict_window.py
+index ad101fc..55b3c2d 100644
+--- a/service/tests/test_backtest_strict_window.py
++++ b/service/tests/test_backtest_strict_window.py
+@@ -69,17 +69,21 @@ def test_cli_defaults_match_the_module_defaults():
+     main() overwrites the globals with argparse's own defaults, so the two
+     must agree or the CLI silently runs something the tests never see.
+ 
+     Caught live on 2026-08-20: BIAS_EMA/BIAS_MODE/BIAS_TF were changed to the
+     M15-agreement defaults as module constants, the golden pinned the new
+     behaviour, every test passed -- and a plain `backtest.py` run still took
+     counter-trend entries because --bias-ema still defaulted to 0.
+     """
+     bt = _load_bt()
+     args = bt.build_parser().parse_args([])
++    # --strategy joined this list on 2026-08-20: its default silently decides
++    # what EVERY historical backtest command measures, and setting the
++    # argparse default to "ht" left all 505 tests passing.
++    assert args.strategy == bt.STRATEGY
+     assert args.bias_ema == bt.BIAS_EMA
+     assert args.bias_mode == bt.BIAS_MODE
+     assert args.bias_tf == bt.BIAS_TF
+     assert args.bias_buffer_atr == bt.BIAS_BUFFER_ATR
+     # --confirm/--ema-len use None as "leave the module constant alone"
+     assert args.confirm is None
+     assert args.ema_len is None
+diff --git a/service/tests/test_qf_lane.py b/service/tests/test_qf_lane.py
+index 7fa2680..b9715f0 100644
+--- a/service/tests/test_qf_lane.py
++++ b/service/tests/test_qf_lane.py
+@@ -36,24 +36,38 @@ def test_lanes_close_only_their_own_positions():
+     _bt, trades, _bal = _run("both")
+     qf_reasons = {"qf target", "qf stop", "qf expired"}
+     for t in trades:
+         if t["lane"] == "qf":
+             assert t["why"] in qf_reasons, f"qf trade closed by {t['why']!r}"
+         else:
+             assert t["why"] not in qf_reasons, f"ht trade closed by {t['why']!r}"
+ 
+ 
+ def test_ht_decisions_match_until_the_first_qf_close():
+-    """Before any QuickFlip trade has resolved, the balance is untouched, so
+-    HalfTrend's decisions must be bit-identical to running it alone. After
+-    that point they may legitimately diverge -- the profit target is a dollar
+-    amount off a balance both lanes now share."""
++    """The QuickFlip lane's presence does not perturb HalfTrend BEFORE
++    QuickFlip trades.
++
++    That weaker claim is all this can honestly assert on the frozen fixture,
++    and the earlier docstring claimed more. The mechanism is real -- until a
++    QuickFlip trade RESOLVES the shared balance is untouched, so HalfTrend's
++    decisions must be bit-identical to running it alone -- but the fixture
++    holds only two QuickFlip setups (opening 2025-10-30 14:55 and 2025-11-06
++    14:00), and the last HalfTrend trade this compares exits 2025-10-30 06:10,
++    nearly NINE HOURS before the first QuickFlip position is even opened. So
++    it exercises leakage before QuickFlip trades at all; it does not exercise
++    the interesting window -- a HalfTrend basket held open ACROSS a live
++    QuickFlip position, before that position resolves. Do not stretch the
++    fixture to fix this: it is frozen and three golden pins depend on it.
++
++    After the first QuickFlip close the two paths may legitimately diverge --
++    the profit target is a dollar amount off a balance both lanes now share.
++    """
+     _b1, ht_only, _x = _run("ht")
+     _b2, both, _y = _run("both")
+     qf_closes = [t["exit_t"] for t in both if t["lane"] == "qf"]
+     if not qf_closes:
+         return                      # nothing to compare against
+     first_qf_close = min(qf_closes)
+     early_alone = [t for t in ht_only if t["exit_t"] <= first_qf_close]
+     early_both = [t for t in both
+                   if t["lane"] == "ht" and t["exit_t"] <= first_qf_close]
+     assert early_alone, "fixture must contain a HalfTrend trade before the first qf close"
+@@ -72,10 +86,61 @@ def test_qf_trades_carry_the_full_record_shape():
+         assert t["legs"] and "t" in t["legs"][0] and "oz" in t["legs"][0]
+         assert t["stop_history"] and t["tp"] is not None
+         assert t["exit_t"] > t["legs"][0]["t"]
+         assert t["why"] in ("qf target", "qf stop", "qf expired")
+ 
+ 
+ def test_balances_chain_across_both_lanes():
+     _bt, trades, bal = _run("both")
+     ordered = sorted(trades, key=lambda t: t["exit_t"])
+     assert round(ordered[-1]["bal_after"], 2) == round(bal, 2)
++
++
++def test_the_open_equity_valley_is_marked_in_a_qf_only_run():
++    """H1, 2026-08-20. The valley was marked inside the HalfTrend section,
++    BELOW the `--strategy qf` short-circuit, so every qf-only run reported a
++    fabricated `max open-equity valley 0.00` -- across 118 trades on the
++    365-day run. On this fixture QuickFlip's realized drawdown is exactly
++    zero, which makes the pin sharp: a positive valley can ONLY come from
++    marking the open position's floating P/L, so this fails if the mark is
++    ever moved back below the short-circuit or stops counting qf_pl().
++    """
++    bt = _load_bt()
++    bt.STRATEGY = "qf"
++    trades, _bal, max_dd, valley = bt.run(
++        json.loads(BARS.read_text()), 10000.0, False)
++    assert trades
++    assert max_dd == 0.0, "fixture assumption: QuickFlip never closes lower"
++    assert valley > 0.0, "a valley of 0.00 across real trades is fiction"
++
++
++def test_the_valley_is_never_shallower_than_the_closed_drawdown():
++    """The account was at least as deep under water intrabar as it was at
++    any close. True in every mode -- and only true in `both` if QuickFlip's
++    floating P/L is part of the equity being marked."""
++    for strategy in ("ht", "qf", "both"):
++        bt = _load_bt()
++        bt.STRATEGY = strategy
++        _t, _b, max_dd, valley = bt.run(
++            json.loads(BARS.read_text()), 10000.0, False)
++        assert valley >= max_dd - 1e-9, strategy
++
++
++def test_a_quickflip_lane_on_m15_warns_instead_of_going_silent():
++    """M5: qf_signals() needs THREE M5 bars to box its 15-minute opening
++    range, so on M15 (one bar at 13:30) it produces zero setups, always,
++    with no warning -- a `--tf M15 --strategy both` study silently measured
++    HalfTrend alone."""
++    bt = _load_bt()
++    assert bt.qf_timeframe_warning("M5", "both") is None
++    assert bt.qf_timeframe_warning("M15", "ht") is None
++    for strategy in ("qf", "both"):
++        warning = bt.qf_timeframe_warning("M15", strategy)
++        assert warning and "ZERO" in warning
++
++
++def test_the_m15_warning_is_telling_the_truth():
++    """Not a guess: the lane really is empty on M15 and non-empty on M5."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    assert bt.qf_signals(candles), "fixture must hold M5 setups"
++    assert bt.qf_signals(bt.resample(candles, 900)) == []
+diff --git a/service/tests/test_qf_report.py b/service/tests/test_qf_report.py
+index 617dcdf..58a6947 100644
+--- a/service/tests/test_qf_report.py
++++ b/service/tests/test_qf_report.py
+@@ -1,15 +1,15 @@
+ """A combined run must report the lanes separately -- a blended number hides
+ which strategy actually made the money."""
+ import json
+ 
+-from tests.test_backtest_golden import BARS, _load_bt
++from tests.test_backtest_golden import BARS, ROOT, _load_bt
+ 
+ 
+ def _artifact(balance=10000.0):
+     bt = _load_bt()
+     bt.STRATEGY = "both"
+     candles = json.loads(BARS.read_text())
+     trades, bal, dd, valley = bt.run(candles, balance, False)
+     args = bt.build_parser().parse_args(["--balance", str(balance)])
+     return bt, bt.build_run_json(candles, trades, args,
+                                  {"bal": bal, "max_dd": dd, "valley": valley})
+@@ -38,10 +38,62 @@ def test_lane_nets_sum_to_the_total():
+ 
+ 
+ def test_concurrency_is_reported():
+     """How many QuickFlip trades overlapped a HalfTrend position -- the
+     thing a combined equity curve hides, and the reason exposure can exceed
+     one lane's. Pinned against the frozen fixture so a broken overlap check
+     (e.g. an equality test instead of interval intersection, or a constant
+     0) cannot slip through unnoticed."""
+     _bt, art = _artifact()
+     assert art["stats"]["lanes"]["qf_trades_overlapping_ht"] == 1
++
++
++def test_lane_stats_carry_a_per_lane_max_drawdown():
++    """Spec 2026-08-20 asks for "(trades, win%, net, max DD)" per lane. The
++    first three shipped; max DD did not."""
++    _bt, art = _artifact()
++    for key in ("ht", "qf"):
++        assert "max_dd" in art["stats"]["lanes"][key]
++        assert art["stats"]["lanes"][key]["max_dd"] >= 0.0
++
++
++def test_lane_drawdown_is_a_path_measure_not_a_sum_of_losers():
++    bt = _load_bt()
++    rows = [{"pl": 100.0, "exit_t": 4}, {"pl": -30.0, "exit_t": 1},
++            {"pl": -20.0, "exit_t": 3}, {"pl": 10.0, "exit_t": 2}]
++    # chronological: -30, +10, -20, +100 -> cumulative -30, -20, -40, +60.
++    # The peak starts at 0 (the lane's own starting point), so the deepest
++    # dig below any prior peak is 40, not the 50 you get by summing losers.
++    assert bt._lane_drawdown(rows) == 40.0
++    assert bt._lane_drawdown([{"pl": 5.0, "exit_t": 1},
++                              {"pl": 7.0, "exit_t": 2}]) == 0.0
++    assert bt._lane_drawdown([]) == 0.0
++
++
++def test_quickflip_entries_reach_the_sizing_report():
++    """M8: sizing["clamped"] was incremented only in the HalfTrend block, so
++    a lane clamping its own entries to the minimum lot was invisible in the
++    printed clamp rate."""
++    bt = _load_bt()
++    bt.STRATEGY = "qf"
++    bt.run(json.loads(BARS.read_text()), 10000.0, False)
++    s = bt.run.sizing
++    assert s["entries"] == 0, "a qf-only run risk-sizes no HalfTrend entry"
++    assert s["qf_entries"] > 0, "...but QuickFlip's entries must be counted"
++    assert s["qf_clamp_pct"] is not None
++    assert s["qf_risk_median"] is not None
++
++
++def test_the_html_report_names_both_lanes_in_its_title(tmp_path):
++    """M4b: --web/--json carry `lane` "so the report can colour and filter
++    them" (spec 2026-08-20), but scripts/backtest_report.py contained the
++    string "lane" zero times -- so the shared page blended both lanes while
++    `both` is the default."""
++    import sys
++    sys.path.insert(0, str(ROOT / "scripts"))
++    from backtest_report import write_report
++
++    _bt, art = _artifact()
++    out = tmp_path / "report.html"
++    write_report(art, out)
++    html = out.read_text(encoding="utf-8")
++    assert "ht)" in html and "qf)" in html, "the title does not break out the lanes"
+diff --git a/service/tests/test_qf_signals.py b/service/tests/test_qf_signals.py
+index c771cb2..d4ee985 100644
+--- a/service/tests/test_qf_signals.py
++++ b/service/tests/test_qf_signals.py
+@@ -84,10 +84,71 @@ def test_atr_boundary_does_not_leak_the_last_days_close():
+     mutated = [dict(x) for x in candles]
+     mutated[-1] = dict(mutated[-1])
+     mutated[-1]["c"] = mutated[-1]["c"] + 10_000.0
+ 
+     atr_after = bt.qf_daily_atr(mutated)
+     first_day_after = sorted(atr_after)[0]
+     value_after = atr_after[first_day_after]
+ 
+     assert first_day_after == first_day_before
+     assert value_after == value_before
++
++
++# --- same-bar exit precedence -------------------------------------------
++# One M5 bar's range can cover BOTH the stop and the target, and OHLC cannot
++# say which price came first. The replay always books the loss. Nothing
++# pinned that before: the frozen fixture's only two QuickFlip trades exit
++# "qf expired" and "qf target", so reversing the precedence to target-first
++# -- the classic backtest-inflation bug -- left every golden green while the
++# 365-day QuickFlip net moved +354.56 -> +427.66 (+21%).
++
++def _pos(direction, entry, stop, tp, expire_t=10 ** 12):
++    return {"dir": direction, "entry": entry, "stop": stop, "tp": tp,
++            "expire_t": expire_t}
++
++
++def test_stop_beats_target_when_one_bar_covers_both_short():
++    bt = _load_bt()
++    # sold the sweep at 2000: stop 2005 above, target 1990 below. This bar
++    # trades through both.
++    pos = _pos("SELL", entry=2000.0, stop=2005.0, tp=1990.0)
++    bar = {"t": 0, "o": 2000.0, "h": 2006.0, "l": 1989.0, "c": 1995.0}
++    assert bt.qf_resolve(pos, bar) == (2005.0, "qf stop")
++
++
++def test_stop_beats_target_when_one_bar_covers_both_long():
++    bt = _load_bt()
++    pos = _pos("BUY", entry=2000.0, stop=1995.0, tp=2010.0)
++    bar = {"t": 0, "o": 2000.0, "h": 2011.0, "l": 1994.0, "c": 2005.0}
++    assert bt.qf_resolve(pos, bar) == (1995.0, "qf stop")
++
++
++def test_the_stop_does_not_win_when_it_was_never_touched():
++    """Guard against the pin passing for the wrong reason: a resolver that
++    always answered "qf stop" would satisfy the two tests above."""
++    bt = _load_bt()
++    bt_short = bt.qf_resolve(_pos("SELL", 2000.0, 2005.0, 1990.0),
++                             {"t": 0, "o": 2000.0, "h": 2001.0,
++                              "l": 1989.0, "c": 1991.0})
++    assert bt_short == (1990.0, "qf target")
++    bt_long = bt.qf_resolve(_pos("BUY", 2000.0, 1995.0, 2010.0),
++                            {"t": 0, "o": 2000.0, "h": 2011.0,
++                             "l": 1999.0, "c": 2009.0})
++    assert bt_long == (2010.0, "qf target")
++
++
++def test_expiry_never_pre_empts_a_stop_on_the_same_bar():
++    """The window closing does not turn a losing trade into a close-price
++    exit: stop first, expiry only if neither level was touched."""
++    bt = _load_bt()
++    pos = _pos("SELL", entry=2000.0, stop=2005.0, tp=1990.0, expire_t=0)
++    bar = {"t": 0, "o": 2000.0, "h": 2006.0, "l": 1998.0, "c": 2002.0}
++    assert bt.qf_resolve(pos, bar) == (2005.0, "qf stop")
++    quiet = {"t": 0, "o": 2000.0, "h": 2001.0, "l": 1999.0, "c": 2000.5}
++    assert bt.qf_resolve(pos, quiet) == (2000.5, "qf expired")
++
++
++def test_an_untouched_position_before_expiry_resolves_to_nothing():
++    bt = _load_bt()
++    pos = _pos("BUY", entry=2000.0, stop=1995.0, tp=2010.0)
++    bar = {"t": 0, "o": 2000.0, "h": 2001.0, "l": 1999.0, "c": 2000.5}
++    assert bt.qf_resolve(pos, bar) is None
+diff --git a/service/tests/test_quickflip_probe.py b/service/tests/test_quickflip_probe.py
+index 338b560..7f5ac05 100644
+--- a/service/tests/test_quickflip_probe.py
++++ b/service/tests/test_quickflip_probe.py
+@@ -1,20 +1,22 @@
+ """The probe is the only evidence behind the spec's numbers, so it is pinned.
+ 
+ Deliberately includes a guard on the TIME CONVENTION: candle `t` is server
+ wall-clock and must be read with no offset. A +3h shift is what invalidated
+ the first two spikes and inflated the result that was nearly built live.
+ """
+ import importlib.util
+ import json
+ import pathlib
+ 
++from tests.test_backtest_golden import _load_bt
++
+ ROOT = pathlib.Path(__file__).resolve().parents[2]
+ BARS = pathlib.Path(__file__).parent / "data" / "bars_slice.json"
+ 
+ 
+ def _probe():
+     spec = importlib.util.spec_from_file_location(
+         "qfp", ROOT / "scripts" / "quickflip_probe.py")
+     mod = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(mod)
+     return mod
+@@ -87,10 +89,49 @@ def test_setups_have_a_stop_on_the_losing_side_of_entry():
+ 
+ 
+ def test_at_most_one_setup_per_day():
+     import datetime as dt
+     qfp = _probe()
+     candles = json.loads(BARS.read_text())
+     atr = qfp.daily_atr(candles)
+     got = qfp.setups_at(candles, 13, 30, atr)
+     days = [int(s["entry_t"]) // 86400 for s in got]
+     assert len(days) == len(set(days)), "more than one setup on some day"
++
++
++def test_probe_and_engine_pin_the_same_defaults():
++    """The twin-drift guard the duplication was justified by.
++
++    `scripts/quickflip_probe.py` and `backtest.py`'s `qf_signals()` implement
++    the same sweep-and-reverse geometry twice on purpose (the probe imports
++    nothing from the engine so it can be pointed at any bars JSON). The stated
++    justification is that "both pin the same defaults in tests, so drift fails
++    a test rather than passing silently" -- and that was only half true:
++    `test_qf_signals.py::test_defaults_match_the_spec` pinned the ENGINE's
++    constants, while the probe pinned NOTHING. Proven 2026-08-20: setting the
++    probe's WINDOW_MIN to 45 AND its --hour default to 10 left all 505 tests
++    passing, in the one file that is the sole evidence behind the spec's
++    numbers.
++
++    The argparse defaults are pinned too, not just the module constants:
++    --hour/--minute ARE the measured session, and a bare probe run is where
++    every published QuickFlip figure came from.
++    """
++    qfp = _probe()
++    bt = _load_bt()
++    assert qfp.WINDOW_MIN == bt.QF_WINDOW_MIN, "probe window drifted from the engine"
++    assert qfp.ATR_DAYS == bt.QF_ATR_DAYS, "probe ATR lookback drifted"
++    assert qfp.SPREAD_USD == bt.SPREAD_USD, "probe spread charge drifted"
++    args = qfp.build_parser().parse_args([])
++    assert (args.hour, args.minute) == (bt.QF_HOUR, bt.QF_MINUTE), (
++        "the probe's default session is not the engine's default session")
++
++
++def test_the_probe_says_out_loud_what_it_leaves_out():
++    """The probe drops setups that expire unresolved; the engine trades them.
++    That divergence is by design, and it is worth ~1.9x at the shipped gate,
++    so it may not be silent -- it must be in the output and in the docstring
++    of the file people copy numbers out of."""
++    qfp = _probe()
++    for text in (qfp.EXCLUSION_NOTE, qfp.__doc__):
++        assert "expire" in text.lower()
++        assert "backtest.py" in text

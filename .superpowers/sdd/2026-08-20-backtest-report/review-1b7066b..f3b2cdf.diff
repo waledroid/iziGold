@@ -1,0 +1,957 @@
+# Review package: 1b7066b..HEAD
+
+## Commits
+f3b2cdf docs(izi): document backtest.py --source/--json/--web and the offline report
+c1cc2c5 feat(backtest): --web writes a self-contained report with MT5-style overlays and trade boxes
+
+## Files changed
+ .claude/agents/izi.md                   |  29 +-
+ scripts/backtest.py                     |  14 +
+ scripts/backtest_report.py              |  32 +++
+ service/app/static/backtest_report.html | 237 +++++++++++++++++
+ service/tests/backtest_report_smoke.js  | 452 ++++++++++++++++++++++++++++++++
+ service/tests/test_backtest_web.py      |  82 ++++++
+ 6 files changed, 845 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/.claude/agents/izi.md b/.claude/agents/izi.md
+index e370aff..806864c 100644
+--- a/.claude/agents/izi.md
++++ b/.claude/agents/izi.md
+@@ -533,21 +533,48 @@ HalfTrend/EMA painting (`EnablePaint`, active strategy only) + trade boxes
+   for the 08-11 blackout (see §7) — confirms an offline close is never lost
+   silently again.
+ - **Backtesting**: `service/.venv/bin/python scripts/backtest.py --balance 4000
+   [--verbose]` replays halftrend + the full current money rulebook over the
+   accumulated candles (cap 2000 bars ≈ one trading week; memory-only, resets
+   on service restart). Validated against reality (reproduced the +$94.81
+   live basket within $0.35). Simplifications: bar-close granularity, own
+   Wilder ATR/ADX, flat spread charge, no margin model. Un-modeled gates:
+   the daily loss brake (MaxDailyLossPct) is not simulated, and neither is
+   the news blackout (NewsGuard) — replay results are slightly optimistic vs
+-  the live rulebook around losing days and high-impact events.
++  the live rulebook around losing days and high-impact events. `--source
++  PATH` replays a saved JSON dump instead of the live 2000-bar cap (e.g.
++  `bars_max.json`, ~12 months); `--days N` slices the tail. `--help` groups
++  every knob into Data/Rules/Experiments/Output; Rules mirror live EA inputs,
++  Experiments default OFF and are study-only. **`--json PATH`** writes the
++  full run artifact (meta/stats/candles/indicators/every trade, parallel
++  arrays not per-bar objects — 12mo of M5 is ~74k bars). **`--web PATH`**
++  (2026-08-20) writes ONE self-contained HTML report from that same artifact
++  via `scripts/backtest_report.py:write_report()` — inlines the vendored
++  Lightweight Charts lib (`service/app/static/vendor/`), the page template
++  (`service/app/static/backtest_report.html` — same file the Mini App tab is
++  planned to reuse later so the drawing code isn't duplicated), and the JSON,
++  so it opens from disk with no server/network. Shows candles + EMA9/21/55/200
++  + HalfTrend (one series, per-point colour, matching the Mini App's MT5-style
++  render) + a stepped stop-loss line + a canvas overlay drawing each trade's
++  red risk / green reward zone (green zone omitted when `tp` is null, e.g.
++  `--entry-mode fixed`) + a complete trade table (row click zooms the chart).
++  A real 12-month run is ~1,210 trades / 6.4 MB; above 300 trades the page
++  thins pyramid-add chart markers (entry/exit markers always draw; the trade
++  table is never thinned) to keep Lightweight Charts responsive — this is a
++  report-rendering thinning only, it does not touch replay logic or the
++  artifact JSON. `--web` and `--json` share one artifact build when both are
++  passed together. `--json`/`--web` output is unvalidated by eye beyond the
++  automated tests (`service/tests/test_backtest_web.py`,
++  `service/tests/backtest_report_smoke.js` — a headless Node smoke test with
++  hand-rolled DOM/canvas/LightweightCharts stubs since no npm/browser deps
++  were added) — a human should open a generated report at least once after
++  any further change to the template or writer.
+ 
+ # 7. History worth knowing (why rules exist)
+ 
+ - $200 EU demo couldn't margin 0.01 lots (ESMA 1:20) → balance topped to $4.2k.
+ - Missed trades: Algo button off (→ `/config` ini + heartbeat warning),
+   `[not enough money]` (→ margin), window blocks (→ 🚫 notices).
+ - Trade 1: +$102.82 full pyramid + profit target. Trade 2: −$23 retracement
+   after growing adds + instant-breakeven stops + a midnight close-all into
+   the closed market (mislabeled "telegram exit", was the dashboard) → begat
+   the ATR pad, halfway ladder, shrinking adds, honest partial-close
+diff --git a/scripts/backtest.py b/scripts/backtest.py
+index ac4cae7..aa75eac 100644
+--- a/scripts/backtest.py
++++ b/scripts/backtest.py
+@@ -1295,20 +1295,24 @@ def build_parser():
+                          "byte-identical) or M15 (the M5 source aggregated to "
+                          "15-minute bars before anything else runs). Bar-based "
+                          "parameters are then read in M15 bars; the exposure "
+                          "budget and the trading-window hours keep their "
+                          "wall-clock meaning")
+     rules.add_argument("--profit-target", type=float, default=None,
+                     help="override ProfitTargetPct, the basket's bank-at "
+                          "percent of cycle balance (default 2.0; <= 0 turns "
+                          "the target off exactly like the EA input, leaving "
+                          "the lock / stop / reversal to close the basket)")
++    out.add_argument("--web", default=None, metavar="PATH",
++                     help="write a self-contained HTML report (chart with "
++                          "HalfTrend/EMA overlays and every trade drawn with "
++                          "its SL/TP and stop path) to this file")
+     return ap
+ 
+ 
+ def apply_window_args(args):
+     """Wire --loose-window (and the suppressed --strict-window no-op) into
+     the STRICT_WINDOW runtime flag. Extracted out of main() so a test can
+     drive the real CLI-to-global path without running a whole backtest."""
+     global STRICT_WINDOW
+     STRICT_WINDOW = not args.loose_window
+ 
+@@ -1603,20 +1607,30 @@ def main():
+         print(f"           risk actually taken: median {s['risk_median']:.2f}% "
+               f"p90 {s['risk_p90']:.2f}%  (target {RISK_PCT:.2f}%)")
+     armed = [t for t in trades if t.get("floor") is not None]
+     if EXIT_SCHEME != "target-exit":
+         print(f"floor armed on {len(armed)} trades; "
+               f"{len(floor_leaks)} realized below their floor "
+               f"({', '.join(t['why'] for t in floor_leaks) or 'none'})")
+     if args.chart:
+         plot(candles, trades, args.balance, args.chart)
+         print(f"chart      {args.chart}")
++    art = None
+     if args.json:
+         art = build_run_json(candles, trades, args,
+                              {"bal": bal, "max_dd": max_dd, "valley": max_valley})
+         Path(args.json).write_text(json.dumps(art, separators=(",", ":")))
+         print(f"json       {args.json} "
+               f"({Path(args.json).stat().st_size / 1e6:.1f} MB)")
++    if args.web:
++        sys.path.insert(0, str(Path(__file__).resolve().parent))
++        from backtest_report import write_report
++        if art is None:
++            art = build_run_json(candles, trades, args,
++                                 {"bal": bal, "max_dd": max_dd, "valley": max_valley})
++        write_report(art, args.web)
++        print(f"report     {args.web} "
++              f"({Path(args.web).stat().st_size / 1e6:.1f} MB)")
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/scripts/backtest_report.py b/scripts/backtest_report.py
+new file mode 100644
+index 0000000..ff3bd9d
+--- /dev/null
++++ b/scripts/backtest_report.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""Turn a backtest run artifact into ONE self-contained HTML file.
++
++Self-contained on purpose: the report is an artifact you keep, mail, and
++compare against next month's. It must open from disk with no server, no
++network and no build step, so the chart library, the page and the run data are
++all inlined.
++
++The template lives in service/app/static/ so the Mini App tab (spec section 4)
++can reuse the same drawing code later instead of growing a second one.
++"""
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++TEMPLATE = ROOT / "service" / "app" / "static" / "backtest_report.html"
++LIB = ROOT / "service" / "app" / "static" / "vendor" / \
++    "lightweight-charts.standalone.production.js"
++
++
++def write_report(artifact, out_path):
++    """artifact: the dict from backtest.build_run_json(). Writes out_path."""
++    html = TEMPLATE.read_text(encoding="utf-8")
++    meta = artifact.get("meta", {})
++    title = f"XAUUSD backtest — {meta.get('bars', 0)} bars, " \
++            f"{len(artifact.get('trades', []))} trades"
++    # Substitute data LAST: the artifact is arbitrary JSON and must never be
++    # re-scanned for placeholder tokens.
++    html = html.replace("__TITLE__", title)
++    html = html.replace("__LIB__", LIB.read_text(encoding="utf-8"))
++    html = html.replace("__DATA__", json.dumps(artifact, separators=(",", ":")))
++    Path(out_path).write_text(html, encoding="utf-8")
+diff --git a/service/app/static/backtest_report.html b/service/app/static/backtest_report.html
+new file mode 100644
+index 0000000..0b95f5f
+--- /dev/null
++++ b/service/app/static/backtest_report.html
+@@ -0,0 +1,237 @@
++<!doctype html>
++<meta charset="utf-8">
++<title>__TITLE__</title>
++<style>
++  :root { color-scheme: dark; }
++  body { margin:0; background:#0e1116; color:#d7dce3;
++         font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; }
++  header { padding:10px 14px; border-bottom:1px solid #232833; }
++  h1 { margin:0 0 6px; font-size:15px; font-weight:600; }
++  .stats { display:flex; flex-wrap:wrap; gap:14px; font-variant-numeric:tabular-nums; }
++  .stat b { display:block; font-size:16px; }
++  .stat span { color:#8b95a5; font-size:11px; text-transform:uppercase; }
++  .pos { color:#26a69a; } .neg { color:#ef5350; }
++  .warn { margin:8px 14px 0; padding:8px 10px; border-radius:6px;
++          background:#3a2a12; border:1px solid #6b4a18; color:#f0c674; }
++  .caveats { margin:6px 14px 10px; color:#8b95a5; font-size:11px; }
++  #wrap { position:relative; height:62vh; margin:0 14px; }
++  #chart, #overlay { position:absolute; inset:0; }
++  #overlay { pointer-events:none; }
++  #legend { position:absolute; top:6px; left:8px; z-index:3; font-size:11px;
++            background:rgba(14,17,22,.72); padding:4px 7px; border-radius:4px;
++            pointer-events:none; }
++  #legend i { font-style:normal; margin-right:8px; }
++  table { width:calc(100% - 28px); margin:12px 14px 40px; border-collapse:collapse;
++          font-variant-numeric:tabular-nums; }
++  th,td { padding:5px 8px; border-bottom:1px solid #1c212b; text-align:right; }
++  th { color:#8b95a5; font-weight:500; text-align:right; position:sticky; top:0;
++       background:#0e1116; }
++  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
++  tbody tr { cursor:pointer; }
++  tbody tr:hover { background:#161b24; }
++</style>
++
++<header>
++  <h1 id="title">XAUUSD backtest</h1>
++  <div class="stats" id="stats"></div>
++</header>
++<div id="warnbox"></div>
++<div class="caveats" id="caveats"></div>
++
++<div id="wrap">
++  <div id="chart"></div>
++  <canvas id="overlay"></canvas>
++  <div id="legend">
++    <i style="color:#1e90ff">HalfTrend</i><i style="color:#e0e0e0">EMA9</i>
++    <i style="color:#ffb74d">EMA21</i><i style="color:#42a5f5">EMA55</i>
++    <i style="color:#ab47bc">EMA200</i>
++  </div>
++</div>
++
++<table>
++  <thead><tr><th>#</th><th>Opened</th><th>Dir</th><th>Legs</th><th>Entry</th>
++  <th>Exit</th><th>Why</th><th>P/L</th><th>Balance</th></tr></thead>
++  <tbody id="rows"></tbody>
++</table>
++
++<script>__LIB__</script>
++<script>
++var RUN = __DATA__;
++
++var HT_UP = "#1e90ff", HT_DOWN = "#ff4500";
++var GREEN = "rgba(38,166,154,0.18)", RED = "rgba(239,83,80,0.18)";
++var GREEN_L = "#26a69a", RED_L = "#ef5350";
++
++function money(v) { return (v >= 0 ? "+$" : "-$") + Math.abs(v).toFixed(2); }
++function stamp(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " "); }
++
++// ---- header -------------------------------------------------------------
++(function header() {
++  var s = RUN.stats, m = RUN.meta;
++  document.getElementById("title").textContent =
++    "XAUUSD " + m.tf + " backtest — " + stamp(m.start) + " to " + stamp(m.end) +
++    "  (" + m.bars.toLocaleString() + " bars, " +
++    (m.strict_window ? "strict" : "loose") + " entry window)";
++  var cells = [
++    ["Net P/L", money(s.net), s.net >= 0 ? "pos" : "neg"],
++    ["Trades", String(s.trades), ""],
++    ["Win rate", s.win_rate.toFixed(1) + "%", ""],
++    ["Max drawdown", "$" + s.max_dd.toFixed(2), "neg"],
++    ["Balance", "$" + s.start_balance.toFixed(0) + " → $" + s.end_balance.toFixed(2), ""],
++    ["Risk taken", s.risk_median.toFixed(2) + "% / p90 " + s.risk_p90.toFixed(2) + "%", ""]
++  ];
++  document.getElementById("stats").innerHTML = cells.map(function (c) {
++    return '<div class="stat"><b class="' + c[2] + '">' + c[1] + "</b><span>" + c[0] + "</span></div>";
++  }).join("");
++  if (s.clamp_pct > 10) {
++    document.getElementById("warnbox").innerHTML =
++      '<div class="warn"><b>' + s.clamp_pct.toFixed(1) +
++      "% of entries were forced to the 0.01 minimum lot.</b> At this starting " +
++      "balance the 1% risk rule is often not obeyed — this run measures " +
++      "minimum-lot behaviour as much as the rulebook. $4,000 minimum for " +
++      "meaningful results; $10,000+ for a clean test.</div>";
++  }
++  document.getElementById("caveats").textContent = "Not modelled: " + m.caveats.join(" · ");
++})();
++
++// ---- chart --------------------------------------------------------------
++var chart = LightweightCharts.createChart(document.getElementById("chart"), {
++  layout: { background: { color: "#0e1116" }, textColor: "#8b95a5" },
++  grid: { vertLines: { color: "#171b24" }, horzLines: { color: "#171b24" } },
++  rightPriceScale: { borderColor: "#232833" },
++  timeScale: { borderColor: "#232833", timeVisible: true, secondsVisible: false },
++  crosshair: { mode: 0 }
++});
++
++var noLabel = { lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
++function line(color, width) {
++  return chart.addLineSeries(Object.assign({ color: color, lineWidth: width }, noLabel));
++}
++var ema9 = line("#e0e0e0", 1), ema21 = line("#ffb74d", 1),
++    ema55 = line("#42a5f5", 2), ema200 = line("#ab47bc", 1);
++var htSeries = chart.addLineSeries(Object.assign({ color: HT_UP, lineWidth: 2 }, noLabel));
++var stopSeries = chart.addLineSeries(Object.assign({
++  color: "#f0c674", lineWidth: 1, lineStyle: 2,
++  lineType: LightweightCharts.LineType.WithSteps }, noLabel));
++var candles = chart.addCandlestickSeries({
++  upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
++  wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
++
++(function feed() {
++  var C = RUN.candles, I = RUN.ind, n = C.t.length;
++  var bars = [], e9 = [], e21 = [], e55 = [], e200 = [], ht = [];
++  for (var i = 0; i < n; i++) {
++    var t = C.t[i];
++    bars.push({ time: t, open: C.o[i], high: C.h[i], low: C.l[i], close: C.c[i] });
++    e9.push(I.ema9[i] == null ? { time: t } : { time: t, value: I.ema9[i] });
++    e21.push(I.ema21[i] == null ? { time: t } : { time: t, value: I.ema21[i] });
++    e55.push(I.ema55[i] == null ? { time: t } : { time: t, value: I.ema55[i] });
++    e200.push(I.ema200[i] == null ? { time: t } : { time: t, value: I.ema200[i] });
++    ht.push(I.ht.v[i] == null ? { time: t }
++      : { time: t, value: I.ht.v[i], color: I.ht.trend[i] === 0 ? HT_UP : HT_DOWN });
++  }
++  candles.setData(bars);
++  ema9.setData(e9); ema21.setData(e21); ema55.setData(e55); ema200.setData(e200);
++  htSeries.setData(ht);
++
++  // stepped stop line: one segment per trade, whitespace between them so
++  // separate trades never join into one line
++  var stops = [], seen = {};
++  RUN.trades.forEach(function (tr) {
++    tr.stop_history.forEach(function (h) { if (!seen[h.t]) { seen[h.t] = 1; stops.push({ time: h.t, value: h.stop }); } });
++    if (!seen[tr.exit_t]) { seen[tr.exit_t] = 1; stops.push({ time: tr.exit_t, value: tr.stop_history[tr.stop_history.length - 1].stop }); }
++    var gap = tr.exit_t + 300;
++    if (!seen[gap]) { seen[gap] = 1; stops.push({ time: gap }); }
++  });
++  stops.sort(function (a, b) { return a.time - b.time; });
++  stopSeries.setData(stops);
++
++  // markers: entry, each pyramid add, exit. Real 12-month runs carry ~1,200
++  // trades (~3,600 marker candidates); Lightweight Charts gets visibly
++  // sluggish rendering that many at once, so pyramid-add markers ("+") are
++  // included only when there aren't too many trades to begin with. Entry and
++  // exit markers (the ones the trade table's row-click needs to make sense
++  // of what it zoomed to) are always drawn.
++  var SHOW_ADDS = RUN.trades.length <= 300;
++  var marks = [];
++  RUN.trades.forEach(function (tr, i) {
++    var up = tr.dir === "BUY";
++    marks.push({ time: tr.legs[0].t, position: up ? "belowBar" : "aboveBar",
++                 color: up ? GREEN_L : RED_L, shape: up ? "arrowUp" : "arrowDown",
++                 text: "#" + (i + 1) });
++    if (SHOW_ADDS) {
++      tr.legs.slice(1).forEach(function (leg) {
++        marks.push({ time: leg.t, position: up ? "belowBar" : "aboveBar",
++                     color: "#f0c674", shape: "circle", text: "+" });
++      });
++    }
++    marks.push({ time: tr.exit_t, position: up ? "aboveBar" : "belowBar",
++                 color: tr.pl >= 0 ? GREEN_L : RED_L, shape: "square",
++                 text: money(tr.pl) });
++  });
++  marks.sort(function (a, b) { return a.time - b.time; });
++  candles.setMarkers(marks);
++})();
++
++// ---- trade boxes on the overlay canvas ----------------------------------
++var cv = document.getElementById("overlay"), ctx = cv.getContext("2d");
++
++function sizeCanvas() {
++  var r = document.getElementById("wrap").getBoundingClientRect();
++  var dpr = window.devicePixelRatio || 1;
++  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
++  cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
++  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
++}
++
++function drawBoxes() {
++  ctx.clearRect(0, 0, cv.width, cv.height);
++  var ts = chart.timeScale(), vr = ts.getVisibleRange();
++  if (!vr) return;
++  RUN.trades.forEach(function (tr) {
++    var t0 = tr.legs[0].t, t1 = tr.exit_t;
++    if (t1 < vr.from || t0 > vr.to) return;              // off screen
++    var x0 = ts.timeToCoordinate(Math.max(t0, vr.from));
++    var x1 = ts.timeToCoordinate(Math.min(t1, vr.to));
++    if (x0 == null || x1 == null) return;
++    var entry = candles.priceToCoordinate(tr.legs[0].px);
++    var stop0 = candles.priceToCoordinate(tr.stop_history[0].stop);
++    if (entry == null || stop0 == null) return;
++    var w = Math.max(1, x1 - x0);
++    // risk zone: entry -> initial stop
++    ctx.fillStyle = RED;
++    ctx.fillRect(x0, Math.min(entry, stop0), w, Math.abs(stop0 - entry));
++    // reward zone: entry -> target (fixed mode has no target: nothing drawn)
++    if (tr.tp != null) {
++      var tp = candles.priceToCoordinate(tr.tp);
++      if (tp != null) {
++        ctx.fillStyle = GREEN;
++        ctx.fillRect(x0, Math.min(entry, tp), w, Math.abs(tp - entry));
++      }
++    }
++    ctx.strokeStyle = tr.pl >= 0 ? GREEN_L : RED_L;
++    ctx.lineWidth = 1;
++    ctx.strokeRect(x0 + 0.5, Math.min(entry, stop0) + 0.5, w, Math.abs(stop0 - entry));
++  });
++}
++
++function redraw() { sizeCanvas(); drawBoxes(); }
++chart.timeScale().subscribeVisibleTimeRangeChange(drawBoxes);
++new ResizeObserver(redraw).observe(document.getElementById("wrap"));
++redraw();
++
++// ---- trade table --------------------------------------------------------
++document.getElementById("rows").innerHTML = RUN.trades.map(function (t, i) {
++  return '<tr data-i="' + i + '"><td>' + (i + 1) + "</td><td>" + stamp(t.legs[0].t) +
++    "</td><td>" + t.dir + "</td><td>" + t.legs.length + "</td><td>" +
++    t.legs[0].px.toFixed(2) + "</td><td>" + t.exit.toFixed(2) + "</td><td>" +
++    t.why + '</td><td class="' + (t.pl >= 0 ? "pos" : "neg") + '">' + money(t.pl) +
++    "</td><td>" + t.bal_after.toFixed(2) + "</td></tr>";
++}).join("");
++
++document.getElementById("rows").addEventListener("click", function (ev) {
++  var tr = ev.target.closest("tr"); if (!tr) return;
++  var t = RUN.trades[+tr.dataset.i], pad = 60 * 300;   // 60 M5 bars of context
++  chart.timeScale().setVisibleRange({ from: t.legs[0].t - pad, to: t.exit_t + pad });
++});
++</script>
+diff --git a/service/tests/backtest_report_smoke.js b/service/tests/backtest_report_smoke.js
+new file mode 100644
+index 0000000..23fb7fa
+--- /dev/null
++++ b/service/tests/backtest_report_smoke.js
+@@ -0,0 +1,452 @@
++#!/usr/bin/env node
++'use strict';
++/*
++ * Headless smoke test for service/app/static/backtest_report.html.
++ *
++ * Node has no DOM, no <canvas>, and no lightweight-charts, and Task 7's
++ * constraints forbid adding npm/node dependencies (no jsdom, no headless
++ * browser) -- so this hand-rolls minimal stubs for exactly what the
++ * template's inline script touches: document, window, ResizeObserver,
++ * LightweightCharts. It proves the DATA WIRING is correct -- the shapes and
++ * values the template computes and hands to the chart library -- not that
++ * the chart looks right on screen. Whether it visually resembles the MT5
++ * display is a human call on the real generated file; this script cannot
++ * make that call and does not try to.
++ *
++ * What it checks, in order:
++ *   1. `node --check` on the template's inline script (raw, and -- if a real
++ *      generated report is present -- with real embedded JSON substituted
++ *      in), so a syntax error can never ship silently.
++ *   2. Against a small hand-built "known artifact" (2 trades, one with a
++ *      pyramid add, one with tp:null to mirror fixed-entry-mode trades):
++ *        - candle count fed to the chart matches the artifact
++ *        - each EMA series receives one point per candle
++ *        - the HalfTrend series carries per-point colours, both HT_UP and
++ *          HT_DOWN present, and null HalfTrend bars carry no value/color
++ *        - the stepped-stop series contains whitespace gap points between
++ *          trades (so two trades' stop lines never visually join)
++ *        - markers are sorted ascending by time (Lightweight Charts throws
++ *          at runtime on an unsorted array -- this is the one property that
++ *          would be a hard runtime crash, not just a cosmetic bug)
++ *        - trade-box canvas geometry matches hand-computed coordinates
++ *          given stubbed timeToCoordinate/priceToCoordinate functions, and
++ *          the tp:null trade draws no green reward-zone rect
++ *   3. Against a 301-trade artifact: pyramid-add ("+") markers are thinned
++ *      out (entry/exit only) once trade count exceeds the 300 cutoff added
++ *      to the template for the real 1,210-trade run; a fixture below the
++ *      cutoff keeps its add markers.
++ *
++ * Run: node service/tests/backtest_report_smoke.js
++ * Exit code 0 = every assertion passed. Non-zero + message on stderr = fail.
++ */
++const fs = require('fs');
++const os = require('os');
++const path = require('path');
++const vm = require('vm');
++const assert = require('assert');
++const { execFileSync } = require('child_process');
++
++const ROOT = path.resolve(__dirname, '..', '..');
++const TEMPLATE_PATH = path.join(ROOT, 'service', 'app', 'static', 'backtest_report.html');
++
++function extractScriptBlocks(html) {
++  const re = /<script>([\s\S]*?)<\/script>/g;
++  const out = [];
++  let m;
++  while ((m = re.exec(html))) out.push(m[1]);
++  return out;
++}
++
++function nodeCheck(src, label) {
++  const tmp = path.join(os.tmpdir(),
++    `btr-check-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
++  fs.writeFileSync(tmp, src);
++  try {
++    execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' });
++  } catch (e) {
++    console.error(`SYNTAX ERROR in ${label}:\n${e.stderr}`);
++    process.exit(1);
++  } finally {
++    fs.unlinkSync(tmp);
++  }
++  console.log(`ok    node --check: ${label}`);
++}
++
++// ---------------------------------------------------------------------------
++// 1. Syntax check
++// ---------------------------------------------------------------------------
++const templateHtml = fs.readFileSync(TEMPLATE_PATH, 'utf8');
++const blocks = extractScriptBlocks(templateHtml);
++assert.strictEqual(blocks.length, 2,
++  `expected 2 <script> blocks in the template, found ${blocks.length} -- ` +
++  'template structure changed, update this smoke test');
++const [libPlaceholderBlock, mainScriptRaw] = blocks;
++assert.strictEqual(libPlaceholderBlock.trim(), '__LIB__',
++  'first <script> block is no longer the __LIB__ placeholder -- template changed');
++
++nodeCheck(mainScriptRaw, 'template inline script (raw, __DATA__ unresolved)');
++
++const REAL_REPORT = process.env.BTR_SMOKE_REAL_REPORT ||
++  path.join(os.tmpdir(), 'backtest12m.html');
++if (fs.existsSync(REAL_REPORT)) {
++  const realBlocks = extractScriptBlocks(fs.readFileSync(REAL_REPORT, 'utf8'));
++  assert.strictEqual(realBlocks.length, 2, 'real report does not have 2 <script> blocks');
++  nodeCheck(realBlocks[1], `generated report inline script (${REAL_REPORT})`);
++} else {
++  console.log('skip  no generated report on disk (set BTR_SMOKE_REAL_REPORT or ' +
++    `run backtest.py --web first; looked at ${REAL_REPORT}) -- the raw-template ` +
++    'check above still covers syntax');
++}
++
++// ---------------------------------------------------------------------------
++// Stub environment
++// ---------------------------------------------------------------------------
++const HT_UP = '#1e90ff', HT_DOWN = '#ff4500';
++const RED = 'rgba(239,83,80,0.18)', GREEN = 'rgba(38,166,154,0.18)';
++const GREEN_L = '#26a69a', RED_L = '#ef5350';
++
++function makeCtxStub() {
++  const ops = [];
++  const ctx = {
++    fillStyle: null, strokeStyle: null, lineWidth: null,
++    setTransform(...args) { ops.push({ op: 'setTransform', args }); },
++    clearRect(x, y, w, h) { ops.push({ op: 'clearRect', x, y, w, h }); },
++    fillRect(x, y, w, h) { ops.push({ op: 'fillRect', x, y, w, h, style: ctx.fillStyle }); },
++    strokeRect(x, y, w, h) {
++      ops.push({ op: 'strokeRect', x, y, w, h, style: ctx.strokeStyle, lineWidth: ctx.lineWidth });
++    },
++  };
++  ctx.__ops = ops;
++  return ctx;
++}
++
++/** Runs the template's inline script against `runFixture` in a fresh vm
++ * context with recording stubs, and returns everything the assertions need
++ * to inspect: the series stubs (with their .data payloads), the candlestick
++ * stub (.data / .markers), and the canvas op log. */
++function runScenario(runFixture, opts) {
++  opts = opts || {};
++  const T0 = runFixture.__T0;
++  const visibleFrom = opts.visibleFrom != null ? opts.visibleFrom : T0;
++  const visibleTo = opts.visibleTo != null ? opts.visibleTo : T0 + 100000;
++
++  function timeToCoordinate(t) { return Math.round((t - T0) / 300 * 10); }
++  function priceToCoordinate(price) { return Math.round((3000 - price) * 2); }
++
++  const lineSeriesCalls = [];
++  let candlestickStub = null;
++  const ctxStub = makeCtxStub();
++
++  const WRAP_RECT = { width: 800, height: 500 };
++  const windowStub = { devicePixelRatio: 2 };
++  const overlayEl = { style: {}, width: 0, height: 0, getContext: () => ctxStub };
++  const wrapEl = { getBoundingClientRect: () => WRAP_RECT };
++  const elements = {
++    title: { textContent: '' },
++    stats: { innerHTML: '' },
++    warnbox: { innerHTML: '' },
++    caveats: { textContent: '' },
++    chart: {},
++    overlay: overlayEl,
++    wrap: wrapEl,
++    legend: {},
++    rows: { innerHTML: '', _handlers: {}, addEventListener(t, fn) { this._handlers[t] = fn; } },
++  };
++  const documentStub = {
++    getElementById(id) {
++      if (!(id in elements)) throw new Error(`no stub for getElementById(${JSON.stringify(id)})`);
++      return elements[id];
++    },
++  };
++
++  class ResizeObserverStub {
++    constructor(cb) { this.cb = cb; }
++    observe(el) { this.observedEl = el; }
++  }
++
++  const timeScaleStub = {
++    getVisibleRange: () => ({ from: visibleFrom, to: visibleTo }),
++    timeToCoordinate,
++    subscribeVisibleTimeRangeChange(fn) { timeScaleStub._sub = fn; },
++    setVisibleRange(r) { timeScaleStub._lastSetRange = r; },
++  };
++
++  const LightweightChartsStub = {
++    LineType: { WithSteps: 1 },
++    createChart(container) {
++      assert.strictEqual(container, elements.chart, 'createChart called with the wrong element');
++      return {
++        addLineSeries(o) {
++          const stub = { opts: o, data: null, setData(arr) { stub.data = arr; } };
++          lineSeriesCalls.push(stub);
++          return stub;
++        },
++        addCandlestickSeries(o) {
++          candlestickStub = {
++            opts: o, data: null, markers: null,
++            setData(arr) { candlestickStub.data = arr; },
++            setMarkers(arr) { candlestickStub.markers = arr; },
++            priceToCoordinate,
++          };
++          return candlestickStub;
++        },
++        timeScale() { return timeScaleStub; },
++      };
++    },
++  };
++
++  const sandbox = {
++    document: documentStub,
++    window: windowStub,
++    ResizeObserver: ResizeObserverStub,
++    LightweightCharts: LightweightChartsStub,
++    console,
++  };
++  vm.createContext(sandbox);
++  const code = mainScriptRaw.replace('__DATA__', JSON.stringify(runFixture));
++  vm.runInContext(code, sandbox, { filename: 'backtest_report_inline.js' });
++
++  return { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT };
++}
++
++// ---------------------------------------------------------------------------
++// 2. Small known artifact: candle/indicator wiring, HalfTrend colours,
++//    stepped-stop gaps, marker sort order, hand-computed box geometry.
++// ---------------------------------------------------------------------------
++const T0 = 1700000000;
++const BAR = 300;
++const N = 20;
++
++function buildSmallFixture() {
++  const t = [], o = [], h = [], l = [], c = [];
++  const ema9 = [], ema21 = [], ema55 = [], ema200 = [], htV = [], htTrend = [];
++  for (let i = 0; i < N; i++) {
++    const time = T0 + i * BAR;
++    t.push(time); o.push(2400 + i); h.push(2405 + i); l.push(2395 + i); c.push(2402 + i);
++    if (i < 3) {
++      ema9.push(null); ema21.push(null); ema55.push(null); ema200.push(null);
++      htV.push(null); htTrend.push(null);
++    } else {
++      ema9.push(2400 + i * 0.1); ema21.push(2399 + i * 0.1);
++      ema55.push(2398 + i * 0.1); ema200.push(2397 + i * 0.1);
++      htV.push(2396 + i * 0.1); htTrend.push(i % 2);   // both 0 (up) and 1 (down) occur
++    }
++  }
++  return {
++    __T0: T0,
++    meta: {
++      generated_at: T0, source: 'fixture', tf: 'M5', bars: N,
++      start: t[0], end: t[N - 1], strict_window: true, entry_mode: 'adr',
++      args: {}, caveats: ['news blackout', 'daily-loss brake', 'kill switch'],
++    },
++    stats: {
++      trades: 2, wins: 2, losses: 0, win_rate: 100.0, net: 350.0,
++      start_balance: 4000.0, end_balance: 4350.0, max_dd: 50.0, max_valley: 60.0,
++      best: 250.0, worst: 100.0, clamp_pct: 0.0, risk_median: 1.0, risk_p90: 1.2,
++    },
++    candles: { t, o, h, l, c },
++    ind: { ema9, ema21, ema55, ema200, ht: { v: htV, trend: htTrend } },
++    trades: [
++      {
++        dir: 'BUY',
++        legs: [{ t: T0 + 2 * BAR, px: 2400.00, oz: 100 }, { t: T0 + 4 * BAR, px: 2402.00, oz: 50 }],
++        tp: 2410.00,
++        stop_history: [{ t: T0 + 2 * BAR, stop: 2395.00 }, { t: T0 + 4 * BAR, stop: 2398.00 }],
++        exit: 2405.00, exit_t: T0 + 6 * BAR, why: 'target', pl: 250.00, bal_after: 4250.00,
++        regime: 'trend',
++      },
++      {
++        dir: 'SELL',
++        legs: [{ t: T0 + 10 * BAR, px: 2420.00, oz: 80 }],
++        tp: null,   // mirrors --entry-mode fixed / a trade stopped before a target existed
++        stop_history: [{ t: T0 + 10 * BAR, stop: 2425.00 }],
++        exit: 2415.00, exit_t: T0 + 12 * BAR, why: 'reversal', pl: 100.00, bal_after: 4350.00,
++        regime: 'range',
++      },
++    ],
++  };
++}
++
++(function smallArtifactChecks() {
++  const fixture = buildSmallFixture();
++  const { lineSeriesCalls, candlestickStub, ctxStub, elements, windowStub, WRAP_RECT } =
++    runScenario(fixture, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++
++  // -- candle count fed to the chart -----------------------------------
++  assert.strictEqual(candlestickStub.data.length, N, 'candle count mismatch');
++  console.log(`ok    ${N} candles fed to the candlestick series`);
++
++  // -- indicator series lengths ------------------------------------------
++  assert.strictEqual(lineSeriesCalls.length, 6,
++    'expected 6 addLineSeries calls (ema9, ema21, ema55, ema200, halftrend, stop)');
++  const [ema9S, ema21S, ema55S, ema200S, htS, stopS] = lineSeriesCalls;
++  assert.strictEqual(ema9S.opts.color, '#e0e0e0');
++  assert.strictEqual(ema21S.opts.color, '#ffb74d');
++  assert.strictEqual(ema55S.opts.color, '#42a5f5');
++  assert.strictEqual(ema200S.opts.color, '#ab47bc');
++  for (const s of [ema9S, ema21S, ema55S, ema200S]) {
++    assert.strictEqual(s.data.length, N, `EMA series (color ${s.opts.color}) length != candle count`);
++  }
++  console.log('ok    all 4 EMA series received one point per candle');
++
++  // -- HalfTrend: one series, per-point colour, both colours present ------
++  assert.strictEqual(htS.opts.color, HT_UP, 'HalfTrend series base colour should be HT_UP');
++  const htColors = new Set(htS.data.filter((p) => 'color' in p).map((p) => p.color));
++  assert.ok(htColors.has(HT_UP), 'HalfTrend series never uses HT_UP');
++  assert.ok(htColors.has(HT_DOWN), 'HalfTrend series never uses HT_DOWN');
++  fixture.ind.ht.v.forEach((v, i) => {
++    if (v == null) assert.ok(!('value' in htS.data[i]), `null HalfTrend bar ${i} carries a value`);
++  });
++  console.log('ok    HalfTrend is one series carrying both HT_UP and HT_DOWN per-point colours');
++
++  // -- stepped-stop series: whitespace gaps between trades -----------------
++  // 1 == the stub's LightweightCharts.LineType.WithSteps (see runScenario)
++  assert.strictEqual(stopS.opts.lineType, 1,
++    'stop series does not use LineType.WithSteps');
++  assert.strictEqual(stopS.data.length, 7,
++    '2 + 2 stop_history points + 2 exit-carry points + 2 gap points, expected 7');
++  for (let i = 1; i < stopS.data.length; i++) {
++    assert.ok(stopS.data[i].time > stopS.data[i - 1].time, 'stop series not sorted ascending by time');
++  }
++  // stopS.data was built inside the vm sandbox (a different V8 realm), so its
++  // arrays carry that realm's Array.prototype; re-materialize through the
++  // OUTER Array.from before deepStrictEqual, else content-identical arrays
++  // fail as "not reference-equal" purely on cross-realm prototype identity.
++  const whitespace = Array.from(stopS.data)
++    .filter((p) => !('value' in p)).map((p) => p.time);
++  assert.deepStrictEqual(whitespace, [T0 + 6 * BAR + BAR, T0 + 12 * BAR + BAR],
++    'expected exactly one whitespace gap point after each trade, at exit_t + 300');
++  console.log('ok    stepped-stop series has whitespace gaps between the two trades, sorted');
++
++  // -- markers: sorted by time (Lightweight Charts throws if not) ----------
++  assert.strictEqual(candlestickStub.markers.length, 5,
++    'trade1 (entry+add+exit) + trade2 (entry+exit) = 5 markers expected');
++  for (let i = 1; i < candlestickStub.markers.length; i++) {
++    assert.ok(candlestickStub.markers[i].time >= candlestickStub.markers[i - 1].time,
++      'markers not sorted ascending by time -- setMarkers() throws at runtime on this');
++  }
++  const shapes = Array.from(candlestickStub.markers).map((m) => m.shape);
++  assert.deepStrictEqual(shapes, ['arrowUp', 'circle', 'square', 'arrowDown', 'square'],
++    'unexpected marker shape sequence');
++  console.log('ok    5 markers, sorted ascending by time, expected shape sequence');
++
++  // -- trade-box canvas geometry (hand-computed) ---------------------------
++  assert.strictEqual(elements.overlay.width, WRAP_RECT.width * windowStub.devicePixelRatio);
++  assert.strictEqual(elements.overlay.height, WRAP_RECT.height * windowStub.devicePixelRatio);
++  assert.strictEqual(elements.overlay.style.width, WRAP_RECT.width + 'px');
++  assert.strictEqual(elements.overlay.style.height, WRAP_RECT.height + 'px');
++  const setTransformOp = ctxStub.__ops.find((o) => o.op === 'setTransform');
++  assert.deepStrictEqual(setTransformOp.args, [2, 0, 0, 2, 0, 0], 'devicePixelRatio not applied via setTransform');
++
++  const clearOp = ctxStub.__ops.find((o) => o.op === 'clearRect');
++  assert.ok(clearOp, 'drawBoxes never cleared the canvas');
++  assert.strictEqual(clearOp.w, elements.overlay.width);
++  assert.strictEqual(clearOp.h, elements.overlay.height);
++
++  const rects = ctxStub.__ops.filter((o) => o.op === 'fillRect' || o.op === 'strokeRect');
++  assert.strictEqual(rects.length, 5,
++    'trade1: risk fill + reward fill + stroke (3); trade2 (tp:null): risk fill + stroke (2) = 5');
++
++  const close = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, `${msg}: ${a} != ${b}`);
++  // trade 1 (BUY, tp=2410): entry px 2400 -> coord 1200, stop 2395 -> coord 1210,
++  // tp 2410 -> coord 1180; x0 = timeToCoordinate(T0+600) = 20, x1 = timeToCoordinate(T0+1800) = 60, w = 40
++  assert.strictEqual(rects[0].op, 'fillRect'); assert.strictEqual(rects[0].style, RED);
++  close(rects[0].x, 20, 't1 risk x'); close(rects[0].y, 1200, 't1 risk y');
++  close(rects[0].w, 40, 't1 risk w'); close(rects[0].h, 10, 't1 risk h');
++
++  assert.strictEqual(rects[1].op, 'fillRect'); assert.strictEqual(rects[1].style, GREEN);
++  close(rects[1].x, 20, 't1 reward x'); close(rects[1].y, 1180, 't1 reward y');
++  close(rects[1].w, 40, 't1 reward w'); close(rects[1].h, 20, 't1 reward h');
++
++  assert.strictEqual(rects[2].op, 'strokeRect'); assert.strictEqual(rects[2].style, GREEN_L);
++  close(rects[2].x, 20.5, 't1 stroke x'); close(rects[2].y, 1200.5, 't1 stroke y');
++  close(rects[2].w, 40, 't1 stroke w'); close(rects[2].h, 10, 't1 stroke h');
++
++  // trade 2 (SELL, tp=null): entry px 2420 -> coord 1160, stop 2425 -> coord 1150;
++  // x0 = timeToCoordinate(T0+3000) = 100, x1 = timeToCoordinate(T0+3600) = 120, w = 20
++  // no reward rect: tp is null
++  assert.strictEqual(rects[3].op, 'fillRect'); assert.strictEqual(rects[3].style, RED);
++  close(rects[3].x, 100, 't2 risk x'); close(rects[3].y, 1150, 't2 risk y');
++  close(rects[3].w, 20, 't2 risk w'); close(rects[3].h, 10, 't2 risk h');
++
++  assert.strictEqual(rects[4].op, 'strokeRect'); assert.strictEqual(rects[4].style, GREEN_L);
++  close(rects[4].x, 100.5, 't2 stroke x'); close(rects[4].y, 1150.5, 't2 stroke y');
++  close(rects[4].w, 20, 't2 stroke w'); close(rects[4].h, 10, 't2 stroke h');
++
++  console.log('ok    trade-box geometry matches hand-computed coordinates; tp:null trade draws no reward zone');
++})();
++
++// ---------------------------------------------------------------------------
++// 3. Marker thinning above the 300-trade cutoff (real run has 1,210 trades)
++// ---------------------------------------------------------------------------
++(function markerThinningChecks() {
++  function manyTrades(n) {
++    const trades = [];
++    for (let i = 0; i < n; i++) {
++      const base = T0 + i * 3 * BAR;
++      trades.push({
++        dir: i % 2 === 0 ? 'BUY' : 'SELL',
++        legs: [{ t: base, px: 2400, oz: 10 }, { t: base + BAR, px: 2401, oz: 5 }],
++        tp: 2410, stop_history: [{ t: base, stop: 2395 }],
++        exit: 2402, exit_t: base + 2 * BAR, why: 'target', pl: 10, bal_after: 4010,
++        regime: null,
++      });
++    }
++    return trades;
++  }
++  function fixtureWith(n) {
++    const f = buildSmallFixture();
++    f.trades = manyTrades(n);
++    f.stats.trades = n;
++    return f;
++  }
++
++  const below = runScenario(fixtureWith(300), {
++    visibleFrom: T0, visibleTo: T0 + 300 * 3 * BAR + 1000,
++  });
++  assert.strictEqual(below.candlestickStub.markers.length, 300 * 3,
++    'at the 300-trade cutoff, add markers should still be shown (entry+add+exit each)');
++
++  const above = runScenario(fixtureWith(301), {
++    visibleFrom: T0, visibleTo: T0 + 301 * 3 * BAR + 1000,
++  });
++  assert.strictEqual(above.candlestickStub.markers.length, 301 * 2,
++    'above the 300-trade cutoff, add markers should be thinned (entry+exit only, ' +
++    'matching the real ~1,210-trade run)');
++  for (let i = 1; i < above.candlestickStub.markers.length; i++) {
++    assert.ok(above.candlestickStub.markers[i].time >= above.candlestickStub.markers[i - 1].time,
++      'markers not sorted ascending by time in the thinned (>300-trade) path');
++  }
++
++  console.log('ok    add-marker thinning kicks in above 300 trades (300: '
++    + `${below.candlestickStub.markers.length} markers, 301: ${above.candlestickStub.markers.length}); `
++    + 'exit/entry markers unaffected and still sorted');
++})();
++
++// ---------------------------------------------------------------------------
++// 4. Markers really are sorted, not just already in order.
++//
++// Section 2's fixture happens to list its trades in chronological order, so
++// its "markers sorted ascending" assertion would also pass with the
++// template's `marks.sort(...)` call deleted -- that check alone doesn't
++// prove the sort matters. This fixture lists the LATER trade first in
++// RUN.trades (out of chronological order, which is otherwise plausible --
++// e.g. after a filter/dedupe pass) so only an actual sort produces
++// ascending output. Lightweight Charts throws at runtime on an unsorted
++// markers array, so this is the one property here that is a crash, not a
++// cosmetic bug.
++// ---------------------------------------------------------------------------
++(function markersAreActuallySortedCheck() {
++  const f = buildSmallFixture();
++  // swap: index 0 is now the chronologically LATER trade (was trades[1])
++  f.trades = [f.trades[1], f.trades[0]];
++  const { candlestickStub } = runScenario(f, { visibleFrom: T0, visibleTo: T0 + 13 * BAR });
++  const times = Array.from(candlestickStub.markers).map((m) => m.time);
++  const sorted = Array.from(times).sort((a, b) => a - b);
++  assert.deepStrictEqual(times, sorted,
++    'markers were not actually sorted -- input trade order was chronologically reversed ' +
++    'and the output should not be; Lightweight Charts throws at runtime on this');
++  console.log('ok    markers are actually re-sorted from out-of-chronological-order trade input');
++})();
++
++console.log('\nPASS -- all headless assertions passed');
+diff --git a/service/tests/test_backtest_web.py b/service/tests/test_backtest_web.py
+new file mode 100644
+index 0000000..245b7d2
+--- /dev/null
++++ b/service/tests/test_backtest_web.py
+@@ -0,0 +1,82 @@
++"""The report must be one self-contained file: no network, no server."""
++import importlib.util
++import json
++import pathlib
++import re
++
++from tests.test_backtest_golden import BARS, _load_bt
++
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++
++
++def _writer():
++    spec = importlib.util.spec_from_file_location(
++        "btr", ROOT / "scripts" / "backtest_report.py")
++    mod = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(mod)
++    return mod
++
++
++def _artifact():
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    trades, bal, dd, valley = bt.run(candles, 10000.0, False)
++    args = bt.build_parser().parse_args(["--balance", "10000"])
++    return bt.build_run_json(candles, trades, args,
++                             {"bal": bal, "max_dd": dd, "valley": valley})
++
++
++def test_report_is_written_and_is_not_empty(tmp_path):
++    out = tmp_path / "r.html"
++    _writer().write_report(_artifact(), str(out))
++    assert out.stat().st_size > 100_000
++
++
++def test_report_references_no_external_assets(tmp_path):
++    out = tmp_path / "r.html"
++    _writer().write_report(_artifact(), str(out))
++    html = out.read_text(encoding="utf-8")
++    for m in re.findall(r'(?:src|href)\s*=\s*["\']([^"\']+)', html):
++        assert not m.startswith(("http://", "https://", "//")), \
++            f"external asset would break offline use: {m}"
++
++
++def test_report_embeds_the_chart_library_and_the_run(tmp_path):
++    out = tmp_path / "r.html"
++    art = _artifact()
++    _writer().write_report(art, str(out))
++    html = out.read_text(encoding="utf-8")
++    assert "createChart" in html, "chart library not inlined"
++    assert '"trades"' in html, "run artifact not inlined"
++    assert str(art["stats"]["trades"]) in html
++
++
++def test_no_placeholder_survives_into_the_output(tmp_path):
++    out = tmp_path / "r.html"
++    _writer().write_report(_artifact(), str(out))
++    html = out.read_text(encoding="utf-8")
++    for token in ("__LIB__", "__DATA__", "__TITLE__"):
++        assert token not in html, f"unsubstituted placeholder {token}"
++
++
++def test_fixed_entry_mode_serializes_tp_as_null_for_every_trade():
++    """Task 6's reviewer verified 61/61 by hand; pin it in CI. The report's
++    box-drawing code (`if (tr.tp != null)`) depends on fixed-mode trades never
++    carrying a target, else it would draw a bogus green reward zone.
++
++    bt.run() reads the ENTRY_MODE/FIXED_LOTS globals directly (they are only
++    wired from args inside main(), which this test bypasses), so set them the
++    same way test_backtest_golden.py sets STRICT_WINDOW."""
++    bt = _load_bt()
++    candles = json.loads(BARS.read_text())
++    bt.STRICT_WINDOW = False
++    bt.ENTRY_MODE = "fixed"
++    bt.FIXED_LOTS = 0.05
++    args = bt.build_parser().parse_args(
++        ["--balance", "10000", "--entry-mode", "fixed"])
++    trades, bal, dd, valley = bt.run(candles, 10000.0, False)
++    art = bt.build_run_json(candles, trades, args,
++                            {"bal": bal, "max_dd": dd, "valley": valley})
++    assert art["trades"], "expected at least one trade in the fixture slice"
++    for t in art["trades"]:
++        assert t["tp"] is None, f"fixed-mode trade carries a tp: {t}"
