@@ -522,6 +522,18 @@ void FlattenBeforeBreak()
      }
   }
 
+bool ApplyIziTemplate(long chartId)
+  {
+   if(chartId <= 0) return false;
+   if(ChartApplyTemplate(chartId, "iziBot.tpl")) return true;
+   if(ChartApplyTemplate(chartId, "default.tpl")) return true;
+   if(ChartApplyTemplate(chartId, "XauAssistant.tpl")) return true;
+   if(ChartApplyTemplate(chartId, "\\Files\\iziBot.tpl")) return true;
+   if(ChartApplyTemplate(chartId, "\\Files\\default.tpl")) return true;
+   if(ChartApplyTemplate(chartId, "\\Files\\XauAssistant.tpl")) return true;
+   return false;
+  }
+
 void OnTimer()
   {
    // Single-instance guard: a newer attachment claimed ownership — step down.
@@ -552,135 +564,137 @@ void OnTimer()
         }
      }
 
-   // One-shot auto-spawn of Bitcoin chart from the Gold instance
-   static bool g_btcSpawnChecked = false;
-   if(AutoSpawnBtcChart && !g_btcSpawnChecked && (StringFind(_Symbol, "XAU") >= 0 || StringFind(_Symbol, "xau") >= 0))
+   // Periodic auto-spawn / template re-attachment of Bitcoin chart from the Gold instance
+   static datetime g_lastBtcSpawnCheck = 0;
+   if(AutoSpawnBtcChart && (StringFind(_Symbol, "XAU") >= 0 || StringFind(_Symbol, "xau") >= 0))
      {
-      g_btcSpawnChecked = true;
-      bool btcRunning = false;
-      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+      datetime now = TimeCurrent();
+      if(now - g_lastBtcSpawnCheck >= 15)
         {
-         string sym = ChartSymbol(cid);
-         if(StringFind(sym, "BTC") >= 0 || StringFind(sym, "btc") >= 0)
+         g_lastBtcSpawnCheck = now;
+         bool btcRunning = false;
+         for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
            {
-            string ea = ChartGetString(cid, CHART_EXPERT_NAME);
-            if(ea != "")
+            string sym = ChartSymbol(cid);
+            if(StringFind(sym, "BTC") >= 0 || StringFind(sym, "btc") >= 0)
               {
-               btcRunning = true;
-               break;
-              }
-            else
-              {
-               PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
-               bool ok = ChartApplyTemplate(cid, "iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "XauAssistant.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\XauAssistant.tpl");
-               if(ok)
+               string ea = ChartGetString(cid, CHART_EXPERT_NAME);
+               if(ea != "")
                  {
                   btcRunning = true;
                   break;
                  }
                else
                  {
-                  PrintFormat("XauAssistant: ChartApplyTemplate failed on chart %I64d (err=%d)", cid, GetLastError());
+                  PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
+                  if(ApplyIziTemplate(cid))
+                    {
+                     btcRunning = true;
+                     break;
+                    }
+                  else
+                    {
+                     PrintFormat("iziBot: ApplyIziTemplate failed on chart %I64d (err=%d)", cid, GetLastError());
+                    }
                  }
               }
            }
-        }
-      if(!btcRunning)
-        {
-         string btcCandidates[] = {BtcPreferredSymbol, "BTCUSD", "BTCUSDT", "BTCUSD.a", "BTCUSDm", "BTCUSDto"};
-         string btcSym = "";
-         bool is_custom = false;
-         for(int i = 0; i < ArraySize(btcCandidates); i++)
+         if(!btcRunning)
            {
-            if(SymbolExist(btcCandidates[i], is_custom))
+            string btcCandidates[] = {BtcPreferredSymbol, "BTCUSD", "BTCUSDT", "BTCUSD.a", "BTCUSDm", "BTCUSDto"};
+            string btcSym = "";
+            bool is_custom = false;
+            for(int i = 0; i < ArraySize(btcCandidates); i++)
               {
-               btcSym = btcCandidates[i];
-               break;
+               if(SymbolExist(btcCandidates[i], is_custom))
+                 {
+                  btcSym = btcCandidates[i];
+                  break;
+                 }
               }
-           }
-         if(btcSym != "")
-           {
-            SymbolSelect(btcSym, true);
-            long btcCid = ChartOpen(btcSym, BtcTimeframe);
-            if(btcCid > 0)
+            if(btcSym != "")
               {
-               PrintFormat("iziBot: auto-spawned %s %s chart (id %I64d)",
-                           btcSym, EnumToString(BtcTimeframe), btcCid);
-               bool ok = ChartApplyTemplate(btcCid, "iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(btcCid, "XauAssistant.tpl");
-               if(!ok) ok = ChartApplyTemplate(btcCid, "\\Files\\iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(btcCid, "\\Files\\XauAssistant.tpl");
-               if(!ok) PrintFormat("XauAssistant: ChartApplyTemplate failed on %I64d (err=%d)", btcCid, GetLastError());
+               SymbolSelect(btcSym, true);
+               long btcCid = ChartOpen(btcSym, BtcTimeframe);
+               if(btcCid > 0)
+                 {
+                  PrintFormat("iziBot: auto-spawned %s %s chart (id %I64d)",
+                              btcSym, EnumToString(BtcTimeframe), btcCid);
+                  if(!ApplyIziTemplate(btcCid))
+                     PrintFormat("iziBot: ApplyIziTemplate failed on %I64d (err=%d)", btcCid, GetLastError());
+                 }
               }
-           }
-         else
-           {
-            Print("iziBot: auto-spawn BTC skipped (no matching Bitcoin symbol found in Market Watch)");
+            else
+              {
+               Print("iziBot: auto-spawn BTC skipped (no matching Bitcoin symbol found in Market Watch)");
+              }
            }
         }
      }
 
-   // One-shot auto-spawn of Gold M15 chart from the Bitcoin instance
-   static bool g_xauSpawnChecked = false;
-   if(AutoSpawnBtcChart && !g_xauSpawnChecked && (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0))
+   // Periodic auto-spawn of Gold M15 chart from the Bitcoin instance
+   static datetime g_lastXauSpawnCheck = 0;
+   if(AutoSpawnBtcChart && (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0))
      {
-      g_xauSpawnChecked = true;
-      bool xauRunning = false;
-      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+      datetime now = TimeCurrent();
+      if(now - g_lastXauSpawnCheck >= 15)
         {
-         string sym = ChartSymbol(cid);
-         if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "xau") >= 0 || StringFind(sym, "GOLD") >= 0 || StringFind(sym, "gold") >= 0)
+         g_lastXauSpawnCheck = now;
+         bool xauRunning = false;
+         for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
            {
-            string ea = ChartGetString(cid, CHART_EXPERT_NAME);
-            if(ea != "")
+            string sym = ChartSymbol(cid);
+            if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "xau") >= 0 || StringFind(sym, "GOLD") >= 0 || StringFind(sym, "gold") >= 0)
               {
-               xauRunning = true;
-               break;
+               string ea = ChartGetString(cid, CHART_EXPERT_NAME);
+               if(ea != "")
+                 {
+                  xauRunning = true;
+                  break;
+                 }
+               else
+                 {
+                  PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
+                  if(ApplyIziTemplate(cid))
+                    {
+                     xauRunning = true;
+                     break;
+                    }
+                  else
+                    {
+                     PrintFormat("iziBot: ApplyIziTemplate failed on chart %I64d (err=%d)", cid, GetLastError());
+                    }
+                 }
+              }
+           }
+         if(!xauRunning)
+           {
+            string xauCandidates[] = {"XAUUSD", "GOLD", "XAUUSD.a", "XAUUSDm", "XAUUSDto"};
+            string xauSym = "";
+            bool is_custom = false;
+            for(int i = 0; i < ArraySize(xauCandidates); i++)
+              {
+               if(SymbolExist(xauCandidates[i], is_custom))
+                 {
+                  xauSym = xauCandidates[i];
+                  break;
+                 }
+              }
+            if(xauSym != "")
+              {
+               SymbolSelect(xauSym, true);
+               long xauCid = ChartOpen(xauSym, PERIOD_M15);
+               if(xauCid > 0)
+                 {
+                  PrintFormat("iziBot: auto-spawned %s M15 chart (id %I64d)", xauSym, xauCid);
+                  if(!ApplyIziTemplate(xauCid))
+                     PrintFormat("iziBot: ApplyIziTemplate failed on %I64d (err=%d)", xauCid, GetLastError());
+                 }
               }
             else
               {
-               PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
-               bool ok = ChartApplyTemplate(cid, "iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "XauAssistant.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\XauAssistant.tpl");
-               if(ok) { xauRunning = true; break; }
+               Print("iziBot: auto-spawn Gold skipped (no matching Gold symbol found in Market Watch)");
               }
-           }
-        }
-      if(!xauRunning)
-        {
-         string xauCandidates[] = {"XAUUSD", "GOLD", "XAUUSD.a", "XAUUSDm", "XAUUSDto"};
-         string xauSym = "";
-         bool is_custom = false;
-         for(int i = 0; i < ArraySize(xauCandidates); i++)
-           {
-            if(SymbolExist(xauCandidates[i], is_custom))
-              {
-               xauSym = xauCandidates[i];
-               break;
-              }
-           }
-         if(xauSym != "")
-           {
-            SymbolSelect(xauSym, true);
-            long xauCid = ChartOpen(xauSym, PERIOD_M15);
-            if(xauCid > 0)
-              {
-               PrintFormat("iziBot: auto-spawned %s M15 chart (id %I64d)", xauSym, xauCid);
-               bool ok = ChartApplyTemplate(xauCid, "iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(xauCid, "XauAssistant.tpl");
-               if(!ok) ok = ChartApplyTemplate(xauCid, "\\Files\\iziBot.tpl");
-               if(!ok) ok = ChartApplyTemplate(xauCid, "\\Files\\XauAssistant.tpl");
-               if(!ok) PrintFormat("iziBot: ChartApplyTemplate failed on %I64d (err=%d)", xauCid, GetLastError());
-              }
-           }
-         else
-           {
-            Print("iziBot: auto-spawn Gold skipped (no matching Gold symbol found in Market Watch)");
            }
         }
      }

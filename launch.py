@@ -307,27 +307,51 @@ def stop_mt5(system: str, prefix: Path, dry_run: bool = False) -> bool:
     return not mt5_running_linux()
 
 
-def find_mt5_data_dir(system: str, prefix: Path) -> Path | None:
+def find_all_mt5_data_dirs(system: str, prefix: Path) -> list[Path]:
+    """Find ALL valid MQL5 data folders across both AppData and Program Files/Wine.
+    Prioritizes active installations (e.g. where terminal64.exe or active logs live)."""
     if system == "Windows":
         appdata = os.environ.get("APPDATA")
         roots = [Path(appdata) / "MetaQuotes" / "Terminal"] if appdata else []
+        search_root = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
     else:
         roots = [prefix / "drive_c" / "users" / os.environ.get("USER", "user") /
                  "AppData" / "Roaming" / "MetaQuotes" / "Terminal"]
+        search_root = prefix
+
     candidates = []
     for root in roots:
         if root.exists():
             candidates.extend(path / "MQL5" for path in root.iterdir()
                              if path.is_dir() and (path / "MQL5").is_dir())
-    # A terminal started with a portable/config profile keeps MQL5 beside the
-    # executable instead of under AppData. This is common with the bundled
-    # Wine startup config and must be preferred over treating the data folder
-    # as missing.
-    search_root = prefix if system != "Windows" else Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
     if search_root.exists():
         candidates.extend(path for path in search_root.rglob("MQL5")
                           if path.is_dir() and (path / "Experts").exists())
-    return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+
+    def sort_key(p: Path) -> int:
+        score = 0
+        if (p.parent / "terminal64.exe").exists():
+            score += 100
+        if (p / "Files" / "xau_relay_req.json").exists():
+            score += 50
+        if (p / "logs").exists():
+            score += 20
+        return score
+
+    candidates.sort(key=sort_key, reverse=True)
+    seen = set()
+    result = []
+    for c in candidates:
+        r = c.resolve()
+        if r not in seen:
+            seen.add(r)
+            result.append(r)
+    return result
+
+
+def find_mt5_data_dir(system: str, prefix: Path) -> Path | None:
+    dirs = find_all_mt5_data_dirs(system, prefix)
+    return dirs[0] if dirs else None
 
 
 def make_chart_chr(symbol: str, desc: str, period_size: int, chart_id: int = 130000000000000001) -> bytes:
@@ -349,10 +373,14 @@ def make_chart_chr(symbol: str, desc: str, period_size: int, chart_id: int = 130
         f"shift_size=20.000000\r\n"
         f"background_color=0\r\n"
         f"foreground_color=16777215\r\n"
+        f"bar_up_color=65280\r\n"
+        f"bar_down_color=255\r\n"
+        f"bull_candle_color=65280\r\n"
+        f"bear_candle_color=255\r\n"
         f"barup_color=65280\r\n"
-        f"bardown_color=65280\r\n"
-        f"bullcandle_color=0\r\n"
-        f"bearcandle_color=16777215\r\n"
+        f"bardown_color=255\r\n"
+        f"bullcandle_color=65280\r\n"
+        f"bearcandle_color=255\r\n"
         f"chartline_color=65280\r\n"
         f"windows_total=0\r\n"
         f"<expert>\r\n"
@@ -368,77 +396,81 @@ def make_chart_chr(symbol: str, desc: str, period_size: int, chart_id: int = 130
     return txt.encode("utf-16")
 
 
-def ensure_chart_templates(data_dir: Path, dry_run: bool) -> None:
-    """Installs iziBot.tpl and XauAssistant.tpl to MT5 templates directories and pre-provisions
-    the multi-asset Default profile (XAUUSD M15 and BTCUSD M5) so both charts
-    immediately have the EA attached with auto-trading enabled upon launch."""
-    terminal_root = data_dir.parent if data_dir.name == "MQL5" else data_dir
-    target_dirs = [
-        terminal_root / "Profiles" / "Templates",
-        data_dir / "Profiles" / "Templates",
-        data_dir / "Experts",
-        data_dir / "Files",
-    ]
+def ensure_chart_templates(data_dirs: list[Path] | Path, dry_run: bool) -> None:
+    """Installs iziBot.tpl, default.tpl, and XauAssistant.tpl to MT5 templates directories
+    and pre-provisions the multi-asset Default profile (XAUUSD M15 and BTCUSD M5)
+    across ALL detected MT5 installations so both charts automatically load with the EA attached."""
+    if isinstance(data_dirs, Path):
+        data_dirs = [data_dirs]
+
     izibot_tpl = ROOT / "mt5" / "Templates" / "iziBot.tpl"
     xau_tpl = ROOT / "mt5" / "Templates" / "XauAssistant.tpl"
-    for tdir in target_dirs:
-        if not dry_run:
-            tdir.mkdir(parents=True, exist_ok=True)
-            if izibot_tpl.exists():
-                shutil.copy2(izibot_tpl, tdir / "iziBot.tpl")
-                shutil.copy2(izibot_tpl, tdir / "default.tpl")
-            if xau_tpl.exists():
-                shutil.copy2(xau_tpl, tdir / "XauAssistant.tpl")
-
-    charts_dirs = [
-        terminal_root / "Profiles" / "Charts" / "Default",
-        data_dir / "Profiles" / "Charts" / "Default",
-    ]
-    prog_files_charts = Path.home() / ".mt5" / "drive_c" / "Program Files" / "MetaTrader 5" / "Profiles" / "Charts" / "Default"
-    if prog_files_charts.parent.parent.exists():
-        charts_dirs.append(prog_files_charts)
     xau_data = make_chart_chr("XAUUSD", "Gold vs US Dollar", 15, 130000000000000001)
     btc_data = make_chart_chr("BTCUSD", "Bitcoin vs US Dollar", 5, 130000000000000002)
     order_data = "chart01.chr\r\nchart02.chr\r\n".encode("utf-16")
 
-    if not dry_run:
-        for cdir in charts_dirs:
-            cdir.mkdir(parents=True, exist_ok=True)
-            for f in list(cdir.glob("chart*.chr")):
-                if f.name not in ("chart01.chr", "chart02.chr"):
-                    try:
-                        f.unlink()
-                    except OSError:
-                        pass
-            (cdir / "chart01.chr").write_bytes(xau_data)
-            (cdir / "chart02.chr").write_bytes(btc_data)
-            (cdir / "order.wnd").write_bytes(order_data)
+    for d in data_dirs:
+        terminal_root = d.parent if d.name == "MQL5" else d
+        template_dirs = [
+            terminal_root / "Profiles" / "Templates",
+            d / "Profiles" / "Templates",
+            d / "Experts",
+            d / "Files",
+        ]
+        chart_dirs = [
+            terminal_root / "Profiles" / "Charts" / "Default",
+            d / "Profiles" / "Charts" / "Default",
+        ]
 
-    Progress.note("multi-asset chart profiles and templates installed (XAUUSD M15 + BTCUSD M5)")
+        if not dry_run:
+            for tdir in template_dirs:
+                tdir.mkdir(parents=True, exist_ok=True)
+                if izibot_tpl.exists():
+                    shutil.copy2(izibot_tpl, tdir / "iziBot.tpl")
+                    shutil.copy2(izibot_tpl, tdir / "default.tpl")
+                if xau_tpl.exists():
+                    shutil.copy2(xau_tpl, tdir / "XauAssistant.tpl")
+
+            for cdir in chart_dirs:
+                cdir.mkdir(parents=True, exist_ok=True)
+                for f in list(cdir.glob("chart*.chr")):
+                    if f.name not in ("chart01.chr", "chart02.chr"):
+                        try:
+                            f.unlink()
+                        except OSError:
+                            pass
+                (cdir / "chart01.chr").write_bytes(xau_data)
+                (cdir / "chart02.chr").write_bytes(btc_data)
+                (cdir / "order.wnd").write_bytes(order_data)
+
+    Progress.note("multi-asset chart profiles and templates installed across all MT5 targets (XAUUSD M15 + BTCUSD M5)")
 
 
 def install_ea_sources(system: str, prefix: Path, editor: Path | None,
                         dry_run: bool) -> None:
-    data_dir = find_mt5_data_dir(system, prefix)
-    if data_dir is None:
+    data_dirs = find_all_mt5_data_dirs(system, prefix)
+    if not data_dirs:
         Progress.note("MT5 data folder is not ready yet; attach MT5 once, then re-run")
         return
-    experts = data_dir / "Experts"
-    includes = data_dir / "Include" / "XauAssistant"
-    if not dry_run:
-        experts.mkdir(parents=True, exist_ok=True)
-        for mq_name in ("iziBot.mq5", "XauAssistant.mq5"):
-            src = ROOT / "mt5" / "Experts" / mq_name
-            if src.exists():
-                shutil.copy2(src, experts / mq_name)
-        if includes.exists():
-            shutil.rmtree(includes)
-        shutil.copytree(ROOT / "mt5" / "Include" / "XauAssistant", includes)
-    Progress.note(f"EA sources copied to {data_dir}")
-    ensure_chart_templates(data_dir, dry_run)
+    for data_dir in data_dirs:
+        experts = data_dir / "Experts"
+        includes = data_dir / "Include" / "XauAssistant"
+        if not dry_run:
+            experts.mkdir(parents=True, exist_ok=True)
+            for mq_name in ("iziBot.mq5", "XauAssistant.mq5"):
+                src = ROOT / "mt5" / "Experts" / mq_name
+                if src.exists():
+                    shutil.copy2(src, experts / mq_name)
+            if includes.exists():
+                shutil.rmtree(includes)
+            shutil.copytree(ROOT / "mt5" / "Include" / "XauAssistant", includes)
+        Progress.note(f"EA sources copied to {data_dir}")
+    ensure_chart_templates(data_dirs, dry_run)
     if editor is None:
         Progress.note("MetaEditor not found; compile iziBot.mq5 manually")
         return
+    primary_dir = data_dirs[0]
+    experts = primary_dir / "Experts"
     source = experts / "iziBot.mq5"
     if system == "Windows":
         command = [str(editor), f'/compile:"{source}"', "/log"]
@@ -490,10 +522,12 @@ def install_ea_sources(system: str, prefix: Path, editor: Path | None,
                 break
             time.sleep(1)
         if fresh and output.exists():
-            # Synchronize compiled .ex5 to both iziBot and XauAssistant names
+            # Synchronize compiled .ex5 to both iziBot and XauAssistant names across all data dirs
+            dest_dirs = [ROOT / "mt5" / "Experts"] + [d / "Experts" for d in data_dirs]
+            if system != "Windows" and install_root is not None:
+                dest_dirs.append(install_root / "MQL5" / "Experts")
             for ex_name in ("iziBot.ex5", "XauAssistant.ex5"):
-                for dest_dir in (experts, ROOT / "mt5" / "Experts",
-                                 (install_root / "MQL5" / "Experts") if (system != "Windows" and install_root is not None) else None):
+                for dest_dir in dest_dirs:
                     if dest_dir is not None:
                         dest = dest_dir / ex_name
                         try:
@@ -790,9 +824,18 @@ def verify_ea(timeout: int, prefix: Path | None = None) -> bool:
     while time.time() < deadline:
         state = health("http://127.0.0.1:9000/api/state")
         if state and state.get("age_s") is not None and state["age_s"] < 60:
-            Progress.note(f"EA heartbeat received (age {state['age_s']}s)")
-            return True
+            hbs = state.get("heartbeats", {})
+            symbols = [sym for sym, h in hbs.items() if h.get("age_s", 999) < 60]
+            if "XAUUSD" in symbols and "BTCUSD" in symbols:
+                Progress.note(f"EA heartbeats received from BOTH XAUUSD ({hbs['XAUUSD']['age_s']}s) and BTCUSD ({hbs['BTCUSD']['age_s']}s)")
+                return True
+            elif symbols:
+                Progress.note(f"EA heartbeat active for {', '.join(symbols)} (waiting for multi-asset peers...)")
         time.sleep(2)
+    state = health("http://127.0.0.1:9000/api/state")
+    if state and state.get("age_s") is not None and state["age_s"] < 60:
+        Progress.note(f"EA heartbeat active (age {state['age_s']}s)")
+        return True
     if dt.datetime.now().weekday() >= 5:
         Progress.note("WEEKEND: EA heartbeat/trading validation may require the next broker session")
     else:
@@ -975,6 +1018,11 @@ def main() -> int:
 
     progress.stage("Starting MT5 and installing the EA")
     if terminal and not args.skip_mt5:
+        if args.restart_mt5 and (mt5_running_windows() if system == "Windows" else mt5_running_linux()):
+            Progress.note("restarting MT5: gracefully stopping running terminal first to flush state")
+            stop_mt5(system, prefix, args.dry_run)
+            if not args.dry_run:
+                time.sleep(2)
         install_ea_sources(system, prefix, editor, args.dry_run)
         launch_mt5(system, terminal, prefix, args.dry_run, args.restart_mt5)
         time.sleep(3 if args.dry_run else 8)

@@ -4371,5 +4371,27 @@ and §6/§7b (ops). The through-line worth remembering:
   - **Asset Security Toggles (`Stop/Play`)**: Converted into clean, emoji-guided 3-line alerts (`⏹️ ₿ BTCUSD HALTED & SECURED`, `▶️ ₿ BTCUSD RESUMED`).
 
 
+# 37. Bulletproof Multi-Asset EA Auto-Attachment & Profile Provisioning (2026-10-25)
+
+- **Root Cause of BTCUSD EA Detachment**:
+  - `launch.py` located MT5 data directories by `max(candidates, key=mtime)`. Under Wine, file operations in `AppData` caused `AppData/Roaming/.../Terminal/<HASH>/MQL5` to have a newer mtime than `Program Files/MetaTrader 5/MQL5`, so `launch.py` wrote templates and chart profiles to `AppData`.
+  - However, MT5 under Wine ran directly from `C:\Program Files\MetaTrader 5` and actively used `C:\Program Files\MetaTrader 5\MQL5\Profiles\Charts\Default` and `MQL5\Profiles\Templates`.
+  - When MT5 was previously restarted with `--restart-mt5`, MT5 was stopped AFTER `install_ea_sources`, meaning MT5's shutdown routine flushed its in-memory charts (which lacked the BTCUSD EA) over `Default/order.wnd` and `chart01.chr`.
+  - Furthermore, `mt5-start.ini` specified `Symbol=XAUUSD` under `[StartUp]`, which only re-attached the EA to XAUUSD on boot, leaving BTCUSD unattached.
+- **Permanent Solution & Architectural Fixes**:
+  1. **Multi-Target Detection & Provisioning (`find_all_mt5_data_dirs`, `ensure_chart_templates`)**:
+     - `find_all_mt5_data_dirs()` identifies all valid MQL5 installations (both `Program Files` and `AppData`), prioritizing the active folder where `terminal64.exe`, `xau_relay_req.json`, or active logs reside.
+     - `ensure_chart_templates()` provisions `default.tpl`, `iziBot.tpl`, and `XauAssistant.tpl` across **ALL** template targets (`MQL5/Profiles/Templates`, `Profiles/Templates`, `MQL5/Files`, `MQL5/Experts`).
+     - `Default` chart profile (`chart01.chr` for XAUUSD M15 + `chart02.chr` for BTCUSD M5, both with `iziBot` expert and sleek dark candle styling, plus `order.wnd`) is synchronized across all chart profile directories.
+  2. **Graceful Stop Before Provisioning**:
+     - When `--restart-mt5` is called, `stop_mt5()` is executed **before** writing sources, templates, and chart profiles. MT5 cleanly flushes before any files are rewritten, preventing shutdown clobbering.
+  3. **Continuous Peer Auto-Attachment Self-Healing (`iziBot.mq5` / `XauAssistant.mq5`)**:
+     - The auto-spawn / template-attach routine in `OnTimer()` was changed from a one-shot flag to a 15-second periodic self-healing loop (`ApplyIziTemplate`).
+     - If the peer chart (Gold on BTC instance, or Bitcoin on Gold instance) is missing or open without an EA, `ApplyIziTemplate` iterates through `iziBot.tpl`, `default.tpl`, and fallback locations until the EA is re-attached.
+  4. **Multi-Asset Heartbeat Verification (`verify_ea`)**:
+     - Launcher verification checks `state["heartbeats"]` for both `XAUUSD` and `BTCUSD`, waiting until both active peers report before marking the sequence complete.
+
+
+
 
 
