@@ -25,7 +25,7 @@ def client(tmp_path, monkeypatch):
 
 
 def _trade(**overrides):
-    ev = {"event": "open", "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+    ev = {"event": "open", "strategy_id": "izi5", "direction": "BUY",
           "lots": 0.1, "price": 2400.0, "sl": 2390.0, "tp": 0.0,
           "reason": "signal confirmed", "ticket": 12345, "entry_mode": "adr",
           "htf_agree": 1, "ema200_agree": 1}

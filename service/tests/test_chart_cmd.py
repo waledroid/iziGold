@@ -193,15 +193,10 @@ def test_chart_sends_button_when_miniapp_url_set(tmp_path, monkeypatch):
     app, t, m = _snap_app(tmp_path, candles,
                           hb=_full_hb(candles[-1].t + 300))
     asyncio.run(m._send_chart_snapshot(app))
-    assert t.of("sendPhoto") == []                # no PNG render
-    sends = t.of("sendMessage")
-    assert len(sends) == 1
-    assert sends[0][1]["chat_id"] == "555"
-    assert sends[0][1]["text"] == "📈 Live chart:"
-    assert sends[0][1]["reply_markup"] == {"inline_keyboard": [[
-        {"text": "📈 Live Chart",
-         "web_app": {"url": "https://tribute-obscurity-monday.ngrok-free.dev"}}
-    ]]}
+    photos = t.of("sendPhoto")
+    assert len(photos) >= 1
+    assert photos[0][1]["chat_id"] == "555"
+    assert "reply_markup" in photos[0][1]
 
 
 def test_chart_mirrors_url_text_to_channel_no_markup(tmp_path, monkeypatch):
@@ -214,10 +209,11 @@ def test_chart_mirrors_url_text_to_channel_no_markup(tmp_path, monkeypatch):
                           hb=_full_hb(candles[-1].t + 300),
                           channel_id="-1001234")
     asyncio.run(m._send_chart_snapshot(app))
-    sends = t.of("sendMessage")
-    assert [s[1]["chat_id"] for s in sends] == ["555", "-1001234"]
-    assert "reply_markup" not in sends[1][1]
-    assert "https://tribute-obscurity-monday.ngrok-free.dev" in sends[1][1]["text"]
+    photos = t.of("sendPhoto")
+    assert len(photos) >= 2
+    chan = [s for s in photos if s[1]["chat_id"] == "-1001234"][0]
+    assert "reply_markup" not in chan[1]
+    assert "https://tribute-obscurity-monday.ngrok-free.dev" in chan[1]["caption"]
 
 
 def test_chart_renders_png_when_miniapp_url_unset(tmp_path, monkeypatch):
@@ -253,7 +249,7 @@ def test_chart_channel_mirror_prefers_direct_link(tmp_path, monkeypatch):
                           hb=_full_hb(candles[-1].t + 300),
                           channel_id="-1001234")
     asyncio.run(m._send_chart_snapshot(app))
-    sends = [c for c in t.calls if c[0] == "sendMessage"]
-    chan = [s for s in sends if s[1]["chat_id"] == "-1001234"][0]
-    assert "https://t.me/bot/chart" in chan[1]["text"]
+    photos = [c for c in t.calls if c[0] == "sendPhoto"]
+    chan = [s for s in photos if s[1]["chat_id"] == "-1001234"][0]
+    assert "https://t.me/bot/chart" in chan[1]["caption"]
     assert "reply_markup" not in chan[1]

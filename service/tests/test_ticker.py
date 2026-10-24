@@ -286,7 +286,7 @@ def test_heartbeat_endpoint_triggers_ticker(tmp_path, monkeypatch):
                              "profit": 54.02}],
               "kill_switch": False, "hwm": 4800.0, "exposure_min": 5,
               "window_open": True, "spread_points": 25.0,
-              "active_strategy": "halftrend_ema_v1"}
+              "active_strategy": "izi5"}
         r = client.post("/heartbeat", json=hb)
         assert r.status_code == 200
         assert r.json()["command"] is None      # response shape unchanged

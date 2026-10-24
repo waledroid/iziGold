@@ -64,7 +64,7 @@ def test_journal_mode_is_wal_or_documented_fallback(tmp_path):
 def _hb(equity=10_000.0):
     return {"equity": equity, "balance": 10_000.0, "floating_pl": 0.0,
             "open_count": 0, "kill_switch": False, "exposure_min": 0,
-            "active_strategy": "halftrend_ema_v1"}
+            "active_strategy": "izi5"}
 
 
 def test_heartbeat_collapses_within_60s(tmp_path):
@@ -239,17 +239,17 @@ def test_overlays_payload_cached_until_accumulator_changes(client):
     from app import main
     candles = _candles(120)
     assert client.post("/analyze", json=_payload(candles)).status_code == 200
-    first = main.ui_overlays("halftrend_ema_v1")
-    assert first is main.ui_overlays("halftrend_ema_v1")
+    first = main.ui_overlays("izi5")
+    assert first is main.ui_overlays("izi5")
     # a different strategy is a separate cache entry, not a bust
     other = main.ui_overlays("boll_stochrsi_v1")
     assert other is not first
-    assert first is main.ui_overlays("halftrend_ema_v1")
+    assert first is main.ui_overlays("izi5")
 
     bumped = [dict(c) for c in candles]
     bumped[-1]["c"] += 5.0
     assert client.post("/analyze", json=_payload(bumped)).status_code == 200
-    assert main.ui_overlays("halftrend_ema_v1") is not first
+    assert main.ui_overlays("izi5") is not first
 
 
 class _RacingCache(dict):
@@ -258,7 +258,7 @@ class _RacingCache(dict):
     the stale-key list being built and this request deleting it."""
 
     def __iter__(self):
-        return iter([("gone-key", "halftrend_ema_v1"), *self.keys()])
+        return iter([("gone-key", "izi5"), *self.keys()])
 
 
 def test_overlays_eviction_tolerates_a_concurrently_removed_key(client):
@@ -267,10 +267,10 @@ def test_overlays_eviction_tolerates_a_concurrently_removed_key(client):
     The loser used to hit an unhandled KeyError -> 500."""
     from app import main
     assert client.post("/analyze", json=_payload(_candles(120))).status_code == 200
-    stale = (("old-key",), "halftrend_ema_v1")
+    stale = (("old-key",), "izi5")
     cache = main.app.state.overlays_cache = _RacingCache()
     cache[stale] = {}
-    assert client.get("/api/overlays?strategy=halftrend_ema_v1").status_code == 200
+    assert client.get("/api/overlays?strategy=izi5").status_code == 200
     assert stale not in cache          # the genuinely-present stale entry went
 
 

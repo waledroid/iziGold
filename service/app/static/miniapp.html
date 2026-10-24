@@ -101,6 +101,27 @@ body {
 
 /* Trades report */
 #tradesPanel { background: var(--bg); }
+#repPeriods {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.period-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.period-card .p-lbl { font-size: 11px; color: var(--text-muted); font-weight: 600; }
+.period-card .p-val { font-size: 14px; font-weight: 700; }
+.period-card .p-sub { font-size: 10px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #repHead {
   display: flex;
   align-items: center;
@@ -233,6 +254,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   background: var(--accent);
   border-color: var(--accent);
 }
+.tf-btn.preview-toggle { margin-left: auto; }
 
 /* Chart */
 #chartWrap {
@@ -350,13 +372,14 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 9</div>
     <div class="legend-row"><span class="legend-swatch" style="background:#888888"></span>EMA 21</div>
     <div class="legend-row"><span class="legend-swatch" style="background:#f5c542"></span><span id="legend-trade-ema">EMA 55</span></div>
-    <div class="legend-row"><span class="legend-swatch" style="background:mediumpurple"></span>EMA 200</div>
+    <div class="legend-row"><span class="legend-swatch" style="background:#a78bfa"></span>EMA 200</div>
   </div>
   <div id="posCard"></div>
 </div>
 </div>
 
 <div id="tradesPanel" class="panel">
+  <div id="repPeriods"></div>
   <div id="repHead">
     <button class="rep-btn" id="repBack" style="display:none">← Back</button>
     <button class="rep-btn" id="repPrev">‹</button>
@@ -437,6 +460,41 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   // series with whitespace gaps at every flip.
   var HT_UP_COLOR = "#1e90ff";   // dodgerblue -- trend 0
   var HT_DOWN_COLOR = "#ff4500"; // orangered  -- trend 1
+  // The boot-time values above intentionally match config/chart_spec.json.
+  // applyChartSeries() replaces them from /api/history's chart object on
+  // every refresh, so a palette change never requires editing this page.
+  function chartSeriesSpec(chartSpec, name) {
+    if (!chartSpec || !chartSpec.series || !chartSpec.series[name]) return null;
+    return chartSpec.series[name];
+  }
+
+  function applyChartSeries(chartSpec) {
+    if (!chartSpec) return;
+    var ema9 = chartSeriesSpec(chartSpec, "ema9");
+    var ema21 = chartSeriesSpec(chartSpec, "ema21");
+    var trade = chartSeriesSpec(chartSpec, "ema_trade");
+    var ema200 = chartSeriesSpec(chartSpec, "ema200");
+    var ht = chartSpec.series ? chartSpec.series.halftrend : null;
+    try {
+      if (ema9Series && ema9 && ema9.color) {
+        ema9Series.applyOptions({ color: ema9.color, lineWidth: ema9.width || 1 });
+      }
+      if (ema21Series && ema21 && ema21.color) {
+        ema21Series.applyOptions({ color: ema21.color, lineWidth: ema21.width || 1 });
+      }
+      if (ema55Series && trade && trade.color) {
+        ema55Series.applyOptions({ color: trade.color, lineWidth: trade.width || 2 });
+      }
+      if (ema200Series && ema200 && ema200.color) {
+        ema200Series.applyOptions({ color: ema200.color, lineWidth: ema200.width || 2 });
+      }
+      if (htSeries && ht && ht.up && ht.down) {
+        HT_UP_COLOR = ht.up;
+        HT_DOWN_COLOR = ht.down;
+        htSeries.applyOptions({ color: ht.up, lineWidth: ht.width || 2 });
+      }
+    } catch (e) {}
+  }
   // Baseline for the live EMA recurrence: the EMA value AT the last
   // CLOSED bar (server truth), i.e. index length-2 of the just-fetched
   // history (index length-1 is the still-forming bar). Reset on every
@@ -446,74 +504,87 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   var emaK = { e9: 2 / 10, e21: 2 / 22, e55: 2 / 56, e200: 2 / 201 };
   var lastBarT = null;
 
-  // S/R zone boxes (owner 2026-09-05, spec 2026-09-05-sr-zones-design.md):
-  // Lightweight Charts v4 has no rectangle primitive, so each box is a
-  // BASELINE series filled between baseValue (= box lo) and value (= box
-  // hi). A fixed POOL of 18 series is created in boot() BEFORE the EMA/
-  // HalfTrend overlays and the candle series so it paints under every
-  // overlay and the candles; slots are grouped weakest tier first
-  // (M15, H1, H4) so a stronger tier's fill draws over a weaker one where
-  // they overlap. Unused slots hold empty data. autoscaleInfoProvider
-  // returns null so a far-away box can never stretch the price axis.
+  // S/R zone outlines (owner 2026-09-05; outline-only since 2026-10-01):
+  // Lightweight Charts v4 has no rectangle primitive. Each zone is drawn
+  // as two horizontal price lines, one at hi and one at lo, using the
+  // unblended role color from /api/history's chart spec. There is no fill.
+  // Zones outside the loaded candles' price range are omitted, so their
+  // axis labels cannot clutter the scale; price lines themselves never
+  // affect autoscaling. Weaker tiers are drawn first so H4 labels win.
   var SR_TIERS = ["M15", "H1", "H4"];
-  var SR_PER_TIER = 6;                       // 3 per role x 2 roles
-  var SR_ALPHA = { H4: 0.35, H1: 0.22, M15: 0.12 };
-  var SR_RGB = { support: "173,216,230", resistance: "255,245,157" };
-  var SR_CLEAR = "rgba(0,0,0,0)";
-  var srPool = {};                           // tier -> [baseline series]
+  var srLines = [];
+  var FALLBACK_SR_COLORS = { support: "#add8e6", resistance: "#fff59d" };
 
-  function srColor(zone) {
-    return "rgba(" + SR_RGB[zone.role] + "," + SR_ALPHA[zone.tier] + ")";
+  function srOutlineColor(role, chartSpec) {
+    var zones = chartSpec && chartSpec.sr_zones;
+    if (zones && zones[role] && typeof zones[role].color === "string") {
+      return zones[role].color;
+    }
+    return FALLBACK_SR_COLORS[role] || "#9aa5b8";
   }
 
-  function initSrPool() {
-    SR_TIERS.forEach(function (tier) {
-      srPool[tier] = [];
-      for (var k = 0; k < SR_PER_TIER; k++) {
-        srPool[tier].push(chart.addBaselineSeries({
-          baseValue: { type: "price", price: 0 },
-          topLineColor: SR_CLEAR, bottomLineColor: SR_CLEAR,
-          topFillColor1: SR_CLEAR, topFillColor2: SR_CLEAR,
-          bottomFillColor1: SR_CLEAR, bottomFillColor2: SR_CLEAR,
-          lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-          crosshairMarkerVisible: false,
-          autoscaleInfoProvider: function () { return null; }
-        }));
-      }
-    });
+  function srOutlineStyle(chartSpec) {
+    var fallback = { width: 1, style: "dashed" };
+    var zones = chartSpec && chartSpec.sr_zones;
+    if (!zones || !zones.outline) return fallback;
+    return {
+      width: isNumeric(zones.outline.width) ? zones.outline.width : 1,
+      style: zones.outline.style || "dashed"
+    };
   }
 
-  // zones: the /api/history sr_zones list; times: the loaded bars' times
-  // (unix seconds, ascending -- toLwCandle passes c.t through). A box
-  // spans from its `born` bar (or the first loaded bar when older than
-  // the window) to the newest loaded bar.
-  function setSrZones(zones, times) {
-    var byTier = {};
-    SR_TIERS.forEach(function (t) { byTier[t] = []; });
-    (Array.isArray(zones) ? zones : []).forEach(function (z) {
-      if (z && byTier[z.tier] && isNumeric(z.lo) && isNumeric(z.hi) && z.hi > z.lo) {
-        byTier[z.tier].push(z);
-      }
+  function srLineStyle(style) {
+    return style === "dotted" ? LightweightCharts.LineStyle.Dotted :
+      style === "solid" ? LightweightCharts.LineStyle.Solid :
+      LightweightCharts.LineStyle.Dashed;
+  }
+
+  function clearSrOutlines() {
+    srLines.forEach(function (line) {
+      try { series.removePriceLine(line); } catch (e) {}
     });
+    srLines = [];
+  }
+
+  function zoneTag(zone, edge) {
+    var touches = isNumeric(zone.touches) ? zone.touches : 1;
+    return (edge === "hi" ? "R " : "S ") + zone.tier + " x" + touches;
+  }
+
+  // zones: the /api/history sr_zones list; rows: the loaded Lightweight
+  // candle objects (used only for the visible price range); chartSpec: the
+  // /api/history chart object from config/chart_spec.json.
+  function setSrZones(zones, rows, chartSpec) {
+    clearSrOutlines();
+    if (!series || !Array.isArray(rows) || !rows.length) return;
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < rows.length; i++) {
+      if (!isValidCandle(rows[i])) continue;
+      if (rows[i].low < lo) lo = rows[i].low;
+      if (rows[i].high > hi) hi = rows[i].high;
+    }
+    if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return;
+    var pad = (hi - lo) * 0.05;
+    var style = srOutlineStyle(chartSpec);
     SR_TIERS.forEach(function (tier) {
-      var pool = srPool[tier] || [];
-      for (var k = 0; k < pool.length; k++) {
-        var z = byTier[tier][k];
-        if (!z) { try { pool[k].setData([]); } catch (e) {} continue; }
-        var pts = [];
-        for (var i = 0; i < times.length; i++) {
-          if (times[i] >= z.born) pts.push({ time: times[i], value: z.hi });
-        }
-        if (!pts.length && times.length) {
-          pts.push({ time: times[times.length - 1], value: z.hi });
-        }
-        var col = srColor(z);
-        try {
-          pool[k].applyOptions({ baseValue: { type: "price", price: z.lo },
-                                 topFillColor1: col, topFillColor2: col });
-          pool[k].setData(pts);
-        } catch (e) {}
-      }
+      (Array.isArray(zones) ? zones : []).forEach(function (z) {
+        if (!z || z.tier !== tier || (z.role !== "support" && z.role !== "resistance")) return;
+        if (!isNumeric(z.lo) || !isNumeric(z.hi) || !(z.hi > z.lo)) return;
+        if (z.hi < lo - pad || z.lo > hi + pad) return;
+        var color = srOutlineColor(z.role, chartSpec);
+        [["hi", z.hi], ["lo", z.lo]].forEach(function (edge) {
+          try {
+            srLines.push(series.createPriceLine({
+              price: edge[1],
+              color: color,
+              lineWidth: style.width,
+              lineStyle: srLineStyle(style.style),
+              axisLabelVisible: true,
+              title: zoneTag(z, edge[0])
+            }));
+          } catch (e) {}
+        });
+      });
     });
   }
 
@@ -528,14 +599,13 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
   // indicator arrays (old server) degrade to "no points for that series"
   // -- overlays just don't draw, the candle chart still works.
   // ---- Indicator sub-panel PLUGINS (owner 2026-09-02) --------------------
-  // Each pane below the main chart is a self-contained plugin: to REMOVE a
-  // pane, delete its id from ENABLED_PANELS; to ADD one, register an entry
-  // in PANEL_PLUGINS (build() creates its series on a dedicated chart,
-  // update() maps the /api/history payload into them) and list its id.
+  // Each pane below the main chart is a self-contained plugin. The enabled
+  // set comes from /api/history's chart spec (`panels`), so only
+  // config/chart_spec.json decides which panes may be built.
   // Panels are read-only slaves of the main chart's time scale and refresh
   // on every history load (boot, TF switch, bar rollover) — no per-tick
   // updates, matching how the server computes the series on closed data.
-  var ENABLED_PANELS = ["rsi", "macd"];
+  var ENABLED_PANELS = [];
   var PANEL_PLUGINS = {
     rsi: {
       height: 92,
@@ -557,37 +627,10 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
         }
         try { st.line.setData(pts); } catch (e) {}
       }
-    },
-    macd: {
-      height: 92,
-      build: function (pchart, colors) {
-        var hist = pchart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
-        var line = pchart.addLineSeries({ color: "#38bdf8", lineWidth: 1.5,
-                                          priceLineVisible: false, lastValueVisible: false });
-        var sig = pchart.addLineSeries({ color: "#f5c542", lineWidth: 1,
-                                         priceLineVisible: false, lastValueVisible: false });
-        return { hist: hist, line: line, sig: sig };
-      },
-      update: function (st, body, idxMap, times) {
-        var h = [], l = [], s = [];
-        for (var i = 0; i < idxMap.length; i++) {
-          var orig = idxMap[i], t = times[i];
-          var vh = arrAt(body.macd_hist, orig);
-          h.push(isNumeric(vh)
-            ? { time: t, value: vh, color: vh >= 0 ? "rgba(38,166,154,0.6)" : "rgba(239,83,80,0.6)" }
-            : { time: t });
-          var vl = arrAt(body.macd_line, orig);
-          l.push(isNumeric(vl) ? { time: t, value: vl } : { time: t });
-          var vs = arrAt(body.macd_signal, orig);
-          s.push(isNumeric(vs) ? { time: t, value: vs } : { time: t });
-        }
-        try { st.hist.setData(h); } catch (e) {}
-        try { st.line.setData(l); } catch (e) {}
-        try { st.sig.setData(s); } catch (e) {}
-      }
     }
   };
   var panelStates = {};   // id -> {chart, series-state}
+  var panelsRangeSynced = false;
 
   function initPanels() {
     var colors = themeColors();
@@ -609,8 +652,9 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       });
       panelStates[id] = { chart: pchart, state: plug.build(pchart, colors) };
     });
-    // one-way sync: the main chart drives every panel's visible range
-    if (chart && chart.timeScale) {
+    // one-way sync: the main chart drives every panel's visible range.
+    // Subscribed only once; later history refreshes must not stack handlers.
+    if (!panelsRangeSynced && chart && chart.timeScale) {
       chart.timeScale().subscribeVisibleLogicalRangeChange(function (range) {
         if (!range) return;
         ENABLED_PANELS.forEach(function (id) {
@@ -618,7 +662,33 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
           if (ps) { try { ps.chart.timeScale().setVisibleLogicalRange(range); } catch (e) {} }
         });
       });
+      panelsRangeSynced = true;
     }
+  }
+
+  function removePanel(id) {
+    var stale = panelStates[id];
+    if (!stale) return;
+    try { stale.chart.remove(); } catch (e) {}
+    var el = document.getElementById("panel-" + id);
+    if (el && el.parentNode) {
+      try { el.parentNode.removeChild(el); } catch (removeError) {}
+    }
+    delete panelStates[id];
+  }
+
+  function configurePanels(chartSpec) {
+    var wanted = [];
+    if (chartSpec && chartSpec.panels && typeof chartSpec.panels === "object") {
+      wanted = Object.keys(chartSpec.panels).filter(function (id) {
+        return chartSpec.panels[id] && PANEL_PLUGINS[id];
+      });
+    }
+    Object.keys(panelStates).forEach(function (id) {
+      if (wanted.indexOf(id) === -1) removePanel(id);
+    });
+    ENABLED_PANELS = wanted;
+    initPanels();
   }
 
   function setPanelData(body, idxMap, times) {
@@ -860,6 +930,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       btn.addEventListener("click", function () { selectTf(tf); });
       tfRow.appendChild(btn);
     });
+    initPreviewToggle();
   }
 
   function highlightActiveTf() {
@@ -895,11 +966,18 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
           times.push(lw.time);
           idxMap.push(i);
         }
+        currentChart = body.chart || currentChart;
+        latestPreview = body.preview || null;
+        configurePanels(currentChart);
+        applyChartSeries(currentChart);
         series.setData(rows);
         setIndicatorSeriesData(body, idxMap, times);
-        setSrZones(body.sr_zones, times);
+        setSrZones(body.sr_zones, rows, currentChart);
         setPanelData(body, idxMap, times);
         setEmaBaseline(body);
+        renderPreview();
+        updatePreviewButton();
+        updateTradeEmaLegend();
         // Past-trade markers: refetched after every successful history
         // load (initial boot, TF switch, and the bar-rollover refetch in
         // handleMessage's "candle" branch all funnel through here), using
@@ -913,11 +991,14 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       });
   }
 
-  // Trading-EMA length per timeframe (mirror of the server's
-  // _TRADE_EMA_LEN): the M15 lane trades EMA 50, everything else 55.
+  // Trading-EMA length per timeframe comes from the chart spec; the M15
+  // lane trades EMA 50 and everything else uses the default length.
   function updateTradeEmaLegend() {
     var el = document.getElementById("legend-trade-ema");
-    if (el) el.textContent = "EMA " + (currentTf === "M15" ? 50 : 55);
+    var lens = currentChart && currentChart.trade_ema_len;
+    var n = lens ? (currentTf === "M15" ? lens.M15 : lens.default) : null;
+    if (!isNumeric(n)) n = currentTf === "M15" ? 50 : 55;
+    if (el) el.textContent = "EMA " + n;
   }
 
   function selectTf(tf) {
@@ -925,6 +1006,8 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     currentTf = tf;
     highlightActiveTf();
     updateTradeEmaLegend();
+    latestPreview = null;
+    renderPreview();
     loadHistory(tf);
   }
 
@@ -1019,6 +1102,116 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       '<div class="row"><span>P/L</span><span class="' + profitClass + '">' +
       (totalProfit >= 0 ? "+" : "") + totalProfit.toFixed(2) + '</span></div>';
     posCard.classList.add("visible");
+  }
+
+  // ---- Optional pre-entry preview -------------------------------------------
+  // The service supplies one approximate band per history response. It is
+  // drawn only when explicitly enabled; the spec default is off and a
+  // browser choice persists across reloads. Preview lines are tracked
+  // separately from live-position lines so position updates cannot erase
+  // them (and vice versa).
+  var PREVIEW_STORAGE_KEY = "xau-miniapp-preview-enabled";
+  var currentChart = null;
+  var latestPreview = null;
+  var previewWanted = null;
+  var previewButton = null;
+  var previewLines = [];
+
+  function storedPreviewWanted() {
+    try {
+      var stored = window.localStorage.getItem(PREVIEW_STORAGE_KEY);
+      if (stored === "1") return true;
+      if (stored === "0") return false;
+    } catch (e) {}
+    return null;
+  }
+
+  function previewLineStyle(style) {
+    return style === "solid" ? LightweightCharts.LineStyle.Solid :
+      style === "dotted" ? LightweightCharts.LineStyle.Dotted :
+      LightweightCharts.LineStyle.Dashed;
+  }
+
+  function previewSpec() {
+    if (currentChart && currentChart.preview &&
+        typeof currentChart.preview === "object") {
+      return currentChart.preview;
+    }
+    return null;
+  }
+
+  function isPreviewEnabled() {
+    if (previewWanted !== null) return previewWanted;
+    var spec = previewSpec();
+    return !!(spec && spec.enabled_default);
+  }
+
+  function updatePreviewButton() {
+    if (!previewButton) return;
+    var on = isPreviewEnabled();
+    previewButton.classList.toggle("active", on);
+    previewButton.setAttribute("aria-pressed", on ? "true" : "false");
+    previewButton.textContent = "Preview " + (on ? "On" : "Off");
+    previewButton.title = "Optional pre-entry preview: the service's approximate entry/SL/TP band";
+  }
+
+  function clearPreviewLines() {
+    previewLines.forEach(function (line) {
+      try { series.removePriceLine(line); } catch (e) {}
+    });
+    previewLines = [];
+  }
+
+  function renderPreview() {
+    clearPreviewLines();
+    if (!series || !isPreviewEnabled()) return;
+    var pv = latestPreview;
+    var spec = previewSpec();
+    if (!pv || !pv.active || !spec) return;
+    var levels = [
+      ["entry", pv.entry, "P " + pv.direction + " " + pv.entry],
+      ["sl", pv.sl, "P SL " + pv.sl],
+      ["tp", pv.tp, "P TP " + pv.tp]
+    ];
+    levels.forEach(function (level) {
+      var style = spec[level[0]] || {};
+      if (!isNumeric(level[1]) || typeof style.color !== "string") return;
+      try {
+        previewLines.push(series.createPriceLine({
+          price: level[1],
+          color: style.color,
+          lineWidth: isNumeric(style.width) ? style.width : 1,
+          lineStyle: previewLineStyle(style.style),
+          axisLabelVisible: true,
+          title: level[2]
+        }));
+      } catch (e) {}
+    });
+  }
+
+  function setPreviewEnabled(on) {
+    previewWanted = !!on;
+    try {
+      window.localStorage.setItem(PREVIEW_STORAGE_KEY, previewWanted ? "1" : "0");
+    } catch (e) {}
+    updatePreviewButton();
+    renderPreview();
+  }
+
+  function initPreviewToggle() {
+    if (!tfRow) return;
+    if (previewWanted === null) previewWanted = storedPreviewWanted();
+    if (!previewButton || !document.body.contains(previewButton)) {
+      previewButton = document.createElement("button");
+      previewButton.type = "button";
+      previewButton.id = "previewBtn";
+      previewButton.className = "tf-btn preview-toggle";
+      tfRow.appendChild(previewButton);
+      previewButton.addEventListener("click", function () {
+        setPreviewEnabled(!isPreviewEnabled());
+      });
+    }
+    updatePreviewButton();
   }
 
   // ---- Connection state: dot + offline banner ------------------------------
@@ -1343,7 +1536,8 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       tr.appendChild(el("td", null, r.time || "–"));
       tr.appendChild(el("td", "muted", r.session || "–"));
       var dir = (r.direction || "").toString().toUpperCase();
-      tr.appendChild(el("td", dir === "BUY" ? "dir-buy" : (dir === "SELL" ? "dir-sell" : ""), dir === "BUY" || dir === "SELL" ? dir : "–"));
+      var symBadge = (r.symbol && String(r.symbol).toUpperCase().indexOf("BTC") !== -1) ? "₿ " : "🥇 ";
+      tr.appendChild(el("td", dir === "BUY" ? "dir-buy" : (dir === "SELL" ? "dir-sell" : ""), dir === "BUY" || dir === "SELL" ? (symBadge + dir) : "–"));
       // M15 agreement at entry: Yes / No / – when the row predates the field.
       var m15cell = el("td", r.m15 === true ? "dir-buy" : (r.m15 === false ? "dir-sell" : "muted"),
                        r.m15 === true ? "Yes" : (r.m15 === false ? "No" : "–"));
@@ -1407,6 +1601,29 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     repEls.foot.style.display = "block";
   }
 
+  function renderPeriods(periods) {
+    var box = document.getElementById("repPeriods");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!periods || typeof periods !== "object") return;
+    [
+      { key: "today", label: "📅 Today" },
+      { key: "week", label: "🗓 This Week" },
+      { key: "month", label: "📆 This Month" }
+    ].forEach(function (spec) {
+      var p = periods[spec.key] || {};
+      var card = el("div", "period-card");
+      var trades = isNumeric(p.trades) ? p.trades : 0;
+      var winPct = (trades > 0 && isNumeric(p.win_pct)) ? (" · " + p.win_pct.toFixed(0) + "% W") : "";
+      card.appendChild(el("div", "p-lbl", spec.label + " (" + trades + winPct + ")"));
+      card.appendChild(el("div", "p-val " + plClass(p.pl || 0), fmtMoney(p.pl || 0)));
+      var gPl = p.gold && isNumeric(p.gold.pl) ? fmtMoney(p.gold.pl) : "$0.00";
+      var bPl = p.btc && isNumeric(p.btc.pl) ? fmtMoney(p.btc.pl) : "$0.00";
+      card.appendChild(el("div", "p-sub", "🥇 " + gPl + "  ·  ₿ " + bPl));
+      box.appendChild(card);
+    });
+  }
+
   function renderReport() {
     var d = repState.data;
     repEls.back.style.display = repState.view === "day" ? "" : "none";
@@ -1418,6 +1635,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       repEls.title.textContent = (d && d.label) ? d.label : (repState.date || "—");
     }
     if (!d) { repEls.table.style.display = "none"; repEls.foot.style.display = "none"; return; }
+    renderPeriods(d.periods);
     if (repState.view === "month") renderMonth(d); else renderDay(d);
   }
 
@@ -1576,14 +1794,26 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     repEls.toast = document.getElementById("toast");
     repState.month = currentMonthKey();
 
-    document.getElementById("tabChart").addEventListener("click", function () { selectTab("chart"); });
+    var isStandaloneReport = window.location && window.location.pathname === "/reports";
+    var tabChartBtn = document.getElementById("tabChart");
+    if (isStandaloneReport && tabChartBtn) {
+      tabChartBtn.textContent = "← Cockpit";
+    }
+    tabChartBtn.addEventListener("click", function () {
+      if (isStandaloneReport) { window.location.href = "/"; return; }
+      selectTab("chart");
+    });
     document.getElementById("tabTrades").addEventListener("click", function () { selectTab("trades"); });
     repEls.back.addEventListener("click", function () { openMonth(repState.month); });
     repEls.prev.addEventListener("click", function () { openMonth(shiftMonth(repState.month, -1)); });
     repEls.next.addEventListener("click", function () { openMonth(shiftMonth(repState.month, +1)); });
     repEls.csv.addEventListener("click", downloadCsv);
     repEls.copy.addEventListener("click", copyCsv);
-    renderReport();
+    if (isStandaloneReport || (window.location && window.location.search.indexOf("tab=trades") !== -1)) {
+      selectTab("trades");
+    } else {
+      renderReport();
+    }
   }
 
   // ---- Boot -----------------------------------------------------------------
@@ -1632,10 +1862,8 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
       autoSize: true
     });
 
-    // S/R pool is added first so the translucent boxes sit under every
-    // overlay and the candles (Lightweight Charts draws later-added series
-    // on top).
-    initSrPool();   // 18 box slots, under every overlay and the candles
+    // S/R outlines and the pre-entry preview use candle-series price lines,
+    // so there is no pooled fill-series state to initialize here.
 
     // Overlays are added BEFORE the candlestick series so candles paint on
     // top of them (Lightweight Charts draws later-added series on top),
@@ -1648,7 +1876,7 @@ table.rep tr.day-row:active { background: rgba(255,255,255,0.05); }
     ema55Series = chart.addLineSeries(Object.assign(
       { color: "#f5c542", lineWidth: 2 }, noLabel));       // gold
     ema200Series = chart.addLineSeries(Object.assign(
-      { color: "mediumpurple", lineWidth: 2 }, noLabel));
+      { color: "#a78bfa", lineWidth: 2 }, noLabel));
     // Base `color` is just the series-level fallback (e.g. for an empty
     // series) -- actual rendering uses the per-point `color` set on each
     // data item in setIndicatorSeriesData(), so the line itself flips

@@ -36,7 +36,7 @@ def test_overlays_carry_sr_zones_from_the_candles_table(tmp_path, monkeypatch):
         from app.models import Candle
         main.app.state.recent_candles = {"symbol": "XAUUSD", "timeframe": "M5",
                                          "candles": [Candle(**r) for r in rows[-300:]]}
-        body = client.get("/api/overlays", params={"strategy": "halftrend_ema_v1"}).json()
+        body = client.get("/api/overlays", params={"strategy": "izi5"}).json()
         assert "sr_zones" in body
         assert {z["tier"] for z in body["sr_zones"]} == {"H4", "H1", "M15"}
         assert all(z["hi"] == 4040.0 for z in body["sr_zones"])
@@ -49,5 +49,5 @@ def test_overlays_sr_zones_fail_open_when_no_history(tmp_path, monkeypatch):
         rows = [{"t": 900 + 300 * i, "o": 1, "h": 2, "l": 0, "c": 1, "v": 1} for i in range(10)]
         main.app.state.recent_candles = {"symbol": "XAUUSD", "timeframe": "M5",
                                          "candles": [Candle(**r) for r in rows]}
-        body = client.get("/api/overlays", params={"strategy": "halftrend_ema_v1"}).json()
+        body = client.get("/api/overlays", params={"strategy": "izi5"}).json()
         assert body["sr_zones"] == []

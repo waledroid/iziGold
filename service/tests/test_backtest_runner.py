@@ -7,7 +7,7 @@ from app.db import SignalDb
 
 
 def _params(**over):
-    p = {"strategy": "halftrend_ema_v1", "symbol": "XAUUSD",
+    p = {"strategy": "izi5", "symbol": "XAUUSD",
          "start_ts": 0, "end_ts": 10**10, "balance": 10000.0,
          "risk_pct": 1.0, "entry_mode": "adr", "exit_scheme": "target-exit",
          "ema200_confirm": "off", "m15_bias": "off"}
@@ -38,7 +38,7 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
     assert "--entry-mode adr" in s and "--exit-scheme target-exit" in s
     assert "--ema200-confirm off" in s and "--bias-ema" not in s
 
-    cmd15 = backtest_runner.build_cli(_params(strategy="halftrend_m15_v1"),
+    cmd15 = backtest_runner.build_cli(_params(strategy="izi15"),
                                       src, jout, wout)
     s15 = " ".join(cmd15)
     assert "--tf M15" in s15 and "--confirm 1" in s15
@@ -55,7 +55,7 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
     # S/R wall filter (2026-09-05 increment 2): same flags on both lanes,
     # absent when off
     assert "--sr-zone-tiers" not in s and "--sr-zone-tiers" not in s15
-    for strat in ("halftrend_ema_v1", "halftrend_m15_v1"):
+    for strat in ("izi5", "izi15"):
         srs = " ".join(backtest_runner.build_cli(
             _params(strategy=strat, sr_filter="on"), src, jout, wout))
         assert "--sr-zone-tiers H4,H1,M15" in srs and "--sr-zone-room-atr 1.0" in srs
@@ -66,7 +66,7 @@ def test_build_cli_maps_strategies_and_flags(tmp_path):
         and "--bias-mode target" in biased
     # bias is an M5-lane concept: the M15 lane never gets the flags
     b15 = " ".join(backtest_runner.build_cli(
-        _params(strategy="halftrend_m15_v1", m15_bias="on"), src, jout, wout))
+        _params(strategy="izi15", m15_bias="on"), src, jout, wout))
     assert "--bias-ema" not in b15
 
 

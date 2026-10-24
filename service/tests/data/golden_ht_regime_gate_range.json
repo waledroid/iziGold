@@ -13,10 +13,10 @@
    "lane": "ht",
    "dir": "BUY",
    "entry": 3988.08,
-   "legs": 3,
-   "exit": 3990.52,
-   "why": "stop",
-   "pl": -10.6
+   "legs": 2,
+   "exit": 3988.66,
+   "why": "reversal",
+   "pl": -13.85
   },
   {
    "lane": "ht",
@@ -32,9 +32,9 @@
    "dir": "BUY",
    "entry": 4146.44,
    "legs": 3,
-   "exit": 4159.24,
-   "why": "profit lock",
-   "pl": 19.13
+   "exit": 4152.93,
+   "why": "stop",
+   "pl": -12.23
   },
   {
    "lane": "ht",
@@ -79,16 +79,16 @@
    "legs": 3,
    "exit": 4362.12,
    "why": "profit lock",
-   "pl": 34.08
+   "pl": 12.35
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4332.46,
-   "legs": 3,
-   "exit": 4346.65,
+   "legs": 2,
+   "exit": 4342.3,
    "why": "profit lock",
-   "pl": 24.49
+   "pl": 12.43
   },
   {
    "lane": "ht",
@@ -103,10 +103,10 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 4083.58,
-   "legs": 3,
+   "legs": 2,
    "exit": 4065.25,
    "why": "profit lock",
-   "pl": 24.63
+   "pl": 7.07
   },
   {
    "lane": "ht",
@@ -122,27 +122,27 @@
    "dir": "SELL",
    "entry": 4018.57,
    "legs": 3,
-   "exit": 3998.99,
+   "exit": 3986.81,
    "why": "profit lock",
-   "pl": 20.56
+   "pl": 18.81
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3922.87,
-   "legs": 2,
-   "exit": 3914.1,
+   "legs": 1,
+   "exit": 3905.33,
    "why": "stop",
-   "pl": -33.0
+   "pl": -35.49
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4011.13,
-   "legs": 3,
+   "legs": 2,
    "exit": 4024.68,
    "why": "flatten",
-   "pl": 21.04
+   "pl": 12.81
   },
   {
    "lane": "ht",
@@ -157,10 +157,10 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3965.5,
-   "legs": 2,
+   "legs": 1,
    "exit": 3967.55,
    "why": "reversal",
-   "pl": -11.33
+   "pl": -4.5
   },
   {
    "lane": "ht",
@@ -175,10 +175,10 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3991.83,
-   "legs": 3,
-   "exit": 3985.61,
-   "why": "stop",
-   "pl": -18.72
+   "legs": 2,
+   "exit": 3977.19,
+   "why": "flatten",
+   "pl": 4.54
   },
   {
    "lane": "ht",
@@ -187,7 +187,7 @@
    "legs": 1,
    "exit": 4001.38,
    "why": "stop",
-   "pl": -39.52
+   "pl": -33.88
   },
   {
    "lane": "ht",
@@ -199,6 +199,6 @@
    "pl": -35.93
   }
  ],
- "final_balance": 3750.38,
- "max_dd": 249.62
+ "final_balance": 3687.68,
+ "max_dd": 312.32
 }

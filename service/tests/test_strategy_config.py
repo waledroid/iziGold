@@ -10,7 +10,7 @@ The file has two sections:
               registered strategy is ActiveStrategy -- there is only ONE set
               of these EA inputs (not duplicated per strategy).
   strategies  per-instance HalfTrend parameters that DO differ between the M5
-              lane (halftrend_ema_v1) and the M15 lane (halftrend_m15_v1,
+              lane (izi5) and the M15 lane (izi15,
               added 2026-08-22). Each block mirrors that lane's own EA
               inputs (M15's are the `M15...`-prefixed inputs).
 
@@ -21,7 +21,7 @@ Windows) and asserts each equals the JSON value, numerically (so `50` and
 `50.0` agree), for BOTH strategies' own inputs plus the shared block.
 
 test_backtest_constants_match_config proves scripts/backtest.py actually
-LOADS the JSON (shared + the halftrend_ema_v1 block -- the only lane it
+LOADS the JSON (shared + the izi5 block -- the only lane it
 replays) rather than hardcoding its own copy.
 
 test_config_has_no_unmapped_or_missing_keys is the completeness check: add a
@@ -39,6 +39,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "strategy.json"
 EA_PATH = ROOT / "mt5" / "Experts" / "XauAssistant.mq5"
+TRADE_MANAGER_PATH = ROOT / "mt5" / "Include" / "XauAssistant" / "TradeManager.mqh"
 
 # shared config key -> (EA `input` name, backtest.py module attribute)
 # The trading window is a single EA input pair mapped onto one backtest
@@ -49,6 +50,7 @@ SHARED_MAPPING = {
     "trail_lock_pct": ("TrailLockPct", "TRAIL_LOCK_PCT"),
     "trail_activate_r": ("TrailActivateR", "TRAIL_ACTIVATE_R"),
     "add_trigger_atr": ("AddTriggerATR", "ADD_TRIGGER_ATR"),
+    "first_add_trigger_atr": ("FirstAddTriggerATR", "FIRST_ADD_TRIGGER_ATR"),
     "max_positions": ("MaxPositions", "MAX_POSITIONS"),
     "adx_trend_threshold": ("AdxTrendThreshold", "ADX_MIN"),
     "max_daily_exposure_min": ("MaxDailyExposureMin", "EXPO_MIN"),
@@ -61,7 +63,7 @@ SHARED_MAPPING = {
 
 # strategy id -> {config key -> EA `input` name for THAT strategy's own inputs}
 STRATEGY_EA_NAMES = {
-    "halftrend_ema_v1": {
+    "iziGold5": {
         "confirm_closes": "ConfirmCloses",
         "ema_length": "EmaLength",
         "ht_amplitude": "HtAmplitude",
@@ -71,25 +73,37 @@ STRATEGY_EA_NAMES = {
         "htf_chop_eff_max": "HtfChopEffMax",
         "htf_chop_bars": "HtfChopBars",
     },
-    # No HTF-confirm mapping here (owner 2026-08-22: the M15 lane's higher-
-    # timeframe module was removed entirely -- its only confirmation is its
-    # own EMA200, an EA input with no numeric knobs, so it needs no config
-    # mapping either). See STRATEGY_EA_NAMES["halftrend_ema_v1"] for the
-    # lane that still has one.
-    "halftrend_m15_v1": {
+    "iziGold15": {
         "confirm_closes": "M15ConfirmCloses",
         "confirm_clear_atr": "M15ConfirmClearATR",
         "ema_length": "M15EmaLength",
         "ht_amplitude": "M15Amplitude",
         "stop_buffer_atr": "M15StopBufferATR",
     },
+    "iziBit5": {
+        "confirm_closes": "Btc5ConfirmCloses",
+        "ema_length": "Btc5EmaLength",
+        "ht_amplitude": "Btc5Amplitude",
+        "stop_buffer_atr": "Btc5StopBufferATR",
+        "htf_confirm_ema": "Btc5HtfConfirmEma",
+        "htf_confirm_buffer_atr": "Btc5HtfConfirmBufferATR",
+        "htf_chop_eff_max": "Btc5HtfChopEffMax",
+        "htf_chop_bars": "Btc5HtfChopBars",
+    },
+    "iziBit15": {
+        "confirm_closes": "Btc15ConfirmCloses",
+        "confirm_clear_atr": "Btc15ConfirmClearATR",
+        "ema_length": "Btc15EmaLength",
+        "ht_amplitude": "Btc15Amplitude",
+        "stop_buffer_atr": "Btc15StopBufferATR",
+    },
 }
 
 # scripts/backtest.py replays the M5 (`ht`) lane only -- it does not gain an
-# M15 lane -- so only halftrend_ema_v1's block has a backtest.py attribute
+# M15 lane -- so only iziGold5's block has a backtest.py attribute
 # to check.
 STRATEGY_BT_ATTRS = {
-    "halftrend_ema_v1": {
+    "iziGold5": {
         "confirm_closes": "CONFIRM_CLOSES",
         "ema_length": "EMA_LEN",
         "ht_amplitude": "AMPLITUDE",
@@ -180,7 +194,7 @@ def test_strategy_config_matches_the_ea():
 
 def test_backtest_constants_match_config():
     """scripts/backtest.py must LOAD these values from the JSON (shared +
-    the halftrend_ema_v1 block, the only lane it replays), not carry its own
+    the izi5 block, the only lane it replays), not carry its own
     hardcoded copy. Proves the load is faithful, one attribute at a time,
     plus the WINDOW tuple special case."""
     config = _load_config()
@@ -197,13 +211,14 @@ def test_backtest_constants_match_config():
                 f"shared.{key}: config/strategy.json={json_value!r} != "
                 f"backtest.{bt_attr}={bt_value!r}")
 
-    m5_block = config["strategies"]["halftrend_ema_v1"]
-    for key, bt_attr in STRATEGY_BT_ATTRS["halftrend_ema_v1"].items():
+    strat_key = "iziGold5" if "iziGold5" in config["strategies"] else "izi5"
+    m5_block = config["strategies"][strat_key]
+    for key, bt_attr in STRATEGY_BT_ATTRS[strat_key].items():
         bt_value = getattr(bt, bt_attr)
         json_value = m5_block[key]
         if bt_value != json_value:
             mismatches.append(
-                f"strategies.halftrend_ema_v1.{key}: "
+                f"strategies.{strat_key}.{key}: "
                 f"config/strategy.json={json_value!r} != "
                 f"backtest.{bt_attr}={bt_value!r}")
 
@@ -211,6 +226,26 @@ def test_backtest_constants_match_config():
         "\n".join(mismatches)
     assert bt.WINDOW == (config["shared"]["trading_window_start_hour"],
                           config["shared"]["trading_window_end_hour"])
+
+
+def test_first_add_trigger_is_wired_end_to_end():
+    """The first-add restraint spans three artifacts: JSON, EA input, and the
+    separate replay constant. This also checks the MQL call chain textually,
+    since the EA cannot be compiled or executed here."""
+    config = _load_config()
+    assert config["shared"]["first_add_trigger_atr"] == 3.0
+    assert config["shared"]["first_add_trigger_atr"] == (
+        3 * config["shared"]["add_trigger_atr"])
+
+    manager = TRADE_MANAGER_PATH.read_text(encoding="utf-8")
+    assert "m_firstAddTriggerAtr" in manager
+    assert re.search(
+        r"needTriggerAtr\s*=\s*\(n\s*==\s*1\)\s*\?\s*m_firstAddTriggerAtr\s*:\s*m_addTriggerAtr",
+        manager) is not None
+    ea = EA_PATH.read_text(encoding="utf-8")
+    assert re.search(
+        r"g_trades\.Init\([^;]*AddTriggerATR,\s*FirstAddTriggerATR,",
+        ea, re.DOTALL) is not None
 
 
 def test_config_has_no_unmapped_or_missing_keys():

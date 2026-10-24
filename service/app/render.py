@@ -5,7 +5,34 @@ from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
+from app import chart_spec
 from app.indicators import ema, halftrend
+
+# Render palette: read from config/chart_spec.json (the single source of
+# truth) so the Telegram PNGs match the web frontends and the MT5 chart.
+_BG = chart_spec.hex_to_rgba01(chart_spec.theme_background())
+_FG = chart_spec.theme_foreground()
+_CANDLE_UP = "#2ecc71"
+_CANDLE_DOWN = "#e74c3c"
+_EMA9 = chart_spec.series_color("ema9")
+_EMA21 = chart_spec.series_color("ema21")
+_EMA_TRADE = chart_spec.series_color("ema_trade")
+_EMA200 = chart_spec.series_color("ema200")
+_RISK = chart_spec.trade_box("risk")["color"]
+_PROFIT = chart_spec.trade_box("profit")["color"]
+_RISK_ALPHA = chart_spec.trade_box("risk")["alpha"]
+_PROFIT_ALPHA = chart_spec.trade_box("profit")["alpha"]
+
+
+def _style_dark(ax):
+    """Dark-theme the axes to match the web frontends and the MT5 chart
+    (background/foreground from config/chart_spec.json)."""
+    ax.set_facecolor(_BG)
+    for spine in ax.spines.values():
+        spine.set_color(_FG)
+    ax.tick_params(colors=_FG, labelcolor=_FG)
+    ax.yaxis.label.set_color(_FG)
+    ax.title.set_color(_FG)
 
 
 def _favorable(direction: str, entry: float, exit_price: float) -> bool:
@@ -47,8 +74,10 @@ def _plot_ema(ax, values, offset, window_len, color, linewidth, alpha=1.0, zorde
 
 def _plot_halftrend(ax, ht_values, offset, window_len, linewidth=1.6, zorder=1):
     """Plot the HalfTrend line, segmented per-pair so each piece is colored
-    by the trend of its later endpoint (dodgerblue = up, orangered = down),
-    matching the EA's live chart painting."""
+    by the trend of its later endpoint (up/down colours from the chart
+    spec), matching the EA's live chart painting."""
+    up = chart_spec.halftrend_up()
+    down = chart_spec.halftrend_down()
     prev_x, prev_y = None, None
     for i in range(window_len):
         entry = ht_values[offset + i]
@@ -56,28 +85,35 @@ def _plot_halftrend(ax, ht_values, offset, window_len, linewidth=1.6, zorder=1):
             prev_x, prev_y = None, None
             continue
         y, trend = entry
-        color = "dodgerblue" if trend == 0 else "orangered"
+        color = up if trend == 0 else down
         if prev_x is not None:
             ax.plot([prev_x, i], [prev_y, y], color=color, linewidth=linewidth,
                      zorder=zorder)
         prev_x, prev_y = i, y
 
 
-SR_RGB = {"support": (173 / 255, 216 / 255, 230 / 255),
-          "resistance": (255 / 255, 245 / 255, 157 / 255)}
-SR_ALPHA = {"H4": 0.35, "H1": 0.22, "M15": 0.12}
+def _sr_color(role: str) -> str:
+    """S/R zone outline colour from the chart spec."""
+    return chart_spec.sr_color(role)
+
+
+def _sr_style() -> dict:
+    return chart_spec.sr_outline()
 
 
 def _plot_sr_zones(ax, window, zones):
-    """Light-blue support / light-yellow resistance boxes (2026-09-05),
-    behind everything else. Only zones that overlap the window's own price
-    range are drawn -- an off-screen box must never widen the y axis of a
-    100-bar snapshot. A zone that only partially overlaps the window (e.g.
-    its low edge is inside the window but its high edge is far above) is
-    clipped to the window's price range (plus the same pad used for the
-    overlap test) so matplotlib's autoscale can never stretch the y axis
-    to the zone's off-screen edge. x spans from the zone's `born` bar (or
-    the window's first bar) to the right edge; label at the right edge."""
+    """Light-blue support / light-yellow resistance outlines (2026-09-05,
+    outline-only since 2026-10-01). The rectangle has no fill; only its
+    border and right-edge label are drawn. Only zones that overlap the
+    window's own price range are drawn -- an off-screen box must never
+    widen the y axis of a 100-bar snapshot. A zone that only partially
+    overlaps the window (e.g. its low edge is inside the window but its
+    high edge is far above) is clipped to the window's price range (plus
+    the same pad used for the overlap test) so matplotlib's autoscale can
+    never stretch the y axis to the zone's off-screen edge. x spans from
+    the zone's `born` bar (or the window's first bar) to the right edge;
+    label at the right edge. Colours and outline style come from
+    config/chart_spec.json, not hardcoded here."""
     if not zones or not window:
         return
     lo_px = min(c.l for c in window)
@@ -93,18 +129,22 @@ def _plot_sr_zones(ax, window, zones):
             hi = min(hi, hi_px + pad)
             if hi <= lo:
                 continue
-            rgb = SR_RGB.get(z.get("role"))
-            alpha = SR_ALPHA.get(z.get("tier"))
-            if rgb is None or alpha is None:
+            role = z.get("role")
+            tier = z.get("tier")
+            if role not in ("support", "resistance"):
                 continue
+            color = _sr_color(role)
+            style = _sr_style()
             x0 = next((i for i, c in enumerate(window) if c.t >= int(z.get("born", 0))), 0)
             ax.add_patch(Rectangle((x0 - 0.5, lo), n - x0, hi - lo,
-                                   facecolor=rgb, alpha=alpha, edgecolor="none",
-                                   zorder=0.3))
-            tag = ("R " if z.get("role") == "resistance" else "S ") + \
-                  f"{z.get('tier')} x{int(z.get('touches', 1))}"
-            ax.text(n - 1, hi if z.get("role") == "resistance" else lo, tag,
-                    fontsize=6, ha="right", va="bottom", color=rgb, alpha=0.9,
+                                   facecolor="none", edgecolor=color,
+                                   linewidth=style["width"],
+                                   linestyle="--" if style["style"] == "dashed" else "-",
+                                   zorder=2.5))
+            tag = ("R " if role == "resistance" else "S ") + \
+                  f"{tier} x{int(z.get('touches', 1))}"
+            ax.text(n - 1, hi if role == "resistance" else lo, tag,
+                    fontsize=6, ha="right", va="bottom", color=color,
                     zorder=6)
         except Exception:
             continue
@@ -150,18 +190,20 @@ def render_trade_chart(candles, trade: dict, out_path: str,
         ht_full = halftrend(candles, amplitude=4)
 
         fig = Figure(figsize=(10, 5))
+        fig.patch.set_facecolor(_BG)
         ax = fig.add_subplot(111)
+        _style_dark(ax)
         _plot_sr_zones(ax, window, sr_zones)
 
         # Overlays first, drawn under the price bars (lower zorder).
         _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
-        _plot_ema(ax, ema9_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
-        _plot_ema(ax, ema21_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
-        _plot_ema(ax, ema55_full, offset, window_len, "gold", 1.2, zorder=1)
-        _plot_ema(ax, ema200_full, offset, window_len, "mediumpurple", 1.2, zorder=1)
+        _plot_ema(ax, ema9_full, offset, window_len, _EMA9, 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema21_full, offset, window_len, _EMA21, 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema55_full, offset, window_len, _EMA_TRADE, 1.2, zorder=1)
+        _plot_ema(ax, ema200_full, offset, window_len, _EMA200, 1.2, zorder=1)
 
         for i, c in enumerate(window):
-            color = "#2ecc71" if c.c >= c.o else "#e74c3c"
+            color = _CANDLE_UP if c.c >= c.o else _CANDLE_DOWN
             ax.vlines(i, c.l, c.h, color=color, linewidth=1, zorder=2)
             ax.vlines(i, min(c.o, c.c), max(c.o, c.c), color=color, linewidth=3, zorder=2)
 
@@ -179,7 +221,7 @@ def render_trade_chart(candles, trade: dict, out_path: str,
         first_entry = legs[0]["price"] if legs else price
 
         marker = "^" if event == "open" else "v"
-        marker_color = "#2ecc71" if event == "open" else "#e74c3c"
+        marker_color = _CANDLE_UP if event == "open" else _CANDLE_DOWN
         entry_x = window_len - 1
         ax.scatter([entry_x], [price], marker=marker, color=marker_color,
                   s=160, zorder=5, edgecolors="black")
@@ -197,17 +239,17 @@ def render_trade_chart(candles, trade: dict, out_path: str,
         if sl and sl > 0:
             y1, y2 = sorted((first_entry, sl))
             ax.add_patch(Rectangle((entry_x, y1), 1, y2 - y1,
-                                   facecolor="red", alpha=0.12,
+                                   facecolor=_RISK, alpha=_RISK_ALPHA,
                                    edgecolor="none", zorder=0.5))
         if event == "close" and _favorable(direction, first_entry, price):
             y1, y2 = sorted((first_entry, price))
             ax.add_patch(Rectangle((entry_x, y1), 1, y2 - y1,
-                                   facecolor="#2ecc71", alpha=0.12,
+                                   facecolor=_PROFIT, alpha=_PROFIT_ALPHA,
                                    edgecolor="none", zorder=0.5))
 
         # Entry/add/SL/TP/exit horizontal lines, each with a small
         # right-edge price label.
-        entry_color = "#2ecc71" if direction == "BUY" else "#e74c3c"
+        entry_color = _CANDLE_UP if direction == "BUY" else _CANDLE_DOWN
         _hline_with_label(ax, window_len, first_entry, entry_color, "-", "E",
                           linewidth=1.2)
         for leg in legs[1:]:
@@ -216,8 +258,8 @@ def render_trade_chart(candles, trade: dict, out_path: str,
             _hline_with_label(ax, window_len, leg["price"], "gray", ":", "A",
                               linewidth=0.8, alpha=0.7)
         if sl and sl > 0:
-            ax.axhline(sl, color="red", linestyle="--", linewidth=1, zorder=1.5)
-            ax.text(window_len - 1, sl, f"SL {sl:g}", color="red", fontsize=7,
+            ax.axhline(sl, color=_RISK, linestyle="--", linewidth=1, zorder=1.5)
+            ax.text(window_len - 1, sl, f"SL {sl:g}", color=_RISK, fontsize=7,
                     ha="right", va="bottom", zorder=6)
         if tp and tp > 0:
             _hline_with_label(ax, window_len, tp, "green", "--", "TP",
@@ -227,13 +269,15 @@ def render_trade_chart(candles, trade: dict, out_path: str,
                               linewidth=1.2)
 
         legend_handles = [
-            Line2D([0], [0], color="dodgerblue", linewidth=1.6, label="HalfTrend"),
-            Line2D([0], [0], color="#888888", linewidth=0.8, alpha=0.35, label="EMA9"),
-            Line2D([0], [0], color="#888888", linewidth=0.8, alpha=0.35, label="EMA21"),
-            Line2D([0], [0], color="gold", linewidth=1.2, label=f"EMA{trade_ema_len}"),
-            Line2D([0], [0], color="mediumpurple", linewidth=1.2, label="EMA200"),
+            Line2D([0], [0], color=chart_spec.halftrend_up(), linewidth=1.6, label="HalfTrend"),
+            Line2D([0], [0], color=_EMA9, linewidth=0.8, alpha=0.35, label="EMA9"),
+            Line2D([0], [0], color=_EMA21, linewidth=0.8, alpha=0.35, label="EMA21"),
+            Line2D([0], [0], color=_EMA_TRADE, linewidth=1.2, label=f"EMA{trade_ema_len}"),
+            Line2D([0], [0], color=_EMA200, linewidth=1.2, label="EMA200"),
         ]
-        ax.legend(handles=legend_handles, loc="upper left", fontsize=7, framealpha=0.3)
+        leg = ax.legend(handles=legend_handles, loc="upper left", fontsize=7, framealpha=0.3)
+        for txt in leg.get_texts():
+            txt.set_color(_FG)
 
         title = f"{direction} {event} @ {price}" if price else f"{direction} {event}"
         if reason and reason not in (f"signal {direction}",):
@@ -267,35 +311,37 @@ def render_snapshot_chart(candles, out_path: str, positions=None, sr_zones=None)
         ht_full = halftrend(candles, amplitude=4)
 
         fig = Figure(figsize=(10, 5))
+        fig.patch.set_facecolor(_BG)
         ax = fig.add_subplot(111)
+        _style_dark(ax)
         _plot_sr_zones(ax, window, sr_zones)
 
         _plot_halftrend(ax, ht_full, offset, window_len, linewidth=1.6, zorder=1)
-        _plot_ema(ax, ema9_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
-        _plot_ema(ax, ema21_full, offset, window_len, "#888888", 0.8, alpha=0.35, zorder=1)
-        _plot_ema(ax, ema55_full, offset, window_len, "gold", 1.2, zorder=1)
-        _plot_ema(ax, ema200_full, offset, window_len, "mediumpurple", 1.2, zorder=1)
+        _plot_ema(ax, ema9_full, offset, window_len, _EMA9, 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema21_full, offset, window_len, _EMA21, 0.8, alpha=0.35, zorder=1)
+        _plot_ema(ax, ema55_full, offset, window_len, _EMA_TRADE, 1.2, zorder=1)
+        _plot_ema(ax, ema200_full, offset, window_len, _EMA200, 1.2, zorder=1)
 
         for i, c in enumerate(window):
-            color = "#2ecc71" if c.c >= c.o else "#e74c3c"
+            color = _CANDLE_UP if c.c >= c.o else _CANDLE_DOWN
             ax.vlines(i, c.l, c.h, color=color, linewidth=1, zorder=2)
             ax.vlines(i, min(c.o, c.c), max(c.o, c.c), color=color, linewidth=3, zorder=2)
 
         last = window[-1]
         ax.annotate(f"{last.c:g}", xy=(window_len - 1, last.c),
                     xytext=(6, 0), textcoords="offset points",
-                    color="#2ecc71" if last.c >= last.o else "#e74c3c",
+                    color=_CANDLE_UP if last.c >= last.o else _CANDLE_DOWN,
                     fontsize=8, fontweight="bold", zorder=6)
 
         for p in (positions or []):
-            entry_color = "#2ecc71" if p.direction == "BUY" else "#e74c3c"
+            entry_color = _CANDLE_UP if p.direction == "BUY" else _CANDLE_DOWN
             _hline_with_label(ax, window_len, p.open_price, entry_color,
                               "--", "E", alpha=0.8)
         if positions:
             sl = positions[0].sl
             if sl and sl > 0:
-                ax.axhline(sl, color="red", linestyle="-", linewidth=1.2, zorder=1.5)
-                ax.text(window_len - 1, sl, f"SL {sl:g}", color="red",
+                ax.axhline(sl, color=_RISK, linestyle="-", linewidth=1.2, zorder=1.5)
+                ax.text(window_len - 1, sl, f"SL {sl:g}", color=_RISK,
                         fontsize=7, ha="right", va="bottom", zorder=6)
         fig.tight_layout()
         fig.savefig(out_path)

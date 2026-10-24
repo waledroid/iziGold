@@ -67,10 +67,18 @@ public:
          m_rsiHandle = iRSI(_Symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
          m_rsiAdded = AddPanel(m_rsiHandle, "RSI(14)");
         }
+      else
+        {
+         RemovePanel("RSI(14)");
+        }
       if(showMacd)
         {
          m_macdHandle = iMACD(_Symbol, PERIOD_CURRENT, 12, 26, 9, PRICE_CLOSE);
          m_macdAdded = AddPanel(m_macdHandle, "MACD(12,26,9)");
+        }
+      else
+        {
+         RemovePanel("MACD(12,26,9)");
         }
      }
 

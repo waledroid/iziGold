@@ -12,7 +12,9 @@ never depends on this process.
 """
 import json
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -68,9 +70,6 @@ def miniapp_port() -> int:
 
 
 PUSH_URL = f"http://127.0.0.1:{miniapp_port()}/feed/push"
-
-
-_last_depth = None   # buffer depth the service reported on the last push
 
 
 def push(key: str, batch: dict) -> bool:

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Replay halftrend_ema_v1 with the CURRENT money rulebook over accumulated
+"""Replay izi5 with the CURRENT money rulebook over accumulated
 candles (service /ui/candles, or a saved JSON) and report P/L.
 
 Faithful to the EA where it matters: HalfTrend port from app.indicators,
 ConfirmCloses=1 entry latch, wick-extreme stop padded 0.75*ATR(14), pyramid
-adds (1*ATR advance, in-profit, condition-still-true, max 2, sizes *0.7),
+adds (first add 2*ATR, later adds 1*ATR; in-profit, condition-still-true,
+max 2, sizes *0.7),
 halfway->lagging-ladder shared stop, 2%-of-cycle profit target, 50%-of-peak
-profit lock (armed at 1R), 04-23 trading window, 23:54 pre-break flatten,
+profit lock (armed at 1R), 04-22 trading window, 23:54 pre-break flatten,
 stop-and-reverse on opposite confirmed signal, Wilder ADX(14) >= 25 gate.
 
 Simplifications (documented, keep in mind when reading results):
@@ -39,7 +40,7 @@ Usage: backtest.py [--balance 4000] [--source URL|file.json] [--verbose]
                    [--window-start H] [--window-end H] [--hour-table]
                    [--tf M5|M15] [--profit-target PCT]
 
-Replays halftrend_ema_v1, the only registered lane (see the LANES/Lane
+Replays izi5, the only registered lane (see the LANES/Lane
 plug-in contract below -- a second lane, if one is ever added again, plugs
 back in there without CLI surgery; QuickFlip, the second lane this replay
 carried 2026-08-20 through 2026-08-22, was dropped as a paid experiment --
@@ -122,7 +123,7 @@ Adds/exits are otherwise untouched; the rule lives only in the entry block.
 
 --loose-window (entry-window correctness fix, 2026-08-17 owner's rule; strict
 is now the DEFAULT as of 2026-08-20 -- this flag restores the old replay):
-the TRUE halftrend_ema_v1 entry is "arrow on bar 1; wait bar 2; ENTER at
+the TRUE izi5 entry is "arrow on bar 1; wait bar 2; ENTER at
 bar 3's OPEN if bar 3 opens on the trend's side of the EMA (= bar 2 CLOSED
 there); otherwise the signal is DEAD until the next HalfTrend flip". Default
 (strict): exactly one decision per flip, at the close of the bar
@@ -196,7 +197,7 @@ so the two clocks can be compared.
 
 --window-start H / --window-end H / --hour-table (trading-hours experiment,
 2026-08-18): the EA's TradingWindowStartHour / TradingWindowEndHour (server
-time, GMT+3). Defaults 4 and 23 reproduce the live window byte-identically.
+time, GMT+3). Defaults 4 and 22 reproduce the live window byte-identically.
 The window gates NEW ENTRIES only — exactly like the EA, whose RiskManager
 checks the hour in the entry path and never in the exit path — so a narrower
 window does NOT force an early flatten: a basket opened at 17:55 under
@@ -343,9 +344,10 @@ _CFG_RAW = _load_strategy_config()
 # `strategies` (per-instance HalfTrend inputs that DO differ between the M5
 # lane and the M15 lane added 2026-08-22). This replay is the M5 (`ht`) lane
 # only -- scripts/backtest.py does not gain an M15 lane -- so flatten the
-# shared block with just the halftrend_ema_v1 block, exactly the values that
+# shared block with just the izi5 block, exactly the values that
 # were flat top-level keys before the restructure.
-_CFG = {**_CFG_RAW["shared"], **_CFG_RAW["strategies"]["halftrend_ema_v1"]}
+_strat_key = "iziGold5" if "iziGold5" in _CFG_RAW["strategies"] else "izi5"
+_CFG = {**_CFG_RAW["shared"], **_CFG_RAW["strategies"][_strat_key]}
 
 # --- current EA inputs (values loaded from config/strategy.json) ---
 RISK_PCT = _CFG["risk_per_trade_pct"]
@@ -361,6 +363,7 @@ CONFIRM_CLOSES = _CFG["confirm_closes"]
 EMA_LEN = _CFG["ema_length"]
 AMPLITUDE = _CFG["ht_amplitude"]
 ADD_TRIGGER_ATR = _CFG["add_trigger_atr"]
+FIRST_ADD_TRIGGER_ATR = _CFG["first_add_trigger_atr"]
 MAX_POSITIONS = _CFG["max_positions"]
 ADD_SHRINK = 0.7
 PROFIT_TARGET_PCT = _CFG["profit_target_pct"]
@@ -412,14 +415,16 @@ MIN_OZ = 1                # 0.01 lots
 # test of the risk rules.
 MIN_BALANCE = 500.0     # below this the result is fiction (no margin stop-out
                         # is modelled either -- a $300 account goes negative)
+HYBRID_MIN_BALANCE = 50.0
 WARN_BALANCE = 2000.0   # below this, warn loudly and name the clamp rate
 
 
 def validate_balance(value):
     """None = fine, str = warn and run, SystemExit = refuse."""
-    if value < MIN_BALANCE:
+    floor = HYBRID_MIN_BALANCE if ENTRY_MODE == "hybrid" else MIN_BALANCE
+    if value < floor:
         raise SystemExit(
-            f"--balance {value:.0f} is below the ${MIN_BALANCE:.0f} floor.\n"
+            f"--balance {value:.0f} is below the ${floor:.0f} floor.\n"
             "At that size nearly every entry clamps to the 0.01 minimum lot "
             "(94.7% at $500, measured over the last 365 days), so the replay "
             "measures minimum-lot behaviour, not the rulebook -- and margin "
@@ -1370,11 +1375,26 @@ def run(candles, start_balance, verbose, active_lanes=None):
                 # than the level actually banked (median $2.89, max $34.69
                 # off on multi-leg target exits over 12 months). `tp` feeds
                 # the artifact and the page only -- nothing decides on it.
-                if ENTRY_MODE != "fixed" and PROFIT_TARGET_PCT > 0:
+                if ENTRY_MODE == "hybrid" and not basket.get("partial_taken"):
+                    adv = (px - basket["legs"][0]["px"]) * s
+                    init_r = abs(basket["legs"][0]["px"] - basket.get("entry_stop", basket["stop"]))
+                    if init_r > 0 and adv >= 1.5 * init_r:
+                        basket["partial_taken"] = True
+                        close_oz = int(round(basket["legs"][0]["oz"] * 0.5))
+                        if close_oz > 0 and close_oz < basket["legs"][0]["oz"]:
+                            part_pl = (px - basket["legs"][0]["px"]) * s * close_oz
+                            bal += part_pl
+                            basket["legs"][0]["oz"] -= close_oz
+                        basket["stop"] = basket["legs"][0]["px"]
+                        note_stop(basket, x["t"], basket["stop"])
+                        if verbose:
+                            print(f"  hybrid 1.5R partial bank + BE stop->{basket['stop']:.2f}")
+
+                if ENTRY_MODE not in ("fixed", "hybrid") and PROFIT_TARGET_PCT > 0:
                     basket["tp"] = floor_price(basket["legs"], s, target)
                 closed = False
-                if ENTRY_MODE == "fixed" or PROFIT_TARGET_PCT <= 0:
-                    pass   # pure ride: no profit target / floor (EA: 0 = off)
+                if ENTRY_MODE in ("fixed", "hybrid") or PROFIT_TARGET_PCT <= 0:
+                    pass   # pure ride / runner: no premature +2% cut-off
                 elif EXIT_SCHEME == "target-exit":
                     if pl >= target:
                         close_basket(px, when, "profit target")
@@ -1408,6 +1428,13 @@ def run(candles, start_balance, verbose, active_lanes=None):
                 elif signal and signal != basket["dir"]:
                     close_basket(px, when, "reversal")
                 elif ENTRY_MODE != "fixed":  # no pyramid adds in fixed mode
+                    # in hybrid mode, add only once Stage 1 has locked BE, and scale max positions by balance
+                    max_allowed_pos = MAX_POSITIONS
+                    if ENTRY_MODE == "hybrid":
+                        if bal <= 200:
+                            max_allowed_pos = 1
+                        elif bal <= 500:
+                            max_allowed_pos = 2
                     # pyramid add (frozen once the floor is armed, except
                     # in the floor-a-adds erosion probe)
                     frozen = (basket.get("floor") is not None
@@ -1416,9 +1443,11 @@ def run(candles, start_balance, verbose, active_lanes=None):
                     cond = (basket["dir"] == "BUY" and trend == 0 and px > e) or \
                            (basket["dir"] == "SELL" and trend == 1 and px < e)
                     adv = (px - basket["legs"][-1]["px"]) * s
+                    need_trigger = FIRST_ADD_TRIGGER_ATR if len(basket["legs"]) == 1 else ADD_TRIGGER_ATR
                     if (not frozen and cond and pl > 0
-                            and len(basket["legs"]) < MAX_POSITIONS
-                            and adv >= ADD_TRIGGER_ATR * a):
+                            and len(basket["legs"]) < max_allowed_pos
+                            and adv >= need_trigger * a
+                            and (ENTRY_MODE != "hybrid" or basket.get("partial_taken"))):
                         oz = max(MIN_OZ, int(basket["legs"][-1]["oz"] * ADD_SHRINK))
                         basket["legs"].append({"px": px, "oz": oz, "t": int(x["t"])})
                         n_adds = len(basket["legs"]) - 1
@@ -1546,6 +1575,24 @@ def run(candles, start_balance, verbose, active_lanes=None):
                     if ENTRY_MODE == "fixed":
                         oz = max(MIN_OZ, int(round(FIXED_LOTS * 100)))
                         orig_oz = oz
+                    elif ENTRY_MODE == "hybrid":
+                        rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
+                        risk = bal * rp / 100
+                        want = int(risk / dist)
+                        # Equity-adaptive bounds ($50 - $5,000)
+                        if bal <= 200:
+                            min_oz, max_oz = MIN_OZ, MIN_OZ          # 0.01 lot
+                        elif bal <= 500:
+                            min_oz, max_oz = MIN_OZ, MIN_OZ * 2      # 0.01 - 0.02 lots
+                        elif bal <= 2000:
+                            min_oz, max_oz = MIN_OZ * 2, MIN_OZ * 5  # 0.02 - 0.05 lots (anchor 0.03)
+                        else:
+                            dyn_max = min(max(int(round(bal * 0.000024 * 100)), MIN_OZ * 5), MIN_OZ * 15)
+                            min_oz, max_oz = MIN_OZ * 2, dyn_max
+                        oz = max(min_oz, min(want, max_oz))
+                        orig_oz = oz
+                        sizing["entries"] += 1
+                        sizing["risk_pct"].append(100.0 * oz * dist / bal)
                     else:
                         rp = RISK_PCT / (CHOP_SOFT_RISK_DIV if soft else 1.0)
                         if bias == "counter" and BIAS_MODE == "size_target":
@@ -1806,7 +1853,7 @@ def plot(candles, trades, start_balance, out_path):
 
 def build_parser():
     ap = argparse.ArgumentParser(
-        description="Replay halftrend_ema_v1 with the current money rulebook "
+        description="Replay izi5 with the current money rulebook "
                     "over historical candles and report P/L.",
         epilog="NOT MODELLED:\n  " + "\n  ".join(CAVEATS) +
                "\n\nSTARTING BALANCE: $10,000+ for a clean test of the risk "
@@ -1830,7 +1877,7 @@ def build_parser():
         "study knobs. All default to the live EA's behaviour: the filters "
         "(regime/atr-spike/chop/bias/sr/min-stop) default to OFF because the "
         "live EA has none, but --window-start/--window-end are the EA's REAL "
-        "trading window and default to its live 4-23")
+        "trading window and default to its live 4-22")
     out = ap.add_argument_group("Output")
 
     data.add_argument("--balance", type=float, default=4000,
@@ -1898,11 +1945,16 @@ def build_parser():
                          "signal) to agree with the entry direction "
                          "(study 2026-09-02). Off = byte-identical")
     rules.add_argument("--add-trigger-atr", type=float, default=None,
-                    help="override the pyramid add spacing (x ATR of the "
-                         "trading TF; config default %s). NOTE the live EA "
-                         "bug found 2026-09-01: it spaced adds on M5 ATR "
-                         "even on the M15 lane — this replay always uses "
-                         "the trading TF's own ATR" % _CFG["add_trigger_atr"])
+                    help="override the pyramid spacing for adds after the "
+                         "first one (x ATR of the trading TF; config default "
+                         "%s). NOTE the live EA bug found 2026-09-01: it "
+                         "spaced adds on M5 ATR even on the M15 lane — this "
+                         "replay always uses the trading TF's own ATR"
+                         % _CFG["add_trigger_atr"])
+    rules.add_argument("--first-add-trigger-atr", type=float, default=None,
+                    help="override only the first pyramid add spacing (x ATR "
+                         "of the trading TF; config default %s)"
+                         % _CFG["first_add_trigger_atr"])
     rules.add_argument("--confirm", type=int, default=None,
                     help="override ConfirmCloses (consecutive closes beyond "
                          "the EMA required after a flip; default 1)")
@@ -1912,7 +1964,7 @@ def build_parser():
     rules.add_argument("--exit-scheme", choices=EXIT_SCHEMES, default="target-exit",
                     help="profit-floor experiment scheme (default: current "
                          "behavior, close at profit target)")
-    rules.add_argument("--entry-mode", choices=["adr", "fixed"], default="adr",
+    rules.add_argument("--entry-mode", choices=["adr", "fixed", "hybrid"], default="adr",
                     help="adr = live behavior; fixed = fixed lots, no adds/"
                          "target/lock, exit on confirmed reversal or stop")
     rules.add_argument("--fixed-lots", type=float, default=0.05,
@@ -2007,7 +2059,7 @@ def build_parser():
                          "(EA TradingWindowStartHour, default 4)")
     exp.add_argument("--window-end", type=int, default=None,
                     help="first server hour that may NOT open a trade "
-                         "(EA TradingWindowEndHour, default 23); exits and "
+                         "(EA TradingWindowEndHour, default 22); exits and "
                          "the 23:50 flatten are never gated by the window")
     out.add_argument("--hour-table", action="store_true",
                     help="print the entry-hour breakdown (trades / win%% / "
@@ -2114,6 +2166,9 @@ def main():
     if args.add_trigger_atr is not None:
         global ADD_TRIGGER_ATR
         ADD_TRIGGER_ATR = args.add_trigger_atr
+    if args.first_add_trigger_atr is not None:
+        global FIRST_ADD_TRIGGER_ATR
+        FIRST_ADD_TRIGGER_ATR = args.first_add_trigger_atr
     global RSI_FILTER, MACD_AGREE
     RSI_FILTER = args.rsi_filter
     MACD_AGREE = args.macd_agree
@@ -2161,7 +2216,7 @@ def main():
     head = [f"backtest: {len(candles)} bars  {t0:%Y-%m-%d %H:%M} -> "
             f"{t1:%m-%d %H:%M} (server time)  [dataset {_fp}]",
             f"start balance ${args.balance:,.0f}",
-            "strategy halftrend_ema_v1",
+            "strategy izi5",
             f"exit scheme {EXIT_SCHEME}"]
     if ENTRY_MODE == "fixed":
         head.append(f"entry mode fixed ({FIXED_LOTS:g} lots)")
@@ -2203,7 +2258,7 @@ def main():
         head.append(f"bias ema{BIAS_EMA} {BIAS_TF} mode {BIAS_MODE}")
     if EMA200_CONFIRM:
         head.append("ema200-confirm on")
-    if WINDOW != (4, 23):
+    if WINDOW != (4, 22):
         head.append(f"window {WINDOW[0]}-{WINDOW[1]}")
     if PROFIT_TARGET_PCT != 2.0:
         head.append(f"profit target {PROFIT_TARGET_PCT:g}%")

@@ -22,10 +22,10 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3969.23,
-   "legs": 3,
+   "legs": 1,
    "exit": 3948.05,
    "why": "profit target",
-   "pl": 123.09
+   "pl": 83.92
   },
   {
    "lane": "ht",
@@ -40,19 +40,19 @@
    "lane": "ht",
    "dir": "BUY",
    "entry": 3988.08,
-   "legs": 3,
-   "exit": 3990.52,
-   "why": "stop",
-   "pl": -10.6
+   "legs": 2,
+   "exit": 3988.66,
+   "why": "reversal",
+   "pl": -13.85
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 3988.66,
-   "legs": 2,
+   "legs": 1,
    "exit": 3987.79,
    "why": "profit lock",
-   "pl": -21.54
+   "pl": 4.02
   },
   {
    "lane": "ht",
@@ -77,45 +77,27 @@
    "dir": "BUY",
    "entry": 4087.45,
    "legs": 2,
-   "exit": 4083.16,
-   "why": "stop",
-   "pl": -34.69
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4108.67,
-   "legs": 1,
-   "exit": 4112.1,
-   "why": "flatten",
-   "pl": 16.15
+   "exit": 4093.51,
+   "why": "profit lock",
+   "pl": 6.26
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4146.44,
    "legs": 3,
-   "exit": 4159.24,
-   "why": "profit lock",
-   "pl": 19.13
+   "exit": 4152.93,
+   "why": "stop",
+   "pl": -12.23
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4137.25,
-   "legs": 3,
-   "exit": 4114.16,
-   "why": "profit lock",
-   "pl": 15.1
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4140.72,
-   "legs": 1,
-   "exit": 4130.66,
+   "legs": 2,
+   "exit": 4140.72,
    "why": "reversal",
-   "pl": -10.26
+   "pl": -45.97
   },
   {
    "lane": "ht",
@@ -157,28 +139,28 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 4195.35,
-   "legs": 2,
-   "exit": 4201.22,
-   "why": "stop",
-   "pl": -50.34
+   "legs": 1,
+   "exit": 4200.14,
+   "why": "reversal",
+   "pl": -14.97
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4224.24,
-   "legs": 3,
+   "legs": 2,
    "exit": 4216.81,
    "why": "profit lock",
-   "pl": -4.27
+   "pl": 3.78
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4334.06,
-   "legs": 3,
+   "legs": 2,
    "exit": 4314.01,
    "why": "profit lock",
-   "pl": 4.84
+   "pl": -3.63
   },
   {
    "lane": "ht",
@@ -187,205 +169,133 @@
    "legs": 3,
    "exit": 4362.12,
    "why": "profit lock",
-   "pl": 34.08
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4216.66,
-   "legs": 1,
-   "exit": 4231.82,
-   "why": "stop",
-   "pl": -30.72
+   "pl": 12.35
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4257.21,
-   "legs": 2,
+   "legs": 1,
    "exit": 4239.86,
    "why": "profit target",
-   "pl": 118.27
+   "pl": 85.75
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4256.6,
-   "legs": 2,
-   "exit": 4252.37,
+   "legs": 1,
+   "exit": 4248.14,
    "why": "stop",
-   "pl": -40.74
+   "pl": -34.64
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4332.46,
-   "legs": 3,
-   "exit": 4346.65,
+   "legs": 2,
+   "exit": 4342.3,
    "why": "profit lock",
-   "pl": 24.49
+   "pl": 12.43
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4346.31,
    "legs": 3,
-   "exit": 4337.56,
-   "why": "profit lock",
-   "pl": 6.67
+   "exit": 4338.93,
+   "why": "stop",
+   "pl": -17.81
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4116.83,
    "legs": 3,
-   "exit": 4123.01,
-   "why": "stop",
-   "pl": -16.74
+   "exit": 4141.66,
+   "why": "profit lock",
+   "pl": 17.1
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4102.48,
-   "legs": 3,
-   "exit": 4087.58,
-   "why": "profit lock",
-   "pl": -2.15
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4023.52,
    "legs": 1,
-   "exit": 4055.42,
-   "why": "stop",
-   "pl": -32.1
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4058.13,
-   "legs": 3,
-   "exit": 4098.25,
-   "why": "profit target",
-   "pl": 87.05
+   "exit": 4084.82,
+   "why": "profit lock",
+   "pl": 17.46
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4096.09,
    "legs": 3,
-   "exit": 4127.15,
-   "why": "profit target",
-   "pl": 86.75
+   "exit": 4113.59,
+   "why": "profit lock",
+   "pl": 8.23
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4103.05,
-   "legs": 2,
-   "exit": 4112.24,
-   "why": "stop",
-   "pl": -37.05
+   "legs": 1,
+   "exit": 4116.37,
+   "why": "reversal",
+   "pl": -27.04
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4116.37,
-   "legs": 2,
-   "exit": 4110.5,
-   "why": "stop",
-   "pl": -43.82
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4112.48,
-   "legs": 2,
-   "exit": 4109.27,
-   "why": "profit lock",
-   "pl": 2.92
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4129.34,
-   "legs": 3,
-   "exit": 4134.7,
-   "why": "stop",
-   "pl": -7.87
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4132.11,
    "legs": 1,
-   "exit": 4140.26,
-   "why": "reversal",
-   "pl": -25.05
+   "exit": 4104.63,
+   "why": "stop",
+   "pl": -35.81
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4118.04,
-   "legs": 2,
-   "exit": 4123.11,
-   "why": "stop",
-   "pl": -38.5
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4106.65,
    "legs": 1,
-   "exit": 4111.13,
-   "why": "stop",
-   "pl": -37.45
+   "exit": 4112.66,
+   "why": "profit lock",
+   "pl": 15.54
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4083.58,
-   "legs": 3,
+   "legs": 2,
    "exit": 4065.25,
    "why": "profit lock",
-   "pl": 24.63
+   "pl": 7.07
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4057.09,
-   "legs": 2,
-   "exit": 4063.78,
+   "legs": 1,
+   "exit": 4070.46,
    "why": "stop",
-   "pl": -31.31
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4083.47,
-   "legs": 2,
-   "exit": 4105.75,
-   "why": "profit lock",
-   "pl": 16.7
+   "pl": -27.14
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4076.36,
-   "legs": 3,
-   "exit": 4063.82,
+   "legs": 2,
+   "exit": 4065.08,
    "why": "profit lock",
-   "pl": 27.55
+   "pl": 18.16
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4069.28,
-   "legs": 2,
-   "exit": 4061.98,
-   "why": "profit lock",
-   "pl": 20.94
+   "legs": 1,
+   "exit": 4040.61,
+   "why": "profit target",
+   "pl": 113.88
   },
   {
    "lane": "ht",
@@ -401,36 +311,27 @@
    "dir": "SELL",
    "entry": 4018.57,
    "legs": 3,
-   "exit": 3998.99,
+   "exit": 3986.81,
    "why": "profit lock",
-   "pl": 20.56
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3989.26,
-   "legs": 1,
-   "exit": 3980.16,
-   "why": "flatten",
-   "pl": 17.8
+   "pl": 18.81
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 3997.64,
-   "legs": 3,
-   "exit": 3989.3,
+   "legs": 1,
+   "exit": 3990.44,
    "why": "profit lock",
-   "pl": 19.94
+   "pl": 21.0
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3922.87,
-   "legs": 2,
-   "exit": 3914.1,
+   "legs": 1,
+   "exit": 3905.33,
    "why": "stop",
-   "pl": -33.0
+   "pl": -35.49
   },
   {
    "lane": "ht",
@@ -448,7 +349,7 @@
    "legs": 3,
    "exit": 3957.04,
    "why": "profit lock",
-   "pl": 35.49
+   "pl": 18.7
   },
   {
    "lane": "ht",
@@ -472,46 +373,46 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3957.43,
-   "legs": 2,
-   "exit": 3963.16,
+   "legs": 1,
+   "exit": 3968.89,
    "why": "stop",
-   "pl": -40.66
+   "pl": -34.97
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3966.51,
-   "legs": 2,
-   "exit": 3977.38,
+   "legs": 1,
+   "exit": 3980.92,
    "why": "profit target",
-   "pl": 77.17
+   "pl": 99.47
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 3936.66,
-   "legs": 3,
-   "exit": 3928.85,
-   "why": "profit lock",
-   "pl": 6.52
+   "legs": 1,
+   "exit": 3954.54,
+   "why": "stop",
+   "pl": -36.16
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3971.94,
-   "legs": 2,
+   "legs": 1,
    "exit": 3994.96,
    "why": "profit target",
-   "pl": 102.6
+   "pl": 91.28
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 4011.13,
-   "legs": 3,
+   "legs": 2,
    "exit": 4024.68,
    "why": "flatten",
-   "pl": 21.04
+   "pl": 12.81
   },
   {
    "lane": "ht",
@@ -526,10 +427,10 @@
    "lane": "ht",
    "dir": "BUY",
    "entry": 4012.65,
-   "legs": 2,
-   "exit": 4019.78,
+   "legs": 1,
+   "exit": 4018.13,
    "why": "profit lock",
-   "pl": 21.9
+   "pl": 31.68
   },
   {
    "lane": "ht",
@@ -542,75 +443,57 @@
   },
   {
    "lane": "ht",
-   "dir": "SELL",
-   "entry": 3994.27,
-   "legs": 1,
-   "exit": 4003.0,
-   "why": "reversal",
-   "pl": -17.86
-  },
-  {
-   "lane": "ht",
    "dir": "BUY",
    "entry": 4013.98,
-   "legs": 2,
+   "legs": 1,
    "exit": 4015.41,
    "why": "profit lock",
-   "pl": -19.07
+   "pl": 7.38
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 4011.88,
-   "legs": 3,
-   "exit": 4008.32,
-   "why": "stop",
-   "pl": -8.99
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4011.53,
    "legs": 1,
-   "exit": 4006.77,
-   "why": "stop",
-   "pl": -39.71
+   "exit": 4011.53,
+   "why": "reversal",
+   "pl": 0.3
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3991.18,
-   "legs": 2,
-   "exit": 3986.17,
-   "why": "stop",
-   "pl": -40.4
+   "legs": 1,
+   "exit": 3983.63,
+   "why": "reversal",
+   "pl": -23.25
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 3983.63,
-   "legs": 3,
-   "exit": 3975.6,
+   "legs": 1,
+   "exit": 3977.11,
    "why": "profit lock",
-   "pl": 27.99
+   "pl": 18.96
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3985.83,
    "legs": 2,
-   "exit": 3991.72,
+   "exit": 3995.66,
    "why": "profit lock",
-   "pl": 12.15
+   "pl": 19.93
   },
   {
    "lane": "ht",
    "dir": "SELL",
    "entry": 3959.34,
-   "legs": 3,
-   "exit": 3935.24,
-   "why": "profit target",
-   "pl": 112.17
+   "legs": 2,
+   "exit": 3942.37,
+   "why": "profit lock",
+   "pl": 35.65
   },
   {
    "lane": "ht",
@@ -625,19 +508,19 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3965.5,
-   "legs": 2,
+   "legs": 1,
    "exit": 3967.55,
    "why": "reversal",
-   "pl": -11.33
+   "pl": -4.5
   },
   {
    "lane": "ht",
    "dir": "BUY",
    "entry": 3967.55,
-   "legs": 2,
+   "legs": 1,
    "exit": 3971.42,
    "why": "profit lock",
-   "pl": 13.1
+   "pl": 22.02
   },
   {
    "lane": "ht",
@@ -652,10 +535,10 @@
    "lane": "ht",
    "dir": "BUY",
    "entry": 3977.07,
-   "legs": 2,
-   "exit": 3987.64,
-   "why": "profit target",
-   "pl": 79.3
+   "legs": 1,
+   "exit": 3981.58,
+   "why": "profit lock",
+   "pl": 25.86
   },
   {
    "lane": "ht",
@@ -688,19 +571,10 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3991.83,
-   "legs": 3,
-   "exit": 3985.61,
-   "why": "stop",
-   "pl": -18.72
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3983.75,
-   "legs": 3,
+   "legs": 2,
    "exit": 3977.19,
    "why": "flatten",
-   "pl": 58.34
+   "pl": 4.54
   },
   {
    "lane": "ht",
@@ -709,7 +583,7 @@
    "legs": 1,
    "exit": 3994.48,
    "why": "stop",
-   "pl": -40.5
+   "pl": -36.82
   },
   {
    "lane": "ht",
@@ -718,7 +592,7 @@
    "legs": 1,
    "exit": 4001.38,
    "why": "stop",
-   "pl": -39.52
+   "pl": -33.88
   },
   {
    "lane": "ht",
@@ -733,10 +607,10 @@
    "lane": "ht",
    "dir": "BUY",
    "entry": 4005.17,
-   "legs": 3,
-   "exit": 4019.14,
+   "legs": 2,
+   "exit": 4013.8,
    "why": "profit lock",
-   "pl": 21.42
+   "pl": 4.59
   },
   {
    "lane": "ht",
@@ -754,9 +628,9 @@
    "legs": 1,
    "exit": 4000.94,
    "why": "stop",
-   "pl": -38.43
+   "pl": -32.94
   }
  ],
- "final_balance": 3721.74,
- "max_dd": 321.71
+ "final_balance": 3637.14,
+ "max_dd": 367.14
 }

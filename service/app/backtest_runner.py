@@ -27,21 +27,24 @@ RUN_TIMEOUT_S = 1800
 # sweep + 2026-08-27 MAE study — see config/strategy.json, the
 # parity-tested source of truth).
 STRATEGIES = {
-    "halftrend_ema_v1": {"label": "HalfTrend M5",
-                         "flags": ["--tf", "M5", "--confirm", "2",
-                                   "--stop-buffer", "0.75"]},
-    # EMA 45 -> 50 and the 0.3 ATR confirm-clearance went live on the M15
-    # lane on 2026-08-31 / 2026-09-01 (EA inputs + config/strategy.json);
-    # this map lagged until 2026-09-06 -- the page was replaying EMA-45
-    # without the clearance filter for a week.
-    "halftrend_m15_v1": {"label": "HalfTrend M15",
-                         "flags": ["--tf", "M15", "--confirm", "1",
-                                   "--stop-buffer", "1.75",
-                                   "--ema-len", "50",
-                                   "--confirm-clear-atr", "0.3",
-                                   # RSI 70/30 enforced on the M15 lane
-                                   # since 2026-09-07 (owner "go")
-                                   "--rsi-filter", "70"]},
+    "iziGold5": {"label": "HalfTrend M5 (iziGold5)",
+                 "flags": ["--tf", "M5", "--confirm", "2",
+                           "--stop-buffer", "0.75"]},
+    "iziGold15": {"label": "HalfTrend M15 (iziGold15)",
+                  "flags": ["--tf", "M15", "--confirm", "1",
+                            "--stop-buffer", "1.75",
+                            "--ema-len", "50",
+                            "--confirm-clear-atr", "0.3",
+                            "--rsi-filter", "70"]},
+    "izi5": {"label": "HalfTrend M5",
+             "flags": ["--tf", "M5", "--confirm", "2",
+                       "--stop-buffer", "0.75"]},
+    "izi15": {"label": "HalfTrend M15",
+              "flags": ["--tf", "M15", "--confirm", "1",
+                        "--stop-buffer", "1.75",
+                        "--ema-len", "50",
+                        "--confirm-clear-atr", "0.3",
+                        "--rsi-filter", "70"]},
 }
 
 # S/R zone wall filter (spec 2026-09-05, increment 2): the replay half of
@@ -72,7 +75,7 @@ def build_cli(params: dict, source: Path, json_out: Path, web_out: Path) -> list
     cmd += STRATEGIES[params["strategy"]]["flags"]
     # M15 bias is the M5 lane's HTF-agreement replay; the M15 lane has no
     # HTF module (EA: "the only confirmation is the ema 200").
-    if params.get("m15_bias") == "on" and params["strategy"] == "halftrend_ema_v1":
+    if params.get("m15_bias") == "on" and params["strategy"] in ("izi5", "iziGold5"):
         cmd += ["--bias-ema", "200", "--bias-tf", "M15", "--bias-mode", "target"]
     if params.get("sr_filter") == "on":
         cmd += SR_FILTER_FLAGS

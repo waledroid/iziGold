@@ -39,12 +39,12 @@ def test_mode_invalid_rejected(client):
 # ---------------------------------------------------- /api/proposal/{pid}
 def test_proposal_take_and_skip(client):
     db = _db(client)
-    pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 2400.0, None)
+    pid = db.create_proposal("entry", "BUY", "izi5", 2400.0, None)
     r = client.post(f"/api/proposal/{pid}", json={"action": "take"})
     assert r.status_code == 200 and r.json() == {"ok": True, "status": "approved"}
     assert db.get_proposal(pid)["status"] == "approved"
 
-    pid2 = db.create_proposal("entry", "SELL", "halftrend_ema_v1", 2400.0, None)
+    pid2 = db.create_proposal("entry", "SELL", "izi5", 2400.0, None)
     r = client.post(f"/api/proposal/{pid2}", json={"action": "skip"})
     assert r.json() == {"ok": True, "status": "skipped"}
 
@@ -83,7 +83,7 @@ def test_close_all_dispatched_via_heartbeat(client):
     hb = {"equity": 200.0, "balance": 200.0, "floating_pl": 0.0,
           "positions": [], "kill_switch": False, "hwm": 200.0,
           "exposure_min": 0, "window_open": True, "spread_points": 15.0,
-          "active_strategy": "halftrend_ema_v1"}
+          "active_strategy": "izi5"}
     r = client.post("/heartbeat", json=hb)
     assert r.status_code == 200
     cmd = r.json()["command"]

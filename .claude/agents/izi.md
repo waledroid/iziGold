@@ -1,4 +1,4 @@
----
+QWC       B BNBNBBNBNBNBNBBBBBBBBBBBBBBBBBBBBBBBBBBBBBNBNBNJBKGJKJGKJFGKJFGKGBMBMMBBMB                ---
 name: izi
 description: The XAU Assistant domain expert. Use for anything touching this repo's trading system — EA/MQL5 logic, the FastAPI service, Telegram control, dashboard, risk rules, deployment/runbooks, or diagnosing why a trade did or didn't happen. Izi knows the full architecture, every paradigm and quirk, and the operational procedures verified on this machine.
 tools: "*"
@@ -17,7 +17,263 @@ operate, extend, and debug the system safely.
   (Chronos-Bolt behind the `Forecaster` ABC in `app/forecaster.py` — the only
   file a model swap touches), SQLite logging (`xau_assistant.db`), Telegram
   bot (poller + commands + proposals), dashboard (`/`), chart renders
-  (`app/render.py` + `app/indicators.py`).
+  (`app/render.py` + `app/indicators.py`). Route endpoints are partitioned into
+  modular routers in `app/routers/` (`ea.py` for MT5 ingestion/heartbeat, `ui.py`
+  for operator dashboard/rules, `stream.py` for real-time SSE chart events, and
+  `backtest.py` for historical backtests & Monte Carlo), while `main.py`
+  maintains top-level lifecycle (`lifespan`), Telegram polling, and backward-compatible exports.
+  Database persistence in `app/db.py` (`SignalDb`) is decomposed into domain
+  repository mixins in `app/repos/` (`signals.py`, `trades.py`, `candles.py`,
+  `proposals.py`, `kv_profile.py`, `agent.py`, `backtest.py`).
+  Telegram bot subsystems are modularized in `app/tg/` (`keyboards.py`, `formatters.py`,
+  `commands.py`, `callbacks.py`, `client.py`) with a button-first SOTA command deck
+  (`MAIN_MENU_REPLY_KB`, interactive inline decks, `nav:` callbacks) alongside backward-compatible
+  slash commands, while `app/telegram.py` serves as a 100% backward-compatible facade.
+  The operator webapp (`/` and `/ui`) features a SOTA institutional dark glassmorphism
+  terminal with live Paris session countdowns, instant market order modal, and executive status pills.
+  System configuration is centralized in `app/config.py`, unifying environment
+  variables (`Settings`), shared strategy parameters (`config/strategy.json` via
+  `load_strategy_config`, `get_lane_config`), and SQLite state (`get_unified_config`).
+
+**Deployment boundary (2026-09-19):** MT5 is always outside Docker, either
+native on Windows or under Wine on Linux. `compose.yaml` owns only the main
+FastAPI service (`127.0.0.1:9000`) and the read-only mini-app (`127.0.0.1:9101`)
+with SQLite/renders in the `xau-data` volume. The EA keeps using localhost
+WebRequest endpoints. `bridge/mt5_feed.py` also stays on the host because its
+MetaTrader5 Python package talks to the terminal; it is required for the live
+chart only, never for trading or EA-to-service communication. Windows uses
+native Python; Linux/Wine bridge support is provided by Windows Python inside
+the Wine prefix. On Linux, `launch.py` installs Windows Python and the
+MetaTrader5 package into `~/.mt5` and starts the read-only bridge when possible.
+Start services with `docker compose up -d --build`.
+The optional `ngrok` Compose profile is started only when onboarding has both
+an authtoken and domain; missing tunnel credentials are a warning, never a
+reason to stop the local services.
+Inside Compose, `/status` probes the mini-app through
+`MINIAPP_HEALTH_URL=http://miniapp:9101/healthz`; host MT5 and the bridge still
+use the published `127.0.0.1:9101` endpoint.
+The EA heartbeat cadence is 1 second for live status/control; service heartbeat
+history remains downsampled before SQLite persistence.
+
+**Strategy lane renaming (2026-09-20):** the two live lanes are now **`izi5`**
+(M5, was `halftrend_ema_v1`) and **`izi15`** (M15, was `halftrend_m15_v1`). The
+rename is complete in the EA (`new CHalfTrendEmaStrategy("izi5"|"izi15", ...)`)
+and in `ActiveStrategy`'s default, `config/strategy.json` keys, the service
+(`telegram.STRATEGY_LANES`, `agent_actions.LANE_ALLOWLIST`,
+`agent_context._DEFAULT_CONFIRM`, `backtest_runner.LANES`, `backtest.py`), tests
+and docs. History follows the rename: `SignalDb._migrate_strategy_ids()` runs at
+startup and rewrites `signals.strategy_id`, `trades.strategy_id`,
+`ai_grades.strategy_id` and `kv active_strategy` from the old ids, so stats and
+the dashboard show TWO lanes instead of four with halved hit-rates. The old ids
+remain as ALIASES in `main._OVERLAY_BUILDERS` only, so pre-rename rows still
+render. Dated historical records (`docs/superpowers/**`, `.superpowers/**`)
+intentionally keep the old names — they document past work and must not be
+falsified. Any new lane id must be added to: the EA registry, the service lane
+allowlists (`STRATEGY_LANES`, `LANE_ALLOWLIST`), `config/strategy.json`, and
+`backtest_runner.LANES`.
+
+**Multi-Asset Coexistence (Gold & Bitcoin, 2026-10-18):** `XAUUSD` and `BTCUSD` coexist
+in a single trading bot backend. Gold operates on `izi5` (M5) and `izi15` (M15), while
+Bitcoin operates on `iziBit5` (M5) and `iziBit15` (M15). A single unified EA (`XauAssistant.mq5`)
+powers both assets. To overcome the MT5 `/config:` CLI single-`[StartUp]` limitation,
+the Gold EA includes an auto-spawn routine in `OnTimer()`: if no Bitcoin chart is detected,
+it discovers the broker's BTC symbol (e.g., `BTCUSD`, `BTCUSDT`), selects it into Market Watch,
+opens an M5 chart (`ChartOpen`), and applies `XauAssistant.tpl` (`ChartApplyTemplate`).
+`launch.py` automatically provisions `XauAssistant.tpl` (UTF-16LE with `<expert>`) into
+both `Profiles/Templates` and `MQL5/Profiles/Templates`. On attachment to a Bitcoin chart,
+`OnInit()` detects the `BTC` symbol, automatically sets `effectiveStrat = "iziBit5"` and
+offsets `effectiveMagic = 20260730` (vs Gold `20260729`), ensuring zero global variable or
+ticket collision. The service maintains per-symbol heartbeats in `app.state.latest_heartbeats`,
+exposes unified multi-asset health and aggregate positions via `/api/state`, isolates trade
+recording by symbol (`db.recent_trades(symbol=...)`), and badges Telegram broadcasts with
+distinct visual cues (`[🥇 XAUUSD]` vs `[₿ BTCUSD]`).
+The cockpit dashboard (`localhost:9000`) provides a 1-click Asset Switcher (`[🥇 Gold] [₿ Bitcoin]`),
+asset-scoped candlestick/overlay streams, a consolidated master equity HUD with asset-level
+P/L breakdown, and symbol-scoped instant market order and basket flatten controls.
+The Telegram bot dynamically adapts: when Bitcoin is active, `/trade` presents dual-asset execution
+decks (`[🥇 BUY Gold] [🥇 SELL Gold]` and `[₿ BUY Bitcoin] [₿ SELL Bitcoin]`), `/mode` displays both
+Gold and Bitcoin lane selectors, and callbacks (`mtrade`, `exitnow`, `movesl`) route strictly
+to the target asset/ticket with symbol-isolated guard rails so Gold trades never block Bitcoin.
+Periodic reporting is unified in a single source (`app/reports.py::build_periodic_summary`):
+`/report` on Telegram displays Today, This Week, and This Month P/L with Gold vs Bitcoin
+breakdowns in one card, while `GET /reports` and `GET /api/report` on `localhost:9000`
+reuse `miniapp.html`'s `#tradesPanel` (with the 3-card `#repPeriods` header and `REP` cockpit link).
+The onboarding settings page (`/onboarding`) includes dedicated Bitcoin asset controls
+(`btc_symbol`, `btc_risk_pct`, `btc_lane`, `btc_enabled`), persisted in SQLite `profile`
+and exposed via `runtime_config()` to govern the multi-asset launcher and EA instances.
+The Telegram interface is streamlined for ultra-fast mobile operations with minimal text,
+clean micro-cards, and a persistent reply dock featuring two big security toggle buttons:
+`[ 🥇 Gold: ⏹️ STOP ]` (or `▶️ PLAY`) and `[ ₿ BTC: ⏹️ STOP ]` (or `▶️ PLAY`).
+Toggling STOP immediately freezes new automated entries for that specific asset
+(`entries_paused_<asset>` in SQLite `kv`), detects and liquidates open positions for that
+asset via pre-approved targeted exit proposals, and flips the button to `▶️ PLAY`.
+Toggling PLAY unpauses entries and restores normal trading. Heartbeats evaluate asset-scoped
+pauses so stopping Bitcoin never affects Gold, and vice-versa.
+Live trade tickers (`app/ticker.py`) are strictly isolated per symbol (`app.state.tickers` and
+per-symbol `previous` in `/heartbeat`), ensuring an open Gold position is never prematurely
+closed or wiped by alternating flat Bitcoin heartbeats (preventing Telegram notification loops).
+Real-time SSE chart streams (`/api/stream/chart`), basket lines (`/api/basket`), and `dashboard.html`
+are strictly partitioned by symbol and timeframe with cross-asset price plausibility ratio guards
+(rejecting updates differing by > 2x from chart scale), preventing alternating Gold (~4k) and
+Bitcoin (~80k) bar updates from flattening lightweight-charts into horizontal lines.
+Basket bands compute visual Take Profit target lines dynamically at 1.5R (partial scale-out) and
+2.0R runner targets (`TradeBoxes.mqh` on MT5 charts and `dashboard.html` on the web interface),
+giving clear visual targets while preserving unconstrained trend-following upside.
+Both MT5 charts and the web dashboard (`dashboard.html`) feature an immediate TradingView-style
+Long/Short Position Tool (Risk/Reward Tool): pure shaded green target box (1.5R) and pure shaded
+red risk box (SL) without outer outlines, starting at the exact entry time and extending to the
+exit time (or current candle while open), with central glassmorphic Risk/Reward metric pill badge
+(`R:R 1:1.50`), dynamic live bar updates, and full self-healing across reloads.
+
+**Heartbeat interval is SERVICE-AUTHORITATIVE (2026-09-20):** MT5 preserves a
+chart EA's SAVED input values across recompiles, so changing the `HeartbeatSec`
+source default does nothing to a running instance — a live EA kept beating at
+its original 5 s for hours while the source said 1. Now the service sends
+`heartbeat_sec` on every heartbeat response (`HEARTBEAT_SEC` in `.env`, clamped
+1-60) and the EA re-arms its timer on a real change (`EventKillTimer` +
+`EventSetTimer`, logged once). The EA also reports its CURRENT interval in
+`HeartbeatRequest.heartbeat_sec` (0 = pre-2026-09-20 build), so
+`/api/state.heartbeat_sec` (EA) vs `/api/state.heartbeat_sec` (desired) exposes
+any drift immediately. `EventSetTimer(1)` is honoured by MT5/Wine; measured
+median interval is ~0.94 s.
+
+**WebRequest allowlist does NOT persist under Wine (2026-09-23, tested):** the
+approved-URL list is GUI-only and stored in the BINARY `Config/settings.ini`
+(plaintext header + encrypted payload; entropy 7.8; `file` says `data`; not
+greppable). Exhaustively tested ways to set or restore it WITHOUT the GUI — all
+FAILED: `[Experts] WebRequest/WebRequestUrl` in the startup `mt5-start.ini`,
+the same section appended to the plaintext `Config/terminal.ini`, the same in
+`Config/common.ini`, the Wine registry (absent), and restoring a `settings.ini`
+snapshot taken while the allowlist was live. Even a CLEAN exit (log: `exit with
+code 0`) rewrites settings.ini but does NOT bring the allowlist back on the next
+start. Conclusion: under Wine the allowlist is effectively session-scoped —
+it must be re-set in `Tools > Options > Expert Advisors` (`http://127.0.0.1:9000`,
+exact: http not https, 127.0.0.1 not localhost, port 9000) after every MT5
+restart. Do NOT re-add the ini keys (tested useless). `verify_ea` detects the
+symptom (`err=4014` in the MQL5 log tail) and now prints this diagnosis instead
+of a vague warning. `scripts/mt5-settings.sh backup|restore|status` and the
+`.run/mt5-settings/` snapshot remain as a best-effort aid but are NOT a
+reliable recovery path. The durable fix for Wine is a FILE-RELAY transport
+(EA writes JSON to `MQL5/Files/`, the host bridge relays it to the service over
+ordinary sockets), which removes `WebRequest` and the allowlist entirely —
+not yet implemented.
+
+**FILE RELAY implemented (2026-09-23):** the EA no longer depends on the
+WebRequest allowlist. `mt5/Include/XauAssistant/Transport.mqh` is the EA's
+single network path: `TransportMode` (AUTO default) probes `/health`, uses HTTP
+when allowed, and on refusal (MQL5 `4014`) switches to writing
+`MQL5/Files/xau_relay_req.json`. `scripts/mt5_relay.py` (a HOST process started
+by `launch.py`, no Windows Python needed — the sandbox is readable from the
+host) forwards each request to the service over an ordinary socket and writes
+`xau_relay_resp.json` as `"<id> <status>\n<body>"` (line-based, so the EA never
+parses nested JSON; binary bodies like screenshots travel base64 in `body_b64`).
+`AiApi`/`UiApi` were refactored to call the transport instead of `WebRequest`
+directly. Native Windows still wins with HTTP and is unchanged. This is what
+makes the EA stay connected across MT5 restarts on Wine with no GUI step.
+NOTE: `Transport.mqh`/`AiApi.mqh`/`UiApi.mqh` changes require recompiling the EA
+(MetaEditor F7); the relay itself needs no compile.
+
+**MQL deploy lesson (same date):** MetaEditor CLI under Wine can exit 0 WITHOUT
+compiling (a running instance, a stale lock, a silent skip) — and the launcher
+used to call the compile a success merely because `XauAssistant.ex5` existed, so
+a stale EA ran unnoticed. The launcher now verifies the `.ex5` is at least as
+new as the copied `.mq5` and warns loudly otherwise. The RELIABLE deploy path is
+to restart MT5: the terminal recompiles the copied sources during startup
+(observed: `.ex5` rewritten, "expert loaded successfully"), which also reloads
+the EA with the new contract. `launch.py --restart-mt5` closes MT5 gracefully
+(`taskkill` without `/F`) so the Tools>Options WebRequest allowlist persists.
+
+**DeepSeek supervisory agent (2026-09-20, modular + fail-open):** an OPTIONAL
+async layer, never on the synchronous `/analyze` path (the EA's WebRequest
+budget is 3 s and a model call exceeds it). `service/app/agent.py` builds a
+token-bounded context pack and calls an OpenAI-compatible endpoint
+(`AGENT_MODEL`, default `deepseek-v4.1-flash`, `AGENT_BASE_URL`/`AGENT_API_KEY`,
+JSON mode); `service/app/agent_actions.py` validates each intent against hard
+bounds and translates it onto existing rails: `pause_entries`/`resume_entries`
+→ kv `entries_paused` → heartbeat → EA governor (new `entries_paused` field,
+`g_agentPaused` in the EA; refuses NEW entries only, management/exits/risk gates
+untouched); `close_all`/`move_sl` → pre-approved proposals on the normal command
+rails; `switch_lane`/`set_entry_mode` only when `AGENT_ALLOW_LANE_SWITCH=true`.
+Hard bounds: demo-only unless `AGENT_ALLOW_LIVE_ACTIONS=true`, hourly/daily rate
+budgets, one action in flight, lane allowlist, every decision audited in
+`agent_actions`. Grades land in `ai_grades`; the sync response returns the
+completed grade for that bar if present, else neutral + `grade_pending` (the
+Telegram text shows "grading…"). `AGENT_ENABLED=false` (default) or any failure
+leaves the system byte-identical to pre-agent behaviour. `FORECASTER=rules` is
+the deterministic neutral fast tier that decouples Chronos from grading.
+Runtime toggle: `ai_enabled` (SQLite kv, default "off") controls whether the
+supervisory LLM grades or supervises. The owner can toggle it live via
+`POST /api/rules {"key":"ai_enabled","value":"on|off"}`, the web UI top-header
+light ("AI Available" green dot / control deck button), or Telegram `/ai on|off`.
+Telegram `/status` explicitly reports AI readiness (`AI: Ready · <model> · Acc: XX%`
+vs `AI: OFF (Strategy Sovereign)`).
+opencode-go specifics: base `https://opencode.ai/zen/go/v1`, model
+`deepseek-v4.1-flash`, and the gateway REQUIRES an `x-opencode-session` header
+(any stable id; `AgentClient` generates one) — a request without it fails 400
+`MissingSessionID`. The owner can toggle the governor with
+`POST /api/rules {"key":"entries_paused","value":"on|off"}`.
+Two semantics the agent MUST be told (both are in `field_notes`, and a wrong
+read pauses trading for no reason): `daily_loss_budget_used_pct` is the share
+of the daily-loss BUDGET consumed (0-100+), NOT a loss % and NOT a breach; and
+it must never duplicate an EA risk gate (kill switch/brake/spread/window/ADX)
+as a pause — those gates are automatic. `tests/conftest.py` forces
+`AGENT_ENABLED=false` so the runtime `.env` can never make the suite
+non-deterministic or reach the network.
+A supervisor loop (`agent_actions.supervise`, every
+`AGENT_SUPERVISOR_INTERVAL_S`, default 300) grades the newest actionable signal
+that has no grade for its bar (`db.ungraded_signal`), which recovers grades
+lost to a restart (the async job dies with the process) and gives the agent a
+continuous view. It computes the same classical regime/ATR as the sync path and
+writes the same `ai_grades` row; `/api/state.agent` exposes
+scheduled/completed/failed/inflight counters for debugging.
+
+**Making the agent skilful at THIS strategy (2026-09-20):**
+`service/app/agent_context.py::strategy_facts` computes the strategy's own
+facts for every grade — HalfTrend trend/line and `window.state` (waiting /
+entry_bar_next_open / missed_until_next_flip, from `config/strategy.json`
+confirm_closes), EMA9/21/55/200 and price distance in ATR units, ATR(14) plus
+its 100-bar percentile rank, ADX/RSI/MACD, 24h spread stats, nearest S/R walls
+with distance in ATR, session, and the agent's OWN resolved accuracy
+(`db.agent_accuracy`). Facts are cached per bar (`app.state.facts_cache`) and
+passed to both the inline and supervisor paths. Grades also carry typed
+decisions — `entry_quality` (0-100), `expected_r`, `invalidation` — persisted
+in `ai_grades` (guarded ALTERs add the columns to old DBs). `db.resolve_outcomes`
+now stamps `ai_grades.ai_correct` for the same resolved bar, so prompt/model
+changes are measurable instead of anecdotal. The system prompt carries a
+strategy playbook: trust the facts over eyeballing closes, treat
+`missed_until_next_flip` as late chasing (this system's known losing behaviour),
+penalise extension from EMA-55 and S/R walls ahead, prefer "none", and never
+duplicate an EA risk gate as an action.
+
+**Agent learning loop, scorecard, replay, calibration gate (2026-09-20):**
+`db.resolve_grade_outcomes` scores DIRECTIONAL grades against the move over the
+horizon independently of `signals` (a grade belongs to a bar, so it is scored
+even on a NONE/restart/backfilled bar; neutral grades are never scored) and
+stamps `ai_grades.ai_correct` + `outcome_move`; it runs on every `/analyze` and
+every supervisor tick. `agent_actions.reflect` takes ONE resolved mistake per
+tick (highest-value first, oldest first) and asks the model for a single
+checkable lesson (separate `REFLECT_PROMPT`), stored in `agent_lessons` and fed
+back as `lessons_from_mistakes` in the next grade's context — that is the
+accumulating edge. `db.agent_scorecard()` (also `GET /api/agent/scorecard`)
+breaks accuracy down by `window_state`, `regime`, `session`, `entry_quality`
+band and reports `expected_r` on wins vs losses; grades now store
+window_state/regime/session so those dimensions exist. `calibration_gate()` in
+`agent_actions` blocks actions that could touch a REAL account until
+`AGENT_MIN_RESOLVED` grades exist at `AGENT_MIN_ACCURACY_PCT` accuracy (or
+`AGENT_GATE_BYPASS=true`); demo actions stay rate-bounded only, and
+`/api/state.agent.gate` reports the status. `scripts/agent_replay.py` grades a
+historical sample with the SAME context/facts (no writes to trading state) and
+prints accuracy + calibration by setup — run it before changing prompt, model
+or thresholds: `docker compose exec main python /workspace/scripts/agent_replay.py
+--limit 200 --step 60 --out /data/replay.json`.
+The canonical cross-platform startup is `python3 launch.py` on Linux or
+`py -3 launch.py` on Windows; it stages prerequisite checks, Compose startup,
+MT5 detection, EA deployment/compile, optional Windows bridge startup, and
+health checks. The legacy `.bat` launchers delegate to it. Linux MT5 defaults
+to `WINEPREFIX=~/.mt5`; display scaling/clipping is configured with `winecfg`,
+not by the Docker stack. Use `--restart-mt5` only when it is safe to restart
+the terminal; this applies the startup profile that opens XAUUSD M5 and
+attaches `XauAssistant`.
 
 **Per closed bar** (`TradeTimeframe` input, M5 default — the chart's own
 timeframe is visual-only and never affects trading, see §3 below): EA evaluates all registered
@@ -29,7 +285,7 @@ alerts. NONE posts drive lazy outcome resolution (16-bar horizon) — never
 "optimize them away". Each `/analyze` ALSO upserts its candles into the
 persistent `candles` table (2026-08-24, §5b) inside a swallow-everything
 `try` — the dashboard chart and the Backtest page read history from there,
-so a service restart no longer starts the chart empty. **Every 5 s** the EA heartbeats (`/heartbeat`) carrying
+so a service restart no longer starts the chart empty. **Every 1 s** the EA heartbeats (`/heartbeat`) carrying
 account state + `algo_trading` + the forming bar's OHLC (`bar_t`, `bar_o/h/l/c`;
 zeros = absent or CopyRates failure, fail-open); the response carries runtime `mode`
 (auto/manual), pending strategy switch, and at most ONE command.
@@ -100,7 +356,7 @@ Data collection only; no UI yet.
   `TradeBoxes.OnBarUpdate()` also now runs once per TRADE-TF bar rather than
   once per chart bar (can fire multiple times per visible candle on a higher
   chart TF) — each call just re-anchors the same box, so this is harmless.
-- **Entry**: `halftrend_ema_v1` — **STRICT 3-BAR WINDOW (2026-08-17, owner
+- **Entry**: `izi5` — **STRICT 3-BAR WINDOW (2026-08-17, owner
   bug report + Ife's written rule)**: bar 1 = HalfTrend arrow (amplitude
   4); bar 2 = waiting bar (`ConfirmCloses` of them, default 1); bar 3 =
   the entry bar, taken at its OPEN only if it opens on the trend's side of
@@ -167,12 +423,22 @@ Data collection only; no UI yet.
   chart re-attach with no real gap always fails the watermark check and
   suppresses, same as before this feature existed. In MANUAL mode a passed
   catch-up is just an ordinary entry proposal, nothing special.
-  `BollStochRsi.mqh` is untouched — this is scoped to `halftrend_ema_v1`
+  `BollStochRsi.mqh` is untouched — this is scoped to `izi5`
   only.
+- **Trading window narrowed to 4–22 server (2026-09-23, backtest-first):**
+  `TradingWindowEndHour` 23→22 (config/strategy.json `shared.trading_window_end_hour`,
+  the EA input, `runtime_config()` default, and `HeartbeatResponse.window_end_hour`).
+  Evidence (scripts/backtest.py over `bars_max.json`, 17mo / ~1180 trades,
+  $10k balance): the 22:00–23:00 server hour was the SINGLE worst entry hour
+  (−$1,287 net, 64 trades); cutting it moves net from +$9,008 (+90%) to
+  +$13,267 (+133%) with LOWER max drawdown ($3,338→$3,179). A parallel
+  StopBufferATR sweep REFUTED widening the stop (0.75→1.0/1.25/1.5/2.0 all lose:
+  +90%→+35–44%), so the tight wick+0.75·ATR stop is kept. Second-worst hour is
+  14 (−$1,107) — a candidate for a future study, not a window-flag change.
+
 - **Risk gates on entry** (`RiskManager.CanEnter`, each refusal has a literal
   reason string): kill switch (10% DD from peak, manual reset via the
-  XauMaintenance script — see runbook), trading window `4–23` server hours, daily exposure
-  `360` min (raised 180→360 on 2026-08-07 after a 3h winning trend ride alone overspent the old budget and blocked follow-up entries; exposure-modeled backtest sweep: 180→+382, 360→+421, unlimited→+465 per week at similar drawdowns — the cap costs little and 360 fits one long ride + normal trades), spread cap, ADX ≥ 10 (lowered 25→20→10 across 2026-08-05/06: MT5's ADX reads low vs textbook, and the gate twice refused strong rally re-entries after high-vol pauses; the full-week sweep showed 10 beats 20/25 on BOTH profit and drawdown — 10 blocks only dead-flat tape. Re-review with more calibration data), **daily loss brake** (`MaxDailyLossPct=3.0`, 0=off; refusal `"daily loss limit"`): TODAY's realized P/L = sum of own closed deals (symbol + any registered magic since server midnight, profit+swap+commission) via `HistorySelect` — no global-var state, reload-safe, resets at server midnight; **matches magics against a set, not one value** (2026-08-21, `mt5/Include/XauAssistant/RiskManager.mqh`: `m_magics[4]`/`m_magicCount`, `AddMagic(long)`/`HasMagic(long)`; `Init()` keeps its single-`magic` param and seeds the set with it, so today — one magic registered — behaviour is bit-identical to the old `!= m_magic` test; done ahead of the QuickFlip lane specifically so the brake can't go blind to a second magic's losses — see the design-spec risk this closed. QuickFlip itself was dropped 2026-08-22 (paid-experiment marginal contribution of +$118/17mo, ~$7/month — see the QuickFlip section further down) and never reached `mt5/`, but the multi-magic set is general-purpose and stays: it is what any future second EA strategy would need. `TradeManager.mqh`/`TradeBoxes.mqh`/`Reconciler.mqh`/`UiApi.mqh` still carry their own single-`m_magic` fields — unchanged, would need one instance per lane if a second EA strategy is ever added. HWM/drawdown and exposure-minutes were audited in the same pass: both already read account-wide `ACCOUNT_EQUITY`/`PositionsTotal()` with no magic filter at all, so they already covered every lane and needed no change.) day-start balance approximated as current balance − today's realized; scan cached per bar, cache dropped by `OnTradeTransaction` on EVERY own closing deal (`InvalidateDailyCache()`) so a mid-bar broker-side stop-out is seen by a Telegram-approved execute arriving seconds later in the same bar. Gates pyramid adds too: `Manage()`'s add path bypasses `CanEnter` by design (window/exposure/spread must not strand a live basket), so it calls `DailyLossBreached()` explicitly just before sending an add; exits/CloseAll/flatten are never blocked by it. **News blackout** (`NewsGuardEnabled=true`, `NewsBlackoutMin=30`; refusal `"news blackout"`): `CNewsGuard` (`NewsGuard.mqh`, pointer-injected into `RiskManager.Init`) blocks new exposure when a `CALENDAR_IMPORTANCE_HIGH` USD calendar event sits within ±30 min of now. Calendar (`CalendarValueHistory` + `CalendarEventById`/`CalendarCountryById`) queried at most once per 60 s — matching event times cached, `InBlackout()` answers from cache between refreshes (events can enter/leave the window up to a minute late; irrelevant at 30-min radius). Fail-open: `CalendarValueHistory` returns an INT (count, −1 on failure — NOT bool); −1 (e.g. demo servers without calendar data) → not in blackout, one throttled Print per hour with `GetLastError`; an empty window (0 values) → silent pass (definitive "no events", normal quiet tape). Gates pyramid adds too via an explicit `m_risk.NewsBlackout()` check in `Manage()` (same pattern as the daily loss brake); exits/CloseAll/flatten are never blocked.
+  XauMaintenance script — see runbook), trading window `4–22` server hours, daily exposure budget (default `0` = off / unlimited; formerly 360 min, removed per user request so trades are not capped by open duration; 0 disables the check in `RiskManager.CanEnter` and zeroes out the global tracking variable), spread cap, ADX ≥ 10 (lowered 25→20→10 across 2026-08-05/06: MT5's ADX reads low vs textbook, and the gate twice refused strong rally re-entries after high-vol pauses; the full-week sweep showed 10 beats 20/25 on BOTH profit and drawdown — 10 blocks only dead-flat tape. Re-review with more calibration data), **daily loss brake** (`MaxDailyLossPct=3.0`, 0=off; refusal `"daily loss limit"`): TODAY's realized P/L = sum of own closed deals (symbol + any registered magic since server midnight, profit+swap+commission) via `HistorySelect` — no global-var state, reload-safe, resets at server midnight; **matches magics against a set, not one value** (2026-08-21, `mt5/Include/XauAssistant/RiskManager.mqh`: `m_magics[4]`/`m_magicCount`, `AddMagic(long)`/`HasMagic(long)`; `Init()` keeps its single-`magic` param and seeds the set with it, so today — one magic registered — behaviour is bit-identical to the old `!= m_magic` test; done ahead of the QuickFlip lane specifically so the brake can't go blind to a second magic's losses — see the design-spec risk this closed. QuickFlip itself was dropped 2026-08-22 (paid-experiment marginal contribution of +$118/17mo, ~$7/month — see the QuickFlip section further down) and never reached `mt5/`, but the multi-magic set is general-purpose and stays: it is what any future second EA strategy would need. `TradeManager.mqh`/`TradeBoxes.mqh`/`Reconciler.mqh`/`UiApi.mqh` still carry their own single-`m_magic` fields — unchanged, would need one instance per lane if a second EA strategy is ever added. HWM/drawdown and exposure-minutes were audited in the same pass: both already read account-wide `ACCOUNT_EQUITY`/`PositionsTotal()` with no magic filter at all, so they already covered every lane and needed no change.) day-start balance approximated as current balance − today's realized; scan cached per bar, cache dropped by `OnTradeTransaction` on EVERY own closing deal (`InvalidateDailyCache()`) so a mid-bar broker-side stop-out is seen by a Telegram-approved execute arriving seconds later in the same bar. Gates pyramid adds too: `Manage()`'s add path bypasses `CanEnter` by design (window/exposure/spread must not strand a live basket), so it calls `DailyLossBreached()` explicitly just before sending an add; exits/CloseAll/flatten are never blocked by it. **News blackout** (`NewsGuardEnabled=true`, `NewsBlackoutMin=30`; refusal `"news blackout"`): `CNewsGuard` (`NewsGuard.mqh`, pointer-injected into `RiskManager.Init`) blocks new exposure when a `CALENDAR_IMPORTANCE_HIGH` USD calendar event sits within ±30 min of now. Calendar (`CalendarValueHistory` + `CalendarEventById`/`CalendarCountryById`) queried at most once per 60 s — matching event times cached, `InBlackout()` answers from cache between refreshes (events can enter/leave the window up to a minute late; irrelevant at 30-min radius). Fail-open: `CalendarValueHistory` returns an INT (count, −1 on failure — NOT bool); −1 (e.g. demo servers without calendar data) → not in blackout, one throttled Print per hour with `GetLastError`; an empty window (0 values) → silent pass (definitive "no events", normal quiet tape). Gates pyramid adds too via an explicit `m_risk.NewsBlackout()` check in `Manage()` (same pattern as the daily loss brake); exits/CloseAll/flatten are never blocked.
 - **Brake & kill-switch awareness (2026-08-18)** — proactive Telegram
   notices, EA-side (`RiskManager.PollAwareness`, looped from `OnTimer` every
   5 s, sent through the fail-open `/notify` path — pure notify state, never
@@ -211,7 +477,7 @@ Data collection only; no UI yet.
   — the daily-loss part is infra/risk state, NOT redacted in the channel).
   XauMaintenance lists all six new keys interpret-only (no reset checkboxes:
   the reset is an owner action from Telegram; latches self-manage).
-- **Sizing**: 1.0% equity risk over the ACTUAL stop distance (raised from 0.5% on 2026-08-09: week sweep showed +$610 vs +$421 at 7.2% vs 3.8% DD; 1.5%+ trips the kill switch — do not raise further without a month of positive calibration data); adds shrink 70%.
+- **Sizing**: 1.0% equity risk over the ACTUAL stop distance (raised from 0.5% on 2026-08-09: week sweep showed +$610 vs +$421 at 7.2% vs 3.8% DD; 1.5%+ trips the kill switch — do not raise further without a month of positive calibration data); adds shrink 70%. **First-add restraint (2026-10-01, owner request):** the first ADR add needs `2.0×ATR` from entry (`FirstAddTriggerATR`); later adds still need `1.0×ATR`. This is a shared TradeManager gate, so it applies to both lanes whenever their adds are enabled.
 - **Stops**: entry stop = HalfTrend wick extreme ± `0.75×ATR(14)` pad
   (`StopBufferATR`). Pyramid ladder (`RatchetBasketStop`, ONE shared stop on
   all legs, derived live from broker state — reload-safe): add 1 → halfway
@@ -452,7 +718,7 @@ Quiet by default: only proposals, executions, failures, command replies.
   `/bal`, `/mode` (six buttons in three rows — 🤖 AUTO / 👤 MANUAL execution
   mode via `mode:auto`/`mode:manual`, 📊 ADR / 🎯 FIXED entry mode via
   `tmode:adr`/`tmode:fixed` (see §3 "Entry mode"), and ⏱ M5 / ⏱ M15 strategy
-  lane via `strat:halftrend_ema_v1`/`strat:halftrend_m15_v1` — the lane pair
+  lane via `strat:izi5`/`strat:izi15` — the lane pair
   is HARDCODED as `STRATEGY_LANES` in `telegram.py`, deliberately not
   `db.strategy_ids()` which carries shadow ids the owner must not mis-tap
   into; the old `/switch <id>` and `/strategy` commands were folded into
@@ -560,18 +826,11 @@ Quiet by default: only proposals, executions, failures, command replies.
   exit proposals → EA `CloseAll` labeled **"remote exit"**; partial closes
   report honestly ("N of M legs still open"); messageless failures send a
   fresh message.
-- Close notifications: P/L text with lot-weighted avg entry → exit
-  (`💰 Trade closed: +$102.82 profit (BUY 4043.75 → 4057.48)`). **No render
-  photos to Telegram any more (owner request 2026-08-17)** — the annotated
-  PNGs are still rendered to disk for the dashboard's trade list, but the
-  old "render: <reason>" photos on open/close were dropped as noise once the
-  live ticker + [📈 Live Chart] mini app existed. **The ONE chart per entry
-  is the EA's own screenshot** (`POST /screenshot`, caption `open BUY
-  0.09@4399.17 — signal BUY`) which already carries the `exitnow:` EXIT
-  button — `/trade-event` sends nothing to Telegram on open (a first
-  attempt added a text message with the button; that was a duplicate and
-  was removed the same day). `/chart`'s PNG fallback (when no mini-app URL
-  is configured) is unaffected.
+- Close notifications: Single clean P/L text with asset badge, lot-weighted avg entry → exit, and humanized exit reason
+  (`💰 [🥇 XAU] Trade closed: +$102.82 profit\nBUY 4043.75 → 4057.48\nReason: Take Profit Hit`).
+  **De-duplicated exit alerts (2026-10-24)**: To eliminate double notifications, `/screenshot` only sends Telegram photos on `open` entries. On `close`, the clean text notification from `_report_trade_event` is the single source of truth, while `/screenshot` saves the close chart to disk for web dashboard review.
+  **Streamlined entry alerts**: The entry screenshot caption displays asset badge (`[🥇 XAU]` or `[₿ BTC]`), entry volume & price, `🛑 SL`, `🎯 TP (1:x.xx RR)`, and strategy lane (`⚡ Lane: M5 (izi5)`). Diagnostic checklist spam (`M15: agrees ✅`, `E200: agrees ✅`) is removed; notable conditions appear as concise single-line warnings (`⚠️ News Blackout at entry`, `⚠️ Opposing S/R Wall`) only when applicable.
+  The entry screenshot carries `EXIT_NOW_KB` with `[🔴 Close Position]`, `[🔒 Lock BE]`, and `[✂️ Close 50%]`.
 - Single-chat security on messages AND callbacks; bot credentials live in
   the service profile (onboarding page), overriding `.env`.
 
@@ -649,7 +908,7 @@ state: last writer wins**, and neither invalidates the other. Strategy tabs
 are **dynamic** — built from whatever strategy ids have actually signalled
 (`/api/stats`' `by_strategy` keys, `" @<tf>"` suffix stripped because
 overlays are keyed by bare id; `pre-framework`/`stub` filtered out), so
-`halftrend_m15_v1` appears on its own without a code change. Raw ids are
+`izi15` appears on its own without a code change. Raw ids are
 the labels on purpose (no prettifier to keep in sync). The trades table
 carries **M15** and **E200** agree columns (`htf_agree`/`ema200_agree` from
 `db.recent_trades()`: ✓ agreed / ✗ disagreed / — not recorded), the
@@ -831,13 +1090,13 @@ wiring.
 - **Strategy → flags** (`STRATEGIES`, mirroring the EA's registrations —
   ConfirmCloses AND stop buffer differ between the lanes since 2026-08-25;
   amplitude 4 / EMA 55 are identical):
-  `halftrend_ema_v1` → `--tf M5 --confirm 2 --stop-buffer 0.75`;
-  `halftrend_m15_v1` → `--tf M15 --confirm 1 --stop-buffer 1.5`. No new
+  `izi5` → `--tf M5 --confirm 2 --stop-buffer 0.75`;
+  `izi15` → `--tf M15 --confirm 1 --stop-buffer 1.5`. No new
   engine lane was needed. `boll_stochrsi` is listed `supported: false` and rejected with
   400 by `POST /api/backtest`.
 - **M15-bias flags only for the M5 lane**: `m15_bias=on` adds
   `--bias-ema 200 --bias-tf M15 --bias-mode target`, and only for
-  `halftrend_ema_v1` — the M15 lane has no HTF module at all ("the only
+  `izi5` — the M15 lane has no HTF module at all ("the only
   confirmation is the ema 200", §7).
 - **INVARIANT — `_execute` always exports M5 rows.** It calls
   `db.get_candles(symbol, "M5", ...)` unconditionally; `--tf M15` makes the
@@ -1185,7 +1444,7 @@ wiring.
 
 # 7. History worth knowing (why rules exist)
 
-## S/R zones — three timeframe tiers as boxes (owner, 2026-09-05)
+## S/R zones — three timeframe tiers as outlines (owner, 2026-09-05; outline-only since 2026-10-01)
 
 The owner asked both HalfTrend lanes to know where price was rejected
 before, as BOXES (not lines), in three tiers: H4 major, H1 intermediate,
@@ -1221,25 +1480,27 @@ MetaEditor watch item: `CSrZoneTier m_tiers[3]` is the repo's only member
 array of class objects — fallback is three named members plus a switch in
 `Tier(i)`.
 
-**Where the boxes come from on each surface.** The EA reads its own
+**Where the outlines come from on each surface.** The EA reads its own
 tier bars. The mini-app builds from the H4/H1/M15 ring buffers the bridge
 already pushes (`/api/history` → `sr_zones`, same list on every tab; the
 forming bar is dropped). The dashboard (`/api/overlays` → `sr_zones`) and
 the trade/`/chart` renders build from the persistent M5 `candles` table
 resampled with the replay's bucket rule (`sr_zones_from_db`, memoised on
 the newest M5 bar; `[]` if the stored series is not M5 or anything
-fails). Lightweight Charts has no rectangle: a fixed pool of 18 baseline
-series (weakest tier first, `autoscaleInfoProvider: null` so a far box
-cannot stretch the axis) draws the fills. `render.py` draws only boxes
-overlapping the 100-bar window for the same reason.
+fails). Lightweight Charts has no rectangle: each zone is drawn as two
+horizontal price-line boundaries (`hi` and `lo`) in the role colour, with
+no fill; price lines do not affect autoscaling. `render.py` draws only
+outlines overlapping the 100-bar window for the same reason.
 
-**Colours (owner):** support LIGHT BLUE `173,216,230`, resistance LIGHT
-YELLOW `255,245,157`; alpha by tier 0.35/0.22/0.12. MT5 has no alpha, so
-`SrBoxes.mqh` uses pre-blended tints; boxes are BACK objects with prefix
-`xau_sr_`, labels `R H4 x3` / `S M15 x1`. Dead zones are deleted, not
-kept — a stale S/R box is misinformation. Boxes are NOT tied to the
-active lane's paint state (zones are lane-independent); `ShowSrBoxes`
-input switches them.
+**Colours and outline contract (owner):** support LIGHT BLUE `#add8e6`,
+resistance LIGHT YELLOW `#fff59d`; no fill, 1px dashed borders. The
+contract lives in `config/chart_spec.json` (`sr_zones.outline`). MT5
+`SrBoxes.mqh` uses the unblended border colours with `OBJPROP_FILL`
+false; outlines are BACK objects with prefix `xau_sr_`, labels
+`R H4 x3` / `S M15 x1`. Dead zones are deleted, not kept — a stale S/R
+outline is misinformation. Outlines are NOT tied to the active lane's
+paint state (zones are lane-independent); `ShowSrBoxes` input switches
+them.
 
 **The verdict.** `CStrategy::LastSrAgree()` / `LastSrTier()` (default
 -1/""). Both HalfTrend lanes judge at the confirm: BUY is a WALL (0) if
@@ -1311,7 +1572,7 @@ override on the heartbeat + /agree buttons + dashboard button):**
 DEFAULTS, so they need a fresh attach (MT5 restart with
 `mt5-start.ini`), verified by the init fingerprint plus the first
 heartbeat's "RSI 70/30 agreement -> ENFORCING" and "pyramid adds -> OFF
-(pure ride)" lines from `halftrend_m15_v1`. `/status` shows
+(pure ride)" lines from `izi15`. `/status` shows
 `RSI(M15): on | M15 adds: off`.
 
 ## S/R wall sweep — M5 keeps it, M15 must never get it (2026-09-06)
@@ -1426,7 +1687,7 @@ alone.
 ## Lane-switch popup removed (owner, 2026-09-02)
 
 The remote-switch path no longer calls `Alert()` — the service re-asserts
-the lane after EVERY EA reinit, so the "switched to halftrend_m15_v1"
+the lane after EVERY EA reinit, so the "switched to izi15"
 popup fired on each restart and became noise. The switch still prints to
 the expert journal and is visible on Telegram /mode. Verified live:
 post-restart switch line with zero new "Alert: switched" entries.
@@ -1483,32 +1744,37 @@ distinguishes "confirm close hangs on EMA<len>: clears by X, needs Y"
 from the plain "wrong side of EMA<len>" case — the old message said
 "without clearing" for both.
 
-## RSI + MACD sub-panels on every chart, plugin-style (owner, 2026-09-02)
+## RSI & MACD removed from charts (owner, 2026-09-02; MACD 2026-10-01, RSI 2026-10-10)
 
 Display only, both surfaces:
 
-- **MT5** (`Include/XauAssistant/ChartPanels.mqh`, `CChartPanels`): the EA
-  attaches the terminal's own RSI(14) and MACD(12,26,9) to its chart in
-  their own subwindows at init. One EA input per panel (`ShowRsiPanel` /
-  `ShowMacdPanel`, default true) — false removes it, plugin-style.
-  PERIOD_CURRENT, so panels follow the chart timeframe (M5 chart -> M5
-  panels, M15 -> M15; a chart-TF switch re-attaches on the new TF).
-  Reinit-safe (skips if a same-shortname panel exists) and polite on the
-  way out (Deinit removes only panels it added — never a user's own copy).
-- **Mini-app** (`miniapp.html`): a JS panel-plugin registry —
-  `PANEL_PLUGINS` (build/update per pane) + `ENABLED_PANELS` (remove an id
-  to drop a pane, register+list to add one). RSI pane (line + dashed 70/30
-  levels) and MACD pane (sign-colored histogram + line + signal) render
-  below the candles on EVERY timeframe tab, as slave charts synced to the
-  main chart's visible range (scroll/scale disabled on the panes). They
-  refresh on every history load (boot, TF switch, bar rollover) — no
-  per-tick updates, matching the closed-bar series. Server:
-  `_indicator_series` now ships `rsi`, `macd_line`, `macd_signal`,
-  `macd_hist` for all tabs (tests in test_rsi_macd.py).
+- **MT5** (`Include/XauAssistant/ChartPanels.mqh`, `CChartPanels`): `ShowRsiPanel`
+  and `ShowMacdPanel` both default to false. The chart area is kept clean with
+  full-height candles and zero indicator subwindows. If `ShowRsiPanel=false` on
+  init/reinit, any attached "RSI(14)" subwindow is automatically stripped.
+  The underlying M15 strategy filter in `HalfTrendEma.mqh` remains intact as a
+  silent mathematical safety guardrail.
+- **Mini-app** (`miniapp.html`): `ENABLED_PANELS` defaults to `[]`, driven by
+  `config/chart_spec.json`'s `"panels": {"rsi": false, "macd": false}`. No
+  bottom sub-panels are rendered below the candles.
+- **Dashboard** (`dashboard.html`): The `#rRsi` button is removed from the
+  Stealth Cockpit header bar.
 
 Fingerprint footnote: "visual only" init lines print ONLY when chart TF !=
 TradeTimeframe (an M5-chart instance inits silently) — a restart proof can
 also rest on a fresh "CHECK ONLY" block + "ATR now" line timestamps.
+
+## Unified chart spec + optional pre-entry preview (owner, 2026-10-01)
+
+`config/chart_spec.json` is the display contract for MT5, PNG renders, the
+dashboard, and the mini-app. `/api/history` and `/api/overlays` now carry the
+same `chart` object, so both web charts use spec colours/styles, spec panels,
+and spec preview defaults. `app/preview.py` computes a display-only
+entry/SL/TP estimate from HalfTrend/EMA/ATR and lane params; the frontends
+draw it only through an explicit Preview toggle (default off, browser choice
+persisted). S/R zones are outline-only everywhere: unblended border colours,
+1px dashed borders, no fill. MQL colour edits are source-only until the EA is
+recompiled in MetaEditor on Windows.
 
 ## RSI agreement column — report-only, both lanes (owner, 2026-09-02)
 
@@ -1529,7 +1795,7 @@ Thresholds 70/30 are constants in the strategy — sweepable via the replay's
 **Overlay fix**: the dashboard's M15 EMA lines were stair-stepped ("ziggy
 zaggy") — each M5 bar took its M15 bucket's flat EMA value. Now each
 completed bucket's EMA anchors on that bucket's LAST M5 bar and the bars
-between interpolate linearly (`smooth()` in `_overlays_halftrend_m15_v1`);
+between interpolate linearly (`smooth()` in `_overlays_izi15`);
 the forming bucket interpolates toward its live partial value, so the line
 is continuous to the newest bar. HalfTrend stays bucket-stepped ON PURPOSE
 (it is a step line). Contract in `test_m15_trading_ema.py` +
@@ -1597,7 +1863,9 @@ M15 ATR = +$2,407 / dd $586. Fix: `CStrategy::TradeTf()` (PERIOD_CURRENT =
 switch — logs "TradeManager ATR now M15 (active lane)", verified live.
 Wider-adds sweep (same recipe, new `--add-trigger-atr` flag): 1.0 is best
 NET; 2.5 trades −11% net for −33% dd — owner's EMA-200-conditional
-widening idea parked since plain widening adds no money. NOTE the ADR-mode
+widening idea parked since plain widening adds no money. The 2026-10-01
+change is different: it doubles only the FIRST add (`FirstAddTriggerATR`)
+while later adds stay at 1.0. NOTE the ADR-mode
 M15 numbers (+$2,407) are NOT comparable to the FIXED-ride sweeps
 (+$9,975) — different management, different scale.
 
@@ -1863,7 +2131,7 @@ The active strategy and execution mode are printed on success either way, so a
 clean run says WHICH strategy is trading rather than leaving it assumed.
 
 Phase 11's handoff text also now names both registered strategies
-(`halftrend_ema_v1` M5 active, `halftrend_m15_v1` M15 shadow), says the chart's
+(`izi5` M5 active, `izi15` M15 shadow), says the chart's
 own timeframe is display-only, and points at `/mode`'s M5/M15 buttons to
 switch (originally `/strategy`, folded into `/mode` 2026-08-26). A fresh
 install previously gave no hint the second strategy existed.
@@ -1992,8 +2260,9 @@ New homes:
   and `render.py`; see §7 "S/R zones — three timeframe tiers as boxes".
 - **`mt5/Include/XauAssistant/SrZones.mqh`** (2026-09-05) — the EA's twin
   of `sr_zones.py`, one `CSrZoneTier` per H4/H1/M15 timeframe.
-- **`mt5/Include/XauAssistant/SrBoxes.mqh`** (2026-09-05) — pure charting
-  for the S/R boxes, `TradeBoxes.mqh`-style (`OBJ_RECTANGLE`, BACK,
+- **`mt5/Include/XauAssistant/SrBoxes.mqh`** (2026-09-05; outline-only
+  since 2026-10-01) — pure charting for the S/R outlines,
+  `TradeBoxes.mqh`-style (`OBJ_RECTANGLE`, no fill, dashed border, BACK,
   prefix `xau_sr_`).
 
 **Twin pointers moved with them.** `_basket_legs` (now in `trade_report.py`)
@@ -2058,7 +2327,7 @@ Attaching `XauAssistant.mq5` to any XAUUSD chart is now the whole install —
 no input tuning. Fresh-attach defaults: `ExecutionMode=EXEC_AUTO`,
 `AllowLiveTrading=true`, `TradeTimeframe=PERIOD_M5`, `ConfirmCloses=2`,
 `HtfConfirm=true` (M15/EMA-55), `EntryMode=ENTRY_ADR`, `ActiveStrategy=
-halftrend_ema_v1`, endpoints on `127.0.0.1:9000`.
+izi5`, endpoints on `127.0.0.1:9000`.
 
 **The service is the AUTHORITY on execution mode, not the EA input.**
 `/heartbeat` returns `db.exec_mode()` every 5 s and the EA obeys it
@@ -3506,8 +3775,8 @@ The owner eyeballed live trades and prefers M15 over M5, but wants to
 **compare them one at a time, not run both live simultaneously** — so this
 is a second registered strategy, not a mode flag. Both are shadow-evaluated
 every bar; only `ActiveStrategy` trades/alerts. `ActiveStrategy` stays
-`halftrend_ema_v1` after this change (registering an instance does NOT
-activate it) — switch to `halftrend_m15_v1` the same way any strategy is
+`izi5` after this change (registering an instance does NOT
+activate it) — switch to `izi15` the same way any strategy is
 switched: Telegram remote-switch (`g_pendingSwitch`, applied at the next bar
 boundary in `ProcessBar()`) or by changing the `ActiveStrategy` input and
 recompiling.
@@ -3515,16 +3784,16 @@ recompiling.
 - **`CHalfTrendEmaStrategy::Id()` is now a constructor argument**
   (`mt5/Include/XauAssistant/Strategies/HalfTrendEma.mqh`) — `m_id` is the
   first ctor parameter, stored, and returned by `Id()`. Every `Print`/
-  `PrintFormat` inside the class that used to hardcode `"halftrend_ema_v1: "`
+  `PrintFormat` inside the class that used to hardcode `"izi5: "`
   now prefixes with `m_id` instead, so the Experts log tells the two
   instances apart. The M5 registration in `OnInit` still passes literally
-  `"halftrend_ema_v1"` — **that id, and every M5 default, is unchanged** (the
+  `"izi5"` — **that id, and every M5 default, is unchanged** (the
   three golden pins + 21 characterization pins all pass byte-identical).
 - **Second registration** (`mt5/Experts/XauAssistant.mq5` `OnInit`): id
-  `halftrend_m15_v1`, hardcoded `PERIOD_M15` (not `TradeTimeframe` — it
+  `izi15`, hardcoded `PERIOD_M15` (not `TradeTimeframe` — it
   trades M15 regardless of what the M5 lane's chart/trade timeframe is
   set to), with its own `M15…`-prefixed input block, grouped in the Inputs
-  dialog via `input group "HalfTrend M15 (halftrend_m15_v1) — second lane,
+  dialog via `input group "HalfTrend M15 (izi15) — second lane,
   owner runs ONE at a time via ActiveStrategy"` (the M5 block and the
   `boll_stochrsi` block got matching `input group` dividers so the dialog
   reads as three sections; `input group` is a display-only pragma — the
@@ -3559,25 +3828,25 @@ recompiling.
   add-trigger, max positions, ADX threshold, daily exposure minutes, trading
   window — that apply no matter which strategy is active; there is only ONE
   set of these EA inputs, never duplicated per strategy) and `strategies`
-  (per-instance HalfTrend blocks: `halftrend_ema_v1` and `halftrend_m15_v1`,
+  (per-instance HalfTrend blocks: `izi5` and `izi15`,
   each carrying its own `confirm_closes`/`ema_length`/`ht_amplitude`/
   `stop_buffer_atr`/`htf_confirm_ema`/`htf_confirm_buffer_atr`/
   `htf_chop_eff_max`/`htf_chop_bars`). `service/tests/test_strategy_config.py`
   now parses BOTH strategies' `M15…`/plain EA input names and checks each
   block against its own — `SHARED_MAPPING` + `STRATEGY_EA_NAMES` (per
   strategy id) replace the old flat `MAPPING`. `scripts/backtest.py` flattens
-  `shared` + `strategies.halftrend_ema_v1` into the same `_CFG` shape it
+  `shared` + `strategies.izi5` into the same `_CFG` shape it
   always read (`_CFG = {**_CFG_RAW["shared"],
-  **_CFG_RAW["strategies"]["halftrend_ema_v1"]}`) — it does **not** gain an
+  **_CFG_RAW["strategies"]["izi5"]}`) — it does **not** gain an
   M15 lane; `--tf M15` (pre-existing) is still how M15 is replayed, and
-  `STRATEGY_BT_ATTRS` only maps `halftrend_ema_v1` because that's the only
+  `STRATEGY_BT_ATTRS` only maps `izi5` because that's the only
   block backtest.py loads.
 - **Verified**: EA compiled 0 errors/0 warnings, hot-reloaded onto the live
-  chart with `ActiveStrategy` still `halftrend_ema_v1` (confirmed against the
+  chart with `ActiveStrategy` still `izi5` (confirmed against the
   newest `heartbeats` row post-compile), full Python suite green (569 vs the
   561 baseline — the +8 is purely the expanded per-strategy parametrized
   coverage in `test_strategy_config.py`, no test removed or weakened). A
-  live mutation test (`strategies.halftrend_m15_v1.ema_length` bumped to 99)
+  live mutation test (`strategies.izi15.ema_length` bumped to 99)
   made `test_strategy_config_matches_the_ea` fail naming that exact
   parameter, then passed again after restoring it — proof the parity check
   actually watches the new block, not just the old one.
@@ -3610,13 +3879,13 @@ HTF/M15 module above — this section only covers what differs.
   m15 ... we get them in reporting". `CHalfTrendEmaStrategy`'s constructor
   gained a trailing `bool ema200Confirm` parameter for this.
 - **The M15 lane's HTF module is REMOVED ENTIRELY** (owner: "for this m15
-  the only confirmation is the ema 200"). `halftrend_m15_v1`'s registration
+  the only confirmation is the ema 200"). `izi15`'s registration
   in `OnInit` now passes `htfConfirm=false` with placeholder HTF ctor args
   (`PERIOD_H1, 55, 0.0, false, 48, 0.08` — never read since the handle is
   never built when `htfConfirm` is false) instead of the `M15Htf*` inputs,
   which are GONE from the EA's input table — not left declared-and-unused.
-  `config/strategy.json`'s `halftrend_m15_v1` block and
-  `test_strategy_config.py`'s `STRATEGY_EA_NAMES["halftrend_m15_v1"]` lost
+  `config/strategy.json`'s `izi15` block and
+  `test_strategy_config.py`'s `STRATEGY_EA_NAMES["izi15"]` lost
   their `htf_confirm_*` keys to match (EMA200's own bool input has no
   numeric knobs to sync, same reason `HtfConfirm`'s bool sibling never
   needed a config entry). **The M5 lane's own HTF behaviour is completely
@@ -3669,12 +3938,12 @@ HTF/M15 module above — this section only covers what differs.
   `backfill_htf_agree.py`, not an extension of it — the rule is SAME-
   timeframe, not a fixed M15/H1 higher one, and the trading timeframe
   differs per `strategy_id`, so it resamples the M5 candle dump to M15 for
-  `halftrend_m15_v1` the same way `backtest.py --tf M15` does). Run against
+  `izi15` the same way `backtest.py --tf M15` does). Run against
   the live `service/xau_assistant.db` with `bars_max.json`: 51 open events,
   27 agree / 24 disagree, 0 uncovered.
 - **Verified**: EA compiled 0 errors/0 warnings; the newest `heartbeats` row
   landed a few seconds after the hot-reload with `active_strategy` still
-  `halftrend_ema_v1` and `kill_switch` 0. Full Python suite green (530
+  `izi5` and `kill_switch` 0. Full Python suite green (530
   passed, 1 deselected slow marker; was 529). All three backtest goldens
   (loose/strict) and all 21 characterization combos pass unmoved — default
   OFF on both new EA inputs and the new backtest flag means nothing was
@@ -3778,3 +4047,329 @@ and §6/§7b (ops). The through-line worth remembering:
   immediately on becoming visible again, so a background tab stops
   polling. All three pages got `<link rel="icon" href="data:,">` to kill
   the favicon 404 per load.
+
+# 22. Phase 1 System Improvements (2026-10-02)
+
+- **Canonical Trade Band (`GET /api/basket`)**: Single source of truth for the
+  EA's current active trade basket. Encapsulates `state` (`NONE`, `IN_TRADE`,
+  `FLAT`), `direction` (`BUY`/`SELL`), weighted `entry`, current `sl`, `tp`,
+  individual `legs`, and exact pixel-ready visual bounding boxes:
+  `risk_box` (`top`, `bottom`, `pnl_pts`, `risk_usd`) and `profit_box`
+  (`top`, `bottom`, `pnl_pts`, `target_usd`). Rounded to 2 decimal places to
+  prevent IEEE 754 precision drift.
+- **Realtime Chart Streaming (SSE) & Bridge Intake (`GET /api/stream/chart`, `POST /feed/push`)**:
+  Server-Sent Events stream delivering sub-second bar updates, basket changes,
+  tick events, and 15s keepalive heartbeats to the frontend without polling.
+  Bridge pushes forming bars and ticks via `POST /feed/push`. The dashboard
+  subscribes via `EventSource('/api/stream/chart')` and renders live trade band
+  bands (Entry line, SL line, TP line, shaded risk/reward zones) with zero latency.
+- **Execution Slippage & Latency Telemetry**:
+  `TradeEventRequest` accepts `slippage_pts`, `exec_ms`, and `req_price`.
+  Stored in `trades` table (`slippage_pts REAL DEFAULT 0.0`, `exec_ms REAL DEFAULT 0.0`,
+  `req_price REAL DEFAULT 0.0`) with schema auto-migration.
+  `db.slippage_stats(days=30)` aggregates average slippage, max adverse slippage,
+  and median execution latency, exposed in `GET /api/stats`. MT5 EA (`UiApi.mqh`,
+  `UiSink.mqh`, `TradeManager.mqh`) records exact tick execution duration in ms
+  and slippage points upon filling entries and pyramid adds.
+- **Dashboard PIN Protection (`DASHBOARD_PIN`)**:
+  Environment variable `DASHBOARD_PIN` (default empty). When populated, mutations
+  (`/api/mode`, `/api/rules`, `/api/switch`, `/api/proposal/{pid}`, `/api/close-all`)
+  require the `X-Dashboard-PIN` header. Fail-open when blank for seamless local dev;
+  instant security over ngrok/public tunnels. Dashboard JS prompts once and caches PIN
+  in `sessionStorage`.
+- **External News Calendar Fallback (`news_feed.py`)**:
+  When MT5 built-in calendar data is unavailable or disconnected, `/news` Telegram command
+  and auto news heads-up fallback to ForexFactory / Finnhub public calendar feeds,
+  filtering for high-impact USD events (NFP, CPI, FOMC, PPI, GDP, Powell speech)
+  with in-memory 5-minute caching and graceful fail-open.
+- **SQLite WAL Checkpoint & Pruning (`db.checkpoint_wal()`, `db.prune_old_data()`, `POST /api/maintenance/prune`)**:
+  Manual and scheduled database maintenance to control disk bloat on `/mnt/c`,
+  flushing WAL journals (`PRAGMA wal_checkpoint(TRUNCATE)`) and pruning old candles,
+  heartbeats, and spread history beyond configured retention windows.
+
+# 23. Phase 2 System Improvements (2026-10-02)
+
+- **1.5R Partial Profit Scale-Out & Breakeven Ratchet**:
+  Added to `TradeManager.mqh`. When an active basket gains $\ge 1.5\text{R}$
+  (where $\text{R} = |\text{entry} - \text{initial\_sl}|$, tracked via global `XAU_INITIAL_R_<login>_<symbol>`),
+  the EA calls `m_trade.PositionClosePartial(ticket, lots * 0.50)` on the oldest leg,
+  ratchets remaining stop to breakeven (`entry`), and posts `partial_close` to `/trade-event`.
+  Guarded by restart-safe `XAU_PARTIAL_TAKEN_<login>_<symbol>` so it executes exactly once per basket.
+- **Stagnation Exit in Dead Volatility**:
+  Added to `TradeManager.mqh`. If an open position stays trapped for $\ge 20$ bars
+  within $\pm 0.20\text{R}$ chop and `adx_value < 10.0` (provided by `CRiskManager::GetCurrentAdx()`,
+  implemented in `RiskManager.mqh`),
+  the EA closes all legs via `CloseAll("stagnation exit")`, freeing margin and
+  preventing drawdown bleed in non-trending sessions.
+- **AI Dynamic Few-Shot Setup Retrieval**:
+  `SignalDb::similar_historical_setups(regime, signal, limit=3)` queries past
+  `ai_grades` where `ai_correct` and `outcome_move` are resolved. Matches against
+  the current bar's regime and signal direction, injecting concrete historical precedents
+  into `ctx["similar_historical_setups"]` so DeepSeek reasons with in-context empirical evidence.
+- **Shared Frontend Chart Component (`static/chart_shared.js`)**:
+  Centralized Lightweight Charts options, palette constants, candlestick styles,
+  indicator overlays (EMA 9/21/55/200, HalfTrend, Bollinger Bands), and real-time
+  trade band lines (`window.XAUChart`). Shared between `dashboard.html` and `miniapp.html`.
+- **Telegram Rich Trader Actions (`RICH_TRADE_KB`)**:
+  Trade notifications provide inline action buttons: `[🔴 EXIT — close trade]`,
+  `[🔒 Lock BE]` (moves stop to entry), and `[✂️ Close 50%]` (partial scale-out).
+  Dispatched via `close_half` and `move_sl_be` proposals on the EA's heartbeat command rails.
+
+# 24. HTF Filter Strengthening & Volume Profile Engine (2026-10-04)
+
+- **Strengthened Higher-Timeframe Filter**:
+  `HtfChopOnly` in `XauAssistant.mq5` default set to `false`, enforcing higher-timeframe
+  EMA agreement all day across all market sessions rather than only in choppy conditions.
+  Runtime authority remains `htf_enforce` in `SignalDb` (`"off"`, `"M15"`, `"M30"`, `"H1"`),
+  enabling one-click macro alignment to the H1 anchor trend.
+- **Volume Profile (VPVR) Engine on MT5 (`VolumeProfile.mqh`)**:
+  Calculates Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL)
+  across configurable lookback bars (default 100).
+  Renders a vertical histogram projecting from the entry bar to the right edge with:
+  - Gold solid line for POC (`xau_vp_poc`)
+  - Cornflower blue dashed lines for VAH (`xau_vp_vah`) and VAL (`xau_vp_val`)
+  - Color-differentiated histogram bars (amber for POC, dodger blue for Value Area, slate for rejection tails).
+  Triggered on initial chart load, on every HalfTrend BUY/SELL confirm, and on trade execution in `UiSink.mqh`.
+- **AI Context Grounding (`agent_context.py` & `agent.py`)**:
+  - `compute_volume_profile`: computes POC, VAH, VAL, and price location (`above_vah`, `below_val`, `at_poc`, `inside_value_area`).
+  - `compute_mtf_alignment`: calculates top-down trend alignment across M5, M15, and H1 (`3/3_STRONG_BULLISH`, `3/3_STRONG_BEARISH`, etc.).
+  - DeepSeek supervisor system prompt instructs the agent to avoid buying into POC/VAH ceilings or selling into POC/VAL floors, and heavily penalize counter-trend entries against the H1 anchor.
+# 25. SOTA Chart Visual Redesign — Clean Institutional S/R & Volume Profile (2026-10-08)
+
+- **De-cluttered S/R Battleground Engine (`SrBoxes.mqh`)**:
+  - `SrNearestOnly = true`: Replaces the 18-box gridlock with an active battleground filter. Only draws the nearest active Resistance above current price and the nearest active Support below current price per tier. Distant and broken zones are hidden from the visual display while staying fully seeded in memory for strategy and agent math.
+  - `SrMaxSpanBars = 40`: Restricts historical zone projection to the last 40 bars (approx. 3.5 hours on M5), keeping past candlestick history clean and unobstructed.
+  - Box Height Precision for Top-Down Analysis: Reduced `SrMinHeightAtr` from `0.15` to `0.05` and `SrMaxHeightAtr` from `0.60` to `0.20`. Added `SrVisualMaxHeightPts = 250` ($2.50 = 25 pips cap): resistance ceilings are anchored to the exact swing high (`z.hi`) and support floors to the exact swing low (`z.lo`), preventing higher-TF (H1/H4) zones from ballooning into 100-200 pip barn doors that obscure execution price action on M5.
+  - Margin Badge Anchoring: Moved zone labels (`R M15 x2`, `S H1 x3`) from on-candle positions to `now + 3 * barSecs` with `ANCHOR_LEFT_LOWER`/`ANCHOR_LEFT_UPPER`, placing them cleanly in the right margin beside the price scale.
+  - Fully backward compatible with `test_chart_spec.py` outline-only specifications.
+- **Institutional Volume Profile (VPVR) Redesign (`VolumeProfile.mqh`)**:
+  - `VpAnchor = VP_ANCHOR_RIGHT_MARGIN`: Pins histogram bars to the right chart margin projecting leftward (`baseEnd - widthInBars * barSecs`), completely leaving current and future candles visible and unobstructed.
+  - `VpTheme = VP_THEME_INSTITUTIONAL`: Replaced blinding cyan with a muted dark slate palette (`C'38,55,80'` Value Area, `C'24,30,42'` outer tail, `C'245,158,11'` Amber Gold POC).
+  - `VpShowDelta = true`: Real-time order flow volume delta breakdown on each horizontal price bin — splits each bar into buyer volume (`C'34,115,74'` emerald) and seller volume (`C'140,42,50'` crimson).
+  - Direct Price Badges: Renders clear badges on the right price scale for `POC <price>`, `VAH <price>`, and `VAL <price>`.
+  - Dynamic Bar Refresh: Automatically refreshes right margin anchoring on every closed bar in `XauAssistant.mq5::ProcessBar()`.
+
+# 26. TradeManager Protection & Execution Enhancements (2026-10-08)
+
+- **S/R Wall Pyramid Lockout (`SrPyramidGuard`, `SrPyramidRoomAtr`)**:
+  - Injected `CSrZoneSet*` into `CTradeManager` (`SetSrZones(&g_srZones, SrTiers, SrPyramidRoomAtr, SrPyramidGuard)`).
+  - Before opening any pyramid add, `TradeManager::Manage()` queries `m_srZones.Verdict(dir, price, roomPts, tiers, wallTier)`.
+  - If opposing S/R wall is detected within `SrPyramidRoomAtr` (default `1.0` ATR), the pyramid add is strictly blocked (`TradeManager: pyramid add BLOCKED — opposing Support/Resistance wall within 1.0 ATR`). This prevents adding short into a major Support floor or adding long into a major Resistance ceiling.
+- **Prolonged Pyramid Add Trigger (`first_add_trigger_atr = 3.0`)**:
+  - Updated `first_add_trigger_atr` in `config/strategy.json` and `FirstAddTriggerATR` in `XauAssistant.mq5` from `2.0` to `3.0` ATR (enforced by `test_strategy_config.py`).
+  - Ensures the trade proves itself deeply and clears immediate intraday chop before adding extra exposure.
+- **Initial Profit Harvest at S/R Wall or 1.5R (`EnablePartialScaleOut`, `PartialScaleOutR`, `PartialScaleOutPct`)**:
+  - Enhanced partial scale-out triggers when advance $\ge 1.5\text{R}$ **OR** when price arrives at an opposing S/R zone while in profit $\ge 0.8\text{R}$.
+  - Immediately closes 50% of the oldest leg (`ClampToVolume(oldestVol * 0.50)`), banks realized profit, and ratchets the remaining stop to Breakeven (`oldestOpenPx`).
+- **Heavy Reversal Exit (`EnableReversalExit`, `ReversalMinPeakAtr`, `ReversalThresholdAtr`)**:
+  - Continuous peak advance tracking (`PeakAdvanceKey() = "XAU_PEAK_ADV_<login>_<symbol>"`).
+  - If a trade gains $\ge 1.5$ ATR advance (`ReversalMinPeakAtr`), and subsequently pulls back by $\ge 1.0$ ATR from its peak (`ReversalThresholdAtr`), `CloseAll` exits the basket (`"heavy reversal exit (peak=X ATR, pullback=Y ATR)"`), preserving accumulated profit instead of allowing a sharp reversal to wipe out gains.
+- **Trend-Continuation Re-Entry (`EnableContinuationReentry`, `CheckContinuationReentry`)**:
+  - When a basket exits on heavy reversal while the higher-level strategy condition remains intact, `ReentryArmedKey()` is armed.
+  - On subsequent bar close, if momentum rotates back in the trend direction (bear candle below EMA for SELL, bull candle above EMA for BUY) and S/R path is clear, `TradeManager` triggers an automatic continuation re-entry with fresh 0.03 lots and fresh ATR stop.
+- **Standardized Fixed 0.03 Lot Sizing (`UseFixedLot`, `FixedLots = 0.03`)**:
+  - Enabled fixed 0.03 lot sizing across entries and subsequent adds (`ClampToVolume(0.03)`).
+  - Unlocked full `Manage()` functionality (S/R guards, partial scale-outs, reversal exits, and trailing locks) for fixed lot baskets.
+
+# 27. Multi-Asset (Gold & Bitcoin) Coexistence in a Single Bot Architecture (2026-10-18)
+
+- **Dedicated Bitcoin Strategy Lanes (`iziBit5` & `iziBit15`)**:
+  - Added `iziBit5` (M5, 300s, EMA 55) and `iziBit15` (M15, 900s, EMA 50) strategy blocks in `config/strategy.json` and registered inputs in `mt5/Experts/XauAssistant.mq5`.
+  - Registered in `STRATEGY_LANES` and `LANE_ALLOWLIST` in `service/app/agent_actions.py`.
+  - Enforced by full parity test suite (`test_strategy_config.py`).
+- **Multi-Terminal / Multi-Chart Heartbeat Routing**:
+  - `HeartbeatRequest` carries `symbol: str = "XAUUSD"` (e.g. `"XAUUSD"` or `"BTCUSD"`).
+  - Service maintains per-symbol heartbeat dict in `app.state.latest_heartbeats[symbol] = (now, hb)` while maintaining backward-compatible `app.state.latest_heartbeat` pointer.
+  - Heartbeat responses route commands to the targeted chart via `target_symbol`. The EA ignores commands targeted at another symbol.
+- **Symbol-Scoped Database & Trade Reporting**:
+  - `trades` schema includes indexed `symbol TEXT DEFAULT 'XAUUSD'`.
+  - `_basket_legs` queries in `service/app/trade_report.py` are strictly isolated by `symbol` so a close on Gold never truncates an open Bitcoin basket.
+  - `recent_trades(symbol=...)` supports optional symbol filtering.
+- **Telegram Channel Multi-Asset Badging**:
+  - Single Telegram channel shared between Gold and Bitcoin.
+  - Alerts, reports, proposals, and closed trade P/L messages carry distinct symbol badges (`🥇 XAUUSD` vs `₿ BTCUSD`).
+  - `/status` displays dual-asset health when multiple EAs are connected (`EA: 🟢 connected · ₿ BTCUSD 🟢 (0s ago) · 🥇 XAUUSD 🟢 (0s ago)`), displaying active strategy, drawdown, and open positions per asset.
+- **24/7 Trading Window for Crypto**:
+  - `InTradingWindow()` in `RiskManager.mqh` returns `true` when `m_winStart == 0 && m_winEnd >= 24`, enabling 24/7 continuous trading on crypto without rollover cuts.
+  - Pre-break flattening (`FlattenBeforeBreakMin`) is bypassed when `FlattenBeforeBreakMin <= 0`.
+- **Default Chart & Timeframe Alignment (2026-10-20)**:
+  - Gold (`XAUUSD`) startup defaults to M15 (`scripts/mt5-start.ini` Period=M15, `TradeTimeframe = PERIOD_M15`, `ActiveStrategy = "izi15"`).
+  - Bitcoin auto-spawns on M5 (`BtcTimeframe = PERIOD_M5`, `effectiveStrat = "iziBit5"`).
+  - `SymbolExist()` in `XauAssistant.mq5` takes an lvalue boolean (`is_custom`) parameter by reference to satisfy MetaEditor strict syntax under MQL5.
+  - `launch.py` automatically provisions both `chart01.chr` (XAUUSD, M15) and `chart02.chr` (BTCUSD, M5) with `expertmode=1` and `path=Experts\XauAssistant.ex5` into the Default chart profile (`ensure_chart_templates()`), guaranteeing both charts hook into the EA seamlessly upon launcher execution.
+  - Multi-series candles and overlays: `service/app/routers/ea.py` and `service/app/routers/ui.py` maintain in-memory series storage `app.state.candles_by_series: dict[tuple[str, str], list[Candle]]`, ensuring BTCUSD M5 and M15 candles coexist concurrently with XAUUSD M15 and M5 candles without clobbering each other.
+  - `ui_candles` and `ui_overlays` query the specific `(symbol, timeframe)` pair, falling back to SQLite `candles` table.
+  - `launch.py` automatically seeds 300 initial bars for both symbols across M5 and M15 on startup (`seed_candles_cache`), populating the charts immediately on fresh attach.
+  - Fixed `open_count` attribute lookup on `HeartbeatRequest` in `service/app/routers/ea.py`.
+  - Added `SetTimeframe(tf)` to `CAiApi` and `CUiApi` in MQL5 so `g_api` and `g_ui` dynamically update their bar copy timeframe when switching strategies or starting on an asset's preferred timeframe.
+  - Web dashboard (`service/app/static/dashboard.html`) auto-scales and auto-fits price scales when switching between Gold (~$4,120) and Bitcoin (~$81,500), defaults BTC to `iziBit5` (M5), and filters trades by `symbol`.
+
+
+# 28. System Optimization & Modularity Refactoring (2026-10-24)
+
+- **Centralized Multi-Asset Registry (`service/app/asset_registry.py`)**:
+  - Encapsulated asset specifications (`AssetSpec`) including canonical symbol names, aliases (e.g. `XAUUSD.raw`, `BTCUSD.a`), base display names, price formatting decimals, point multipliers, and Telegram/UI badges.
+  - Replaced duplicate symbol-formatting logic across `trade_report.py` and `tg/formatters.py` with unified `format_asset_price()` and `format_asset_badge()`.
+- **Unified Candle Buffer Manager (`service/app/candle_buffer.py`)**:
+  - Replaced fragmented candle list dictionaries with `CandleBufferManager` (`service/app/candle_buffer.py`), providing thread-safe sliding-window merge, LRU caching, and per-series isolation across `(symbol, timeframe)`.
+  - Initialized on `app.state.candle_buffers` during application lifespan.
+- **Agent Supervisor Extraction (`service/app/agent_supervisor.py`)**:
+  - Extracted 160+ lines of agent evaluation scheduling, caching, context generation, and offline recovery loops from `service/app/routers/ea.py` into dedicated `service/app/agent_supervisor.py`.
+  - Maintained backward compatibility re-exports in `ea.py` (`agent_supervisor`, `schedule_grade`, `agent_lookup`).
+- **Telegram Background Service Extraction (`service/app/tg/service.py`)**:
+  - Extracted `telegram_poller`, `pinned_editor`, `send_chart_snapshot`, `send_manual`, and `mirror_command_text` out of `service/app/main.py`.
+  - Maintained backward-compatible aliases and monkeypatchable hooks on `app.main`.
+- **Frontend Decoupling (`dashboard.html` / `dashboard.css` / `dashboard.js`)**:
+  - Extracted 800+ lines of inline CSS into `service/app/static/dashboard.css`.
+  - Extracted 1,360+ lines of inline JavaScript into `service/app/static/dashboard.js`.
+  - Lean `dashboard.html` reduced from 2,410 lines to 253 clean semantic markup lines, linking external stylesheet and script bundle.
+
+
+# 29. Telegram MiniApp & Chart Snapshot Fix (2026-10-24)
+
+- **Cloudflare Tunnel Deployment (`cloudflared`)**:
+  - Added `tunnel` service (`cloudflare/cloudflared:latest`) to `compose.yaml` proxying `http://miniapp:9101`.
+  - Bypasses ngrok free-tier `ERR_NGROK_6024` browser interstitial warning that blocked Telegram's in-app WebApp browser view.
+  - Configured `MINIAPP_DEV_BYPASS=true` in `service/.env` allowing seamless WebSocket and candle history access inside Telegram WebApp without 403 viewer auth blocks.
+- **Enhanced Bot Chart Snapshot & MiniApp Inline Action**:
+  - `send_chart_snapshot` in `service/app/tg/service.py` renders and sends the live candlestick chart image directly into Telegram for `/chart` and `📈 chart`, attaching an inline `[📈 Open Live Chart]` button when `MINIAPP_PUBLIC_URL` is set.
+  - Added dedicated `/snap`, `/snapshot`, `/photo` commands for direct high-resolution static chart captures.
+
+
+# 30. MT5 Risk/Reward Position Tool & Redraw Restoration (2026-10-24)
+
+- **Risk/Reward Position Tool Parity (`mt5/Include/XauAssistant/TradeBoxes.mqh`)**:
+  - Resolved issue where losing trades or drawdown periods deleted the green target profit box (`ProfitName`), leaving only the red stop-loss zone visible.
+  - Both Red Risk zone (Entry <-> SL) and Green Reward zone (Entry <-> TP 1.5R) are persistently rendered, updated, and frozen at exit upon trade completion.
+  - Added dashed lines for Take Profit (`TpName`), Stop Loss (`SlName`), and Entry price (`EntryName`) with price labels.
+- **Historical & Active Trade Auto-Redraw**:
+  - Added `RecoverLastTradeFromHistory(magic)` to scan MT5 deal history (`DEAL_ENTRY_OUT` / `DEAL_ENTRY_IN` / `ORDER_SL`) when the terminal or EA restarts while flat, restoring the last trade's risk/reward projection tool onto the chart.
+  - `TradeManager`'s `BasketProfit()` and new `CloseTicket(ulong tk)` are exposed publicly to support remote per-ticket closures and accurate P&L calculation.
+- **MetaEditor Wine Compilation Sync (`launch.py`)**:
+  - Synced EA source file copying into `install_root / "MQL5"` (`Program Files/MetaTrader 5/MQL5`) where Wine MetaEditor compiles from, ensuring newly built `.ex5` binaries are fresh and synchronized across both terminal and data directories.
+
+
+# 31. MT5 Dual-Chart Auto-Launch, Chart Shift & iziBot Naming Architecture (2026-10-24)
+
+- **System and EA Renaming (`iziBot`)**:
+  - Unified system and EA naming under `iziBot` (`mt5/Experts/iziBot.mq5` and compiled binary `iziBot.ex5`).
+  - Strategy lane nomenclature unified across assets:
+    - Gold (`XAUUSD`): `iziGold5` (M5) and `iziGold15` (M15).
+    - Bitcoin (`BTCUSD`): `iziBit5` (M5) and `iziBit15` (M15).
+  - Backward compatibility aliases: `STRATEGY_ALIASES` in `service/app/config.py` and `db._migrate_strategy_ids` automatically normalize legacy `izi5` $\rightarrow$ `iziGold5` and `izi15` $\rightarrow$ `iziGold15`.
+- **Default Multi-Chart Auto-Launch (`XAUUSD M15` + `BTCUSD M5`)**:
+  - `scripts/mt5-start.ini` configures `[StartUp] Profile=Default`, `Expert=iziBot`, `Symbol=XAUUSD`, `Period=M15`.
+  - `launch.py` provisions both `chart01.chr` (XAUUSD, M15, id=130000000000000001) and `chart02.chr` (BTCUSD, M5, id=130000000000000002) with `<expert> name=iziBot path=Experts\iziBot.ex5` into the Default chart profile.
+  - Reciprocal Auto-Spawn in MQL5: `iziBot` on Gold auto-spawns Bitcoin M5 if missing, and `iziBot` on Bitcoin auto-spawns Gold M15 if missing, ensuring both charts always coexist.
+- **Chart Shift & Auto-Scroll Parity**:
+  - Both charts automatically load with "Shift end of the chart from right border" enabled (`CHART_SHIFT = true`, 20% margin: `CHART_SHIFT_SIZE = 20.0`) and autoscroll (`CHART_AUTOSCROLL = true`) set programmatically in `OnInit()`, in templates (`iziBot.tpl`), and in profile files (`chart01.chr`, `chart02.chr`).
+
+
+
+
+
+
+
+# 32. Daily Exposure Removal (2026-10-24)
+
+- **Daily Exposure Limit Disabled (`max_daily_exposure_min = 0`)**:
+  - Daily exposure time budget removed across the entire stack (`config/strategy.json`, `RiskManager.mqh`, `models.py`, `kv_profile.py`, and `dashboard.js`).
+  - `RiskManager.mqh`: `m_maxExpoMin <= 0` bypasses the daily exposure check in `CanEnter`, resets the MT5 global variable `ExpoKey()` to `0.0`, and outputs `expo OFF` in status telemetry.
+  - Runtime and EA heartbeats report `exposure_min: 0`, and new entries are never gated by open-position duration.
+
+
+# 33. Unified Hybrid Sizing & Trade Management Engine (2026-10-24)
+
+- **Dual-Stage Execution Model (`entry_mode = "hybrid"`)**:
+  - Combines the rapid profit-taking, stop-loss de-risking, and disciplined capital preservation of ADR mode with the open-ended trend-riding and heavy reversal protection of 0.03 Fixed mode.
+  - **Sizing**: Uses dynamic risk-calibrated sizing (`CalcLots`) anchored to the 0.03 baseline (clamped to $[0.02, 0.05]$ lots on XAUUSD, $\ge 0.01$ lots on BTCUSD).
+  - **Stage 1 (ADR Harvest & De-Risking)**:
+    - At $\ge 1.5\text{R}$ advance or opposing S/R wall touch, closes 50% of position volume to lock in profit.
+    - Immediately ratchets Stop Loss to Breakeven (`oldestOpenPx`).
+    - Handles indivisible micro-lots (e.g. 0.01 lot on BTCUSD) gracefully by moving SL to Breakeven directly without an impossible volume cut.
+    - Sets MT5 global variable `PartialTakenKey() = 1.0`.
+  - **Stage 2 (Trend Runner)**:
+    - The remaining 50% volume is converted into a 100% risk-free runner.
+    - Bypasses the premature $+2\%$ account target hard take-profit cut-off (`m_targetPct`).
+    - Lets the trade ride the macro trend until a definitive HalfTrend reversal or Heavy Reversal Exit trigger.
+    - Trailing Lock and ATR ratchet remain active behind the runner to protect accumulated paper gains.
+  - **Smart Pyramiding (Add-to-Winners)**:
+    - Pyramid adds are permitted ONLY in Stage 2 after `PartialTakenKey() >= 0.5` (initial leg must already be de-risked and in profit).
+- **Full Stack Parity**:
+  - **MQL5 (`TradeManager.mqh`, `iziBot.mq5`)**: Added `ENTRY_HYBRID = 2`, parses `"hybrid"` from runtime config, exposes `"hybrid"` in heartbeat payload.
+  - **Backend (`models.py`, `kv_profile.py`)**: `entry_mode` accepts `Literal["adr", "fixed", "hybrid"]` (defaulting to `"adr"` when unconfigured in SQLite, `"hybrid"` active in production).
+  - **Dashboard & Telegram UI**: Added `HYBRID` segmented button to web dashboard (`dashboard.html`, `dashboard.js`) and `⚡ HYBRID` button to Telegram `/mode` inline menu (`tg/formatters.py`, `tg/callbacks.py`).
+  - **Backtest Engine (`scripts/backtest.py`)**: `--entry-mode hybrid` accurately models Stage 1 scale-out at 1.5R, stop move to BE, and trailing runner mechanics.
+
+
+# 34. Auto-Adaptive Hybrid Sizing & Risk Management ($50 – $5,000) (2026-10-24)
+
+- **Continuous Equity Tier Adaptation (`AdaptiveVolumeCeiling`, `AdaptiveMaxPositions`)**:
+  - Replaced static `[0.02, 0.05]` volume clamping with continuous equity-scaled dynamic guardrails across all balances:
+    - **Micro Tier (≤ $200)**: Volume strictly clamped to `0.01` broker minimum floor. Pyramid capacity capped at `max_pos = 1` (single bullet only, no margin over-leverage). Stage 1 de-risks indivisible 0.01 lots at $\ge 1.5\text{R}$ by ratcheting SL directly to Breakeven (`oldestOpenPx`) without order rejection, arming an early trailing lock.
+    - **Mini / Growth Tier ($200 – $500)**: Volume clamped to `[0.01, 0.02]` lots. At 0.02 lots, true 50% partial profit banking is unlocked (0.01 banked to balance, 0.01 risk-free runner). Pyramid capacity capped at `max_pos = 2` (initial entry + 1 add).
+    - **Core Tier ($500 – $2,000)**: Volume clamped to `[0.02, 0.05]` lots (centered around the `0.03` anchor). Full 50% partial bank at 1.5R + BE stop. Pyramid capacity allows full 3-leg ladder (`max_pos = 3`).
+    - **Pro / Expansion Tier ($2,000+)**: Removes artificial 0.05 lot ceiling. Maximum volume scales dynamically via $\min(\max(E \times 0.000024, 0.05), 0.15)$ up to `0.12+` lots, enabling natural geometric compounding at 1% risk per trade.
+- **Micro-Account Daily Loss Brake Protection (`RiskManager.mqh`)**:
+  - `DailyLossThresholdUsd()` implements an adaptive floor: `MathMax(dayStartBal * maxDailyLossPct / 100.0, MathMin(dayStartBal * 0.20, 15.0))`. Prevents a single normal 0.01 lot stop-out (~$10) on a $50–$100 account from tripping the 3% daily brake into a premature full-day trading lockout.
+- **Full Stack Parity & Live Telemetry**:
+  - `hybrid` is the permanent, universal default across all strategies and runtime persistence (`entry_mode()` in `kv_profile.py` and `HeartbeatResponse` in `models.py` default to `"hybrid"`).
+  - Web Dashboard (`dashboard.html`, `dashboard.js`): Removed the redundant manual Sizing Mode segmented controls (ADR / 0.03 buttons) from the Gates menu; the bot automatically operates in Hybrid Auto-Adaptive mode for all assets and lanes.
+  - `config.py`: Added `calculate_adaptive_tier(equity)` returning typed tier, description, and dynamic caps.
+  - API endpoints `/api/state` and `/api/config` expose `adaptive_tier` to clients.
+  - Telegram bot (`formatters.py`) annotates `/mode` and `/status` with the active adaptive tier and lot range.
+  - Backtest engine (`scripts/backtest.py`): models adaptive lot sizing and pyramid caps down to $50 starting balance (`HYBRID_MIN_BALANCE = 50.0`).
+
+
+# 35. Intelligent Weekend Market Routing & Gold Sleep Guard (2026-10-24)
+
+- **Weekend Dynamics & Core Design**:
+  - Gold (`XAUUSD`) closes Friday ~22:00 UTC (NY market close) through Sunday ~22:00 UTC (Tokyo/Sydney pre-market open).
+  - Bitcoin (`BTCUSD`) trades 24/7/365 without weekend shutdown.
+  - Rather than destructively removing or closing the Gold chart profile in MT5, the system applies **Intelligent Weekend Routing**:
+    - Both charts (`XAUUSD M15` and `BTCUSD M5`) remain permanently loaded with `iziBot.ex5` in MT5.
+    - On weekends, routing layers dynamically pivot operator focus to **`BTCUSD` / `iziBit5`** while Gold enters a clean weekend sleep state.
+- **MQL5 EA Weekend Guard (`RiskManager.mqh`)**:
+  - `IsWeekendClosed()`: Returns `true` if symbol is non-crypto (e.g. Gold) and current server time falls on Saturday (`day_of_week == 6`) or Sunday before 23:00 server (`day_of_week == 0 && hour < 23`). Crypto symbols (`BTC`, `ETH`) are exempted and remain active 24/7.
+  - `CanEnter()`: Evaluates `IsWeekendClosed()` first, rejecting entry attempts with `why = "weekend market closed"`.
+  - `InTradingWindow()`: Returns `false` on weekends for non-crypto symbols, ensuring `window_open = false` in the heartbeat payload.
+- **Service & API Routing (`config.py`, `routers/ui.py`)**:
+  - `is_weekend_market(dt_now=None)`: Central UTC validator returning `True` between Friday $\ge 22:00$ UTC and Sunday $< 22:00$ UTC.
+  - `get_market_status(symbol, dt_now=None)`: Returns structured open/closed status, reopen countdown (`"Sunday 22:00 UTC"`), and schedule description.
+  - `GET /api/state`: Exposes `is_weekend` (boolean) and `market_status` (dict for XAUUSD and BTCUSD).
+- **Web Dashboard (`dashboard.html`, `dashboard.js`, `dashboard.css`)**:
+  - **Auto-Switch**: On weekend startup or poll, if the operator has not explicitly pinned Gold in the current browser session (`sessionStorage`), the cockpit automatically defaults active view to `BTCUSD` and `iziBit5`.
+  - **Market Closed Banner**: If the operator views `XAUUSD` during the weekend, an amber banner appears: `[🌙 XAU MARKET CLOSED • Reopens Sunday 22:00 UTC • Crypto 24/7 Active]` with a 1-click `Switch to BTCUSD` action button.
+  - **Trade Guard**: Clicking `+ ORDER` while viewing Gold during the weekend warns that the market is closed and prevents failed transmission.
+  - **Telemetry HUD**: Telemetry status chip shows `WEEKEND CLOSED` for Gold and `24/7 OPEN` for Bitcoin.
+- **Telegram Bot (`tg/service.py`, `tg/formatters.py`)**:
+  - `/chart` and `/snap` commands automatically default to `BTCUSD` with caption tag `· ⚡ Weekend Crypto Active` during weekend hours. Explicit symbol queries (e.g. `/chart gold` or `/chart btc`) remain supported.
+  - `/status` displays Gold as `· 🌙 CLOSED (Weekend — reopens Sun 22:00 UTC)` and Bitcoin as `· ⚡ RUNNING (24/7)`.
+
+
+# 36. Telegram Output Sanitation & 2-Second Glanceable Readability (2026-10-24)
+
+- **Unrendered HTML/XML Leakage Fix (`TelegramClient`)**:
+  - `strip_html_tags(text)` added to `tg/client.py` using `re.compile(r"</?[a-zA-Z][a-zA-Z0-9_-]*(?:\s+[^>]*)?>")`:
+    - Automatically cleanses `<b>`, `</b>`, `<code>`, `</i>`, etc. before calling `sendMessage`, `editMessageText`, `sendPhoto`, or `answerCallbackQuery`.
+    - Preserves mathematical/logic comparisons (e.g. `age < 30`, `0 < x < 10`).
+    - Purged explicit raw HTML tags from `commands.py` (`_handle_asset_toggle`, `_cmd_start`, `_cmd_trade`) and `formatters.py` (`_format_ai`).
+- **2-Second Glanceable Format (`formatters.py`)**:
+  - **Settings (`/mode`, "⚙️ Settings" button)**: Replaced verbose multi-paragraph explanations with a 4-bullet glanceable summary:
+    - `⚙️ Settings`
+    - `• Execution mode: AUTO (AUTO executes · MANUAL proposes)`
+    - `• Entry mode: HYBRID · PRO (≤0.10L)`
+    - `• 🥇 Gold: iziGold15`
+    - `• ₿ Bitcoin: iziBit5`
+  - **Gates / Confirmation Rules (`/agree`)**: Replaced 30-line essay with a compact 4-line status:
+    - `🎛️ Strategy Confirmation Gates & Filters`
+    - `• HTF Bias (M5): CHECK ONLY (off, reported)`
+    - `• EMA-200 (M5/M15): CHECK ONLY (off, reported)`
+    - `• RSI 70/30 (M15 lane only): ENFORCING`
+    - `• Pyramid adds on the M15 lane: OFF (pure ride)`
+  - **AI Supervisor (`/ai`)**: Replaced raw HTML tags with a concise 4-line overview.
+  - **Asset Security Toggles (`Stop/Play`)**: Converted into clean, emoji-guided 3-line alerts (`⏹️ ₿ BTCUSD HALTED & SECURED`, `▶️ ₿ BTCUSD RESUMED`).
+
+
+
+

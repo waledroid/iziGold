@@ -22,7 +22,7 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def _hb(positions=(), ts=None, bar_c=4640.55, active="halftrend_m15_v1",
+def _hb(positions=(), ts=None, bar_c=4640.55, active="izi15",
         entry_mode="fixed"):
     return (ts if ts is not None else time.time(), types.SimpleNamespace(
         positions=list(positions), active_strategy=active,
@@ -72,7 +72,7 @@ def test_trade_refuses_when_basket_open(client):
 def test_trade_refuses_when_entry_already_in_flight(client):
     client.app.state.latest_heartbeat = _hb()
     db = client.app.state.db
-    pid = db.create_proposal("entry", "BUY", "halftrend_m15_v1", 4640.0, None)
+    pid = db.create_proposal("entry", "BUY", "izi15", 4640.0, None)
     db.set_proposal_status(pid, "approved", expected="pending")
     reply = handle_command("/trade", client.app)
     assert isinstance(reply, str) and "already" in reply
@@ -92,7 +92,7 @@ def test_mtrade_tap_queues_approved_entry(client):
     assert row is not None
     assert row["direction"] == "BUY"
     assert row["price"] == 4640.55
-    assert row["strategy_id"] == "halftrend_m15_v1"
+    assert row["strategy_id"] == "izi15"
     assert row["tg_message_id"] == 77
     assert edit is not None and "BUY" in edit
 

@@ -22,6 +22,20 @@ def test_exec_mode_default_and_set(db):
         db.set_exec_mode("yolo")
 
 
+def test_runtime_config_is_one_effective_sqlite_view(db):
+    config = db.runtime_config()
+    assert config["execution_mode"] == "auto"
+    assert config["entry_mode"] == "hybrid"
+    assert config["risk_per_trade_pct"] == 1.0
+    assert config["allow_live_trading"] is True
+
+    db.set_exec_mode("manual")
+    db.set_entry_mode("fixed")
+    config = db.runtime_config()
+    assert config["execution_mode"] == "manual"
+    assert config["entry_mode"] == "fixed"
+
+
 def test_get_choice_set_choice_generic_pair(db):
     """exec_mode/entry_mode/htf_enforce are all thin wrappers over this
     generic toggle shape (db.py). A stored value outside `choices` (e.g. a
@@ -52,11 +66,11 @@ def test_exec_mode_and_entry_mode_reimplemented_on_get_choice(db):
     db.set_kv("exec_mode", "garbage")
     assert db.exec_mode() == "manual"
     db.set_kv("entry_mode", "garbage")
-    assert db.entry_mode() == "adr"
+    assert db.entry_mode() == "hybrid"
 
 
 def test_proposal_lifecycle(db):
-    pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
+    pid = db.create_proposal("entry", "BUY", "izi5", 4066.5, None)
     row = db.get_proposal(pid)
     assert row["status"] == "pending" and row["direction"] == "BUY"
     assert db.pending_proposal()["id"] == pid
@@ -151,7 +165,7 @@ def test_pop_approved_command_concurrent_exactly_once(tmp_path):
     Uses threading.Barrier to synchronize concurrent access and verifies exactly-once delivery."""
     for iteration in range(10):  # Loop to catch race conditions that might be intermittent
         db = SignalDb(str(tmp_path / f"t_{iteration}.db"))
-        pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
+        pid = db.create_proposal("entry", "BUY", "izi5", 4066.5, None)
         db.set_proposal_status(pid, "approved")
 
         results = {}
@@ -183,7 +197,7 @@ def test_pop_approved_command_durability(tmp_path):
     Without commit(), a crash/restart would revert the change and re-deliver the command."""
     db_path = str(tmp_path / "durability.db")
     db = SignalDb(db_path)
-    pid = db.create_proposal("entry", "BUY", "halftrend_ema_v1", 4066.5, None)
+    pid = db.create_proposal("entry", "BUY", "izi5", 4066.5, None)
     db.set_proposal_status(pid, "approved")
 
     # Pop the command (should update status to 'dispatched' and commit)
@@ -217,4 +231,4 @@ def test_corrupt_entry_mode_degrades_to_the_default(db):
     """entry_mode picks HOW to size, not WHETHER to trade, so degrading to
     the default is right here -- both choices trade."""
     db.set_kv("entry_mode", "garbage")
-    assert db.entry_mode() == "adr"
+    assert db.entry_mode() == "hybrid"

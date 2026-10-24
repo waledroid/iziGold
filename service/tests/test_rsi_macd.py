@@ -80,16 +80,16 @@ def test_backtest_series_match_indicators():
             assert abs(a - b) < 1e-9
 
 
-def test_miniapp_serves_rsi_and_macd_series():
-    """Every TF tab's /api/history payload carries the sub-panel series
-    (owner 2026-09-02); the frontend panel plugins consume them."""
-    from app.miniapp import _indicator_series
+def test_miniapp_serves_rsi_without_macd_series():
+    """Every TF tab's /api/history payload carries RSI (owner 2026-09-02),
+    but MACD is no longer a chart series (owner 2026-10-01). The MACD math
+    itself remains covered above for strategy/agent/backtest consumers."""
+    from app.overlays import indicator_series
     rows = [{"t": 900 + 300 * i, "o": 1.0, "h": 2.0, "l": 0.5,
              "c": 100.0 + (i % 9) + i * 0.02, "v": 1} for i in range(120)]
     closes = [r["c"] for r in rows]
-    out = _indicator_series(rows, "M5")
+    out = indicator_series(rows, "M5")
     assert out["rsi"] == rsi(closes, 14)
-    line, sig, hist = macd(closes)
-    assert out["macd_line"] == line
-    assert out["macd_signal"] == sig
-    assert out["macd_hist"] == hist
+    assert "macd_line" not in out
+    assert "macd_signal" not in out
+    assert "macd_hist" not in out

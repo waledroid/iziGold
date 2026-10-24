@@ -92,14 +92,14 @@ class _KvDb:
         self.kv[key] = value
 
     def strategy_ids(self):
-        return ["halftrend_ema_v1"]
+        return ["izi5"]
 
 
 def _hb_ns(**over):
     base = dict(equity=4785.18, balance=4719.78, floating_pl=65.40,
                 positions=[], kill_switch=False, hwm=4800.0, exposure_min=5,
                 window_open=True, spread_points=25.0,
-                active_strategy="halftrend_ema_v1", algo_trading=True)
+                active_strategy="izi5", algo_trading=True)
     base.update(over)
     return types.SimpleNamespace(**base)
 
@@ -115,7 +115,7 @@ def test_status_redacted_hides_account_figures():
     text = handle_command("/status", app, redacted=True)
     for figure in ("4785.18", "4719.78", "4800", "drawdown"):
         assert figure not in text
-    assert "halftrend_ema_v1" in text          # strategy stays
+    assert "izi5" in text          # strategy stays
     assert "Protection armed" in text           # state stays, number goes
 
 
@@ -316,7 +316,7 @@ def test_mirror_helper_redacts_command_replies(linked_app):
     hb = {"equity": 4785.18, "balance": 4719.78, "floating_pl": 65.40,
           "positions": [], "kill_switch": False, "hwm": 4800.0,
           "exposure_min": 5, "window_open": True, "spread_points": 25.0,
-          "active_strategy": "halftrend_ema_v1"}
+          "active_strategy": "izi5"}
     client.post("/heartbeat", json=hb)
     text = main._mirror_command_text("/bal", main.app)
     assert text.startswith("👤 /bal")

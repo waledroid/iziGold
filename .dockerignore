@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+**/.venv
+service/.env
+*.db
+*.log
+*.pyc
+__pycache__
+.run
+backtest12m.html
+bars_max.json
+week.json
+m15_real.json

@@ -5,8 +5,8 @@ Unlike scripts/backfill_htf_agree.py (a HIGHER timeframe's EMA), the
 EMA-200 confirmation added 2026-08-22 is a SAME-timeframe check: BUY agrees
 when price is above the strategy's own EMA-200, SELL when below, read at
 the trade's own entry bar -- no buffer, no chop exception. The trading
-timeframe differs per strategy (M5 for halftrend_ema_v1, M15 for
-halftrend_m15_v1), so this script aggregates the M5 candle history into
+timeframe differs per strategy (M5 for izi5, M15 for
+izi15), so this script aggregates the M5 candle history into
 M15 for that lane the same way scripts/backtest.py's --tf M15 does.
 
 Candle history comes from a dump of the live terminal (see
@@ -30,8 +30,8 @@ EMA_LEN = 200
 # ids fall back to M5 (today's only other registered strategy,
 # boll_stochrsi, also trades the chart's TradeTimeframe = M5).
 STRATEGY_TF_SEC = {
-    "halftrend_ema_v1": M5,
-    "halftrend_m15_v1": M15,
+    "izi5": M5,
+    "izi15": M15,
 }
 
 

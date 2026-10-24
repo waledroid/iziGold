@@ -60,7 +60,7 @@ def test_the_no_op_strict_window_flag_is_visible_and_says_it_is_a_no_op():
 
 
 def test_the_experiments_blurb_does_not_claim_the_window_flags_are_off():
-    """--window-start/--window-end are the EA's REAL trading window (4-23),
+    """--window-start/--window-end are the EA's REAL trading window (4-22),
     not a study filter that defaults to OFF."""
     ap = _load_bt().build_parser()
     blurb = next(g.description for g in ap._action_groups

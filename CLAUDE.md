@@ -81,4 +81,4 @@ docs) may skip with an explicit statement.
 
 ## Current status
 
-Strategy layer is modular: strategies live in `mt5/Include/XauAssistant/Strategies/` behind `CStrategy` (with `Id()` and `StopPrice()`), registered in the EA's `OnInit`, all shadow-evaluated per bar (only `ActiveStrategy` trades/alerts). First real strategy: `halftrend_ema_v1`. The `/analyze` request carries `strategy_id` + `shadows`; SQLite tags every row and `stats()` reports per-strategy hit-rates. Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.
+Strategy layer is modular: strategies live in `mt5/Include/XauAssistant/Strategies/` behind `CStrategy` (with `Id()` and `StopPrice()`), registered in the EA's `OnInit`, all shadow-evaluated per bar (only `ActiveStrategy` trades/alerts). First real strategy: `izi5`. The `/analyze` request carries `strategy_id` + `shadows`; SQLite tags every row and `stats()` reports per-strategy hit-rates. Confidence/verdict thresholds are placeholder defaults awaiting Phase 4 calibration against the SQLite accuracy log.

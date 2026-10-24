@@ -18,13 +18,13 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def make_analyze_payload(signal="BUY", strategy_id="halftrend_ema_v1"):
+def make_analyze_payload(signal="BUY", strategy_id="izi5"):
     return {"symbol": "XAUUSD", "timeframe": "M15", "signal": signal,
             "strategy_id": strategy_id,
             "candles": [c.model_dump() for c in trend_candles(200)]}
 
 
-def _post_signal(client, signal, strategy_id="halftrend_ema_v1",
+def _post_signal(client, signal, strategy_id="izi5",
                  news_blackout=False):
     payload = make_analyze_payload()
     payload["signal"] = signal

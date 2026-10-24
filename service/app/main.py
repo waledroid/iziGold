@@ -4,334 +4,79 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import backtest_runner
+from app.agent import AgentClient, AgentError, build_context
 from app.analysis import analyze_forecast
+from app.basket import derive_basket_band
 from app.chart_cmd import merge_forming_bar
 from app.config import settings
 from app.db import SignalDb, profile_completion
 from app.forecaster import get_forecaster
-from app.indicators import bollinger, ema, halftrend
-from app.models import (AnalyzeRequest, AnalyzeResponse, HeartbeatRequest,
-                        HeartbeatResponse, NotifyRequest, ProposalResultRequest,
-                        TradeEventRequest)
+from app.models import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    HeartbeatRequest,
+    HeartbeatResponse,
+    NotifyRequest,
+    ProposalResultRequest,
+    TradeEventRequest,
+)
 from app.regime import classify_regime, last_atr
 from app.render import render_snapshot_chart
+from app import chart_spec, overlays, preview
 from app.sr_zones import sr_zones_from_db
-from app.telegram import (BRAKE_RESET_KB, EXIT_KB, EXIT_NOW_KB, PROPOSAL_KB,
-                          TARGET_KB, TelegramClient,
-                          format_proposal, handle_callback, handle_channel_post,
-                          handle_command, pinned_tick, set_active_client)
+from app.telegram import (
+    BRAKE_RESET_KB,
+    EXIT_KB,
+    EXIT_NOW_KB,
+    PROPOSAL_KB,
+    TARGET_KB,
+    TelegramClient,
+    format_proposal,
+    handle_callback,
+    handle_channel_post,
+    handle_command,
+    pinned_tick,
+    set_active_client,
+)
 from app.ticker import TickerState, load_ticker_state, ticker_tick
-from app.trade_report import (_basket_legs, _prune_screenshots,
-                              _report_trade_event, _trade_caption)
+from app.trade_report import (
+    _basket_legs,
+    _prune_screenshots,
+    _report_trade_event,
+    _trade_caption,
+)
 from app.verdict import combine
 
-# Fail-open swallows exceptions everywhere in this file, which is correct for
-# trading but used to make several of them invisible. The ones that indicate a
-# real defect (rather than a routine Telegram hiccup) are logged here instead
-# of vanishing -- uvicorn's own logger so they land in service/service.log.
+# Sub-routers & Services
+from app.agent_supervisor import agent_supervisor
+from app.candle_buffer import CandleBufferManager
+from app.routers.backtest import router as backtest_router
+from app.routers.stream import router as stream_router
+from app.routers.ea import router as ea_router, _CANDLE_WINDOW_CAP
+from app.routers.ui import router as ui_router, _OVERLAY_BUILDERS
+from app.tg.service import (
+    pinned_editor,
+    telegram_poller,
+)
+
 log = logging.getLogger("uvicorn.error")
 
-# /api/candles and /api/overlays serve from an accumulator, not the latest
-# /analyze payload alone -- the EA only resends its own rolling window each
-# post, so without merging, the dashboard chart could never scroll past what
-# fit in a single post. Capped so memory/response size stay bounded.
-_CANDLE_WINDOW_CAP = 2000
-
-
-def _merge_candle_window(existing: list, incoming: list) -> list:
-    """Merge `incoming` candles into `existing` keyed by `.t`: overlapping
-    timestamps are replaced by the incoming (fresher) candle, new timestamps
-    append. Result is sorted by `t` and capped to the most recent
-    _CANDLE_WINDOW_CAP entries."""
-    merged = {c.t: c for c in existing}
-    for c in incoming:
-        merged[c.t] = c
-    return [merged[t] for t in sorted(merged)][-_CANDLE_WINDOW_CAP:]
-
-
-def _rc_key(rc):
-    c = rc["candles"][-1]
-    # last bar's (t, c) changes when the forming bar updates; len covers appends
-    return (rc["symbol"], rc["timeframe"], len(rc["candles"]), c.t, c.c)
-
-
-# An approved-but-not-yet-dispatched proposal older than this is expired
-# rather than delivered on the next heartbeat -- a stale "yes" tapped
-# minutes ago (EA offline, terminal closed, etc.) should not suddenly fire.
-PROPOSAL_APPROVAL_TTL_S = 120
-
-# A dispatched command the EA never confirmed (no /proposal-result) within
-# this window is reconciled to 'blocked' so it stops showing as in-flight.
-# Approximation: the proposals table has no dispatched_ts column, and
-# pop_approved_command() intentionally doesn't touch decided_ts (only the
-# 'approved'/'skipped'/'expired'/'blocked' transitions do -- see
-# set_proposal_status), so decided_ts still holds the *approval* time, which
-# predates the actual dispatch. Reusing it as a lower bound on dispatch time
-# means this window is deliberately generous (180s, vs. the 120s approval
-# TTL above) to avoid mistaking a slow-but-fine dispatch for a lost one.
-COMMAND_RESULT_TTL_S = 180
-
-
-async def telegram_poller(app: FastAPI):
-    """Long-poll Telegram for commands and reply. Fail-open: any exception
-    just backs off and continues.
-
-    Every TelegramClient call is dispatched via asyncio.to_thread so the
-    (synchronous, up-to-30s-blocking) HTTP call runs off the event loop —
-    otherwise it would stall the entire FastAPI app for the duration of
-    each long-poll, and task.cancel() would be unable to interrupt an
-    in-flight call since the block isn't at an await point."""
-    offset = 0
-    # Filter on the ACTIVE client's chat id, not settings/.env directly --
-    # credentials (and thus chat_id) can come from the profile instead, and
-    # _apply_telegram restarts this task on every apply, so the value read
-    # here at task start always reflects whichever client is current.
-    chat_id = str(getattr(app.state.telegram, "chat_id", "") or settings.telegram_chat_id)
-    while True:
-        try:
-            updates = await asyncio.to_thread(app.state.telegram.get_updates, offset)
-            for upd in updates:
-                offset = upd.get("update_id", offset - 1) + 1
-                cq = upd.get("callback_query")
-                if cq is not None:
-                    from_id = str((cq.get("from") or {}).get("id"))
-                    if from_id == chat_id:
-                        msg = cq.get("message") or {}
-                        edit_text, toast = handle_callback(
-                            cq.get("data", ""), app,
-                            message_id=msg.get("message_id"))
-                        await asyncio.to_thread(app.state.telegram.answer_callback,
-                                                cq.get("id", ""), toast)
-                        if edit_text and msg.get("message_id"):
-                            await asyncio.to_thread(app.state.telegram.edit_message,
-                                                    msg["message_id"], edit_text)
-                            if not cq.get("data", "").startswith("chan:"):
-                                await _mirror(app, text=edit_text)
-                    continue
-                ch_post = upd.get("channel_post")
-                if ch_post is not None:
-                    offer = handle_channel_post(ch_post, app)
-                    if offer is not None:
-                        await asyncio.to_thread(
-                            app.state.telegram.send_message,
-                            offer[0], offer[1])
-                    continue
-                message = upd.get("message") or {}
-                text = message.get("text") or ""
-                msg_chat_id = str(message.get("chat", {}).get("id"))
-                if text.startswith("/") and msg_chat_id == chat_id:
-                    if text.strip().split()[0].lower() == "/chart":
-                        try:
-                            await _send_chart_snapshot(app)
-                        except Exception:
-                            pass  # fail-open: /chart must never kill the poller
-                        continue
-                    if text.strip().split()[0].lower() == "/manual":
-                        try:
-                            await _send_manual(app)
-                        except Exception:
-                            pass  # fail-open: /manual must never kill the poller
-                        continue
-                    reply = handle_command(text, app)
-                    if isinstance(reply, tuple):
-                        await asyncio.to_thread(app.state.telegram.send_message,
-                                                reply[0], reply[1])
-                    elif reply is not None:
-                        await asyncio.to_thread(app.state.telegram.send_message, reply)
-                    chan_text = _mirror_command_text(text, app)
-                    if chan_text is not None:
-                        await _mirror(app, text=chan_text)
-            await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            await asyncio.sleep(5)
-
-
-async def pinned_editor(app: FastAPI):
-    """Every 300 s, create-pin-once the static command-reference message,
-    self-healing if it was deleted/unpinned. The interval is relaxed from
-    the old 60s live-status cadence because the content is now static --
-    `pinned_tick` itself no-ops (no Telegram call) once the pinned message
-    exists and its stored version is current, so this loop mostly just
-    checks in. Fail-open: any exception is swallowed and the loop just
-    retries next tick. The (synchronous, blocking) TelegramClient calls
-    happen inside `pinned_tick`, dispatched via asyncio.to_thread so they
-    run off the event loop -- same reasoning as `telegram_poller` above."""
-    while True:
-        try:
-            await asyncio.to_thread(pinned_tick, app, app.state.telegram)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        await asyncio.sleep(300)
-
-
-def _linked_channel(app) -> str | None:
-    try:
-        return app.state.db.get_kv("channel_id") or None
-    except Exception:
-        return None
-
-
-async def _mirror(app, text: str | None = None,
-                  photo_bytes: bytes | None = None, caption: str = "") -> None:
-    """Mirror one already-sent owner message to the linked channel.
-    Owner-first ordering is the caller's job (call this after the owner
-    send). Fail-open: never raises, no-op when unlinked/no client."""
-    cid = _linked_channel(app)
-    tg = getattr(app.state, "telegram", None)
-    if cid is None or tg is None:
-        return
-    try:
-        if photo_bytes is not None:
-            await asyncio.to_thread(tg.send_photo_to, cid, caption, photo_bytes)
-        elif text:
-            await asyncio.to_thread(tg.send_message_to, cid, text)
-    except Exception:
-        pass
-
-
 _CHART_HB_FRESH_S = 60
-
-
-async def _news_headsup(app, hb) -> None:
-    """Send ONE Telegram notice per high-impact USD event as it enters the
-    notice window: (blackout radius + 5) minutes before the event. Latched
-    in kv "news_alerted" keyed by the event's absolute minute — `in_s` is
-    relative and jitters a few seconds between heartbeats, but now+in_s
-    rounded to the minute is stable. Old keys are pruned as they pass."""
-    events = [e for e in getattr(hb, "news", []) if e.in_s > 0]
-    if not events:
-        return
-    tg = getattr(app.state, "telegram", None)
-    if tg is None:
-        return
-    radius = getattr(hb, "news_blackout_min", 30)
-    window_s = (radius + 5) * 60
-    now = time.time()
-    db = app.state.db
-    try:
-        alerted = set(json.loads(db.get_kv("news_alerted") or "[]"))
-    except ValueError:
-        alerted = set()
-    now_min = int(now // 60)
-    alerted = {k for k in alerted if k >= now_min - 60}   # prune passed events
-    fired = False
-    for e in events:
-        if e.in_s > window_s:
-            continue
-        key = int((now + e.in_s) // 60)
-        if key in alerted:
-            continue
-        alerted.add(key)
-        fired = True
-        name = e.name or "high-impact USD event"
-        text = (f"⏳ News blackout ahead: {name} in "
-                f"{e.in_s // 60}m — entries frozen ±{radius}m around it.")
-        try:
-            await asyncio.to_thread(tg.send_message, text)
-        except Exception:
-            pass
-        await _mirror(app, text=text)
-    if fired or alerted != set():
-        db.set_kv("news_alerted", json.dumps(sorted(alerted)))
-
-
-# Operator manual shipped by /manual. Checked into the repo (regenerate
-# with scripts/build_manual.py after content changes); resolved relative to
-# this file so the service can run from any CWD.
 _MANUAL_PDF = Path(__file__).resolve().parents[2] / "docs" / "izi_manual.pdf"
 
 
-async def _send_manual(app) -> None:
-    """/manual: send docs/izi_manual.pdf into the owner chat as a document.
-    Owner-only (no channel mirror — it's an operator runbook, not trade
-    activity). Missing file degrades to a text reply; never raises into
-    the poller (the caller also guards, like /chart)."""
-    tg = app.state.telegram
-    if not _MANUAL_PDF.is_file():
-        await asyncio.to_thread(
-            tg.send_message,
-            "manual not found — run scripts/build_manual.py and restart")
-        return
-    data = _MANUAL_PDF.read_bytes()
-    await asyncio.to_thread(
-        tg.send_document, "izi — operator manual", data, "izi_manual.pdf")
-
-
-async def _send_chart_snapshot(app) -> None:
-    """/chart: render closed candles + the heartbeat's forming bar and send
-    as a photo (owner first, channel mirror after). Every failure path
-    replies with text instead; never raises into the poller.
-
-    When a mini-app public URL is configured, /chart instead opens the live
-    mini app (owner: text + web_app button; channel: plain URL text line,
-    no markup) rather than rendering a static PNG."""
-    tg = app.state.telegram
-    if settings.miniapp_public_url:
-        kb = {"inline_keyboard": [[
-            {"text": "📈 Live Chart",
-             "web_app": {"url": settings.miniapp_public_url}}
-        ]]}
-        await asyncio.to_thread(tg.send_message, "📈 Live chart:", kb)
-        chan_link = settings.miniapp_direct_link or settings.miniapp_public_url
-        await _mirror(app, text=f"👤 /chart\n📈 Live chart: {chan_link}")
-        return
-    rc = app.state.recent_candles
-    if not rc or not rc.get("candles"):
-        await asyncio.to_thread(
-            tg.send_message, "no candles yet — waiting for the first bar post")
-        return
-    latest = app.state.latest_heartbeat
-    hb = latest[1] if latest is not None else None
-    stale = (latest is None or (time.time() - latest[0]) > _CHART_HB_FRESH_S
-             or not getattr(hb, "bar_t", 0))
-    candles = rc["candles"]
-    if not stale:
-        candles = merge_forming_bar(candles, hb)
-    out = str(app.state.screenshot_dir / "chart_cmd.png")
-    positions = hb.positions if hb is not None else []
-    zones = await asyncio.to_thread(sr_zones_from_db, app.state.db, app.state.sr_cache)
-    ok = await asyncio.to_thread(render_snapshot_chart, candles, out, positions, zones)
-    if not ok:
-        await asyncio.to_thread(tg.send_message, "chart render failed")
-        return
-    caption = (f"📈 {rc['symbol']} {rc['timeframe']} — {candles[-1].c:g} "
-               f"(as of {time.strftime('%H:%M:%S')})")
-    if stale:
-        caption += " · closed bars only"
-    png = await asyncio.to_thread(Path(out).read_bytes)
-    await asyncio.to_thread(tg.send_photo, caption, png)
-    await _mirror(app, photo_bytes=png, caption=f"👤 /chart\n{caption}")
-
-
-def _mirror_command_text(text: str, app) -> str | None:
-    """Channel rendition of an owner command: '👤 /cmd' + the redacted
-    reply. None when the command is unknown or owner-only."""
-    if text.split()[0].lower() == "/channel":
-        return None  # link management is owner-only housekeeping
-    reply = handle_command(text, app, redacted=True)
-    if reply is None:
-        return None
-    body = reply[0] if isinstance(reply, tuple) else reply
-    return f"👤 {text}\n\n{body}"
-
-
 def _effective_telegram(app: FastAPI) -> tuple[str, str]:
-    """Profile credentials when non-empty, else settings (.env) values, both
-    stripped. Profile is only consulted once the row exists (get_profile can
-    be None before any /api/profile POST -- Save or Skip -- has happened)."""
+    """Profile credentials when non-empty, else settings (.env) values."""
     profile = app.state.db.get_profile() or {}
     token = str(profile.get("telegram_bot_token") or "").strip()
     chat_id = str(profile.get("telegram_chat_id") or "").strip()
@@ -342,15 +87,7 @@ def _effective_telegram(app: FastAPI) -> tuple[str, str]:
 
 
 async def _apply_telegram(app: FastAPI) -> None:
-    """Single owner of the Telegram client/task lifecycle: cancels whatever
-    tasks currently exist, then rebuilds app.state.telegram (and its two
-    background tasks) from the effective credentials. Called at lifespan
-    startup and live from POST /api/profile. Never raises -- fail-open.
-
-    Serialized on app.state.telegram_lock: two overlapping callers (e.g. two
-    rapid POST /api/profile requests) must not both read the old task, both
-    decide it needs replacing, and each spawn a fresh pair -- that would
-    leak a poller/pinned-editor task that nothing ever cancels again."""
+    """Single owner of the Telegram client/task lifecycle."""
     async with app.state.telegram_lock:
         try:
             for attr in ("telegram_task", "pinned_task"):
@@ -358,22 +95,12 @@ async def _apply_telegram(app: FastAPI) -> None:
                 if task is not None:
                     task.cancel()
                     try:
-                        # See the lifespan shutdown comment: the underlying
-                        # TelegramClient call runs in a worker thread which
-                        # task.cancel() cannot interrupt mid-call, so bound the
-                        # wait instead of hanging on an in-flight long-poll.
                         await asyncio.wait_for(task, timeout=3.0)
                     except (asyncio.TimeoutError, asyncio.CancelledError):
                         pass
 
             token, chat_id = _effective_telegram(app)
             app.state.telegram = TelegramClient(token, chat_id) if token and chat_id else None
-            # Keep app.telegram's module-level active client in sync so
-            # send_alert (still unit-tested directly, but no longer wired
-            # into the /analyze path -- that alert diet now flows through
-            # maybe_propose's per-proposal messages) reaches whichever
-            # client is live -- including profile-only credentials that never
-            # appear in `settings`.
             set_active_client(app.state.telegram)
             app.state.telegram_task = (
                 asyncio.create_task(telegram_poller(app)) if app.state.telegram else None)
@@ -388,38 +115,28 @@ async def lifespan(app: FastAPI):
     app.state.forecaster = get_forecaster(settings)
     app.state.db = SignalDb(settings.db_path)
     app.state.latest_heartbeat = None
-    app.state.ticker = load_ticker_state(app)   # resume a mid-trade LIVE message across restarts
+    app.state.chart_subscribers = set()
+    app.state.ticker = load_ticker_state(app, "XAUUSD")
+    app.state.tickers = {"XAUUSD": app.state.ticker, "BTCUSD": load_ticker_state(app, "BTCUSD")}
     app.state.ticker_busy = False
+    app.state.ticker_busy_symbols = set()
     app.state.ticker_task = None
     app.state.report_tasks = set()
     app.state.pending_switch = None
     app.state.pending_channel = None
     app.state.last_candles = None
     app.state.recent_candles = None
-    # Response caches for the two hot read endpoints. The dashboard polls
-    # every 30 s but a bar closes every ~5 min, so ~90 % of polls hit an
-    # accumulator that has not changed at all -- serve the already-built
-    # payload instead of re-serializing 2000 candles (and, for overlays,
-    # recomputing HalfTrend + four EMAs) each time. Keyed on _rc_key.
-    app.state.candles_cache = None            # (key, payload)
-    app.state.overlays_cache = {}             # {(key, strategy): payload}
-    app.state.sr_cache = {}                   # {"t": newest M5 bar, "zones": [...]}
-    # Seed the chart accumulator from the persistent candles table so the
-    # dashboard survives a service restart instead of starting empty.
-    try:
-        series = app.state.db.latest_candle_series()
-        if series is not None:
-            from app.models import Candle
-            sym, tf = series
-            rows = app.state.db.get_candles(sym, tf, limit=_CANDLE_WINDOW_CAP)
-            if rows:
-                app.state.recent_candles = {
-                    "symbol": sym, "timeframe": tf,
-                    "candles": [Candle(**r) for r in rows]}
-    except Exception:
-        log.exception("chart accumulator seeding from the candles table failed")
-    # A service restart kills any in-flight backtest thread; its row would
-    # otherwise show 'running' forever (the _busy lock is process-local).
+    app.state.candles_cache = None
+    app.state.overlays_cache = {}
+    app.state.sr_cache = {}
+    app.state.candle_buffer = CandleBufferManager(window_cap=_CANDLE_WINDOW_CAP)
+    app.state.candle_buffer.seed_from_db(app.state.db)
+    app.state.candles_by_series = app.state.candle_buffer.series_dict
+    for (sym, tf), c_list in app.state.candles_by_series.items():
+        if app.state.recent_candles is None or sym == "XAUUSD":
+            app.state.recent_candles = {"symbol": sym, "timeframe": tf, "candles": c_list}
+            if sym == "XAUUSD":
+                app.state.last_candles = c_list
     try:
         app.state.db.conn.execute(
             "UPDATE backtest_runs SET status='failed',"
@@ -433,17 +150,26 @@ async def lifespan(app: FastAPI):
     app.state.telegram_task = None
     app.state.pinned_task = None
     app.state.telegram_lock = asyncio.Lock()
+    app.state.loop = asyncio.get_running_loop()
+    app.state.agent = AgentClient(settings) if settings.agent_enabled else None
+    app.state.agent_grade_cache = {}
+    app.state.agent_inflight = set()
+    app.state.agent_lock = threading.Lock()
+    app.state.agent_task = None
+    if settings.agent_enabled:
+        app.state.agent_task = asyncio.create_task(agent_supervisor(app))
     await _apply_telegram(app)
     yield
+    if app.state.agent_task is not None:
+        app.state.agent_task.cancel()
+        try:
+            await asyncio.wait_for(app.state.agent_task, timeout=2.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
     for task in (app.state.telegram_task, app.state.pinned_task):
         if task is not None:
             task.cancel()
             try:
-                # The underlying TelegramClient call runs in a worker thread
-                # (asyncio.to_thread) which task.cancel() cannot interrupt
-                # mid-call, so an in-flight ~30s long-poll would otherwise
-                # make a bare `await task` hang shutdown for up to 30s.
-                # Bound the wait instead and move on regardless.
                 await asyncio.wait_for(task, timeout=3.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
@@ -453,1052 +179,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="XAU Assistant AI Service", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"),
           name="static")
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok",
-            "forecaster": type(app.state.forecaster).__name__,
-            "db": settings.db_path}
-
-
-def maybe_propose(req: AnalyzeRequest, resp: AnalyzeResponse) -> None:
-    """Proposal lifecycle + alert diet. Never raises (telegram fail-open;
-    db errors are logged by db layer conventions) -- the caller wraps this
-    in try/except as an extra belt-and-braces guard."""
-    db = app.state.db
-    tg = getattr(app.state, "telegram", None)
-
-    def edit(pid_row, suffix):
-        if tg is None or pid_row["tg_message_id"] is None:
-            return
-        tg.edit_message(pid_row["tg_message_id"],
-                        f"{'📥' if pid_row['kind']=='entry' else '📤'} "
-                        f"{pid_row['direction']} @ {pid_row['price']} — {suffix}")
-
-    def is_stale(row) -> bool:
-        return (
-            (row["kind"] == "entry" and (
-                req.signal == "EXIT" or
-                (req.signal in ("BUY", "SELL") and req.signal != row["direction"])))
-            or (row["kind"] == "exit" and req.signal in ("BUY", "SELL"))
-        )
-
-    # 1. expiry: does the active strategy still hold the pending stance?
-    pending = db.pending_proposal()
-    if pending is not None and is_stale(pending):
-        # Guarded: a concurrent Telegram tap (or the /heartbeat TTL sweep)
-        # may have already moved this row off 'pending' between our read
-        # and this write -- e.g. approved right as the stance broke. If so,
-        # skip the ⌛ edit (whatever landed the other transition owns the
-        # message now) but still drop `pending` below so the create-new-
-        # proposal step isn't blocked by a row that is no longer pending.
-        if db.set_proposal_status(pending["id"], "expired", expected="pending"):
-            edit(pending, "⌛ expired (strategy stance changed)")
-        pending = None
-
-    # 1b. same stance-expiry check for an APPROVED-but-not-yet-dispatched
-    # proposal (I1a): a Telegram "Take trade" tap doesn't freeze the
-    # strategy's stance -- it can still flip before the next heartbeat
-    # dispatches the command.
-    approved = db.pending_proposal(status="approved")
-    if approved is not None and is_stale(approved):
-        if db.set_proposal_status(approved["id"], "expired", expected="approved"):
-            edit(approved, "⌛ expired before execution (stance changed)")
-
-    # 2. new proposals: manual mode — or a BLACKOUT entry in auto mode
-    # (owner 2026-09-01): during a news blackout the EA does not auto-
-    # execute; a BUY/SELL signal arriving with news_blackout set becomes a
-    # Telegram proposal instead, so the owner decides the trade themselves.
-    # Auto behavior resumes by itself when the window ends — no mode state
-    # is flipped, so nothing can be left stuck in manual. Exits stay
-    # auto-executed during a blackout exactly as before.
-    if req.signal not in ("BUY", "SELL", "EXIT"):
-        return
-    blackout_entry = bool(getattr(req, "news_blackout", False)) \
-        and req.signal in ("BUY", "SELL")
-    if db.exec_mode() != "manual" and not blackout_entry:
-        return
-    kind = "exit" if req.signal == "EXIT" else "entry"
-    if kind == "exit":
-        # M1: only propose an exit when the latest heartbeat actually shows
-        # an open position -- otherwise there's nothing for "Exit now" to
-        # close, and close_all would be a silent no-op.
-        latest = app.state.latest_heartbeat
-        if latest is None or not latest[1].positions:
-            return
-    price = req.candles[-1].c if req.candles else 0.0
-    if pending is not None and pending["kind"] == kind and \
-       (kind == "exit" or pending["direction"] == req.signal):
-        return  # one pending proposal per stance
-    if kind == "entry":
-        direction = req.signal
-    else:
-        # An exit proposal's direction is informational only (the EA's
-        # close_all closes the whole basket regardless of what we display
-        # here). Best-effort source: the newest proposal row with
-        # kind='entry' and status='executed'; fall back to "BUY".
-        last = db.last_executed_entry()
-        direction = last["direction"] if last else "BUY"
-    pid = db.create_proposal(kind, direction, req.strategy_id, price, None)
-    if tg is not None:
-        markup = (PROPOSAL_KB(pid) if kind == "entry" else EXIT_KB(pid))
-        text = format_proposal(kind, direction, price, resp)
-        if blackout_entry:
-            text = ("⚠️ NEWS BLACKOUT — auto entry paused. "
-                    "Take it yourself?\n" + text)
-        sent = tg.send_message(text, reply_markup=markup)
-        if sent and sent.get("result", {}).get("message_id"):
-            db.set_proposal_message(pid, sent["result"]["message_id"])
-        cid = _linked_channel(app)
-        if cid is not None:
-            try:
-                tg.send_message_to(
-                    cid, format_proposal(kind, direction, price, resp))
-            except Exception:
-                pass
-
-
-@app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):
-    app.state.last_candles = req.candles
-    rc = app.state.recent_candles
-    if rc is not None and rc["symbol"] == req.symbol and rc["timeframe"] == req.timeframe:
-        candles = _merge_candle_window(rc["candles"], req.candles)
-    else:
-        # First post, or the chart attached to a different symbol/timeframe
-        # -- start the accumulator over from this payload rather than
-        # merging incompatible series.
-        candles = _merge_candle_window([], req.candles)
-    app.state.recent_candles = {
-        "symbol": req.symbol,
-        "timeframe": req.timeframe,
-        "candles": candles,
-    }
-    # Persist the incoming bars (the accumulator's merge is equivalent: same
-    # keys, fresher values) -- the forming bar's re-posts overwrite the same
-    # bar_time until the close is final. Fail-open -- persistence must never
-    # break grading.
-    try:
-        app.state.db.upsert_candles(req.symbol, req.timeframe, req.candles)
-    except Exception:
-        log.exception("persisting candles for %s %s failed",
-                      req.symbol, req.timeframe)
-    regime = classify_regime(req.candles)
-    atr_value = last_atr(req.candles)
-    closes = [x.c for x in req.candles]
-    try:
-        fc = app.state.forecaster.forecast(closes, settings.horizon)
-        direction, confidence = analyze_forecast(fc, closes[-1], atr_value)
-        ai_available = True
-    except Exception:
-        direction, confidence, ai_available = "neutral", 0.0, False
-
-    resp = AnalyzeResponse(
-        direction=direction, confidence=confidence, regime=regime,
-        verdict=combine(req.signal, direction, confidence, settings.confirm_threshold),
-        mode=settings.mode, ai_available=ai_available)
-
-    # Lazy outcome resolution needs at least two bars to infer the bar
-    # interval (candles[1].t - candles[0].t). Guarded + fail-open: a short
-    # payload used to raise straight out of /analyze, and grading must never
-    # fail because the accuracy log could not be updated.
-    if len(req.candles) >= 2:
-        try:
-            app.state.db.resolve_outcomes(req.candles, settings.horizon)
-        except Exception:
-            log.exception("resolve_outcomes failed for %s %s",
-                          req.symbol, req.timeframe)
-    # Spread telemetry (ea-scope spec §3): archive the closed bar's spread
-    # aggregates. An all-zero triple means "no samples / old EA" -- skip it
-    # rather than store a meaningless row.
-    if req.spread_min > 0 or req.spread_avg > 0 or req.spread_max > 0:
-        app.state.db.upsert_spread(
-            bar_time=req.candles[-1].t, spread_min=req.spread_min,
-            spread_avg=req.spread_avg, spread_max=req.spread_max)
-    if req.signal != "NONE":
-        app.state.db.insert_signal(
-            bar_time=req.candles[-1].t, symbol=req.symbol, signal=req.signal,
-            price=closes[-1], direction=direction, confidence=confidence,
-            regime=regime, verdict=resp.verdict, mode=settings.mode,
-            ai_available=ai_available, strategy_id=req.strategy_id, is_active=True,
-            timeframe=req.timeframe)
-    try:
-        maybe_propose(req, resp)
-    except Exception:
-        pass
-    for shadow in req.shadows:
-        if shadow.signal == "NONE":
-            continue
-        app.state.db.insert_signal(
-            bar_time=req.candles[-1].t, symbol=req.symbol, signal=shadow.signal,
-            price=closes[-1], direction=direction, confidence=confidence,
-            regime=regime, mode=settings.mode, ai_available=ai_available,
-            verdict=combine(shadow.signal, direction, confidence,
-                            settings.confirm_threshold),
-            strategy_id=shadow.strategy_id, is_active=False,
-            timeframe=req.timeframe)
-    return resp
-
-
-def _sweep_stale_proposals(app: FastAPI) -> None:
-    """Runs at the top of every /heartbeat, before pop_approved_command.
-    Two independent TTL reconciliations (I1b, I4), both fail-open and both
-    guarded (expected=...) so a proposal that transitioned concurrently
-    (e.g. the EA's /proposal-result landing in the same instant) is left
-    alone rather than double-edited or double-transitioned."""
-    db = app.state.db
-    tg = getattr(app.state, "telegram", None)
-
-    def edit(row, suffix):
-        if tg is None or row["tg_message_id"] is None:
-            return
-        if row["kind"] == "reset_brake":
-            tg.edit_message(row["tg_message_id"], f"🔓 brake reset — {suffix}")
-            return
-        tg.edit_message(row["tg_message_id"],
-                        f"{'📥' if row['kind']=='entry' else '📤'} "
-                        f"{row['direction']} @ {row['price']} — {suffix}")
-
-    # I1b: approved-but-undispatched proposals older than the approval TTL
-    # never reach the EA -- expire them instead of dispatching a stale "yes".
-    for row in db.stale_approved(PROPOSAL_APPROVAL_TTL_S):
-        if db.set_proposal_status(row["id"], "expired", expected="approved"):
-            edit(row, "⌛ expired before execution (approval timed out)")
-
-    # I4: dispatched commands the EA never confirmed are reconciled to
-    # 'blocked' so they stop looking in-flight forever.
-    for row in db.stale_dispatched(COMMAND_RESULT_TTL_S):
-        if db.set_proposal_status(row["id"], "blocked", expected="dispatched"):
-            edit(row, "🚫 no confirmation from EA — check the terminal")
-
-
-@app.post("/heartbeat", response_model=HeartbeatResponse)
-async def heartbeat(hb: HeartbeatRequest):
-    previous = app.state.latest_heartbeat
-    prev_algo_trading = previous[1].algo_trading if previous is not None else True
-    app.state.latest_heartbeat = (time.time(), hb)
-    app.state.db.insert_heartbeat({**hb.model_dump(exclude={"positions"}),
-                                   "open_count": len(hb.positions)})
-    # Live ticker: fire-and-forget so three potential Telegram calls (10 s
-    # timeout each) can never delay this response — the EA's commands ride
-    # on it. ticker_busy collapses overlapping runs to at most one.
-    if not app.state.ticker_busy and getattr(app.state, "telegram", None) is not None:
-        app.state.ticker_busy = True
-        hb_now = time.time()
-
-        async def _ticker_bg(hb=hb, hb_now=hb_now, previous=previous):
-            try:
-                await asyncio.to_thread(ticker_tick, app, hb, hb_now, previous)
-            except Exception:
-                pass
-            finally:
-                app.state.ticker_busy = False
-
-        app.state.ticker_task = asyncio.create_task(_ticker_bg())
-    # EA-reconnect notice (owner request 2026-09-01: an MT5 restart produced
-    # no Telegram signal that the EA was back — the launcher's "system up"
-    # notice fires only when setup.sh runs, and the watchdog only announces
-    # restarts IT performed). The service sees every heartbeat, so it covers
-    # every restart path: a heartbeat after a gap > 60 s posts one notice.
-    # previous is None (fresh service process) stays silent — the service
-    # restarts on every code deploy while the EA runs on undisturbed.
-    if previous is not None and (time.time() - previous[0]) > 60:
-        tg = getattr(app.state, "telegram", None)
-        if tg is not None:
-            gap_s = int(time.time() - previous[0])
-            text = ("🟢 EA back online after %ds — %s, algo %s"
-                    % (gap_s, hb.active_strategy or "?",
-                       "ON" if hb.algo_trading else "OFF ⚠️"))
-            try:
-                await asyncio.to_thread(tg.send_message, text)
-            except Exception:
-                pass
-    if prev_algo_trading != hb.algo_trading:
-        tg = getattr(app.state, "telegram", None)
-        if tg is not None:
-            text = ("⚠️ MT5 Algo Trading is OFF — trades cannot execute until you enable it"
-                    if not hb.algo_trading else "✅ Algo Trading back ON")
-            try:
-                await asyncio.to_thread(tg.send_message, text)
-            except Exception:
-                pass
-            await _mirror(app, text=text)
-    # Pre-blackout heads-up: one-shot notice as each high-impact USD event
-    # enters the (radius + 5 min) window, so a blackout never surprises the
-    # owner mid-setup. Fail-open — a notify hiccup must never touch the
-    # heartbeat response the EA's commands ride on.
-    try:
-        await _news_headsup(app, hb)
-    except Exception:
-        pass
-    # Strategy-lane authority (2026-08-27): the owner's last explicit choice
-    # (strat: button / /api/switch) lives in kv "active_strategy" and is
-    # re-asserted on EVERY heartbeat where the EA disagrees. Rationale: an
-    # EA re-init (recompile auto-reload, terminal restart, chart change)
-    # resets its lane to the ActiveStrategy INPUT and used to stay there —
-    # a 2026-08-26 recompile silently flipped the owner's M15 choice back
-    # to M5 for an afternoon. Now a revert survives at most one bar. Empty
-    # kv = owner never chose → the EA input rules, nothing is pushed.
-    stored = app.state.db.get_kv("active_strategy")
-    if stored and hb.active_strategy != stored:
-        app.state.pending_switch = stored
-    else:
-        app.state.pending_switch = None
-    # The sweep and the pop are SQLite writes on the slow /mnt/c mount; run
-    # them in a worker thread so a stalled disk cannot block the event loop
-    # for every other request. Safe to move off-loop now that db.py
-    # serializes writes with its own lock.
-    def _hb_commands():
-        try:
-            _sweep_stale_proposals(app)
-        except Exception:
-            pass  # fail-open: a sweep bug must never block command delivery
-        return app.state.db.pop_approved_command()
-
-    cmd_row = await asyncio.to_thread(_hb_commands)
-    command = None
-    if cmd_row is not None:
-        if cmd_row["kind"] == "entry":
-            command = {"cmd": "execute", "proposal_id": cmd_row["id"],
-                       "direction": cmd_row["direction"]}
-        elif cmd_row["kind"] == "reset_brake":
-            command = {"cmd": "reset_brake", "proposal_id": cmd_row["id"]}
-        elif cmd_row["kind"] == "move_sl":
-            command = {"cmd": "move_sl", "proposal_id": cmd_row["id"]}
-        else:
-            command = {"cmd": "close_all", "proposal_id": cmd_row["id"]}
-    return HeartbeatResponse(
-        switch_to=app.state.pending_switch,
-        mode=app.state.db.exec_mode(),
-        entry_mode=app.state.db.entry_mode(),
-        htf_enforce=app.state.db.htf_enforce(),
-        ema200_enforce=app.state.db.ema200_enforce(),
-        rsi_enforce=app.state.db.rsi_enforce(),
-        m15_adds=app.state.db.m15_adds(),
-        command=command
-    )
-
-
-@app.post("/proposal-result")
-async def proposal_result(res: ProposalResultRequest):
-    db = app.state.db
-    row = db.get_proposal(res.proposal_id)
-    if row is None:
-        return {"ok": False}
-    # Guarded on the row still being 'dispatched': if the /heartbeat TTL
-    # sweep already reconciled it to 'blocked' (I4) before this callback
-    # arrived, don't let a late result silently overwrite that outcome.
-    status = "executed" if res.ok else "blocked"
-    if not db.set_proposal_status(res.proposal_id, status, expected="dispatched"):
-        return {"ok": False}
-    tg = getattr(app.state, "telegram", None)
-    if row["kind"] == "reset_brake":
-        # Brake reset (2026-08-18): edit the tapped notice into the
-        # confirmation (or a failure), messageless -> fresh message.
-        # The EA's detail carries the re-arm % ("Brake reset for today —
-        # re-arms after another 3.0%") — render it, don't hard-code it.
-        text = f"🔓 {res.detail}" if res.ok else f"🚫 brake reset failed: {res.detail}"
-        if tg is not None:
-            try:
-                if row["tg_message_id"] is not None:
-                    await asyncio.to_thread(tg.edit_message, row["tg_message_id"], text)
-                else:
-                    await asyncio.to_thread(tg.send_message, text)
-            except Exception:
-                pass
-            await _mirror(app, text=text)
-        return {"ok": True}
-    if row["kind"] == "move_sl":
-        # SL ratchet: edit the tapped alert with the outcome and — on
-        # success — RE-ATTACH the target keyboard, so [Move SL] stays
-        # reusable as the ride extends (the movesl:/exitnow: guards make a
-        # stale tap safe). Failure edits plain text; messageless → fresh.
-        text = f"🔒 {res.detail}" if res.ok else f"🚫 SL move failed: {res.detail}"
-        if tg is not None:
-            try:
-                if row["tg_message_id"] is not None:
-                    await asyncio.to_thread(
-                        tg.edit_message, row["tg_message_id"], text,
-                        TARGET_KB() if res.ok else None)
-                else:
-                    await asyncio.to_thread(tg.send_message, text)
-            except Exception:
-                pass
-            await _mirror(app, text=text)
-        return {"ok": True}
-    if tg is not None and row["tg_message_id"] is not None:
-        mark = "✅ executed" if res.ok else "🚫 blocked"
-        try:
-            await asyncio.to_thread(
-                tg.edit_message, row["tg_message_id"],
-                f"{'📥' if row['kind']=='entry' else '📤'} {row['direction']} "
-                f"@ {row['price']} — {mark}: {res.detail}")
-        except Exception:
-            pass
-        await _mirror(app, text=(
-            f"{'📥' if row['kind']=='entry' else '📤'} {row['direction']} "
-            f"@ {row['price']} — {mark}: {res.detail}"))
-    elif tg is not None and not res.ok:
-        # Messageless quick-exits (dashboard close-all / exitnow button) have
-        # no proposal message to edit — a failure must still reach the user.
-        try:
-            await asyncio.to_thread(
-                tg.send_message, f"🚫 close failed: {res.detail}")
-        except Exception:
-            pass
-        await _mirror(app, text=f"🚫 close failed: {res.detail}")
-    return {"ok": True}
-
-
-@app.post("/notify")
-async def notify(req: NotifyRequest):
-    """Fire-and-forget Telegram notice for events with no proposal/db row
-    of their own (e.g. an AUTO entry the EA couldn't execute). Sends `text`
-    verbatim; never raises (telegram fail-open); no db writes."""
-    text = req.text.strip()
-    if not text:
-        return {"ok": False}
-    tg = getattr(app.state, "telegram", None)
-    if tg is not None:
-        # FIXED-mode target alert: attach the EXIT button only while a
-        # position is actually open — a late-arriving alert on a flat
-        # account degrades to a plain notice. The channel mirror stays
-        # text-only (no controls in the channel, ever).
-        markup = None
-        button = req.button or ("exit" if req.exit_button else "")
-        if button == "exit":
-            latest = app.state.latest_heartbeat
-            if latest is not None and latest[1].positions:
-                markup = EXIT_NOW_KB(0)
-        elif button == "target":
-            # FIXED-ride target alert: [EXIT] + [🔒 Move SL to here]. Same
-            # flat-account degrade rule as "exit" — a late alert on a flat
-            # account becomes a plain notice.
-            latest = app.state.latest_heartbeat
-            if latest is not None and latest[1].positions:
-                markup = TARGET_KB()
-        elif button == "reset_brake":
-            # Daily-loss-brake 70% / TRIPPED notice: owner-only [Reset
-            # brake for today] (callback brakereset:) — channel stays text-only.
-            markup = BRAKE_RESET_KB()
-        try:
-            await asyncio.to_thread(tg.send_message, text, markup)
-        except Exception:
-            pass
-        await _mirror(app, text=text)
-    return {"ok": True}
-
-
-_STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-
-
-@app.post("/api/switch")
-def ui_switch(body: dict):
-    sid = str(body.get("strategy_id", "")).strip()
-    if not sid:
-        app.state.pending_switch = None
-        app.state.db.set_kv("active_strategy", "")
-        return {"pending": None}
-    if not _STRATEGY_ID_RE.match(sid):
-        raise HTTPException(status_code=400, detail="invalid strategy_id")
-    app.state.pending_switch = sid
-    app.state.db.set_kv("active_strategy", sid)
-    return {"pending": sid}
-
-
-def _edit_proposal_message(row, suffix):
-    """Best-effort: keep the proposal's Telegram message in sync with a
-    decision made on the dashboard. Fail-open — never raises."""
-    tg = getattr(app.state, "telegram", None)
-    if tg is None or row.get("tg_message_id") is None:
-        return
-    try:
-        tg.edit_message(row["tg_message_id"],
-                        f"{'📥' if row['kind'] == 'entry' else '📤'} "
-                        f"{row['direction']} @ {row['price']} — {suffix}")
-    except Exception:
-        pass
-
-
-@app.post("/api/mode")
-def ui_mode(body: dict):
-    mode = str(body.get("mode", "")).strip().lower()
-    if mode not in ("auto", "manual"):
-        raise HTTPException(status_code=400, detail="mode must be auto|manual")
-    app.state.db.set_exec_mode(mode)
-    return {"mode": mode}
-
-
-@app.post("/api/rules")
-def ui_rules(body: dict):
-    """Dashboard mirror of the Telegram rule commands (/agree etc.). Writes
-    the same kv keys the EA reads back on every heartbeat -- last writer
-    (dashboard or Telegram) wins, both stay live."""
-    key = str(body.get("key", "")).strip()
-    value = str(body.get("value", "")).strip()
-    db = app.state.db
-    setters = {"entry_mode": db.set_entry_mode,
-               "htf_enforce": db.set_htf_enforce,
-               "ema200_enforce": db.set_ema200_enforce,
-               "rsi_enforce": db.set_rsi_enforce,
-               "m15_adds": db.set_m15_adds}
-    if key not in setters:
-        raise HTTPException(status_code=400, detail="unknown rule key")
-    try:
-        setters[key](value)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {key: value}
-
-
-@app.post("/api/proposal/{pid}")
-def ui_proposal_decide(pid: int, body: dict):
-    action = str(body.get("action", "")).strip().lower()
-    if action not in ("take", "skip"):
-        raise HTTPException(status_code=400, detail="action must be take|skip")
-    db = app.state.db
-    row = db.get_proposal(pid)
-    if row is None:
-        raise HTTPException(status_code=404, detail="no such proposal")
-    status = "approved" if action == "take" else "skipped"
-    # Same guarded transition the Telegram buttons use: if a concurrent tap
-    # or the expiry sweep already decided this row, report what won instead
-    # of overwriting it.
-    if not db.set_proposal_status(pid, status, expected="pending"):
-        return {"ok": False, "status": db.get_proposal(pid)["status"]}
-    mark = "🟢 approved (dashboard)" if action == "take" else "🔴 skipped (dashboard)"
-    _edit_proposal_message(row, mark)
-    return {"ok": True, "status": status}
-
-
-@app.post("/api/close-all")
-def ui_close_all():
-    db = app.state.db
-    for st in ("pending", "approved", "dispatched"):
-        if db.pending_proposal(kind="exit", status=st) is not None:
-            raise HTTPException(status_code=409, detail=f"close already {st}")
-    last = db.last_executed_entry()
-    direction = last["direction"] if last else "BUY"
-    latest = app.state.latest_heartbeat
-    strategy_id = latest[1].active_strategy if latest else "dashboard"
-    rc = app.state.recent_candles
-    price = rc["candles"][-1].c if rc else 0.0
-    pid = db.create_proposal("exit", direction, strategy_id, price, None)
-    db.set_proposal_status(pid, "approved", expected="pending")
-    return {"ok": True, "proposal_id": pid}
-
-
-@app.get("/api/state")
-def ui_state():
-    latest = app.state.latest_heartbeat
-    hb, age = None, None
-    if latest is not None:
-        age = round(time.time() - latest[0], 1)
-        hb = latest[1].model_dump()
-    proposal = app.state.db.active_proposal()
-    return {"age_s": age, "heartbeat": hb,
-            "pending_switch": app.state.pending_switch,
-            "mode": app.state.db.exec_mode(),
-            "rules": {"entry_mode": app.state.db.entry_mode(),
-                      "htf_enforce": app.state.db.htf_enforce(),
-                      "ema200_enforce": app.state.db.ema200_enforce(),
-                      "rsi_enforce": app.state.db.rsi_enforce(),
-                      "m15_adds": app.state.db.m15_adds()},
-            "proposal": proposal,
-            "stats": app.state.db.stats()}
-
-
-@app.get("/api/equity")
-def ui_equity():
-    return {"series": app.state.db.equity_series()}
-
-
-@app.get("/api/stats")
-def ui_stats():
-    return app.state.db.stats()
-
-
-@app.get("/api/signals")
-def ui_signals(limit: int = 50):
-    return {"signals": app.state.db.recent_signals(limit)}
-
-
-@app.get("/api/candles")
-def ui_candles():
-    rc = app.state.recent_candles
-    if not rc or not rc["candles"]:
-        return {"symbol": "", "timeframe": "", "candles": []}
-    key = _rc_key(rc)
-    cached = getattr(app.state, "candles_cache", None)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    payload = {"symbol": rc["symbol"], "timeframe": rc["timeframe"],
-               "candles": [c.model_dump() for c in rc["candles"]]}
-    app.state.candles_cache = (key, payload)
-    return payload
-
-
-def _overlays_halftrend_ema_v1(candles: list, closes: list) -> dict:
-    ht = halftrend(candles, amplitude=4)
-    return {
-        "halftrend": [list(v) if v is not None else None for v in ht],
-        "ema55": ema(closes, 55),
-        "ema9": ema(closes, 9),
-        "ema21": ema(closes, 21),
-        "ema200": ema(closes, 200),
-    }
-
-
-def _overlays_boll_stochrsi_v1(candles: list, closes: list) -> dict:
-    upper, mid, lower = bollinger(closes, period=20, dev=2.0)
-    return {"bb_upper": upper, "bb_mid": mid, "bb_lower": lower}
-
-
-def _resample_m15(candles: list) -> list:
-    """3xM5 -> 1xM15 dict bars aligned to 900 s boundaries. The trailing
-    (possibly incomplete) bucket is kept -- on a live chart the forming M15
-    bar is real information, and the EA's own M15 lane sees the same thing."""
-    out = []
-    for c in candles:
-        bucket = c.t - (c.t % 900)
-        if out and out[-1]["t"] == bucket:
-            b = out[-1]
-            b["h"] = max(b["h"], c.h)
-            b["l"] = min(b["l"], c.l)
-            b["c"] = c.c
-        else:
-            out.append({"t": bucket, "o": c.o, "h": c.h, "l": c.l, "c": c.c})
-    return out
-
-
-def _overlays_halftrend_m15_v1(candles: list, closes: list) -> dict:
-    """halftrend_m15_v1's indicators computed on M15 bars, expanded back to
-    the M5 candle list (each M5 bar takes its M15 bucket's value) so the
-    arrays stay 1:1 with /api/candles like every other overlay."""
-    m15 = _resample_m15(candles)
-    if len(m15) < 3:
-        return {}
-    m15_objs = [type("C", (), b)() for b in m15]
-    closes15 = [b["c"] for b in m15]
-    ht15 = halftrend(m15_objs, amplitude=4)
-    # M15 trades EMA 50 (owner 2026-08-31, sweep-checked: better than 45 in
-    # both halves, same dd). "ema55" stays as the wire SLOT name every chart
-    # frontend already binds to — the value is the lane's trading EMA.
-    e55, e200 = ema(closes15, 50), ema(closes15, 200)
-    idx = {b["t"]: i for i, b in enumerate(m15)}
-
-    # Bucket sizes, so the interpolation below knows where each M5 bar sits
-    # inside its M15 bucket (3 normally; fewer at session edges/gaps).
-    counts: dict = {}
-    for c in candles:
-        b = c.t - (c.t % 900)
-        counts[b] = counts.get(b, 0) + 1
-
-    # Smooth EMA expansion (owner 2026-09-02: the flat-per-bucket step
-    # rendering read as "ziggy zaggy"): a bucket's EMA value anchors on that
-    # bucket's LAST M5 bar — the moment the value actually became known —
-    # and the M5 bars inside the bucket interpolate linearly from the
-    # previous bucket's anchor. The forming bucket interpolates toward its
-    # live (partial-close) EMA, so the line stays continuous to the newest
-    # bar. HalfTrend stays bucket-stepped on purpose: it IS a step line.
-    def smooth(series, i, b, kth):
-        cur = series[i]
-        if cur is None:
-            return None
-        prev = series[i - 1] if i > 0 else None
-        if prev is None:
-            return cur if kth == counts[b] else None
-        return prev + (cur - prev) * (kth / counts[b])
-
-    seen: dict = {}
-    out_ht, out55, out200 = [], [], []
-    for c in candles:
-        b = c.t - (c.t % 900)
-        i = idx[b]
-        seen[b] = seen.get(b, 0) + 1
-        v = ht15[i]
-        out_ht.append(list(v) if v is not None else None)
-        out55.append(smooth(e55, i, b, seen[b]))
-        out200.append(smooth(e200, i, b, seen[b]))
-    return {"halftrend": out_ht, "ema55": out55, "ema200": out200}
-
-
-# strategy_id -> overlay builder(candles, closes) -> dict. Everywhere else,
-# strategies are handled by tag rather than by per-strategy branching (see
-# db.stats() in db.py) -- this registry is that pattern applied to
-# /api/overlays. A new strategy adds an entry here instead of another
-# if/elif; an unrecognised strategy_id (or none registered) falls through
-# to ui_overlays' existing {} fallback.
-_OVERLAY_BUILDERS = {
-    "halftrend_ema_v1": _overlays_halftrend_ema_v1,
-    "halftrend_m15_v1": _overlays_halftrend_m15_v1,
-    "boll_stochrsi_v1": _overlays_boll_stochrsi_v1,
-    "boll_stochrsi": _overlays_boll_stochrsi_v1,     # EA-side id alias
-}
-
-
-@app.get("/api/overlays")
-def ui_overlays(strategy: str = ""):
-    """Chart-overlay series for the dashboard's price chart, aligned 1:1
-    (same length, None for warmup) with the candle list /api/candles
-    returns from the same app.state.recent_candles snapshot. Unknown
-    strategy or no candles yet -> {} (nothing to draw)."""
-    rc = app.state.recent_candles
-    if not rc or not rc["candles"]:
-        return {}
-    builder = _OVERLAY_BUILDERS.get(strategy)
-    if builder is None:
-        return {}
-    key = _rc_key(rc)
-    cache = getattr(app.state, "overlays_cache", None)
-    if cache is None:
-        cache = app.state.overlays_cache = {}
-    hit = cache.get((key, strategy))
-    if hit is not None:
-        return hit
-    candles = rc["candles"]
-    closes = [c.c for c in candles]
-    payload = builder(candles, closes)
-    # S/R boxes (2026-09-05): from the persistent M5 table, not the 2000-bar
-    # accumulator (H4 needs ~50 days of M5 bars). Memoised on the newest M5
-    # bar in app.state.sr_cache, separate from this overlays_cache.
-    payload["sr_zones"] = sr_zones_from_db(app.state.db, app.state.sr_cache)
-    # Only the current key's entries are kept (one per strategy the
-    # dashboard asks for) -- a new bar drops the whole previous generation
-    # rather than letting the dict grow without bound.
-    # pop(..., None), not del: this is a sync def, so FastAPI runs it in the
-    # threadpool and two overlay requests (the dashboard asks for one
-    # strategy per chart) can build the same stale-key list and race the
-    # eviction -- the second del would raise KeyError and 500.
-    for stale in [k for k in cache if k[0] != key]:
-        cache.pop(stale, None)
-    cache[(key, strategy)] = payload
-    return payload
-
-
-def _mask_secret(value: str) -> str:
-    """Never return the full secret: "****" + last 4 chars (or all dots if
-    shorter than that)."""
-    tail = value[-4:] if len(value) >= 4 else value
-    return "••••" + tail
-
-
-@app.get("/api/profile")
-def ui_profile_get():
-    row = app.state.db.get_profile()
-    completion_pct = profile_completion(row)
-    if row is not None:
-        row = dict(row)
-        token = row.get("telegram_bot_token")
-        if token:
-            row["telegram_bot_token"] = _mask_secret(str(token))
-        ngrok_token = row.get("ngrok_authtoken")
-        if ngrok_token:
-            row["ngrok_authtoken"] = _mask_secret(str(ngrok_token))
-    return {"profile": row, "completion_pct": completion_pct}
-
-
-@app.post("/api/profile")
-async def ui_profile_save(body: dict):
-    body = dict(body) if isinstance(body, dict) else {}
-    # Belt and braces: the onboarding page never sends a masked value back,
-    # but guard here too so a masked telegram_bot_token/ngrok_authtoken
-    # (from the GET response, e.g. round-tripped by a stale client) can
-    # never overwrite the real stored secret.
-    if str(body.get("telegram_bot_token", "")).startswith("•"):
-        body.pop("telegram_bot_token", None)
-    if str(body.get("ngrok_authtoken", "")).startswith("•"):
-        body.pop("ngrok_authtoken", None)
-    row = app.state.db.save_profile(body)
-    if "telegram_bot_token" in body or "telegram_chat_id" in body:
-        try:
-            await _apply_telegram(app)
-        except Exception:
-            pass
-    return {"profile": row, "completion_pct": profile_completion(row)}
-
-
-@app.get("/")
-def ui_page():
-    try:
-        has_profile = app.state.db.get_profile() is not None
-    except Exception:
-        has_profile = True  # fail open to the dashboard, not a redirect/500
-    if not has_profile:
-        return RedirectResponse("/onboarding", status_code=307)
-    return FileResponse(Path(__file__).parent / "static" / "dashboard.html",
-                        media_type="text/html")
-
-
-@app.get("/onboarding")
-def ui_onboarding():
-    return FileResponse(Path(__file__).parent / "static" / "onboarding.html",
-                        media_type="text/html")
-
-
-@app.get("/vocabs")
-def ui_vocabs():
-    """Gold-trading vocabulary reference (owner request 2026-09-01): grouped
-    terms with one-at-a-time accordion explanations; the system's own
-    guardrails are marked inline. Static page, no data dependencies."""
-    return FileResponse(Path(__file__).parent / "static" / "vocabs.html",
-                        media_type="text/html")
-
-
-@app.get("/api/last-close-ticket")
-async def last_close_ticket():
-    """Newest close-deal ticket this service has recorded. The EA's
-    reconciler reads it before replaying "offline" closes and takes
-    max(its MT5-global watermark, this) — a watermark rolled back by a
-    hard terminal kill (gvariables.dat is only saved on clean shutdown;
-    incident 2026-08-31) then can't resurrect closes the service already
-    knows. Aggregate closes carry ticket=0 and are naturally ignored."""
-    row = app.state.db.conn.execute(
-        "SELECT MAX(ticket) FROM trades WHERE event='close' AND ticket>0"
-    ).fetchone()
-    return {"ticket": int(row[0]) if row and row[0] else 0}
-
-
-@app.post("/trade-event")
-async def trade_event(ev: TradeEventRequest):
-    # Idempotent receiver for the EA's at-least-once close delivery: deal
-    # tickets are unique, so a close re-delivered with the same nonzero
-    # ticket (the EA timed out before seeing our response and retried —
-    # the reconciler does this every 60 s) must get the ORIGINAL row id
-    # back, with no re-insert and no re-report.
-    if ev.event == "close" and ev.ticket:
-        row = app.state.db.conn.execute(
-            "SELECT MIN(id) FROM trades WHERE event='close' AND ticket=?",
-            (ev.ticket,)).fetchone()
-        if row is not None and row[0] is not None:
-            return {"id": row[0]}
-    trade_id = app.state.db.insert_trade(ev.model_dump())
-    # legs computed before responding: _basket_legs is a quick db read, and
-    # the background report needs the basket bounded as of THIS row.
-    try:
-        legs = _basket_legs(app.state.db, trade_id)
-    except Exception:
-        legs = []
-    # Respond immediately — the render + Telegram + channel-mirror work for
-    # a FINAL close takes multiple seconds, far beyond the EA's 1 s
-    # WebRequest timeout. Holding the response made the EA treat every
-    # slow final close as FAILED and re-deliver it forever (the 2026-08-13
-    # reconcile spam). The report runs as a background task instead; task
-    # refs are held on app.state so they can't be garbage-collected.
-    # State is captured HERE, at task-creation time, not read inside the
-    # coroutine as it was before the 2026-08-21 extraction. The difference is
-    # sub-millisecond and no test exercises it, but it is a real semantic
-    # change and is kept deliberately: the report then describes the account
-    # as it was WHEN THE TRADE EVENT ARRIVED, rather than as it happens to be
-    # whenever the task gets scheduled. A swapped Telegram client or a newer
-    # candle set arriving in between no longer changes what this report says.
-    task = asyncio.create_task(_report_trade_event(
-        ev, trade_id, legs,
-        last_candles=app.state.last_candles,
-        screenshot_dir=app.state.screenshot_dir,
-        db=app.state.db,
-        telegram=app.state.telegram,
-        mirror=lambda **kw: _mirror(app, **kw),
-        sr_cache=app.state.sr_cache))
-    app.state.report_tasks.add(task)
-    task.add_done_callback(app.state.report_tasks.discard)
-    return {"id": trade_id}
-
-
-@app.post("/screenshot")
-async def screenshot(event: int, request: Request):
-    body = await request.body()
-    dir_path = app.state.screenshot_dir
-    file_path = dir_path / f"{event}.png"
-    # Dispatch the blocking file write and directory scan/prune via
-    # asyncio.to_thread so they run off the event loop instead of stalling
-    # every other request while they hit disk.
-    await asyncio.to_thread(file_path.write_bytes, body)
-    app.state.db.set_screenshot(event, str(file_path))
-    await asyncio.to_thread(_prune_screenshots, dir_path)
-    if app.state.telegram is not None:
-        try:
-            row = app.state.db.conn.execute(
-                "SELECT event, direction, lots, price, reason, profit,"
-                " COALESCE(htf_agree, -1), COALESCE(ema200_agree, -1),"
-                " COALESCE(news_blackout, -1), COALESCE(rsi_agree, -1),"
-                " COALESCE(sr_agree, -1), COALESCE(sr_tier, '')"
-                " FROM trades WHERE id=?", (event,)).fetchone()
-            if row is not None:
-                caption = _trade_caption(*row)
-                markup = EXIT_NOW_KB(event) if row[0] == "open" else None
-                await asyncio.to_thread(
-                    app.state.telegram.send_photo, caption, body, markup)
-        except Exception:
-            pass
-    return {"saved": str(file_path)}
-
-
-@app.get("/api/trades")
-def ui_trades(limit: int = 50):
-    return {"trades": app.state.db.recent_trades(limit)}
-
-
-@app.get("/api/screenshot/{trade_id}")
-def ui_screenshot(trade_id: int):
-    row = app.state.db.conn.execute(
-        "SELECT screenshot_path FROM trades WHERE id=?", (trade_id,)).fetchone()
-    if not row or not row[0]:
-        return JSONResponse(status_code=404, content={"detail": "screenshot not found"})
-    path = Path(row[0])
-    if not path.exists():
-        return JSONResponse(status_code=404, content={"detail": "screenshot not found"})
-    return FileResponse(path, media_type="image/png")
-
-
-@app.get("/api/render/{trade_id}")
-def ui_render(trade_id: int):
-    row = app.state.db.conn.execute(
-        "SELECT render_path FROM trades WHERE id=?", (trade_id,)).fetchone()
-    if not row or not row[0]:
-        return JSONResponse(status_code=404, content={"detail": "render not found"})
-    path = Path(row[0])
-    if not path.exists():
-        return JSONResponse(status_code=404, content={"detail": "render not found"})
-    return FileResponse(path, media_type="image/png")
-
-
-def _day_ts(s: str, end: bool = False) -> int:
-    """Date-picker day -> epoch seconds, midnight (or end-of-day) UTC --
-    the same convention the CLI's --start/--end use. Candle bar_time is
-    broker server time; a day boundary being ~3 h off is acceptable for a
-    date-range filter and matches every existing replay."""
-    d = dt.date.fromisoformat(s)
-    t = dt.datetime.combine(d, dt.time(23, 59, 59) if end else dt.time.min,
-                            tzinfo=dt.timezone.utc)
-    return int(t.timestamp())
-
-
-@app.get("/backtest")
-def ui_backtest_page():
-    return FileResponse(Path(__file__).parent / "static" / "backtest.html",
-                        media_type="text/html")
-
-
-@app.get("/api/backtest/range")
-def ui_backtest_range():
-    series = app.state.db.latest_candle_series()
-    symbol = series[0] if series else "XAUUSD"
-    strategies = [{"id": sid, "label": s["label"], "supported": True}
-                  for sid, s in backtest_runner.STRATEGIES.items()]
-    strategies.append({"id": "boll_stochrsi", "label": "BollStochRsi",
-                       "supported": False})
-    return {"symbol": symbol,
-            "range": app.state.db.candles_range(symbol, "M5"),
-            "strategies": strategies}
-
-
-@app.get("/api/backtest/runs")
-def ui_backtest_runs(limit: int = 20):
-    runs = []
-    for row in app.state.db.recent_backtest_runs(limit):
-        row = dict(row)
-        row["params"] = json.loads(row.pop("params_json") or "{}")
-        row["stats"] = json.loads(row.pop("stats_json") or "null")
-        runs.append(row)
-    return {"runs": runs}
-
-
-@app.post("/api/backtest")
-def ui_backtest_start(body: dict):
-    strategy = str(body.get("strategy", "")).strip()
-    if strategy == "boll_stochrsi":
-        raise HTTPException(status_code=400,
-                            detail="boll_stochrsi is not yet supported by the replay engine")
-    if strategy not in backtest_runner.STRATEGIES:
-        raise HTTPException(status_code=400, detail="unknown strategy")
-    try:
-        start_ts = _day_ts(str(body.get("start", "")))
-        end_ts = _day_ts(str(body.get("end", "")), end=True)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="start/end must be YYYY-MM-DD")
-    if start_ts >= end_ts:
-        raise HTTPException(status_code=400, detail="start must be before end")
-    try:
-        balance = float(body.get("balance", 10000))
-        risk_pct = float(body.get("risk_pct", 1.0))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="balance/risk_pct must be numbers")
-    if not math.isfinite(balance) or not math.isfinite(risk_pct):
-        raise HTTPException(status_code=400, detail="balance/risk_pct must be finite numbers")
-    if balance < 500:
-        raise HTTPException(status_code=400,
-                            detail="balance must be >= 500 (engine minimum)")
-    if not 0 < risk_pct <= 10:
-        raise HTTPException(status_code=400, detail="risk_pct must be in (0, 10]")
-    entry_mode = str(body.get("entry_mode", "adr"))
-    exit_scheme = str(body.get("exit_scheme", "target-exit"))
-    ema200_confirm = str(body.get("ema200_confirm", "off"))
-    m15_bias = str(body.get("m15_bias", "off"))
-    if entry_mode not in ("adr", "fixed"):
-        raise HTTPException(status_code=400, detail="entry_mode must be adr|fixed")
-    if exit_scheme not in ("target-exit", "floor-a", "floor-b", "floor-a-adds"):
-        raise HTTPException(status_code=400, detail="bad exit_scheme")
-    sr_filter = str(body.get("sr_filter", "off"))
-    if ema200_confirm not in ("off", "on") or m15_bias not in ("off", "on") \
-            or sr_filter not in ("off", "on"):
-        raise HTTPException(status_code=400,
-                            detail="ema200_confirm/m15_bias/sr_filter must be off|on")
-    series = app.state.db.latest_candle_series()
-    symbol = series[0] if series else "XAUUSD"
-    rng = app.state.db.candles_range(symbol, "M5")
-    if rng is None or end_ts < rng["start"] or start_ts > rng["end"]:
-        avail = (f"{dt.datetime.fromtimestamp(rng['start'], dt.timezone.utc):%Y-%m-%d} .. "
-                 f"{dt.datetime.fromtimestamp(rng['end'], dt.timezone.utc):%Y-%m-%d}"
-                 if rng else "none -- run the backfill first")
-        raise HTTPException(status_code=400,
-                            detail=f"no candles in that range (available: {avail})")
-    n_bars = app.state.db.count_candles(symbol, "M5", start_ts, end_ts)
-    if n_bars < 300:
-        raise HTTPException(status_code=400,
-                            detail=f"only {n_bars} M5 bars in that range -- need at least 300")
-    params = {"strategy": strategy, "symbol": symbol,
-              "start_ts": start_ts, "end_ts": end_ts,
-              "balance": balance, "risk_pct": risk_pct,
-              "entry_mode": entry_mode, "exit_scheme": exit_scheme,
-              "ema200_confirm": ema200_confirm, "m15_bias": m15_bias,
-              "sr_filter": sr_filter}
-    try:
-        run_id = backtest_runner.start_run(app.state.db, params)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return {"run_id": run_id}
-
-
-@app.get("/api/backtest/{run_id}")
-def ui_backtest_status(run_id: int):
-    row = app.state.db.get_backtest_run(run_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="no such run")
-    row = dict(row)
-    row["params"] = json.loads(row.pop("params_json") or "{}")
-    row["stats"] = json.loads(row.pop("stats_json") or "null")
-    return row
-
-
-@app.get("/api/backtest/{run_id}/report")
-def ui_backtest_report(run_id: int):
-    row = app.state.db.get_backtest_run(run_id)
-    if not row or not row["report_path"] or not Path(row["report_path"]).exists():
-        raise HTTPException(status_code=404, detail="report not found")
-    return FileResponse(row["report_path"], media_type="text/html")
-
-
-_LEGACY_PAGES = {"": "/", "backtest": "/backtest", "onboarding": "/onboarding"}
-
-
-@app.api_route("/ui{path:path}", methods=["GET", "POST"])
-def ui_legacy_redirect(path: str, request: Request):
-    """Old /ui/* addresses (bookmarks, Telegram links, the backtest CLI's
-    default --source) 307 to the new homes. 307 preserves method and body."""
-    tail = path.lstrip("/")
-    target = _LEGACY_PAGES.get(tail, "/api/" + tail)
-    if request.url.query:
-        target += "?" + request.url.query
-    return RedirectResponse(target, status_code=307)
+app.include_router(stream_router)
+app.include_router(backtest_router)
+app.include_router(ea_router)
+app.include_router(ui_router)
+
+# Backward compatibility exports for existing tests and external callers
+from app.routers.ea import analyze
+from app.routers.ui import ui_candles, ui_overlays
+from app.tg.service import (
+    _MANUAL_PDF,
+    mirror_command_text as _mirror_command_text,
+    send_chart_snapshot as _send_chart_snapshot,
+    send_manual as _send_manual,
+)

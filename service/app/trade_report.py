@@ -9,6 +9,7 @@ passed in explicitly by the caller instead."""
 import asyncio
 from pathlib import Path
 
+from app.asset_registry import format_asset_badge
 from app.db import SignalDb
 from app.models import Candle
 from app.render import render_trade_chart
@@ -24,7 +25,14 @@ _SCREENSHOT_RETENTION = 500
 # its candles resampled up here. Map: strategy_id -> (bucket_seconds, trade
 # EMA length) — default M5/55; the M15 lane resamples to 900 s and draws its
 # EMA-50 like its live overlay. A new higher-TF lane adds one row.
-_LANE_RENDER = {"halftrend_m15_v1": (900, 50)}
+_LANE_RENDER = {
+    "iziGold15": (900, 50),
+    "iziGold5": (300, 55),
+    "izi15": (900, 50),
+    "izi5": (300, 55),
+    "iziBit15": (900, 50),
+    "iziBit5": (300, 55),
+}
 
 
 def _resample(candles: list, bucket_s: int) -> list:
@@ -72,12 +80,22 @@ def _basket_legs(db: SignalDb, trade_id: int) -> list:
     carry `ts`/`htf_agree`/`ema200_agree` (needed for the report) and no
     `sl`/`tp` (the mini-app query never selects them). If you change the boundary rule here, change
     it there too, and vice versa."""
-    last_close = db.conn.execute(
-        "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
-        (trade_id,)).fetchone()[0] or 0
-    rows = db.conn.execute(
-        "SELECT price, lots, event, sl, tp FROM trades WHERE id > ? AND event IN"
-        " ('open','add') ORDER BY id ASC", (last_close,)).fetchall()
+    cur = db.conn.execute("SELECT symbol FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    sym = cur[0] if cur and cur[0] else None
+    if sym:
+        last_close = db.conn.execute(
+            "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND symbol = ? AND id < ?",
+            (sym, trade_id)).fetchone()[0] or 0
+        rows = db.conn.execute(
+            "SELECT price, lots, event, sl, tp FROM trades WHERE symbol = ? AND id > ? AND event IN"
+            " ('open','add') ORDER BY id ASC", (sym, last_close)).fetchall()
+    else:
+        last_close = db.conn.execute(
+            "SELECT MAX(id) FROM trades WHERE event='close' AND final=1 AND id < ?",
+            (trade_id,)).fetchone()[0] or 0
+        rows = db.conn.execute(
+            "SELECT price, lots, event, sl, tp FROM trades WHERE id > ? AND event IN"
+            " ('open','add') ORDER BY id ASC", (last_close,)).fetchall()
     return [{"price": r[0], "lots": r[1], "event": r[2], "sl": r[3], "tp": r[4]}
             for r in rows]
 
@@ -143,70 +161,109 @@ async def _report_trade_event(ev, trade_id: int, legs: list, *,
     # owner wants per entry (2026-08-17). Anything sent here would be a
     # duplicate.
     if ev.event == "close" and ev.final and telegram is not None:
+        sym = getattr(ev, "symbol", "XAUUSD")
+        text = _pl_message(ev.profit, ev.direction, legs, ev.price, sym, getattr(ev, "reason", ""))
         try:
-            await asyncio.to_thread(
-                telegram.send_message,
-                _pl_message(ev.profit, ev.direction, legs, ev.price))
+            await asyncio.to_thread(telegram.send_message, text)
         except Exception:
             pass
-        await mirror(text=_pl_message(ev.profit, ev.direction,
-                                      legs, ev.price))
+        await mirror(text=text)
+
+
+def _format_exit_reason(reason: str) -> str:
+    r = (reason or "").strip().lower()
+    if "reversal" in r:
+        return "Reversal Exit"
+    if "stop-loss" in r or "sl" in r:
+        return "Stop Loss Hit"
+    if "profit target" in r or "tp" in r:
+        return "Take Profit Hit"
+    if "profit lock" in r or "trailing" in r:
+        return "Trailing Stop"
+    if "stagnation" in r:
+        return "Stagnation Exit"
+    if "pre-break" in r or "flatten" in r:
+        return "Session Flatten"
+    if "remote exit" in r or "exit" in r:
+        return "Manual Close"
+    return reason or "Exit"
 
 
 def _pl_message(profit: float, direction: str = "", legs: list | None = None,
-                exit_price: float = 0.0) -> str:
+                exit_price: float = 0.0, symbol: str = "XAUUSD",
+                reason: str = "") -> str:
+    badge = format_asset_badge(symbol)
     if profit > 0:
-        head = f"💰 Trade closed: +${profit:.2f} profit"
+        head = f"💰 {badge} Trade closed: +${profit:.2f} profit"
     elif profit < 0:
-        head = f"🔻 Trade closed: -${abs(profit):.2f} loss"
+        head = f"🔻 {badge} Trade closed: -${abs(profit):.2f} loss"
     else:
-        head = "⚖️ Trade closed: breakeven"
-    # lot-weighted average entry across the basket's open/add legs, so
-    # pyramided trades report the entry that actually determined the P/L
+        head = f"⚖️ {badge} Trade closed: breakeven"
+
+    lines = [head]
     if legs and exit_price:
         tot = sum(l.get("lots", 0) for l in legs)
         if tot > 0:
             avg = sum(l["price"] * l.get("lots", 0) for l in legs) / tot
-            head += f" ({direction} {avg:.2f} → {exit_price:.2f})"
-    return head
+            lines.append(f"{direction} {avg:.2f} → {exit_price:.2f}")
+    elif direction and exit_price:
+        lines.append(f"{direction} {exit_price:.2f}")
 
+    if reason:
+        lines.append(f"Reason: {_format_exit_reason(reason)}")
 
+    return "\n".join(lines)
 
 
 def _trade_caption(event, direction, lots, price, reason, profit,
                    htf_agree: int = -1, ema200_agree: int = -1,
                    news_blackout: int = -1, rsi_agree: int = -1,
-                   sr_agree: int = -1, sr_tier: str = "") -> str:
-    caption = f"{event} {direction} {lots}@{price} — {reason}"
+                   sr_agree: int = -1, sr_tier: str = "",
+                   symbol: str = "XAUUSD", strategy_id: str = "",
+                   sl: float = 0.0, tp: float = 0.0) -> str:
+    badge = format_asset_badge(symbol)
     if event == "close":
-        caption += f"; P/L {profit}"
-    else:
-        if htf_agree in (0, 1):
-            # The M15 verdict is evaluated on EVERY entry, in every session,
-            # and reported here even when the tape was trending and it was
-            # not allowed to block (owner 2026-08-21). "no" on a live entry
-            # therefore means: taken in a trend, against M15.
-            caption += f"\nM15: {'agrees ✅' if htf_agree == 1 else 'DISAGREES ⚠️'}"
-        if ema200_agree in (0, 1):
-            # Same "always evaluated" rule as M15 above (owner 2026-08-22):
-            # reported on every entry, both strategies, even when the
-            # enforcement toggle is off and it could not have blocked.
-            caption += (f"\nE200: {'agrees ✅' if ema200_agree == 1 else 'DISAGREES ⚠️'}")
-        if rsi_agree in (0, 1):
-            # Report-only RSI(14) verdict (2026-09-02): same "always
-            # evaluated" rule as M15/E200 above.
-            caption += f"\nRSI: {'agrees ✅' if rsi_agree == 1 else 'DISAGREES ⚠️'}"
-        if sr_agree in (0, 1):
-            # Report-only S/R zone verdict (2026-09-05): "WALL <tier>" =
-            # the entry sat inside / within SrRoomAtr of an opposing box.
-            caption += ("\nS/R: clear ✅" if sr_agree == 1
-                        else f"\nS/R: WALL {sr_tier or '?'} ⚠️")
-        if news_blackout == 1:
-            # Only worth a line when it actually applies (owner 2026-09-01):
-            # this entry happened INSIDE a high-impact blackout window —
-            # either owner-approved via the blackout proposal, or manual.
-            caption += "\nNEWS BLACKOUT at entry ⚠️"
-    return caption
+        clean_reason = _format_exit_reason(reason)
+        if profit > 0:
+            head = f"💰 {badge} Closed: +${profit:.2f} profit"
+        elif profit < 0:
+            head = f"🔻 {badge} Closed: -${abs(profit):.2f} loss"
+        else:
+            head = f"⚖️ {badge} Closed: breakeven"
+        return f"{head}\n{direction} {lots} @ {price:.2f}\nReason: {clean_reason}"
+
+    # For open / add:
+    dir_icon = "🟢" if (direction or "").upper() == "BUY" else "🔴"
+    head = f"{dir_icon} {(direction or '').upper()} {lots} {badge} @ {price:.2f}"
+    lines = [head]
+
+    if sl > 0 and tp > 0:
+        risk = abs(price - sl)
+        reward = abs(tp - price)
+        rr_str = f" (1:{reward / risk:.2f} RR)" if risk > 0 else ""
+        lines.append(f"🛑 SL: {sl:.2f} | 🎯 TP: {tp:.2f}{rr_str}")
+    elif sl > 0:
+        lines.append(f"🛑 SL: {sl:.2f}")
+    elif tp > 0:
+        lines.append(f"🎯 TP: {tp:.2f}")
+
+    if strategy_id:
+        tf = "M15" if "15" in strategy_id else ("M5" if "5" in strategy_id else "")
+        lines.append(f"⚡ Lane: {tf} ({strategy_id})" if tf else f"⚡ Strategy: {strategy_id}")
+
+    # Key warnings only — no repetitive 'agrees' checklist
+    if news_blackout == 1:
+        lines.append("⚠️ News Blackout at entry")
+    if sr_agree == 0:
+        lines.append(f"⚠️ Opposing S/R Wall ({sr_tier or '?'})")
+    if htf_agree == 0:
+        lines.append("⚠️ M15 Disagrees")
+    if ema200_agree == 0:
+        lines.append("⚠️ E200 Disagrees")
+    if rsi_agree == 0:
+        lines.append("⚠️ RSI Disagrees")
+
+    return "\n".join(lines)
 
 
 def _prune_screenshots(dir_path: Path, keep: int = _SCREENSHOT_RETENTION) -> None:

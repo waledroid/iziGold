@@ -53,8 +53,10 @@ def _channel_chart_link() -> str:
 def format_ticker(hb, mode: str, ts_str: str, closed=False,
                   redacted=False) -> str:
     direction = hb.positions[0].direction if hb.positions else "?"
+    sym = getattr(hb, "symbol", "") or ""
+    sym_tag = "₿ BTC " if "BTC" in sym.upper() else ""
     head = "📊 CLOSED" if closed else "📊 LIVE"
-    lines = [f"{head} — {direction} basket ({mode})"]
+    lines = [f"{head} — {sym_tag}{direction} basket ({mode})"]
     if not redacted:
         lines.append(f"Equity     ${hb.equity:,.2f}")
     lines.append(f"Floating   {_money(hb.floating_pl)}")
@@ -95,6 +97,19 @@ _KV_CHANNEL = "ticker_channel_msg_id"
 _KV_CHANNEL_TEXT = "ticker_channel_text"
 
 
+def _kv_keys(symbol: str = "XAUUSD"):
+    sym = (symbol or "XAUUSD").upper()
+    if sym == "XAUUSD":
+        return _KV_OWNER, _KV_OWNER_TEXT, _KV_CHANNEL, _KV_CHANNEL_TEXT
+    prefix = f"ticker_{sym.lower()}_"
+    return (
+        f"{prefix}owner_msg_id",
+        f"{prefix}owner_text",
+        f"{prefix}channel_msg_id",
+        f"{prefix}channel_text",
+    )
+
+
 def _kv_write(app, pairs) -> None:
     """Write kv pairs on a SHORT-LIVED PRIVATE connection. ticker_tick runs
     in a worker thread (asyncio.to_thread) concurrently with request
@@ -121,19 +136,19 @@ def _kv_write(app, pairs) -> None:
         pass  # fail-open: persistence is a nicety, never a blocker
 
 
-def _persist(app, st) -> None:
-    _kv_write(app, [(_KV_OWNER, str(st.owner_msg_id or "")),
-                    (_KV_OWNER_TEXT, st.owner_text or ""),
-                    (_KV_CHANNEL, str(st.channel_msg_id or "")),
-                    (_KV_CHANNEL_TEXT, st.channel_text or "")])
+def _persist(app, st, symbol: str = "XAUUSD") -> None:
+    k_owner, k_owner_text, k_chan, k_chan_text = _kv_keys(symbol)
+    _kv_write(app, [(k_owner, str(st.owner_msg_id or "")),
+                    (k_owner_text, st.owner_text or ""),
+                    (k_chan, str(st.channel_msg_id or "")),
+                    (k_chan_text, st.channel_text or "")])
 
 
-def _clear_persisted(app) -> None:
-    _kv_write(app, [(k, "") for k in
-                    (_KV_OWNER, _KV_OWNER_TEXT, _KV_CHANNEL, _KV_CHANNEL_TEXT)])
+def _clear_persisted(app, symbol: str = "XAUUSD") -> None:
+    _kv_write(app, [(k, "") for k in _kv_keys(symbol)])
 
 
-def load_ticker_state(app) -> "TickerState":
+def load_ticker_state(app, symbol: str = "XAUUSD") -> "TickerState":
     """Rebuild TickerState from the kv store at startup. Empty/absent → a
     fresh state (nothing to resume). Never raises."""
     st = TickerState()
@@ -146,17 +161,34 @@ def load_ticker_state(app) -> "TickerState":
                 "PRAGMA database_list").fetchone()[2]
         except Exception:
             app.state.ticker_db_path = None
-        owner = db.get_kv(_KV_OWNER)
+        k_owner, k_owner_text, k_chan, k_chan_text = _kv_keys(symbol)
+        owner = db.get_kv(k_owner)
         if owner:
             st.owner_msg_id = int(owner)
-            st.owner_text = db.get_kv(_KV_OWNER_TEXT) or ""
-            chan = db.get_kv(_KV_CHANNEL)
+            st.owner_text = db.get_kv(k_owner_text) or ""
+            chan = db.get_kv(k_chan)
             if chan:
                 st.channel_msg_id = int(chan)
-                st.channel_text = db.get_kv(_KV_CHANNEL_TEXT) or ""
+                st.channel_text = db.get_kv(k_chan_text) or ""
     except Exception:
         return TickerState()
     return st
+
+
+def _get_ticker_state(app, symbol: str) -> TickerState:
+    sym = (symbol or "XAUUSD").upper()
+    if not hasattr(app.state, "tickers") or not isinstance(app.state.tickers, dict):
+        app.state.tickers = {}
+    legacy_st = getattr(app.state, "ticker", None)
+    if sym not in app.state.tickers:
+        if (sym == "XAUUSD" or not app.state.tickers) and isinstance(legacy_st, TickerState):
+            app.state.tickers[sym] = legacy_st
+        else:
+            app.state.tickers[sym] = load_ticker_state(app, sym)
+    # Sync with legacy app.state.ticker if replaced directly in tests
+    if sym == "XAUUSD" and isinstance(legacy_st, TickerState) and app.state.tickers[sym] is not legacy_st:
+        app.state.tickers[sym] = legacy_st
+    return app.state.tickers[sym]
 
 
 def ticker_tick(app, hb, now: float, previous=None) -> None:
@@ -165,7 +197,8 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
     tg = getattr(app.state, "telegram", None)
     if tg is None:
         return
-    st = app.state.ticker
+    sym = (getattr(hb, "symbol", "") or "XAUUSD").upper()
+    st = _get_ticker_state(app, sym)
     ts_str = time.strftime("%H:%M:%S", time.localtime(now))
     try:
         mode = app.state.db.exec_mode()
@@ -194,7 +227,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
             ch_id = (ch_sent or {}).get("result", {}).get("message_id")
             if ch_id is not None:
                 st.channel_msg_id, st.channel_text = ch_id, ch_text
-        _persist(app, st)
+        _persist(app, st, sym)
         return
 
     if hb.positions and st.owner_msg_id is not None:
@@ -218,8 +251,11 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
             # The persisted message was deleted (or the id is stale from a
             # different chat): forget it so the next tick posts a fresh
             # LIVE instead of editing a ghost forever.
-            app.state.ticker = TickerState()
-            _clear_persisted(app)
+            new_st = TickerState()
+            app.state.tickers[sym] = new_st
+            if sym == "XAUUSD" or not hasattr(app.state, "ticker"):
+                app.state.ticker = new_st
+            _clear_persisted(app, sym)
             return
         else:
             return  # retry on next tick if edit failed
@@ -231,7 +267,7 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
                 ch_edit_result = None
             if (ch_edit_result or {}).get("ok", False):
                 st.channel_text = ch_text
-        _persist(app, st)
+        _persist(app, st, sym)
         return
 
     if not hb.positions and st.owner_msg_id is not None:
@@ -252,8 +288,11 @@ def ticker_tick(app, hb, now: float, previous=None) -> None:
                                   redacted=True))
             except Exception:
                 pass
-        app.state.ticker = TickerState()
-        _clear_persisted(app)
+        new_st = TickerState()
+        app.state.tickers[sym] = new_st
+        if sym == "XAUUSD" or not hasattr(app.state, "ticker"):
+            app.state.ticker = new_st
+        _clear_persisted(app, sym)
 
 
 def _body(text: str) -> str:

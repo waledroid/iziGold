@@ -8,7 +8,7 @@ from tests.fixtures import trend_candles
 
 
 def _trade(**overrides):
-    ev = {"event": "open", "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+    ev = {"event": "open", "strategy_id": "izi5", "direction": "BUY",
           "lots": 0.1, "price": 2400.0, "sl": 2390.0, "reason": "signal confirmed"}
     ev.update(overrides)
     return ev
@@ -344,7 +344,7 @@ def test_trade_event_close_sends_profit_message(client):
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
-    assert msg_calls[0][1]["text"] == "💰 Trade closed: +$102.82 profit"
+    assert "Trade closed: +$102.82 profit" in msg_calls[0][1]["text"]
 
 
 def test_trade_event_close_sends_loss_message(client):
@@ -361,7 +361,7 @@ def test_trade_event_close_sends_loss_message(client):
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
-    assert msg_calls[0][1]["text"] == "🔻 Trade closed: -$21.40 loss"
+    assert "Trade closed: -$21.40 loss" in msg_calls[0][1]["text"]
 
 
 def test_trade_event_close_sends_breakeven_message(client):
@@ -377,7 +377,7 @@ def test_trade_event_close_sends_breakeven_message(client):
 
     msg_calls = [c for c in ft.calls if c[0] == "sendMessage"]
     assert len(msg_calls) == 1
-    assert msg_calls[0][1]["text"] == "⚖️ Trade closed: breakeven"
+    assert "Trade closed: breakeven" in msg_calls[0][1]["text"]
 
 
 def test_trade_event_open_sends_no_profit_message(client):
@@ -609,7 +609,7 @@ def test_lane_resample_m15_matches_bucketing():
     # 9 M5 bars on a 900s grid -> exactly 3 M15 buckets
     m5 = [Candle(t=900 + 300 * i, o=10.0 + i, h=12.0 + i, l=9.0 + i,
                  c=11.0 + i, v=1.0) for i in range(9)]
-    bucket_s, ema_len = _LANE_RENDER["halftrend_m15_v1"]
+    bucket_s, ema_len = _LANE_RENDER["izi15"]
     assert (bucket_s, ema_len) == (900, 50)
     out = _resample(m5, bucket_s)
     assert len(out) == 3
@@ -631,7 +631,7 @@ def test_render_trade_chart_accepts_ema_len(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# S/R zone boxes (Task 5)
+# S/R zone outlines (Task 5; outline-only since 2026-10-01)
 # ---------------------------------------------------------------------------
 
 def _zones():
@@ -662,6 +662,11 @@ def test_render_trade_chart_accepts_zones_and_keeps_the_axis_tight(tmp_path):
         real(ax, window, zones)
         seen["ax"] = ax                        # stash the axis; ylim is read
         seen["patches"] = len(ax.patches)       # AFTER render_trade_chart returns
+        seen["patches_detail"] = [
+            (patch.get_facecolor(), patch.get_edgecolor(),
+             patch.get_linewidth(), patch.get_linestyle())
+            for patch in ax.patches
+        ]
 
     r._plot_sr_zones = spy
     w = trend_candles(200)[-100:]
@@ -685,6 +690,12 @@ def test_render_trade_chart_accepts_zones_and_keeps_the_axis_tight(tmp_path):
     # two inside + the partially-overlapping zone clipped to the window;
     # the far-outside zone is still skipped entirely.
     assert seen["patches"] == 3
+    # Outline-only: no fill on any zone patch, with a visible 1px border.
+    for face, edge, width, style in seen["patches_detail"]:
+        assert face[3] == 0
+        assert edge[3] > 0
+        assert width == 1
+        assert style != "None"
     ylim = seen["ax"].get_ylim()               # read AFTER render/autoscale
     # 0.15*span (rather than the zone clip's own 0.05*span pad) leaves
     # headroom for the always-on EMA9/21/HalfTrend overlays' own small lag

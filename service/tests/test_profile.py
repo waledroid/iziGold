@@ -258,3 +258,35 @@ def test_ngrok_domain_uppercase_scheme_normalized(tmp_path):
     db = SignalDb(str(tmp_path / "p.db"))
     db.save_profile({"ngrok_domain": "HTTPS://Mixed.Case.Ngrok-Free.dev/path?x=1"})
     assert db.get_profile()["ngrok_domain"] == "mixed.case.ngrok-free.dev"
+
+
+def test_btc_profile_onboarding_fields_roundtrip(client):
+    r = client.post("/api/profile", json={
+        "name": "Trader",
+        "btc_symbol": "BTCUSDT",
+        "btc_risk_pct": 0.75,
+        "btc_lane": "iziBit5",
+        "btc_enabled": 1,
+    })
+    assert r.status_code == 200
+    p = r.json()["profile"]
+    assert p["btc_symbol"] == "BTCUSDT"
+    assert p["btc_risk_pct"] == 0.75
+    assert p["btc_lane"] == "iziBit5"
+    assert p["btc_enabled"] == 1
+
+    rc = client.app.state.db.runtime_config()
+    assert rc["btc_symbol"] == "BTCUSDT"
+    assert rc["btc_risk_pct"] == 0.75
+    assert rc["btc_lane"] == "iziBit5"
+    assert rc["btc_enabled"] is True
+
+
+def test_btc_profile_defaults(tmp_path):
+    from app.db import SignalDb
+    db = SignalDb(str(tmp_path / "defaults.db"))
+    rc = db.runtime_config()
+    assert rc["btc_symbol"] == "BTCUSD"
+    assert rc["btc_risk_pct"] == 0.5
+    assert rc["btc_lane"] == "iziBit5"
+    assert rc["btc_enabled"] is True

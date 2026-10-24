@@ -15,7 +15,7 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def _hb(active="halftrend_ema_v1", equity=10000.0):
+def _hb(active="izi5", equity=10000.0):
     return {"equity": equity, "balance": 10000.0, "floating_pl": 12.5,
             "positions": [{"ticket": 1, "direction": "BUY", "lots": 0.1,
                            "open_price": 2400.0, "sl": 2390.0, "profit": 12.5}],
@@ -49,12 +49,12 @@ def test_switch_queue_delivers_until_confirmed(client):
     r = client.post("/api/switch", json={"strategy_id": "boll_stochrsi_v1"})
     assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
     # delivered while the EA still reports the old strategy
-    r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
+    r = client.post("/heartbeat", json=_hb(active="izi5"))
     body = r.json()
     assert body["switch_to"] == "boll_stochrsi_v1"
     assert body["mode"] == "auto"   # echoes the stored mode (fresh default)
     assert body["command"] is None
-    r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
+    r = client.post("/heartbeat", json=_hb(active="izi5"))
     body = r.json()
     assert body["switch_to"] == "boll_stochrsi_v1"   # at-least-once
     # EA reports the new id active -> cleared
@@ -73,7 +73,7 @@ def test_switch_queue_cancel_clears_pending(client):
     assert r.status_code == 200 and r.json() == {"pending": "boll_stochrsi_v1"}
     r = client.post("/api/switch", json={"strategy_id": ""})
     assert r.status_code == 200 and r.json() == {"pending": None}
-    r = client.post("/heartbeat", json=_hb(active="halftrend_ema_v1"))
+    r = client.post("/heartbeat", json=_hb(active="izi5"))
     body = r.json()
     assert body["switch_to"] is None
     assert body["mode"] == "auto"   # echoes the stored mode (fresh default)
@@ -99,7 +99,7 @@ class _CaptureTg:
         return lambda *a, **k: None
 
 
-def _flat_hb(active="halftrend_m15_v1"):
+def _flat_hb(active="izi15"):
     return {"equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0,
             "positions": [], "kill_switch": False, "hwm": 10100.0,
             "exposure_min": 5, "window_open": True, "spread_points": 25.0,
@@ -115,7 +115,7 @@ def test_reconnect_notice_after_gap(client):
     main.app.state.telegram = tg
     client.post("/heartbeat", json=_flat_hb())
     assert any("EA back online" in t for t in tg.sent), tg.sent
-    assert any("halftrend_m15_v1" in t for t in tg.sent), tg.sent
+    assert any("izi15" in t for t in tg.sent), tg.sent
 
 
 def test_no_notice_for_small_gap_or_fresh_service(client):

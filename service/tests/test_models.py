@@ -41,7 +41,7 @@ def test_request_accepts_shadows():
     from tests.fixtures import trend_candles
     req = AnalyzeRequest(
         symbol="XAUUSD", timeframe="M15", signal="BUY",
-        candles=trend_candles(50), strategy_id="halftrend_ema_v1",
+        candles=trend_candles(50), strategy_id="izi5",
         shadows=[{"strategy_id": "stub", "signal": "SELL"}])
     assert req.shadows[0].strategy_id == "stub"
     assert req.shadows[0].signal == "SELL"

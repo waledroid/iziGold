@@ -182,7 +182,7 @@ COMBOS = [
     {
         "name": "trading_window",
         "cli": "--window-start 8 --window-end 16",
-        "doc": "narrower entry window than the live 4-23 default",
+        "doc": "narrower entry window than the live 4-22 default",
         "set": {"WINDOW": (8, 16)},
     },
     {
@@ -239,6 +239,8 @@ def _replay_combo(combo):
         bt.BAR_MIN = bt.TF_SEC["M15"] // 60
         bt.FLATTEN_HM = bt.FLATTEN_BY_TF["M15"]
         candles = bt.resample(candles, bt.TF_SEC["M15"])
+    # Pinned against the historical 360m default exposure budget
+    bt.EXPO_MIN = 360
     for k, v in combo["set"].items():
         setattr(bt, k, v)
     trades, bal, max_dd, _valley = bt.run(

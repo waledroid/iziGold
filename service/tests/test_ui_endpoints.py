@@ -37,11 +37,11 @@ def test_equity_and_stats_endpoints(client):
 
 def test_signals_endpoint(client):
     payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "BUY",
-               "strategy_id": "halftrend_ema_v1",
+               "strategy_id": "izi5",
                "candles": [c.model_dump() for c in trend_candles(200)]}
     client.post("/analyze", json=payload)
     body = client.get("/api/signals").json()
-    assert body["signals"][0]["strategy_id"] == "halftrend_ema_v1"
+    assert body["signals"][0]["strategy_id"] == "izi5"
     assert body["signals"][0]["signal"] == "BUY"
 
 
@@ -51,20 +51,20 @@ def test_switch_rejects_invalid_strategy_id(client):
 
 
 def test_switch_accepts_valid_strategy_id(client):
-    r = client.post("/api/switch", json={"strategy_id": "halftrend_ema_v1"})
+    r = client.post("/api/switch", json={"strategy_id": "izi5"})
     assert r.status_code == 200
-    assert r.json()["pending"] == "halftrend_ema_v1"
+    assert r.json()["pending"] == "izi5"
 
 
 def test_overlays_empty_when_no_candles(client):
-    r = client.get("/api/overlays?strategy=halftrend_ema_v1")
+    r = client.get("/api/overlays?strategy=izi5")
     assert r.status_code == 200
     assert r.json() == {}
 
 
 def test_overlays_empty_for_unknown_strategy(client):
     payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "NONE",
-               "strategy_id": "halftrend_ema_v1",
+               "strategy_id": "izi5",
                "candles": [c.model_dump() for c in trend_candles(200)]}
     client.post("/analyze", json=payload)
     r = client.get("/api/overlays?strategy=nope")
@@ -72,13 +72,13 @@ def test_overlays_empty_for_unknown_strategy(client):
     assert r.json() == {}
 
 
-def test_overlays_halftrend_ema_v1(client):
+def test_overlays_izi5(client):
     candles = trend_candles(200)
     payload = {"symbol": "XAUUSD", "timeframe": "M15", "signal": "NONE",
-               "strategy_id": "halftrend_ema_v1",
+               "strategy_id": "izi5",
                "candles": [c.model_dump() for c in candles]}
     client.post("/analyze", json=payload)
-    r = client.get("/api/overlays?strategy=halftrend_ema_v1")
+    r = client.get("/api/overlays?strategy=izi5")
     assert r.status_code == 200
     body = r.json()
     n = len(candles)
@@ -90,6 +90,14 @@ def test_overlays_halftrend_ema_v1(client):
     assert all(isinstance(v, list) and len(v) == 2 for v in settled)
     settled_ema = [v for v in body["ema55"] if v is not None]
     assert settled_ema
+    # The dashboard response also carries the optional preview band and the
+    # shared chart spec consumed by the S/R and preview renderers.
+    assert "preview" in body
+    if body["preview"] is not None:
+        assert set(body["preview"]) == {
+            "active", "direction", "entry", "sl", "tp", "reason"}
+    assert body["chart"]["panels"]["macd"] is False
+    assert body["chart"]["sr_zones"]["outline"]["fill"] is False
 
 
 def test_overlays_boll_stochrsi_v1(client):
@@ -113,9 +121,19 @@ def test_dashboard_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "XAU Assistant" in r.text
+    assert "/static/dashboard.css" in r.text
+    assert "/static/dashboard.js" in r.text
+    assert "previewBtn" in r.text
+
+    js = client.get("/static/dashboard.js").text
     for needle in ("/api/state", "/api/candles", "/api/stats", "/api/signals", "/api/switch",
                    "/api/trades", "/api/overlays"):
-        assert needle in r.text
+        assert needle in js
+    assert "renderPreview" in js
+    assert "setSrZones" in js
+    assert "applySeriesSpec" in js
+    assert "addBaselineSeries" not in js
+    assert "topFillColor" not in js
 
 
 def test_vocabs_page_serves_and_navs_link_it(client):

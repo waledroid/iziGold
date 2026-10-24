@@ -3,1554 +3,251 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>iziGold — XAU Assistant</title>
+<title>iziGold — Stealth Cockpit (XAU Assistant)</title>
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@700;800;900&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&family=Outfit:wght@700;800;900&display=swap" rel="stylesheet">
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
-<style>
-:root {
-  --bg-dark: #07090e;
-  --bg-card: rgba(14, 19, 30, 0.82);
-  --bg-card-hover: rgba(22, 30, 46, 0.92);
-  --bg-input: #0b0f17;
-  --border-card: rgba(255, 255, 255, 0.07);
-  --border-card-hover: rgba(245, 197, 66, 0.35);
-  --gold-primary: #f5c542;
-  --gold-secondary: #d4af37;
-  --gold-dark: #996515;
-  --gold-gradient: linear-gradient(135deg, #ffd700 0%, #f5c542 45%, #b48811 100%);
-  --gold-glow: rgba(245, 197, 66, 0.2);
-  --gold-glow-lg: 0 0 24px rgba(245, 197, 66, 0.3);
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
-  --pos-green: #10b981;
-  --pos-bg: rgba(16, 185, 129, 0.14);
-  --pos-border: rgba(16, 185, 129, 0.35);
-  --neg-red: #f43f5e;
-  --neg-bg: rgba(244, 63, 94, 0.14);
-  --neg-border: rgba(244, 63, 94, 0.35);
-  --accent-blue: #38bdf8;
-  --accent-blue-bg: rgba(56, 189, 248, 0.12);
-}
+<script src="/static/chart_shared.js"></script>
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-body {
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-  background-color: var(--bg-dark);
-  background-image: 
-    radial-gradient(circle at 10% 0%, rgba(245, 197, 66, 0.07) 0%, transparent 45%),
-    radial-gradient(circle at 90% 15%, rgba(212, 175, 55, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 50% 100%, rgba(15, 23, 42, 0.8) 0%, transparent 60%);
-  background-attachment: fixed;
-  color: var(--text-main);
-  min-height: 100vh;
-  line-height: 1.5;
-  font-variant-numeric: tabular-nums;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-.mono {
-  font-family: 'JetBrains Mono', monospace;
-}
-
-.wrap {
-  max-width: 1440px;
-  margin: 0 auto;
-  padding: 32px 28px 64px;
-}
-
-/* Header */
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 32px;
-  padding: 16px 24px;
-  background: rgba(12, 17, 26, 0.75);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-card);
-  border-radius: 20px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.brand-logo {
-  width: 48px;
-  height: 48px;
-  background: var(--gold-gradient);
-  border-radius: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  box-shadow: 0 0 25px rgba(245, 197, 66, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  flex-shrink: 0;
-  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.brand-logo:hover {
-  transform: scale(1.06) rotate(3deg);
-}
-
-.brand-title {
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  background: linear-gradient(180deg, #ffffff 0%, #cbd5e1 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  line-height: 1.15;
-}
-
-.brand-subtitle {
-  font-size: 11.5px;
-  color: var(--gold-primary);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.brand-subtitle::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  background: var(--gold-primary);
-  border-radius: 50%;
-  box-shadow: 0 0 8px var(--gold-primary);
-}
-
-/* Standout Modern Luxury Greeting Typography */
-.greeting {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 250px;
-}
-
-.greeting-text {
-  font-family: 'Outfit', 'Syne', 'Plus Jakarta Sans', system-ui, sans-serif;
-  font-style: normal;
-  font-size: 34px;
-  font-weight: 900;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  background: linear-gradient(135deg, #ffffff 0%, #fff2ba 28%, #f5c542 68%, #d4af37 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 3px 12px rgba(245, 197, 66, 0.35));
-}
-
-/* Clean Minimal Top Menu */
-.nav-links {
-  display: flex;
-  gap: 6px;
-  background: rgba(14, 19, 30, 0.7);
-  padding: 4px 6px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.nav-links a {
-  color: var(--text-muted);
-  text-decoration: none;
-  font-size: 13.5px;
-  font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.nav-links a:hover {
-  color: var(--text-main);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.nav-links a.active {
-  color: var(--gold-primary) !important;
-  background: rgba(245, 197, 66, 0.12) !important;
-  border-color: rgba(245, 197, 66, 0.35) !important;
-  font-weight: 700 !important;
-  box-shadow: none !important;
-  transform: none !important;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.prof-badge {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: rgba(18, 24, 38, 0.7);
-  padding: 8px 16px;
-  border-radius: 24px;
-  border: 1px solid var(--border-card);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.prof-badge a {
-  color: var(--gold-primary);
-  text-decoration: none;
-  font-weight: 700;
-  transition: all 0.2s ease;
-  background: rgba(245, 197, 66, 0.12);
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(245, 197, 66, 0.25);
-}
-
-.prof-badge a:hover {
-  background: rgba(245, 197, 66, 0.22);
-  box-shadow: 0 0 10px rgba(245, 197, 66, 0.4);
-}
-
-/* Stale Banner */
-.stale {
-  background: linear-gradient(90deg, rgba(244, 63, 94, 0.2) 0%, rgba(185, 28, 28, 0.3) 100%);
-  border: 1px solid rgba(244, 63, 94, 0.5);
-  color: #fecdd3;
-  padding: 16px 24px;
-  border-radius: 16px;
-  margin-bottom: 24px;
-  display: none;
-  font-weight: 700;
-  font-size: 14.5px;
-  align-items: center;
-  gap: 12px;
-  animation: pulse-border 2s infinite;
-  box-shadow: 0 8px 24px rgba(244, 63, 94, 0.15);
-}
-
-@keyframes pulse-border {
-  0%, 100% { border-color: rgba(244, 63, 94, 0.4); }
-  50% { border-color: rgba(244, 63, 94, 0.9); }
-}
-
-/* Big Control Bar / Command Deck */
-.control-bar {
-  background: var(--bg-card);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-card);
-  border-radius: 20px;
-  padding: 20px 24px;
-  margin-bottom: 30px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.control-deck-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 20px;
-}
-
-/* Greeting (left) — big display serif, gold gradient; the live status line
-   sits underneath it as a subtitle. Name comes from the onboarding profile. */
-.greeting {
-  flex: 1 1 260px;
-  min-width: 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.greeting-text {
-  font-family: 'Playfair Display', 'Plus Jakarta Sans', serif;
-  font-style: italic;
-  font-weight: 600;
-  font-size: clamp(30px, 4.2vw, 46px);
-  line-height: 1.12;
-  background: var(--gold-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  letter-spacing: 0.01em;
-}
-
-/* Controls (right) — the old row of clusters squashed into a compact grid:
-   Mode | Entry | HTF on top, EMA200 | Close All (2 cells wide) below. */
-.control-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(96px, auto));
-  gap: 8px;
-  justify-content: end;
-}
-
-.control-grid .cell-span2 { grid-column: span 2; }
-
-.control-grid button,
-.control-grid .custom-select {
-  padding: 7px 10px;
-  font-size: 12px;
-  width: 100%;
-}
-
-.control-grid .custom-select { padding-right: 30px; }
-.control-grid .btn-group { width: 100%; }
-.control-grid .btn-group button { flex: 1; }
-
-.ctrl-cluster {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 5px;
-  background: rgba(8, 11, 18, 0.7);
-  padding: 8px 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.ctrl-label {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  padding: 0 4px;
-}
-
-/* Prominent Tactile Buttons */
-.btn-group {
-  display: flex;
-  gap: 5px;
-}
-
-button {
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 9px 18px;
-  color: var(--text-muted);
-  background: rgba(22, 29, 44, 0.7);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  user-select: none;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-}
-
-button:hover:not(:disabled) {
-  color: var(--text-main);
-  background: rgba(30, 41, 62, 0.9);
-  border-color: rgba(255, 255, 255, 0.16);
-  transform: translateY(-1.5px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
-}
-
-button:active:not(:disabled) {
-  transform: translateY(0.5px);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-}
-
-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  transform: none !important;
-  box-shadow: none !important;
-}
-
-button.btn-active-gold,
-button.active {
-  background: var(--gold-gradient) !important;
-  color: #080b11 !important;
-  border-color: rgba(255, 255, 255, 0.3) !important;
-  font-weight: 800 !important;
-  box-shadow: 0 4px 18px rgba(245, 197, 66, 0.4) !important;
-}
-
-button.btn-primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-  color: #ffffff;
-  border-color: rgba(59, 130, 246, 0.4);
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
-}
-
-button.btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%);
-  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45);
-}
-
-button.btn-cancel,
-button.btn-danger {
-  background: rgba(244, 63, 94, 0.12);
-  color: #fda4af;
-  border: 1px solid rgba(244, 63, 94, 0.35);
-  box-shadow: 0 2px 8px rgba(244, 63, 94, 0.15);
-}
-
-button.btn-cancel:hover:not(:disabled),
-button.btn-danger:hover:not(:disabled) {
-  background: rgba(244, 63, 94, 0.25);
-  color: #fff;
-  border-color: rgba(244, 63, 94, 0.6);
-  box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35);
-}
-
-button.btn-success {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: #ffffff;
-  border-color: rgba(16, 185, 129, 0.4);
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
-}
-
-button.btn-success:hover:not(:disabled) {
-  background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.45);
-}
-
-button.btn-sm {
-  padding: 6px 12px;
-  font-size: 12px;
-  border-radius: 8px;
-}
-
-/* Custom Select Dropdowns */
-.custom-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background-color: #0d121c;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f5c542' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  color: var(--text-main);
-  border: 1px solid var(--border-card);
-  border-radius: 10px;
-  padding: 9px 34px 9px 14px;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  outline: none;
-  transition: all 0.2s ease;
-}
-
-.custom-select:hover, .custom-select:focus {
-  border-color: rgba(245, 197, 66, 0.4);
-  box-shadow: 0 0 12px rgba(245, 197, 66, 0.15);
-}
-
-.ctrl-status-text {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-left: 4px;
-}
-
-.ctrl-status-text::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--gold-primary);
-  box-shadow: 0 0 8px var(--gold-primary);
-}
-
-/* Trade Proposal Banner */
-.proposal-box {
-  margin-top: 14px;
-  padding: 16px 20px;
-  background: linear-gradient(135deg, rgba(245, 197, 66, 0.1) 0%, rgba(15, 23, 42, 0.9) 100%);
-  border: 1px solid rgba(245, 197, 66, 0.35);
-  border-radius: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-}
-
-.proposal-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 14.5px;
-  font-weight: 600;
-}
-
-.proposal-actions {
-  display: flex;
-  gap: 10px;
-}
-
-/* Live Metrics Strip Grid */
-.strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 18px;
-  margin-bottom: 32px;
-}
-
-.stat-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-card);
-  border-radius: 18px;
-  padding: 20px 22px;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-}
-
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, rgba(245, 197, 66, 0.3), transparent);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.stat-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(245, 197, 66, 0.35);
-  background: var(--bg-card-hover);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.4), 0 0 20px var(--gold-glow);
-}
-
-.stat-card:hover::before {
-  opacity: 1;
-}
-
-.stat-label {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.stat-value {
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--text-main);
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-
-.stat-sub {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  margin-top: 8px;
-}
-
-/* Section Cards */
-.card-section {
-  background: var(--bg-card);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-card);
-  border-radius: 20px;
-  padding: 24px 28px;
-  margin-bottom: 32px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
-  transition: border-color 0.2s ease;
-}
-
-.card-section:hover {
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-  gap: 14px;
-}
-
-h2 {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-h2::before {
-  content: '';
-  display: inline-block;
-  width: 5px;
-  height: 20px;
-  background: var(--gold-gradient);
-  border-radius: 3px;
-  box-shadow: 0 0 10px var(--gold-primary);
-}
-
-/* Chart Panel */
-.chart-panel {
-  position: relative;
-}
-
-.chart-panel.expanded {
-  grid-column: 1 / -1;
-}
-
-.chart-panel.expanded .canvas-wrap {
-  height: 70vh;
-}
-
-.canvas-wrap {
-  position: relative;
-  width: 100%;
-  height: 320px;
-  border-radius: 16px;
-  overflow: hidden;
-  background: #080c14;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5);
-}
-
-.tabs {
-  display: flex;
-  gap: 6px;
-  background: rgba(8, 12, 20, 0.7);
-  padding: 4px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.tab-btn {
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: none;
-  transition: all 0.2s ease;
-}
-
-.tab-btn:hover {
-  color: var(--text-main);
-  background: rgba(255, 255, 255, 0.05);
-  transform: none;
-  box-shadow: none;
-}
-
-.tab-btn.active {
-  background: rgba(245, 197, 66, 0.16) !important;
-  color: var(--gold-primary) !important;
-  border-color: rgba(245, 197, 66, 0.4) !important;
-  box-shadow: 0 0 12px rgba(245, 197, 66, 0.15) !important;
-}
-
-.expand-btn {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(14, 20, 32, 0.85);
-  backdrop-filter: blur(8px);
-  color: var(--gold-primary);
-  border: 1px solid var(--border-card);
-  border-radius: 8px;
-  font-size: 16px;
-  line-height: 1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  z-index: 5;
-  transition: all 0.2s ease;
-}
-
-.expand-btn:hover {
-  background: rgba(245, 197, 66, 0.2);
-  border-color: var(--gold-primary);
-  transform: scale(1.1);
-}
-
-/* Custom Table Design */
-.table-wrap {
-  width: 100%;
-  overflow-x: auto;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(8, 11, 18, 0.5);
-}
-
-.table-wrap.scroll-cap {
-  max-height: 420px;
-  overflow-y: auto;
-}
-
-.table-wrap.scroll-cap::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.table-wrap.scroll-cap::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.2);
-}
-.table-wrap.scroll-cap::-webkit-scrollbar-thumb {
-  background: rgba(245, 197, 66, 0.25);
-  border-radius: 3px;
-}
-.table-wrap.scroll-cap::-webkit-scrollbar-thumb:hover {
-  background: rgba(245, 197, 66, 0.5);
-}
-
-.table-wrap.scroll-cap thead th {
-  position: sticky;
-  top: 0;
-  background: #0d121c;
-  z-index: 2;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 13.5px;
-}
-
-th {
-  text-align: left;
-  padding: 14px 16px;
-  font-size: 11.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-dim);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(14, 19, 30, 0.8);
-}
-
-td {
-  padding: 14px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  color: var(--text-main);
-  vertical-align: middle;
-}
-
-tr:last-child td {
-  border-bottom: none;
-}
-
-tr:hover td {
-  background: rgba(245, 197, 66, 0.03);
-}
-
-/* Badges */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 10px;
-  border-radius: 8px;
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  line-height: 1.2;
-}
-
-.badge-pos {
-  background: var(--pos-bg);
-  color: #34d399;
-  border: 1px solid var(--pos-border);
-}
-
-.badge-neg {
-  background: var(--neg-bg);
-  color: #fb7185;
-  border: 1px solid var(--neg-border);
-}
-
-.badge-gold {
-  background: rgba(245, 197, 66, 0.14);
-  color: var(--gold-primary);
-  border: 1px solid rgba(245, 197, 66, 0.35);
-  box-shadow: 0 0 10px rgba(245, 197, 66, 0.1);
-}
-
-.badge-muted {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-muted);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.pos { color: var(--pos-green); font-weight: 700; }
-.neg { color: var(--neg-red); font-weight: 700; }
-
-.thumb-img {
-  height: 44px;
-  width: auto;
-  border-radius: 8px;
-  border: 1px solid var(--border-card);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  background: #000;
-  display: block;
-}
-
-.thumb-img:hover {
-  transform: scale(1.12);
-  border-color: var(--gold-primary);
-  box-shadow: 0 0 14px rgba(245, 197, 66, 0.4);
-}
-
-/* Lightbox Modal */
-.lightbox-overlay {
-  position: fixed;
-  top: 0; left: 0; width: 100vw; height: 100vh;
-  background: rgba(4, 6, 10, 0.9);
-  backdrop-filter: blur(12px);
-  z-index: 9999;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  animation: fadeIn 0.2s ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.lightbox-content {
-  max-width: 92vw;
-  max-height: 90vh;
-  border-radius: 16px;
-  border: 1px solid rgba(245, 197, 66, 0.4);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(245, 197, 66, 0.25);
-}
-
-@media (max-width: 768px) {
-  .wrap { padding: 16px 12px 48px; }
-  .header { flex-direction: column; gap: 16px; align-items: flex-start; }
-  .control-deck-row { flex-direction: column; align-items: stretch; }
-  .control-grid { justify-content: stretch; grid-template-columns: repeat(2, 1fr); }
-  .control-grid .cell-span2 { grid-column: span 2; }
-}
-</style>
+<link rel="stylesheet" href="/static/dashboard.css">
 </head>
-<body>
 
-<div class="wrap">
-  <!-- Header -->
-  <header class="header">
-    <div class="brand">
-      <div class="brand-logo">🥇</div>
-      <div>
-        <h1 class="brand-title">iziGold</h1>
-        <div class="brand-subtitle">XAU Assistant Console</div>
+<body>
+<div class="cockpit-container">
+
+  <!-- Stale EA & Offline Alerts -->
+  <div id="stale" class="stale">
+    <span>⚠️</span>
+    <span><b>EA Disconnected:</b> Heartbeat stale (>5s). Check MT5 & WebRequest.</span>
+  </div>
+  <div id="svcdown" class="stale">
+    <span>⚠️</span>
+    <span><b>Service Offline:</b> Server unreachable — attempting reconnect…</span>
+  </div>
+  <div id="marketClosedBanner" class="market-closed-banner">
+    <div class="mcb-content">
+      <span>🌙</span>
+      <span id="marketClosedText"><b>XAUUSD Closed for Weekend:</b> Gold market reopens Sunday 22:00 UTC. Active trading on <b>iziBit5 (BTCUSD)</b> 24/7.</span>
+    </div>
+    <button type="button" class="mcb-btn" onclick="switchAsset('BTCUSD', true)">Switch to BTCUSD</button>
+  </div>
+
+  <!-- --- 1. Stealth Cockpit Header Bar --- -->
+  <header class="cockpit-header">
+    <div class="cockpit-left">
+      <div class="symbol-badge">
+        <div class="segmented-ctrl" style="margin-right:2px;">
+          <button id="btnAssetGold" class="seg-btn active" onclick="switchAsset('XAUUSD', true)">🥇 XAU</button>
+          <button id="btnAssetBtc" class="seg-btn" onclick="switchAsset('BTCUSD', true)">₿ BTC</button>
+        </div>
+        <span id="activeSymbolName" class="symbol-name">XAUUSD</span>
+        <span id="activeSymbolTag" class="symbol-tag">GOLD</span>
+      </div>
+
+      <div class="ticker-box">
+        <span id="livePrice" class="live-price mono">—</span>
+        <span id="spreadPill" class="micro-pill mono">18pt</span>
+      </div>
+
+      <div class="session-box">
+        <span class="micro-pulse"></span>
+        <span id="session-clock" class="mono">16:00:00 UTC</span>
+        <span id="session-name" class="micro-pill">London</span>
       </div>
     </div>
-    <nav class="nav-links">
-      <a href="/" class="active">⚡ Dashboard</a>
-      <a href="/backtest">📊 Backtest</a>
-      <a href="/vocabs">📖 Vocabs</a>
-      <a href="/onboarding">⚙️ Settings</a>
-    </nav>
-    <div class="header-right">
-      <span id="prof" class="prof-badge"></span>
+
+    <!-- Center Master Execution Mode & Health -->
+    <div class="cockpit-center">
+      <div class="segmented-ctrl">
+        <button id="mAuto" class="seg-btn" onclick="setMode('auto')">AUTO</button>
+        <button id="mManual" class="seg-btn" onclick="setMode('manual')">MAN</button>
+      </div>
+
+      <div id="ea-pill" class="status-micro" title="MT5 EA Terminal">
+        <span class="status-dot green" id="ea-dot"></span> <span id="ea-text" class="mono">EA</span>
+      </div>
+      <div id="ai-pill" class="status-micro clickable" onclick="toggleAiFromPill()" title="Toggle AI">
+        <span class="status-dot green" id="ai-dot"></span> <span id="ai-text" class="mono">AI</span>
+      </div>
+    </div>
+
+    <!-- Right Telemetry & Actions & Collapsible Menus -->
+    <div class="cockpit-right">
+      <button id="closeAll" class="btn-flat" onclick="closeAllPos()" title="Emergency: Close All Deals" disabled>FLAT</button>
+      <button class="btn-trade-modal" onclick="openOrderModal()">+ ORDER</button>
+
+      <!-- Strategy Gates Popover Trigger -->
+      <div class="menu-dropdown-wrap">
+        <button id="gatesBtn" class="filter-toggle" onclick="toggleGatesMenu(event)" title="Strategy Controls & Risk Gates">
+          <span>🎛️ Gates</span>
+          <span id="gatesCount" class="chip chip-gold" style="padding:1px 5px;font-size:10px;margin-left:2px;">0 on</span>
+        </button>
+        <div id="gatesMenu" class="cockpit-popover" style="display:none;" onclick="event.stopPropagation()">
+          <div class="popover-title">Strategy Rules & Risk Gates</div>
+          <div class="popover-row">
+            <span class="popover-label">HTF Bias Gate</span>
+            <div class="gate-pill">
+              <select id="rHtf" class="gate-select" onchange="setRule('htf_enforce',this.value)">
+                <option>off</option>
+                <option>M15</option>
+                <option>M30</option>
+                <option>H1</option>
+              </select>
+            </div>
+          </div>
+          <div class="popover-row">
+            <span class="popover-label">EMA200 Trend</span>
+            <button id="rE200" class="filter-toggle" onclick="toggleE200()" title="EMA200 Agreement Gate">E200</button>
+          </div>
+          <div class="popover-row">
+            <span class="popover-label">M15 Pyramid Adds</span>
+            <button id="rAdds" class="filter-toggle" onclick="toggleRule('m15_adds')" title="M15 Adds">ADDS</button>
+          </div>
+          <div class="popover-row">
+            <span class="popover-label">Dynamic Router</span>
+            <button id="rDyn" class="filter-toggle" onclick="toggleDynamicRouting()" title="Dynamic Auto-Routing between iziGold5 and iziGold15 by session & volatility">DYN: OFF</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Navigation Menu Dropdown -->
+      <div class="menu-dropdown-wrap">
+        <button id="navBtn" class="filter-toggle" onclick="toggleNavMenu(event)" title="Navigation & Settings" style="padding:4px 9px;font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center;">
+          <span>☰</span>
+        </button>
+        <div id="navMenu" class="cockpit-popover right-aligned" style="display:none;" onclick="event.stopPropagation()">
+          <div class="popover-title">Navigation</div>
+          <a href="/reports" class="popover-item"><span>📊</span> <span>Performance Reports</span></a>
+          <a href="/backtest" class="popover-item"><span>🧪</span> <span>Backtest Studio</span></a>
+          <a href="/vocabs" class="popover-item"><span>📖</span> <span>Domain Runbooks</span></a>
+          <a href="/onboarding" id="prof" class="popover-item"><span>⚙</span> <span>Account & Settings</span></a>
+        </div>
+      </div>
     </div>
   </header>
 
-  <!-- Heartbeat Stale Alert -->
-  <div id="stale" class="stale">
-    <span style="font-size:20px;">⚠️</span>
-    <div>
-      <span style="font-weight:800;">EA Disconnected:</span> MT5 EA heartbeat is stale (>30s). Check MetaTrader 5 connection and WebRequest permissions.
+  <!-- Interactive Floating Proposal Bar (Manual Mode) -->
+  <div id="propcard"></div>
+
+  <!-- --- 2. Top Glanceable Telemetry HUD (3 Bento Cards) --- -->
+  <div class="cockpit-hud" id="strip">
+    <div class="hud-card">
+      <div class="hud-header"><span>Account Equity</span><span style="color:var(--gold-primary)">●</span></div>
+      <div class="hud-val-row"><span class="hud-hero-val mono" style="color:var(--gold-primary)">Connecting…</span></div>
+      <div class="hud-sub-row"><span>Syncing account…</span></div>
     </div>
   </div>
 
-  <!-- Service Unreachable Alert -->
-  <div id="svcdown" class="stale">
-    <span style="font-size:20px;">⚠️</span>
-    <div>
-      <span style="font-weight:800;">⚠️ service unreachable</span> — retrying…
-    </div>
-  </div>
-
-  <!-- Big Buttons Control Bar -->
-  <div class="control-bar">
-    <div class="control-deck-row">
-      <!-- Greeting (name from the onboarding profile; plain "Bonjour !" until it loads) -->
-      <div class="greeting">
-        <div id="bonjour" class="greeting-text">Bonjour&nbsp;!</div>
-        <!-- Execution Status Subtitle -->
-        <div class="ctrl-status-text">
-          <span id="ctlsub">Initializing live feed...</span>
-        </div>
+  <!-- --- 3. Hero Chart Section --- -->
+  <div class="chart-panel" id="pricePanel">
+    <div class="chart-toolbar">
+      <div class="chart-tools-left">
+        <div class="tabs" id="stratTabs" style="display:flex;gap:4px;"></div>
       </div>
-
-      <!-- Compact control grid: Mode | Entry | HTF Gate / EMA200 | Close All -->
-      <div class="control-grid">
-        <div class="ctrl-cluster">
-          <span class="ctrl-label">Mode</span>
-          <div class="btn-group">
-            <button id="mAuto" onclick="setMode('auto')">🤖 AUTO</button>
-            <button id="mManual" onclick="setMode('manual')">👤 MANUAL</button>
-          </div>
-        </div>
-
-        <div class="ctrl-cluster">
-          <span class="ctrl-label">Entry</span>
-          <div class="btn-group">
-            <button id="rAdr" onclick="setRule('entry_mode','adr')">ADR</button>
-            <button id="rFixed" onclick="setRule('entry_mode','fixed')">FIXED</button>
-          </div>
-        </div>
-
-        <div class="ctrl-cluster">
-          <span class="ctrl-label">HTF Gate</span>
-          <select id="rHtf" class="custom-select" onchange="setRule('htf_enforce',this.value)">
-            <option>off</option>
-            <option>M15</option>
-            <option>M30</option>
-            <option>H1</option>
-          </select>
-        </div>
-
-        <div class="ctrl-cluster">
-          <span class="ctrl-label">EMA200</span>
-          <button id="rE200" onclick="toggleE200()">off</button>
-        </div>
-
-        <div class="ctrl-cluster">
-          <span class="ctrl-label" title="RSI 70/30 agreement, enforced on the M15 lane only (M5 reports only)">RSI M15</span>
-          <button id="rRsi" onclick="toggleRule('rsi_enforce','rRsi')">off</button>
-        </div>
-
-        <div class="ctrl-cluster">
-          <span class="ctrl-label" title="Pyramid adds on the M15 lane: off = pure ride (the validated recipe)">M15 adds</span>
-          <button id="rAdds" onclick="toggleRule('m15_adds','rAdds')">off</button>
-        </div>
-
-        <div class="ctrl-cluster cell-span2">
-          <span class="ctrl-label">Emergency</span>
-          <button id="closeAll" class="btn-danger" onclick="closeAllPos()">✖ Close All</button>
-        </div>
+      <div class="chart-tools-right">
+        <button type="button" id="srBtn" class="tab-btn active" onclick="toggleSr()" title="Support & Resistance Zones">SR: On</button>
+        <button type="button" id="vpBtn" class="tab-btn active" onclick="toggleVp()" title="Volume Profile (VPVR)">VP: On</button>
+        <button type="button" id="previewBtn" class="tab-btn" onclick="togglePreview()" title="Preview Target Bands">P: Off</button>
+        <button type="button" id="expandBtn" class="expand-btn" onclick="toggleExpand()" title="Expand Chart">⛶</button>
       </div>
-    </div>
-
-    <!-- Interactive Proposal Card Container -->
-    <div id="propcard"></div>
-  </div>
-
-  <!-- Live Metrics Strip -->
-  <div class="strip" id="strip">
-    <div class="stat-card">
-      <div class="stat-label">System Status</div>
-      <div class="stat-value">Connecting...</div>
-    </div>
-  </div>
-
-  <!-- Live Chart Panel -->
-  <div class="card-section chart-panel" id="pricePanel">
-    <div class="section-header">
-      <h2>XAUUSD — Live Chart</h2>
-      <div class="tabs" id="stratTabs"></div>
     </div>
     <div class="canvas-wrap" id="chartWrap">
       <div id="chartEl" style="width:100%;height:100%"></div>
+      <canvas id="vpCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2;"></canvas>
+      <canvas id="rrCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;"></canvas>
     </div>
-    <button type="button" id="expandBtn" class="expand-btn" onclick="toggleExpand()" title="Expand/Collapse Chart">⛶</button>
   </div>
 
-  <!-- Strategy Comparison Matrix -->
-  <div class="card-section">
-    <div class="section-header">
-      <h2>Strategy Comparison</h2>
+  <!-- --- 4. Unified Bottom Cockpit Dock (Tabbed, No Infinite Scroll) --- -->
+  <div class="dock-panel">
+    <div class="dock-tab-bar">
+      <div class="dock-tab-group">
+        <button type="button" class="dock-tab-btn active" data-dock="deals" onclick="switchDockTab('deals')">
+          <span>●</span> <span>Open Basket</span> <span id="dockDealCount" class="chip chip-muted">0</span>
+        </button>
+        <button type="button" class="dock-tab-btn" data-dock="trades" onclick="switchDockTab('trades')">
+          <span>Trade History</span>
+        </button>
+        <button type="button" class="dock-tab-btn" data-dock="signals" onclick="switchDockTab('signals')">
+          <span>Signal Stream</span>
+        </button>
+        <button type="button" class="dock-tab-btn" data-dock="matrix" onclick="switchDockTab('matrix')">
+          <span>Performance Matrix</span>
+        </button>
+      </div>
+
+      <!-- Compact Signal Filter (only visible when signals tab is active) -->
+      <div id="dockSigControls" style="display:none;">
+        <select id="sigFilter" class="gate-select" onchange="signals()" style="background:rgba(0,0,0,0.4);padding:3px 8px;border-radius:6px;">
+          <option value="all">All</option>
+          <option value="active">Active</option>
+          <option value="shadow">Shadow</option>
+        </select>
+      </div>
     </div>
-    <div class="table-wrap">
+
+    <!-- Dock Panes -->
+    <div id="dock-deals" class="table-wrap" style="padding:10px 14px;">
+      <div id="liveDealsList" style="display:flex;flex-direction:column;gap:6px;">
+        <span class="chip chip-muted">No open positions (Flat)</span>
+      </div>
+    </div>
+
+    <div id="dock-trades" class="table-wrap" style="display:none;">
+      <table id="tr"></table>
+    </div>
+
+    <div id="dock-signals" class="table-wrap" style="display:none;">
+      <table id="sig"></table>
+    </div>
+
+    <div id="dock-matrix" class="table-wrap" style="display:none;">
       <table id="cmp"></table>
     </div>
   </div>
 
-  <!-- Trade History -->
-  <div class="card-section">
-    <div class="section-header">
-      <h2>Trade History</h2>
-    </div>
-    <div class="table-wrap scroll-cap">
-      <table id="tr"></table>
-    </div>
-  </div>
+</div>
 
-  <!-- Signal Log -->
-  <div class="card-section">
-    <div class="section-header">
-      <h2>Signal Log</h2>
-      <select id="sigFilter" class="custom-select" onchange="signals()">
-        <option value="all">All Signals</option>
-        <option value="active">Active Only</option>
-        <option value="shadow">Shadows Only</option>
-      </select>
+<!-- Modal: Instant Market Order -->
+<div id="orderModal" class="modal-overlay" onclick="closeOrderModal(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-title">
+      <span>⚡ Instant Order</span>
+      <button class="modal-close" onclick="closeOrderModal()">&times;</button>
     </div>
-    <div class="table-wrap scroll-cap">
-      <table id="sig"></table>
+    <div class="order-dir-grid">
+      <button type="button" id="modalBuyBtn" class="btn-dir btn-buy selected" onclick="selectOrderDir('BUY')">BUY</button>
+      <button type="button" id="modalSellBtn" class="btn-dir btn-sell" onclick="selectOrderDir('SELL')">SELL</button>
     </div>
+    <div class="order-summary">
+      <div class="order-row">
+        <span style="color:var(--text-dim)">Market</span>
+        <span id="orderModalMarket" class="mono" style="font-weight:700">XAUUSD</span>
+      </div>
+      <div class="order-row">
+        <span style="color:var(--text-dim)">Price</span>
+        <span id="orderModalPrice" class="mono" style="color:var(--gold-primary);font-weight:700">—</span>
+      </div>
+      <div class="order-row">
+        <span style="color:var(--text-dim)">Lane</span>
+        <span id="orderModalLane" style="font-weight:700">iziGold15 (M15)</span>
+      </div>
+      <div class="order-row">
+        <span style="color:var(--text-dim)">Risk Rails</span>
+        <span class="chip chip-pos" style="font-size:10px">Guarded</span>
+      </div>
+    </div>
+    <button type="button" id="orderSubmitBtn" class="btn-submit-order" onclick="submitInstantOrder()">Transmit Order</button>
   </div>
 </div>
 
-<!-- Image Lightbox Modal -->
+<!-- Modal: Image Lightbox -->
 <div id="lightbox" class="lightbox-overlay" onclick="closeLightbox(event)">
   <img id="lightbox-img" class="lightbox-content" src="" alt="Enlarged Chart" onerror="this.closest('.lightbox-overlay').style.display='none'">
 </div>
 
-<script>
-const $=id=>document.getElementById(id);
-const fmt=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function j(u){const r=await fetch(u);return r.json()}
-
-function openLightbox(src){
-  $('lightbox-img').src=src;
-  $('lightbox').style.display='flex';
-}
-function closeLightbox(e){
-  if(e.target===$('lightbox')||e.target===$('lightbox-img')) {
-    $('lightbox').style.display='none';
-  }
-}
-
-let _svcFailStreak=0;
-function svcOk(){
-  _svcFailStreak=0;
-  const el=$('svcdown'); if(el) el.style.display='none';
-}
-function svcFailed(e){
-  console.error('Poll error:', e);
-  _svcFailStreak++;
-  if(_svcFailStreak>=2){ const el=$('svcdown'); if(el) el.style.display='flex'; }
-}
-
-let _rules=null;
-async function state(){
-  try {
-    const s=await j('/api/state');
-    svcOk();
-    $('stale').style.display=(s.age_s==null||s.age_s>30)?'flex':'none';
-
-    // Highlight active control buttons with luxury gold styling
-    $('mAuto').className = s.mode==='auto' ? 'btn-active-gold' : '';
-    $('mManual').className = s.mode==='manual' ? 'btn-active-gold' : '';
-
-    _rules=s.rules||null;
-    if(_rules){
-      $('rAdr').className = _rules.entry_mode==='adr' ? 'btn-active-gold' : '';
-      $('rFixed').className = _rules.entry_mode==='fixed' ? 'btn-active-gold' : '';
-      if(document.activeElement!==$('rHtf')) $('rHtf').value=_rules.htf_enforce;
-      
-      const isE200 = _rules.ema200_enforce==='on';
-      $('rE200').textContent = isE200 ? 'ON' : 'off';
-      $('rE200').className = isE200 ? 'btn-active-gold' : '';
-      const isRsi = _rules.rsi_enforce==='on';
-      $('rRsi').textContent = isRsi ? 'ON' : 'off';
-      $('rRsi').className = isRsi ? 'btn-active-gold' : '';
-      const isAdds = _rules.m15_adds==='on';
-      $('rAdds').textContent = isAdds ? 'ON' : 'off';
-      $('rAdds').className = isAdds ? 'btn-active-gold' : '';
-    }
-    
-    renderProposal(s.proposal);
-    const h=s.heartbeat;
-    $('closeAll').disabled = !(h&&h.positions&&h.positions.length);
-    $('ctlsub').textContent = (s.mode==='manual'?'EA proposes, you approve':'EA automatically executes signals')
-      + (h?` · Spread: ${fmt(h.spread_points,0)} pts`:'');
-    if(!h) return;
-    
-    const posStr = h.positions && h.positions.length > 0 
-      ? h.positions.map(p=>`<div style="font-size:13px;margin-top:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;"><span><b style="color:${p.direction==='BUY'?'var(--pos-green)':'var(--neg-red)'}">${p.direction}</b> ${fmt(p.lots,2)} @ ${fmt(p.open_price,2)}</span><span class="${p.profit>=0?'pos':'neg'}">$${fmt(p.profit,2)}</span></div>`).join('') 
-      : '<span class="badge badge-muted">Flat (0)</span>';
-
-    const killSwitchStatus = h.kill_switch 
-      ? '<span class="badge badge-neg">⛔ TRIPPED</span>' 
-      : (h.hwm>0 ? `<span class="badge badge-pos">OK</span> <span style="font-size:12px;color:var(--text-muted);">(${fmt(100*(h.equity/h.hwm-1),1)}% off peak)</span>` : '<span class="badge badge-pos">OK</span>');
-
-    const pendingSwitch = s.pending_switch
-      ? ` <span style="font-size:12px;color:var(--text-muted)">→</span> <span class="badge badge-gold">${esc(s.pending_switch)}</span> <button class="btn-sm btn-cancel" onclick="sw('')">cancel</button>`
-      : '';
-
-    $('strip').innerHTML= `
-      <div class="stat-card">
-        <div class="stat-label"><span>Account Equity</span> <span style="color:var(--gold-primary)">●</span></div>
-        <div class="stat-value mono" style="color:var(--gold-primary);">$${fmt(h.equity,2)}</div>
-        <div class="stat-sub">High Water Mark: $${fmt(h.hwm,2)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label"><span>Floating P/L</span></div>
-        <div class="stat-value mono ${h.floating_pl>=0?'pos':'neg'}">${h.floating_pl>=0?'+':''}$${fmt(h.floating_pl,2)}</div>
-        <div class="stat-sub">${h.positions?h.positions.length:0} active deal(s)</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label"><span>Open Positions</span></div>
-        <div style="margin-top:2px;">${posStr}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label"><span>Active Strategy</span></div>
-        <div class="stat-value" style="font-size:16px;color:var(--gold-primary);">${esc(h.active_strategy)}${pendingSwitch}</div>
-        <div class="stat-sub">M5 primary execution</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label"><span>Kill Switch</span></div>
-        <div class="stat-value" style="font-size:16px;display:flex;align-items:center;gap:8px;">${killSwitchStatus}</div>
-        <div class="stat-sub">Drawdown protection</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label"><span>Trading Window</span></div>
-        <div class="stat-value" style="font-size:16px;"><span class="badge ${h.window_open?'badge-pos':'badge-muted'}">${h.window_open?'OPEN':'CLOSED'}</span></div>
-        <div class="stat-sub">${h.exposure_min}m exposure used</div>
-      </div>
-    `;
-  } catch(e) {
-    svcFailed(e);
-  }
-}
-
-async function loadProfile(){
-  try {
-    const {profile,completion_pct}=await j('/api/profile');
-    svcOk();
-    // Greeting: first name from the onboarding profile; plain "Bonjour !"
-    // when no name was saved. textContent only — never markup.
-    const g=$('bonjour');
-    if(g){
-      const first=(profile&&profile.name)?String(profile.name).trim().split(/\s+/)[0]:'';
-      g.textContent=first?`Bonjour ${first} !`:'Bonjour !';
-    }
-    const prof=$('prof');
-    prof.textContent='';
-    if(profile&&profile.name) prof.appendChild(document.createTextNode(profile.name+' · '));
-    const a=document.createElement('a');
-    a.href='/onboarding';
-    a.textContent=`Profile ${completion_pct}%`;
-    prof.appendChild(a);
-  } catch(e) {
-    svcFailed(e);
-  }
-}
-document.addEventListener('visibilitychange', ()=>{
-  if(document.visibilityState==='visible') loadProfile();
-});
-window.addEventListener('pageshow', e=>{
-  if(e.persisted) loadProfile();
-});
-
-let chart=null,candleSeries=null,S={};        // S: overlay line series by key
-let _activeTab='halftrend_ema_v1',_expanded=false,_pcData=null;
-
-function initChart(){
-  chart=LightweightCharts.createChart($('chartEl'),{
-    layout:{
-      background:{type:'solid',color:'rgba(8,12,20,0)'},
-      textColor:'#94a3b8',
-      fontFamily:'"JetBrains Mono", "Plus Jakarta Sans", monospace'
-    },
-    grid:{
-      vertLines:{color:'rgba(255,255,255,0.04)'},
-      horzLines:{color:'rgba(255,255,255,0.04)'}
-    },
-    rightPriceScale:{
-      borderColor:'rgba(255,255,255,0.08)'
-    },
-    timeScale:{
-      borderColor:'rgba(255,255,255,0.08)',
-      timeVisible:true,
-      secondsVisible:false
-    },
-    crosshair:{
-      mode:LightweightCharts.CrosshairMode.Normal,
-      vertLine:{color:'rgba(245,197,66,0.4)',width:1,style:LightweightCharts.LineStyle.Dashed},
-      horzLine:{color:'rgba(245,197,66,0.4)',width:1,style:LightweightCharts.LineStyle.Dashed}
-    },
-    autoSize:true
-  });
-
-  const noLbl={priceLineVisible:false,lastValueVisible:false};
-
-  // S/R zone boxes (2026-09-05) -- same pooled-baseline trick as miniapp.html
-  // (see initSrPool there): 18 slots created first so the translucent boxes
-  // sit under every overlay and the candles, weakest tier first.
-  S.sr={};
-  const SR_TIERS=['M15','H1','H4'], SR_CLEAR='rgba(0,0,0,0)';
-  SR_TIERS.forEach(t=>{ S.sr[t]=[]; for(let k=0;k<6;k++){ S.sr[t].push(chart.addBaselineSeries({
-    baseValue:{type:'price',price:0}, topLineColor:SR_CLEAR, bottomLineColor:SR_CLEAR,
-    topFillColor1:SR_CLEAR, topFillColor2:SR_CLEAR, bottomFillColor1:SR_CLEAR, bottomFillColor2:SR_CLEAR,
-    lineWidth:1, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false,
-    autoscaleInfoProvider:()=>null })); } });
-
-  S.ema9=chart.addLineSeries(Object.assign({color:'rgba(148,163,184,0.6)',lineWidth:1},noLbl));
-  S.ema21=chart.addLineSeries(Object.assign({color:'rgba(148,163,184,0.8)',lineWidth:1},noLbl));
-  S.ema55=chart.addLineSeries(Object.assign({color:'#f5c542',lineWidth:2},noLbl));
-  S.ema200=chart.addLineSeries(Object.assign({color:'#a78bfa',lineWidth:2},noLbl));
-  S.ht=chart.addLineSeries(Object.assign({color:'#38bdf8',lineWidth:2},noLbl));
-  S.bb_upper=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
-  S.bb_mid=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed},noLbl));
-  S.bb_lower=chart.addLineSeries(Object.assign({color:'rgba(127,140,154,0.6)',lineWidth:1},noLbl));
-
-  candleSeries=chart.addCandlestickSeries({
-    upColor:'#10b981',
-    downColor:'#f43f5e',
-    borderUpColor:'#10b981',
-    borderDownColor:'#f43f5e',
-    wickUpColor:'#10b981',
-    wickDownColor:'#f43f5e'
-  });
-}
-
-function setLine(s,arr){
-  if(!arr||!_pcData){s.setData([]);return;}
-  s.setData(_pcData.candles.map((c,i)=>arr[i]==null?null:{time:c.t,value:arr[i]}).filter(Boolean));
-}
-
-function setSrZones(zones,times){
-  const ALPHA={H4:0.35,H1:0.22,M15:0.12}, RGB={support:'173,216,230',resistance:'255,245,157'};
-  const byTier={M15:[],H1:[],H4:[]};
-  (Array.isArray(zones)?zones:[]).forEach(z=>{ if(z&&byTier[z.tier]&&Number.isFinite(z.lo)&&Number.isFinite(z.hi)&&z.hi>z.lo) byTier[z.tier].push(z); });
-  Object.keys(byTier).forEach(tier=>{
-    const pool=(S.sr&&S.sr[tier])||[];
-    pool.forEach((s,k)=>{
-      const z=byTier[tier][k];
-      if(!z){ try{s.setData([]);}catch(e){} return; }
-      let pts=times.filter(t=>t>=z.born).map(t=>({time:t,value:z.hi}));
-      if(!pts.length&&times.length) pts=[{time:times[times.length-1],value:z.hi}];
-      const col='rgba('+RGB[z.role]+','+ALPHA[z.tier]+')';
-      try{ s.applyOptions({baseValue:{type:'price',price:z.lo},topFillColor1:col,topFillColor2:col}); s.setData(pts); }catch(e){}
-    });
-  });
-}
-
-function setHt(arr){
-  if(!arr||!_pcData){S.ht.setData([]);return;}
-  S.ht.setData(_pcData.candles.map((c,i)=>{
-    const e=arr[i]; if(e==null) return null;
-    return {time:c.t,value:e[0],color:e[1]===0?'#38bdf8':'#fb7185'};
-  }).filter(Boolean));
-}
-
-function barSec(){const c=_pcData&&_pcData.candles;return c&&c.length>1?c[1].t-c[0].t:300;}
-
-function barTime(candles,ts){
-  const hit=candles.find(c=>c.t>=ts);
-  return (hit||candles[candles.length-1]).t;
-}
-
-function buildMarkers(candles,tr){
-  if(!candles.length) return [];
-  const m=[];
-  for(const t of tr){
-    if(t.ts < candles[0].t) continue;
-    if(t.event==='open'||t.event==='add'){
-      m.push({
-        time:barTime(candles,t.ts),
-        position:t.direction==='BUY'?'belowBar':'aboveBar',
-        color:t.direction==='BUY'?'#10b981':'#f43f5e',
-        shape:t.direction==='BUY'?'arrowUp':'arrowDown',
-        text:(t.event==='add'?'add ':'')+fmt(t.lots,2)
-      });
-    }else if(t.event==='close'){
-      m.push({
-        time:barTime(candles,t.ts),
-        position:'aboveBar',
-        color:t.profit>=0?'#10b981':'#f43f5e',
-        shape:'circle',
-        text:(t.profit>=0?'+':'')+fmt(t.profit)
-      });
-    }
-  }
-  return m.sort((a,b)=>a.time-b.time);
-}
-
-// Cache keys from the last rendered cycle — lets a 30s tick skip all chart
-// work (setData/overlay setData/setMarkers) when nothing actually changed
-// (bars close every ~5min, so most 30s cycles are no-ops).
-let _lastCandleKey=null,_lastCandleCount=null,_lastTradeId=null,_lastTradeCount=null,_lastTab=null;
-let _trades=[];   // shared trades array — fetched once per cycle, feeds chart markers + table
-
-async function refreshChartAndTrades(){
-  if(!window.LightweightCharts){
-    $('chartWrap').innerHTML='<div style="padding:30px;text-align:center;color:var(--text-muted)">Chart library failed to load — the rest of the dashboard still works</div>';
-    return;
-  }
-  if(!chart) initChart();
-  try {
-    const cd=await j('/api/candles');
-    svcOk();
-    let ov={};
-    try{ ov=await j('/api/overlays?strategy='+encodeURIComponent(_activeTab)); }catch(e){}
-    let trades=_trades;
-    try{ trades=(await j('/api/trades?limit=100')).trades||[]; }catch(e){ console.error('trades fetch failed', e); }
-    _trades=trades;
-
-    const candles=cd.candles||[];
-    const last=candles[candles.length-1];
-    const candleKey=last?(last.t+'_'+last.c):null;
-    const newestTradeId=trades.length?trades[0].id:null;
-
-    const unchanged = candleKey===_lastCandleKey && candles.length===_lastCandleCount
-      && newestTradeId===_lastTradeId && trades.length===_lastTradeCount
-      && _activeTab===_lastTab;
-
-    if(!unchanged){
-      _pcData={candles,ov,tr:trades};
-      candleSeries.setData(candles.map(c=>({time:c.t,open:c.o,high:c.h,low:c.l,close:c.c})));
-      setLine(S.ema9,ov.ema9); setLine(S.ema21,ov.ema21);
-      setLine(S.ema55,ov.ema55); setLine(S.ema200,ov.ema200);
-      setHt(ov.halftrend);
-      setSrZones(ov.sr_zones, candles.map(c=>c.t));
-      setLine(S.bb_upper,ov.bb_upper); setLine(S.bb_mid,ov.bb_mid);
-      setLine(S.bb_lower,ov.bb_lower);
-      candleSeries.setMarkers(buildMarkers(candles,trades));
-
-      _lastCandleKey=candleKey; _lastCandleCount=candles.length;
-      _lastTradeId=newestTradeId; _lastTradeCount=trades.length;
-      _lastTab=_activeTab;
-    }
-
-    renderTradesTable(trades.slice(0,50));
-  } catch(e) {
-    svcFailed(e);
-  }
-}
-
-function setTab(t){
-  _activeTab=t;
-  document.querySelectorAll('#stratTabs .tab-btn').forEach(b=>
-    b.classList.toggle('active', b.dataset.tab===t));
-  refreshChartAndTrades();
-}
-
-function toggleExpand(){
-  _expanded=!_expanded;
-  $('pricePanel').classList.toggle('expanded', _expanded);
-}
-
-function zoomToTrade(ts){
-  if(!chart||!_pcData||!_pcData.candles.length) return;
-  const t=barTime(_pcData.candles,ts), span=90*barSec();
-  chart.timeScale().setVisibleRange({from:t-span,to:t+span});
-  $('pricePanel').scrollIntoView({behavior:'smooth',block:'start'});
-}
-
-async function stats(){
-  try {
-    const s=await j('/api/stats');
-    svcOk();
-    const rows=Object.entries(s.by_strategy||{});
-    const ids=[...new Set(rows.map(([k])=>k.split(' @')[0]))].filter(id=>id!=='pre-framework'&&id!=='stub');
-    if(ids.length&&!ids.includes(_activeTab)) _activeTab=ids[0];
-    
-    $('stratTabs').innerHTML=ids.map(id=>
-      `<button type="button" class="tab-btn${id===_activeTab?' active':''}" data-tab="${esc(id)}">${esc(id)}</button>`).join('');
-      
-    $('cmp').innerHTML='<thead><tr><th>Strategy</th><th>Timeframe</th><th>Signals</th><th>Resolved</th><th>Hit Rate</th><th>Avg Move</th><th>Action</th></tr></thead><tbody>'+
-      rows.map(([key,v])=>{
-        const [sid, tf] = key.split(' @');
-        const btn=key==='pre-framework'?''
-          :`<button class="btn-sm btn-primary" data-sid="${esc(sid)}">Switch to this</button>`;
-        return `<tr><td><b style="color:#ffffff">${esc(sid)}</b></td><td><span class="badge badge-muted">${esc(tf||'—')}</span></td><td class="mono">${v.signals}</td><td class="mono">${v.resolved}</td>`
-          +`<td><span class="badge ${v.hit_pct>=50?'badge-pos':'badge-neg'} mono">${fmt(v.hit_pct,1)}%</span></td>`
-          +`<td class="mono">${fmt(v.avg_move)}</td><td>${btn}</td></tr>`;
-      }).join('')+'</tbody>';
-  } catch(e) {
-    svcFailed(e);
-  }
-}
-
-$('stratTabs').addEventListener('click', e=>{
-  const b=e.target.closest('[data-tab]');
-  if(b) setTab(b.dataset.tab);
-});
-
-$('cmp').addEventListener('click', e=>{
-  const btn=e.target.closest('[data-sid]');
-  if(btn) sw(btn.dataset.sid);
-});
-
-async function signals(){
-  try {
-    const {signals}=await j('/api/signals');
-    svcOk();
-    const flt=$('sigFilter').value;
-    const list=signals.filter(s=>flt==='all'||(flt==='active'?s.is_active:!s.is_active));
-    $('sig').innerHTML='<thead><tr><th>Time</th><th>Strategy</th><th>Signal</th><th>AI Forecast</th><th>Verdict</th><th>Outcome</th></tr></thead><tbody>'+
-      list.map(s=>{
-        const vBadge = s.verdict === 'CONFIRMED' ? 'badge-pos' : (s.verdict === 'VETO' ? 'badge-neg' : 'badge-gold');
-        const sigBadge = s.signal === 'BUY' ? 'badge-pos' : (s.signal === 'SELL' ? 'badge-neg' : 'badge-muted');
-        return `<tr><td class="mono" style="font-size:12.5px;color:var(--text-muted);">${new Date(s.created_ts*1000).toLocaleString()}</td><td><b style="color:#ffffff">${esc(s.strategy_id||'—')}</b>${s.timeframe?' <span class="badge badge-muted">'+esc(s.timeframe)+'</span>':''}${s.is_active?'':' <span class="badge badge-muted">(shadow)</span>'}</td>`+
-        `<td><span class="badge ${sigBadge}">${s.signal}</span></td>`+
-        `<td>${s.direction} <span class="badge badge-gold mono">${fmt(100*s.confidence,0)}%</span></td>`+
-        `<td><span class="badge ${vBadge}">${s.verdict}</span></td>`+
-        `<td class="mono">${s.outcome_move==null?'<span style="color:var(--text-dim)">pending</span>':fmt(s.outcome_move)}</td></tr>`;
-      }).join('')+'</tbody>';
-  } catch(e) {
-    svcFailed(e);
-  }
-}
-
-const agree=v=>v===1?'<span class="badge badge-pos">✓</span>'
-  :(v===0?'<span class="badge badge-neg">✗</span>':'—');
-
-function renderTradesTable(trades){
-    $('tr').innerHTML='<thead><tr><th>Locate</th><th>Time</th><th>Event</th><th>Strategy</th><th>Direction</th><th>Lots @ Price</th><th>Realized P/L</th><th>Reason</th><th>M15 Gate</th><th>EMA200 Gate</th><th>MT5 Screen</th><th>Render</th></tr></thead><tbody>'+
-      trades.map(t=>{
-        const pl=t.event==='close'?`<span class="${t.profit>=0?'pos':'neg'} mono" style="font-weight:700;">${t.profit>=0?'+':''}$${fmt(t.profit)}</span>`:'';
-        const evBadge = t.event==='open'?'badge-pos':(t.event==='close'?'badge-gold':'badge-muted');
-        return `<tr><td><button class="btn-sm" onclick="zoomToTrade(${Number(t.ts)})" title="Show on live chart">📍</button></td>`+
-          `<td class="mono" style="font-size:12.5px;color:var(--text-muted);">${new Date(t.ts*1000).toLocaleString()}</td><td><span class="badge ${evBadge}">${esc(t.event)}</span></td><td><b style="color:#ffffff">${esc(t.strategy_id||'—')}</b></td><td><b>${esc(t.direction||'—')}</b></td>`+
-          `<td class="mono">${fmt(t.lots,2)} @ ${fmt(t.price,2)}</td><td>${pl}</td><td><span style="font-size:12px;color:var(--text-muted);">${esc(t.reason||'—')}</span></td>`+
-          `<td>${agree(t.htf_agree)}</td><td>${agree(t.ema200_agree)}</td>`+
-          `<td><img src="/api/screenshot/${t.id}" class="thumb-img" height="42" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td>`+
-          `<td><img src="/api/render/${t.id}" class="thumb-img" height="42" onerror="this.style.display='none'" onclick="openLightbox(this.src)"></td></tr>`;
-      }).join('')+'</tbody>';
-}
-
-function renderProposal(p){
-  const el=$('propcard');
-  if(!p){el.innerHTML='';return;}
-  const badge=p.status==='pending'?'badge-gold':(p.status==='executed'?'badge-pos':(p.status==='blocked'?'badge-neg':'badge-muted'));
-  const btns=p.status==='pending'
-    ?`<div class="proposal-actions">
-        <button class="btn-success" onclick="decide(${Number(p.id)},'take')">🟢 Take Trade</button>
-        <button class="btn-cancel" onclick="decide(${Number(p.id)},'skip')">🔴 Skip</button>
-      </div>`
-    :'';
-  el.innerHTML=`
-    <div class="proposal-box">
-      <div class="proposal-info">
-        <span style="font-size:22px;">${p.kind==='entry'?'📥':'📤'}</span>
-        <div>
-          <span style="color:var(--gold-primary);font-weight:800;font-size:16px;">Trade Proposal:</span> 
-          <b>${esc(p.direction)}</b> @ <span class="mono">$${fmt(p.price)}</span>
-          <span style="color:var(--text-dim);margin:0 6px;">·</span>
-          <span>Strategy: <b>${esc(p.strategy_id||'')}</b></span>
-          <span style="color:var(--text-dim);margin:0 6px;">·</span>
-          <span class="badge ${badge}">${esc(p.status)}</span>
-        </div>
-      </div>
-      ${btns}
-    </div>`;
-}
-
-async function setMode(m){
-  try {
-    const r=await fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
-    if(!r.ok) alert('Mode change failed ('+r.status+')');
-  } catch(e) { alert('Network error: ' + e); }
-  state();
-}
-
-async function setRule(key,value){
-  try {
-    const r=await fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})});
-    if(!r.ok) alert('Rule change failed ('+r.status+')');
-  } catch(e) { alert('Network error: ' + e); }
-  state();
-}
-
-function toggleE200(){
-  setRule('ema200_enforce', _rules&&_rules.ema200_enforce==='on'?'off':'on');
-}
-
-// Generic off/on rule toggle (RSI M15, M15 adds): flips the stored kv the
-// EA reads back on its next heartbeat.
-function toggleRule(key){
-  setRule(key, _rules&&_rules[key]==='on'?'off':'on');
-}
-
-async function decide(pid,action){
-  try {
-    const r=await fetch('/api/proposal/'+pid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
-    if(r.ok){
-      const d=await r.json(); 
-      if(!d.ok) alert('Already decided elsewhere: '+d.status);
-    } else alert('Decision failed ('+r.status+')');
-  } catch(e) { alert('Network error: ' + e); }
-  state();
-}
-
-async function closeAllPos(){
-  if(!confirm('Close ALL open positions across all strategies?')) return;
-  try {
-    const r=await fetch('/api/close-all',{method:'POST'});
-    if(!r.ok){
-      const d=await r.json().catch(()=>({})); 
-      alert('Close-all failed: '+(d.detail||r.status));
-    }
-  } catch(e) { alert('Network error: ' + e); }
-  state();
-}
-
-async function sw(id){
-  try{
-    const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_id:id})});
-    if(!r.ok){
-      const detail=await r.text().catch(()=>'');
-      alert(`Switch request failed (${r.status}): ${detail||'see server log'}`);
-    }
-  }catch(e){
-    alert('Switch request failed: '+e);
-  }
-  state();
-}
-
-state();loadProfile();refreshChartAndTrades();stats();signals();
-setInterval(state,5000);
-setInterval(refreshChartAndTrades,30000);
-setInterval(stats,30000);
-setInterval(signals,30000);
-</script>
+<script src="/static/dashboard.js"></script>
 </body>
 </html>

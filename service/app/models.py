@@ -43,11 +43,18 @@ class AnalyzeResponse(BaseModel):
     verdict: Literal["confirm", "neutral", "conflict"]
     mode: Literal["grading", "veto"]
     ai_available: bool
+    # True when the DeepSeek agent has not yet graded this bar, so `direction`
+    # is the neutral placeholder rather than a real judgement. The EA ignores
+    # both fields (it reads only the strings/numbers above), so old builds are
+    # unaffected -- they are for the dashboard/Telegram and for tests.
+    grade_pending: bool = False
+    grade_source: str = "rules"
 
 
 class Position(BaseModel):
     ticket: int
     direction: Literal["BUY", "SELL"]
+    symbol: str = "XAUUSD"
     lots: float
     open_price: float
     sl: float
@@ -84,7 +91,7 @@ class HeartbeatRequest(BaseModel):
     bar_h: float = 0.0
     bar_l: float = 0.0
     bar_c: float = 0.0
-    entry_mode: str = "adr"
+    entry_mode: str = "hybrid"
     # Brake awareness (2026-08-18): today's realized loss as % of the daily
     # loss brake threshold (0-100+, measured from the reset base when the
     # owner reset the brake today) and whether such a reset is in effect.
@@ -96,12 +103,18 @@ class HeartbeatRequest(BaseModel):
     # EA payloads valid (fail-open).
     news: list[NewsEvent] = []
     news_blackout_min: int = 30
+    # The EA's CURRENT timer interval (seconds). 0 = old EA that does not
+    # report it. Diagnostic only: /status shows when the EA is beating slower
+    # than the service asked for.
+    heartbeat_sec: int = 0
+    symbol: str = "XAUUSD"
 
 
 class HeartbeatResponse(BaseModel):
     switch_to: str | None = None
+    target_symbol: str = ""
     mode: Literal["auto", "manual"] = "manual"
-    entry_mode: Literal["adr", "fixed"] = "adr"
+    entry_mode: Literal["adr", "fixed", "hybrid"] = "hybrid"
     # Higher-timeframe agreement module: the timeframe it ENFORCES on, or
     # "off" to check and report without blocking. The EA obeys this over its
     # own input, so the module can be toggled from Telegram at runtime.
@@ -115,11 +128,28 @@ class HeartbeatResponse(BaseModel):
     # Pyramid adds on the M15 lane: "off" = pure ride (the validated
     # recipe), "on" = ADR adds as before. The M5 lane is unaffected.
     m15_adds: str = "off"
+    # Supervisory-agent governor: true = the agent paused NEW auto entries.
+    # Open-basket management, exits and risk gates are untouched. Sent on
+    # every heartbeat; old EA builds ignore the unknown field.
+    entries_paused: bool = False
+    # Service-authoritative heartbeat interval. MT5 preserves a chart EA's saved
+    # input values across recompiles, so the source default alone cannot change
+    # a running instance; the EA re-arms its timer to this value instead.
+    heartbeat_sec: int = 1
+    # Effective runtime settings from SQLite onboarding/controls. These are
+    # pushed back to the EA so its live risk behavior matches the dashboard.
+    risk_per_trade_pct: float = 1.0
+    max_drawdown_pct: float = 10.0
+    profit_target_pct: float = 2.0
+    window_start_hour: int = 4
+    window_end_hour: int = 22
+    max_daily_exposure_min: int = 0
     command: dict | None = None
 
 
 class TradeEventRequest(BaseModel):
     event: Literal["open", "add", "close"]
+    symbol: str = "XAUUSD"
     strategy_id: str = "unknown"
     direction: Literal["BUY", "SELL"]
     lots: float

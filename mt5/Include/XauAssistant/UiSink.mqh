@@ -9,6 +9,7 @@
 #include <XauAssistant/StrategyRegistry.mqh>
 #include <XauAssistant/UiApi.mqh>
 #include <XauAssistant/TradeBoxes.mqh>
+#include <XauAssistant/VolumeProfile.mqh>
 #include <XauAssistant/Reconciler.mqh>
 #include <XauAssistant/NewsGuard.mqh>
 
@@ -20,18 +21,20 @@ private:
    CTradeBoxes       *m_boxes;
    CReconciler       *m_recon;
    CNewsGuard        *m_news;
+   CVolumeProfile    *m_vp;
 
 public:
-   CUiSink() : m_registry(NULL), m_ui(NULL), m_boxes(NULL), m_recon(NULL), m_news(NULL) {}
+   CUiSink() : m_registry(NULL), m_ui(NULL), m_boxes(NULL), m_recon(NULL), m_news(NULL), m_vp(NULL) {}
 
    void Init(CStrategyRegistry *registry, CUiApi *ui, CTradeBoxes *boxes, CReconciler *recon,
-             CNewsGuard *news = NULL)
+             CNewsGuard *news = NULL, CVolumeProfile *vp = NULL)
      {
       m_registry = registry;
       m_ui       = ui;
       m_boxes    = boxes;
       m_recon    = recon;
       m_news     = news;
+      m_vp       = vp;
      }
 
    // FIXED-mode target alert: one Telegram notice with a tap-to-exit
@@ -48,7 +51,9 @@ public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
-                             bool isFinal = true, string entryMode = "")
+                             bool isFinal = true, string entryMode = "",
+                             double slippagePts = 0.0, int execMs = 0,
+                             double reqPrice = 0.0)
      {
       CStrategy *active = m_registry.Active();
       string strategyId = (active != NULL) ? active.Id() : "unknown";
@@ -77,7 +82,10 @@ public:
       // strategy bookkeeping below) freezes it — a partial leg close of a
       // pyramided basket must not prematurely close out the box.
       if(event == "open")
+        {
          m_boxes.OnOpen(ticket, dir, price, sl);
+         if(m_vp != NULL) m_vp.DrawOnEntry(TimeCurrent(), price);
+        }
       else if(event == "close" && basketGone)
          m_boxes.OnClose(price);
       if(event == "close" && active != NULL && basketGone)
@@ -107,7 +115,8 @@ public:
          newsBlackout = m_news.InBlackout() ? 1 : 0;
       long id = m_ui.PostTradeEvent(event, strategyId, dir, lots, price, sl, reason, ticket,
                                     profit, tp, basketGone, entryMode, htfAgree, ema200Agree,
-                                    newsBlackout, rsiAgree, srAgree, srTier);
+                                    newsBlackout, rsiAgree, srAgree, srTier,
+                                    slippagePts, execMs, reqPrice);
       if(id < 0) return;
       // Live close reported successfully -> the reconciler never needs to
       // re-report this deal on the next MT5/service restart. CloseAll's

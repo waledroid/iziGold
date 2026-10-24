@@ -3,6 +3,15 @@ import sqlite3
 import threading
 import time
 
+from app.repos.agent import AgentRepoMixin
+from app.repos.backtest import BacktestRepoMixin
+from app.repos.base import row_to_dict
+from app.repos.candles import CandleRepoMixin
+from app.repos.kv_profile import KvProfileRepoMixin, PROFILE_FIELDS, profile_completion
+from app.repos.proposals import ProposalRepoMixin
+from app.repos.signals import SignalRepoMixin
+from app.repos.trades import TradeRepoMixin
+
 _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_ts INTEGER NOT NULL,
@@ -28,6 +37,7 @@ _TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
   event TEXT NOT NULL,
+  symbol TEXT DEFAULT 'XAUUSD',
   strategy_id TEXT,
   direction TEXT,
   lots REAL,
@@ -39,7 +49,10 @@ _TRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS trades (
   profit REAL DEFAULT 0,
   render_path TEXT,
   tp REAL DEFAULT 0,
-  final INTEGER DEFAULT 1
+  final INTEGER DEFAULT 1,
+  slippage_pts REAL DEFAULT 0,
+  exec_ms INTEGER DEFAULT 0,
+  req_price REAL DEFAULT 0
 )"""
 
 _KV_SCHEMA = """CREATE TABLE IF NOT EXISTS kv (
@@ -56,7 +69,8 @@ _PROFILE_SCHEMA = """CREATE TABLE IF NOT EXISTS profile (
   broker_name TEXT, account_login TEXT, account_type TEXT,
   experience_level TEXT, risk_ack INTEGER,
   created_ts INTEGER, updated_ts INTEGER, risk_ack_ts INTEGER,
-  ngrok_authtoken TEXT, ngrok_domain TEXT, miniapp_direct_link TEXT
+  ngrok_authtoken TEXT, ngrok_domain TEXT, miniapp_direct_link TEXT,
+  btc_symbol TEXT, btc_risk_pct REAL, btc_lane TEXT, btc_enabled INTEGER DEFAULT 1
 )"""
 
 _SPREAD_SCHEMA = """CREATE TABLE IF NOT EXISTS spread_history (
@@ -99,19 +113,63 @@ _BACKTEST_SCHEMA = """CREATE TABLE IF NOT EXISTS backtest_runs (
   report_path TEXT
 )"""
 
-PROFILE_FIELDS = ["name", "email", "phone", "telegram_bot_token",
-                  "telegram_chat_id", "risk_per_trade_pct", "max_drawdown_pct",
-                  "profit_target_pct", "broker_name", "account_login",
-                  "account_type", "risk_ack",
-                  "ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"]
+_AI_GRADES_SCHEMA = """CREATE TABLE IF NOT EXISTS ai_grades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_ts INTEGER NOT NULL,
+  bar_time INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  strategy_id TEXT,
+  signal TEXT,
+  model TEXT,
+  prompt_version TEXT,
+  direction TEXT,
+  confidence REAL,
+  regime_agreement TEXT,
+  risk_flags TEXT,
+  action TEXT,
+  rationale TEXT,
+  tokens_in INTEGER DEFAULT 0,
+  tokens_out INTEGER DEFAULT 0,
+  latency_ms INTEGER DEFAULT 0,
+  ai_correct INTEGER,
+  entry_quality INTEGER,
+  expected_r REAL,
+  invalidation REAL,
+  window_state TEXT,
+  regime TEXT,
+  session TEXT,
+  outcome_move REAL
+)"""
 
+_AGENT_LESSONS_SCHEMA = """CREATE TABLE IF NOT EXISTS agent_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_ts INTEGER NOT NULL,
+  grade_id INTEGER,
+  bar_time INTEGER,
+  symbol TEXT,
+  timeframe TEXT,
+  direction TEXT,
+  window_state TEXT,
+  regime TEXT,
+  session TEXT,
+  entry_quality INTEGER,
+  outcome_move REAL,
+  lesson TEXT
+)"""
 
-def profile_completion(profile) -> int:
-    if not profile:
-        return 0
-    filled = sum(1 for f in PROFILE_FIELDS
-                 if profile.get(f) not in (None, ""))
-    return round(100 * filled / len(PROFILE_FIELDS))
+_AGENT_ACTIONS_SCHEMA = """CREATE TABLE IF NOT EXISTS agent_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_ts INTEGER NOT NULL,
+  level TEXT,
+  intent TEXT NOT NULL,
+  payload TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  result TEXT,
+  reason TEXT,
+  proposal_id INTEGER,
+  decided_ts INTEGER
+)"""
 
 
 class _SerializedCursor:
@@ -154,20 +212,7 @@ class _SerializedCursor:
 
 
 class _SerializedConnection:
-    """Serializes every use of the ONE shared sqlite3 connection.
-
-    check_same_thread=False lets FastAPI's threadpool, the ticker/poller
-    to_thread hops and the backtest thread all touch the connection, and the
-    old design locked only the WRITE methods on the premise that "SQLite
-    readers don't need it". That premise holds across connections — not on
-    the same connection object: two threads running the SAME SQL race on
-    pysqlite's per-connection statement cache and die with
-    sqlite3.InterfaceError "bad parameter or other API misuse" (1458 hits in
-    service.log by 2026-08-30, from /heartbeat's get_kv vs the ticker).
-    Wrapping the connection — rather than locking each of ~40 methods —
-    also covers main.py's direct db.conn.execute() calls and any future
-    call site by construction. The RLock is shared with SignalDb._lock, so
-    the existing `with self._lock:` write blocks nest harmlessly."""
+    """Serializes every use of the ONE shared sqlite3 connection."""
     __slots__ = ("_conn", "_lock")
 
     def __init__(self, conn, lock):
@@ -194,10 +239,6 @@ class _SerializedConnection:
         with self._lock:
             self._conn.close()
 
-    # `with db.conn:` — sqlite3's transaction scope (commit/rollback on
-    # exit). Dunders bypass __getattr__, so delegate explicitly, and hold
-    # the lock for the WHOLE transaction so no other thread can interleave
-    # statements into it (RLock: nests fine under an outer `with self._lock`).
     def __enter__(self):
         self._lock.acquire()
         self._conn.__enter__()
@@ -209,17 +250,21 @@ class _SerializedConnection:
         finally:
             self._lock.release()
 
-    def __getattr__(self, name):   # row_factory, total_changes, ...
+    def __getattr__(self, name):
         return getattr(self._conn, name)
 
 
-class SignalDb:
+class SignalDb(
+    SignalRepoMixin,
+    TradeRepoMixin,
+    ProposalRepoMixin,
+    CandleRepoMixin,
+    KvProfileRepoMixin,
+    AgentRepoMixin,
+    BacktestRepoMixin,
+):
     def __init__(self, path: str):
         raw_conn = sqlite3.connect(path, check_same_thread=False)
-        # Lighter, safer writes on the slow /mnt/c mount (audit 2026-08-24):
-        # WAL avoids the per-commit journal create/fsync/delete round trip;
-        # drvfs/9p can refuse WAL, so fall back silently (synchronous=NORMAL
-        # and the busy_timeout still apply either way).
         try:
             raw_conn.execute("PRAGMA journal_mode=WAL")
             raw_conn.execute("PRAGMA synchronous=NORMAL")
@@ -237,6 +282,9 @@ class SignalDb:
         self.conn.execute(_PROPOSALS_SCHEMA)
         self.conn.execute(_CANDLES_SCHEMA)
         self.conn.execute(_BACKTEST_SCHEMA)
+        self.conn.execute(_AI_GRADES_SCHEMA)
+        self.conn.execute(_AGENT_ACTIONS_SCHEMA)
+        self.conn.execute(_AGENT_LESSONS_SCHEMA)
         self.conn.commit()
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
         if "strategy_id" not in cols:
@@ -246,10 +294,18 @@ class SignalDb:
         if "timeframe" not in cols:
             self.conn.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
         profile_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(profile)")}
-        for col in ("ngrok_authtoken", "ngrok_domain", "miniapp_direct_link"):
+        for col, col_def in (
+            ("ngrok_authtoken", "TEXT"),
+            ("ngrok_domain", "TEXT"),
+            ("miniapp_direct_link", "TEXT"),
+            ("btc_symbol", "TEXT DEFAULT 'BTCUSD'"),
+            ("btc_risk_pct", "REAL DEFAULT 0.5"),
+            ("btc_lane", "TEXT DEFAULT 'iziBit5'"),
+            ("btc_enabled", "INTEGER DEFAULT 1"),
+        ):
             if col not in profile_cols:
                 try:
-                    self.conn.execute(f"ALTER TABLE profile ADD COLUMN {col} TEXT")
+                    self.conn.execute(f"ALTER TABLE profile ADD COLUMN {col} {col_def}")
                 except sqlite3.OperationalError:
                     pass
         trade_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(trades)")}
@@ -274,37 +330,24 @@ class SignalDb:
             except sqlite3.OperationalError:
                 pass
         if "htf_agree" not in trade_cols:
-            # -1 = unknown (rows written before 2026-08-20, or by an EA build
-            # that does not send it); 1 = the higher-timeframe filter agreed
-            # at entry, 0 = it did not. Older rows are filled in by
-            # scripts/backfill_htf_agree.py.
             try:
                 self.conn.execute(
                     "ALTER TABLE trades ADD COLUMN htf_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
         if "ema200_agree" not in trade_cols:
-            # Same shape as htf_agree, for the EMA-200 (own-timeframe)
-            # confirmation added 2026-08-22: 1 = price agreed with the
-            # strategy's own EMA200 at entry, 0 = it did not, -1 = unknown
-            # (older rows, or an EA build that does not send it). Older rows
-            # are filled in by scripts/backfill_ema200_agree.py.
             try:
                 self.conn.execute(
                     "ALTER TABLE trades ADD COLUMN ema200_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
         if "rsi_agree" not in trade_cols:
-            # RSI(14, lane TF) verdict at the confirm bar (2026-09-02,
-            # report-only): 1 agreed / 0 disagreed / -1 unknown (older rows).
             try:
                 self.conn.execute(
                     "ALTER TABLE trades ADD COLUMN rsi_agree INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
         if "sr_agree" not in trade_cols:
-            # S/R zone verdict (2026-09-05, report-only): 1 clear / 0 wall /
-            # -1 unknown; sr_tier = strongest tier behind a 0, '' otherwise.
             for ddl in ("ALTER TABLE trades ADD COLUMN sr_agree INTEGER DEFAULT -1",
                         "ALTER TABLE trades ADD COLUMN sr_tier TEXT DEFAULT ''"):
                 try:
@@ -312,44 +355,96 @@ class SignalDb:
                 except sqlite3.OperationalError:
                     pass
         if "news_blackout" not in trade_cols:
-            # 1 = entered inside a high-impact news blackout window (owner
-            # 2026-09-01: blackout is a proposal/warning, not a block),
-            # 0 = clear at entry, -1 = unknown (older rows / close events).
             try:
                 self.conn.execute(
                     "ALTER TABLE trades ADD COLUMN news_blackout INTEGER DEFAULT -1")
             except sqlite3.OperationalError:
                 pass
-        # resolve_outcomes runs on EVERY /analyze and scans for unresolved
-        # rows; a partial index keeps that scan proportional to the handful
-        # of open signals instead of the whole (ever-growing) table.
+        for col, col_def in (
+            ("slippage_pts", "REAL DEFAULT 0"),
+            ("exec_ms", "INTEGER DEFAULT 0"),
+            ("req_price", "REAL DEFAULT 0"),
+        ):
+            if col not in trade_cols:
+                try:
+                    self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
+        if "symbol" not in trade_cols:
+            try:
+                self.conn.execute("ALTER TABLE trades ADD COLUMN symbol TEXT DEFAULT 'XAUUSD'")
+            except sqlite3.OperationalError:
+                pass
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_signals_unresolved"
             " ON signals(outcome_price) WHERE outcome_price IS NULL")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signals_series_time"
+            " ON signals(symbol, timeframe, bar_time)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_heartbeats_ts"
+            " ON heartbeats(ts)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposals_status_created"
+            " ON proposals(status, created_ts)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_event_ticket"
+            " ON trades(event, ticket)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_symbol"
+            " ON trades(symbol)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_grades_series_bar"
+            " ON ai_grades(symbol, timeframe, bar_time)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_actions_created"
+            " ON agent_actions(created_ts)")
+        grade_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(ai_grades)")}
+        for col, ddl in (("entry_quality", "ALTER TABLE ai_grades ADD COLUMN entry_quality INTEGER"),
+                         ("expected_r", "ALTER TABLE ai_grades ADD COLUMN expected_r REAL"),
+                         ("invalidation", "ALTER TABLE ai_grades ADD COLUMN invalidation REAL"),
+                         ("window_state", "ALTER TABLE ai_grades ADD COLUMN window_state TEXT"),
+                         ("regime", "ALTER TABLE ai_grades ADD COLUMN regime TEXT"),
+                         ("session", "ALTER TABLE ai_grades ADD COLUMN session TEXT"),
+                         ("outcome_move", "ALTER TABLE ai_grades ADD COLUMN outcome_move REAL")):
+            if col not in grade_cols:
+                try:
+                    self.conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
+        self.conn.execute("PRAGMA user_version = 2")
         self.conn.commit()
+        self._migrate_strategy_ids()
         self._retain()
-        # Heartbeat de-dup window without a per-call SELECT MAX(ts) full
-        # scan (audit 2026-08-24). Seeded once here; a service restart can
-        # therefore insert one extra row inside the 60 s window when the
-        # table was written by a previous process -- harmless.
         self._last_hb_ts = self.conn.execute(
             "SELECT MAX(ts) FROM heartbeats").fetchone()[0]
-        # stats() is the dashboard's most-polled aggregate and only changes
-        # when a signal is written or resolved; bump the version there and
-        # serve a cached copy in between.
         self._signals_version = 0
         self._stats_cache = None
         self._stats_cache_version = -1
 
+    def _migrate_strategy_ids(self) -> None:
+        renames = (
+            ("halftrend_ema_v1", "iziGold5"),
+            ("halftrend_m15_v1", "iziGold15"),
+            ("izi5", "iziGold5"),
+            ("izi15", "iziGold15"),
+        )
+        try:
+            for old, new in renames:
+                for table in ("signals", "trades", "ai_grades"):
+                    self.conn.execute(
+                        f"UPDATE {table} SET strategy_id=? WHERE strategy_id=?",
+                        (new, old))
+                self.conn.execute(
+                    "UPDATE kv SET value=? WHERE key='active_strategy' AND value=?",
+                    (new, old))
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
+
     _RETENTION_S = 90 * 86400
 
     def _retain(self) -> None:
-        """Startup-only pruning of the two unbounded append-only tables
-        (retention chosen 2026-08-24: heartbeats grow ~1.1k rows/day and
-        were never trimmed). Heartbeats are cut on wall-clock ts; spread
-        rows are cut relative to MAX(bar_time) because bar_time is broker
-        server time, not UTC (see spread_stats). Fail-open -- a pruning
-        problem must never stop the service from opening its db."""
         try:
             cutoff = int(time.time()) - self._RETENTION_S
             self.conn.execute("DELETE FROM heartbeats WHERE ts < ?", (cutoff,))
@@ -361,581 +456,5 @@ class SignalDb:
         except sqlite3.Error:
             pass
 
-    def insert_signal(self, *, bar_time, symbol, signal, price, direction,
-                      confidence, regime, verdict, mode, ai_available,
-                      strategy_id="unknown", is_active=True, timeframe="") -> int:
-        with self._lock:
-            cur = self.conn.execute(
-                "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
-                " confidence, regime, verdict, mode, ai_available, strategy_id, is_active,"
-                " timeframe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (int(time.time()), bar_time, symbol, signal, price, direction,
-                 confidence, regime, verdict, mode, int(ai_available),
-                 strategy_id, int(is_active), timeframe))
-            self.conn.commit()
-            self._signals_version += 1
-            return cur.lastrowid
-
-    def resolve_outcomes(self, candles, horizon_bars: int = 16) -> int:
-        with self._lock:
-            bar_seconds = candles[1].t - candles[0].t
-            resolved = 0
-            rows = self.conn.execute(
-                "SELECT id, bar_time, price, direction FROM signals"
-                " WHERE outcome_price IS NULL").fetchall()
-            for rid, bar_time, price, direction in rows:
-                target = bar_time + horizon_bars * bar_seconds
-                hit = next((x for x in candles if x.t >= target), None)
-                if hit is None:
-                    continue
-                move = hit.c - price
-                correct = None
-                if direction == "bullish":
-                    correct = int(move > 0)
-                elif direction == "bearish":
-                    correct = int(move < 0)
-                self.conn.execute(
-                    "UPDATE signals SET outcome_price=?, outcome_move=?, ai_correct=? WHERE id=?",
-                    (hit.c, move, correct, rid))
-                resolved += 1
-            self.conn.commit()
-            if resolved:
-                self._signals_version += 1
-            return resolved
-
-    def stats(self) -> dict:
-        if self._stats_cache is not None \
-           and self._stats_cache_version == self._signals_version:
-            return copy.deepcopy(self._stats_cache)
-        stats = self._stats_uncached()
-        self._stats_cache = stats
-        self._stats_cache_version = self._signals_version
-        return copy.deepcopy(stats)
-
-    def _stats_uncached(self) -> dict:
-        total = self.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
-        done = self.conn.execute(
-            "SELECT COUNT(*), COALESCE(AVG(ai_correct) * 100, 0) FROM signals"
-            " WHERE outcome_price IS NOT NULL").fetchone()
-        by_strategy = {}
-        rows = self.conn.execute(
-            "SELECT COALESCE(strategy_id, 'pre-framework'), COALESCE(timeframe, ''),"
-            " COUNT(*), COUNT(outcome_price),"
-            " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
-            "   CASE WHEN (signal='BUY' AND outcome_move > 0)"
-            "          OR (signal='SELL' AND outcome_move < 0)"
-            "   THEN 1.0 ELSE 0.0 END END) * 100,"
-            " AVG(CASE WHEN outcome_price IS NOT NULL THEN"
-            "   CASE WHEN signal='BUY' THEN outcome_move ELSE -outcome_move END END)"
-            " FROM signals WHERE signal IN ('BUY','SELL')"
-            " GROUP BY COALESCE(strategy_id, 'pre-framework'),"
-            " COALESCE(timeframe, '')").fetchall()
-        for sid, tf, count, resolved, hit, avg in rows:
-            key = f"{sid} @{tf}" if tf else sid   # timeframes never blend
-            by_strategy[key] = {"signals": count, "resolved": resolved,
-                                "hit_pct": round(hit or 0.0, 1),
-                                "avg_move": round(avg or 0.0, 2)}
-        return {"total": total, "resolved": done[0],
-                "ai_correct_pct": round(done[1], 1), "by_strategy": by_strategy}
-
-    def insert_heartbeat(self, hb: dict) -> bool:
-        with self._lock:
-            now = int(time.time())
-            # In-memory last-ts instead of a per-call SELECT MAX(ts) scan
-            # (audit 2026-08-24). The EA heartbeats every ~5 s, so this ran
-            # ~17k times a day over an unbounded table.
-            last = self._last_hb_ts
-            if last is not None and now - last < 60:
-                return False
-            self.conn.execute(
-                "INSERT INTO heartbeats (ts, equity, balance, floating_pl, open_count,"
-                " kill_switch, exposure_min, active_strategy) VALUES (?,?,?,?,?,?,?,?)",
-                (now, hb["equity"], hb["balance"], hb["floating_pl"], hb["open_count"],
-                 int(hb["kill_switch"]), hb["exposure_min"], hb["active_strategy"]))
-            self.conn.commit()
-            self._last_hb_ts = now
-            return True
-
-    def upsert_spread(self, *, bar_time: int, spread_min: float,
-                      spread_avg: float, spread_max: float) -> None:
-        """One row per closed bar; a re-post for the same bar replaces it."""
-        with self._lock:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO spread_history"
-                " (bar_time, spread_min, spread_avg, spread_max) VALUES (?,?,?,?)",
-                (bar_time, spread_min, spread_avg, spread_max))
-            self.conn.commit()
-
-    def spread_stats(self, hours: int = 24) -> dict:
-        """Aggregate spread over the most recent window. The window is
-        anchored to the newest bar_time in the table (broker server clock),
-        not the wall clock -- bar_time is server time (GMT+3 summer) while
-        time.time() is UTC, and anchoring to MAX(bar_time) sidesteps that
-        offset entirely."""
-        row = self.conn.execute(
-            "SELECT COUNT(*), MIN(spread_min), AVG(spread_avg), MAX(spread_max)"
-            " FROM spread_history WHERE bar_time >="
-            " (SELECT MAX(bar_time) FROM spread_history) - ?",
-            (hours * 3600,)).fetchone()
-        n = row[0] or 0
-        if n == 0:
-            return {"n": 0, "min": 0.0, "avg": 0.0, "max": 0.0}
-        return {"n": n, "min": row[1], "avg": row[2], "max": row[3]}
-
-    def equity_series(self, limit: int = 1440) -> list:
-        rows = self.conn.execute(
-            "SELECT ts, equity, balance, floating_pl FROM heartbeats"
-            " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
-        return [{"ts": t, "equity": e, "balance": b, "floating_pl": f}
-                for t, e, b, f in reversed(rows)]
-
-    def recent_signals(self, limit: int = 50) -> list:
-        cols = ["id", "created_ts", "bar_time", "strategy_id", "timeframe", "signal", "price",
-                "direction", "confidence", "regime", "verdict", "is_active",
-                "outcome_move", "ai_correct"]
-        rows = self.conn.execute(
-            f"SELECT {', '.join(cols)} FROM signals ORDER BY id DESC LIMIT ?",
-            (limit,)).fetchall()
-        return [dict(zip(cols, r)) for r in rows]
-
-    def upsert_candles(self, symbol: str, timeframe: str, candles) -> int:
-        """Persist bars; a re-sent bar_time (the EA re-posts the forming bar
-        until it closes) replaces the stored row, so the final close wins."""
-        rows = []
-        for c in candles:
-            if isinstance(c, dict):
-                rows.append((symbol, timeframe, int(c["t"]), c["o"], c["h"],
-                             c["l"], c["c"], c.get("v", 0.0)))
-            else:
-                rows.append((symbol, timeframe, int(c.t), c.o, c.h,
-                             c.l, c.c, getattr(c, "v", 0.0)))
-        with self._lock:
-            self.conn.executemany(
-                "INSERT OR REPLACE INTO candles (symbol, timeframe, bar_time,"
-                " o, h, l, c, v) VALUES (?,?,?,?,?,?,?,?)", rows)
-            self.conn.commit()
-        return len(rows)
-
-    def get_candles(self, symbol: str, timeframe: str, start_ts=None,
-                    end_ts=None, limit=None) -> list:
-        q = ("SELECT bar_time, o, h, l, c, v FROM candles"
-             " WHERE symbol=? AND timeframe=?")
-        args = [symbol, timeframe]
-        if start_ts is not None:
-            q += " AND bar_time >= ?"; args.append(int(start_ts))
-        if end_ts is not None:
-            q += " AND bar_time <= ?"; args.append(int(end_ts))
-        if limit is not None:
-            # newest N, returned ascending like every other path
-            q = (f"SELECT * FROM ({q} ORDER BY bar_time DESC LIMIT ?)"
-                 " ORDER BY bar_time ASC")
-            args.append(int(limit))
-        else:
-            q += " ORDER BY bar_time ASC"
-        rows = self.conn.execute(q, args).fetchall()
-        return [{"t": t, "o": o, "h": h, "l": l, "c": c, "v": v or 0.0}
-                for t, o, h, l, c, v in rows]
-
-    def count_candles(self, symbol: str, timeframe: str,
-                      start_ts=None, end_ts=None) -> int:
-        q = "SELECT COUNT(*) FROM candles WHERE symbol=? AND timeframe=?"
-        args = [symbol, timeframe]
-        if start_ts is not None:
-            q += " AND bar_time >= ?"; args.append(int(start_ts))
-        if end_ts is not None:
-            q += " AND bar_time <= ?"; args.append(int(end_ts))
-        return self.conn.execute(q, args).fetchone()[0]
-
-    def candles_range(self, symbol: str, timeframe: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT MIN(bar_time), MAX(bar_time), COUNT(*) FROM candles"
-            " WHERE symbol=? AND timeframe=?", (symbol, timeframe)).fetchone()
-        if not row or not row[2]:
-            return None
-        return {"start": row[0], "end": row[1], "count": row[2]}
-
-    def latest_candle_series(self) -> tuple | None:
-        row = self.conn.execute(
-            "SELECT symbol, timeframe FROM candles"
-            " ORDER BY bar_time DESC LIMIT 1").fetchone()
-        return (row[0], row[1]) if row else None
-
-    # --- backtest runs -------------------------------------------------
-    def insert_backtest_run(self, params_json: str) -> int:
-        with self._lock:
-            cur = self.conn.execute(
-                "INSERT INTO backtest_runs (created_ts, params_json, status)"
-                " VALUES (?,?, 'running')", (int(time.time()), params_json))
-            self.conn.commit()
-            return cur.lastrowid
-
-    def finish_backtest_run(self, run_id: int, *, status: str, error=None,
-                            stats_json=None, report_path=None) -> None:
-        with self._lock:
-            self.conn.execute(
-                "UPDATE backtest_runs SET status=?, error=?, stats_json=?,"
-                " report_path=? WHERE id=?",
-                (status, error, stats_json, report_path, run_id))
-            self.conn.commit()
-
-    def get_backtest_run(self, run_id: int) -> dict | None:
-        cur = self.conn.execute(
-            "SELECT * FROM backtest_runs WHERE id=?", (run_id,))
-        return self._row_to_dict(cur, cur.fetchone())
-
-    def recent_backtest_runs(self, limit: int = 20) -> list:
-        cur = self.conn.execute(
-            "SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,))
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-    def insert_trade(self, ev: dict) -> int:
-        with self._lock:
-            cur = self.conn.execute(
-                "INSERT INTO trades (ts, event, strategy_id, direction, lots, price,"
-                " sl, reason, ticket, profit, tp, final, entry_mode, htf_agree,"
-                " ema200_agree, news_blackout, rsi_agree, sr_agree, sr_tier)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (int(time.time()), ev["event"], ev.get("strategy_id", "unknown"),
-                 ev["direction"], ev["lots"], ev["price"], ev.get("sl", 0.0),
-                 ev.get("reason", ""), ev.get("ticket", 0), ev.get("profit", 0.0),
-                 ev.get("tp", 0.0), int(ev.get("final", True)),
-                 ev.get("entry_mode", ""), int(ev.get("htf_agree", -1)),
-                 int(ev.get("ema200_agree", -1)), int(ev.get("news_blackout", -1)),
-                 int(ev.get("rsi_agree", -1)),
-                 int(ev.get("sr_agree", -1)), str(ev.get("sr_tier", "") or "")))
-            self.conn.commit()
-            return cur.lastrowid
-
-    def recent_trades(self, limit: int = 50) -> list:
-        cols = ["id", "ts", "event", "strategy_id", "direction", "lots", "price",
-                "sl", "reason", "ticket", "screenshot_path", "profit", "render_path",
-                "tp", "final", "entry_mode", "htf_agree", "ema200_agree",
-                "news_blackout", "rsi_agree", "sr_agree", "sr_tier"]
-        rows = self.conn.execute(
-            f"SELECT {', '.join(cols)} FROM trades ORDER BY id DESC LIMIT ?",
-            (limit,)).fetchall()
-        return [dict(zip(cols, r)) for r in rows]
-
-    def realized_pnl(self, since_ts: int) -> tuple:
-        """(summed profit, close count) over close events at/after since_ts.
-        Only 'close' rows carry a real P/L (opens store the 0.0 default)."""
-        row = self.conn.execute(
-            "SELECT COALESCE(SUM(profit), 0), COUNT(*) FROM trades"
-            " WHERE event='close' AND ts >= ?", (int(since_ts),)).fetchone()
-        return (row[0] or 0.0, row[1] or 0)
-
-    def strategy_pnl(self) -> dict:
-        """{strategy_id: (summed profit, close count)} over ALL close events —
-        the money companion to stats()'s signal hit-rates."""
-        out = {}
-        for sid, total, count in self.conn.execute(
-                "SELECT strategy_id, COALESCE(SUM(profit), 0), COUNT(*)"
-                " FROM trades WHERE event='close' GROUP BY strategy_id"):
-            out[sid or "unknown"] = (total or 0.0, count)
-        return out
-
-    def set_screenshot(self, trade_id: int, path: str) -> None:
-        with self._lock:
-            self.conn.execute(
-                "UPDATE trades SET screenshot_path=? WHERE id=?", (path, trade_id))
-            self.conn.commit()
-
-    def set_render(self, trade_id: int, path: str) -> None:
-        with self._lock:
-            self.conn.execute(
-                "UPDATE trades SET render_path=? WHERE id=?", (path, trade_id))
-            self.conn.commit()
-
-    def get_kv(self, key: str) -> str | None:
-        row = self.conn.execute(
-            "SELECT value FROM kv WHERE key=?", (key,)).fetchone()
-        return row[0] if row else None
-
-    def set_kv(self, key: str, value: str) -> None:
-        with self._lock:
-            self.conn.execute(
-                "INSERT INTO kv (key, value) VALUES (?,?)"
-                " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
-            self.conn.commit()
-
-    def get_profile(self):
-        row = self.conn.execute("SELECT * FROM profile WHERE id = 1").fetchone()
-        if row is None:
-            return None
-        cols = [d[0] for d in self.conn.execute(
-            "SELECT * FROM profile WHERE id = 1").description]
-        return dict(zip(cols, row))
-
-    def save_profile(self, partial: dict) -> dict:
-        with self._lock:
-            now = int(time.time())
-            if self.get_profile() is None:
-                self.conn.execute(
-                    "INSERT INTO profile (id, created_ts, updated_ts) VALUES (1, ?, ?)",
-                    (now, now))
-            updates = {k: v for k, v in partial.items() if k in PROFILE_FIELDS}
-            if isinstance(updates.get("ngrok_domain"), str):
-                # Store the bare hostname only: strip whitespace, a leading
-                # scheme, and anything after the host (path and/or query) --
-                # the ngrok phase in setup.sh and every consumer of
-                # MINIAPP_PUBLIC_URL build "https://<domain>" themselves, so a
-                # scheme, path, or query here would double up or corrupt the
-                # built URL. A pasted full tunnel URL (e.g. copied straight out
-                # of a browser's address bar with a path/query still attached)
-                # normalizes down to just the host.
-                domain = updates["ngrok_domain"].strip()
-                # scheme is case-insensitive ("HTTPS://x" pastes happen); host is
-                # case-insensitive too, so lowercase the whole thing
-                domain = domain.lower().removeprefix("https://").removeprefix("http://")
-                domain = domain.split("/", 1)[0].split("?", 1)[0]
-                updates["ngrok_domain"] = domain
-            if updates.get("risk_ack") and not (self.get_profile() or {}).get("risk_ack_ts"):
-                updates["risk_ack_ts"] = now
-            updates["updated_ts"] = now
-            sets = ", ".join(f"{k} = ?" for k in updates)
-            self.conn.execute(f"UPDATE profile SET {sets} WHERE id = 1",
-                              tuple(updates.values()))
-            self.conn.commit()
-            return self.get_profile()
-
     def _row_to_dict(self, cur, row):
-        """Convert sqlite3 tuple row to dict using cursor description."""
-        if row is None:
-            return None
-        cols = [d[0] for d in cur.description]
-        return dict(zip(cols, row))
-
-    def strategy_ids(self) -> list:
-        rows = self.conn.execute(
-            "SELECT DISTINCT strategy_id FROM signals WHERE strategy_id IS NOT NULL"
-            " ORDER BY strategy_id").fetchall()
-        return [r[0] for r in rows]
-
-    # --- generic toggle shape ----------------------------------------------
-    # exec_mode/entry_mode/htf_enforce are three near-identical
-    # "kv-backed value restricted to a fixed choice set, with a default"
-    # pairs. get_choice/set_choice are that shape pulled out once; the three
-    # public methods below are thin wrappers so callers and tests (which key
-    # off exec_mode()/entry_mode()/htf_enforce() by name) don't have to
-    # change.
-    def get_choice(self, name: str, choices: tuple, default: str,
-                   on_invalid: str | None = None) -> str:
-        """The kv-stored value for `name` if it's one of `choices`.
-
-        UNSET degrades to `default` -- what a fresh install should do.
-        A stored value that is not in `choices` degrades to `on_invalid`
-        (falling back to `default` when not given). The two are separated
-        deliberately: for a trading toggle the safe answer to "the stored
-        value is corrupt" is not always the same as the answer to "nothing
-        has been chosen yet". exec_mode is exactly that case -- a fresh
-        install should trade (drag-and-go), but a CORRUPT value must not
-        silently switch trading ON.
-        """
-        val = self.get_kv(name)
-        if val is None:
-            return default
-        if val in choices:
-            return val
-        return on_invalid if on_invalid is not None else default
-
-    def set_choice(self, name: str, value: str, choices: tuple) -> None:
-        """Store `value` under `name`, or raise ValueError if it is not one
-        of `choices`."""
-        if value not in choices:
-            raise ValueError(f"invalid {name}: {value}")
-        self.set_kv(name, value)
-
-    def exec_mode(self) -> str:
-        # Default AUTO since 2026-08-20 (owner: "all I need to do is drag it
-        # into the chart"). The service is the AUTHORITY on execution mode --
-        # it ships `mode` on every heartbeat and the EA obeys it -- so a
-        # fresh install defaulting to "manual" would silently override an
-        # EA attached with ExecutionMode=EXEC_AUTO within ~5 seconds.
-        # on_invalid="manual": a corrupt stored value must fail toward NOT
-        # trading. Before this was explicit the value degraded to "auto",
-        # i.e. a damaged row could have switched auto-trading ON.
-        return self.get_choice("exec_mode", ("auto", "manual"), "auto",
-                               on_invalid="manual")
-
-    def set_exec_mode(self, mode: str) -> None:
-        self.set_choice("exec_mode", mode, ("auto", "manual"))
-
-    def entry_mode(self) -> str:
-        return self.get_choice("entry_mode", ("adr", "fixed"), "adr")
-
-    def set_entry_mode(self, mode: str) -> None:
-        self.set_choice("entry_mode", mode, ("adr", "fixed"))
-
-    # --- higher-timeframe agreement: a togglable module -------------------
-    # Value is the timeframe it ENFORCES on ("M15"/"M30"/"H1"), or "off" to
-    # check and report without ever blocking an entry. Default "off" (owner
-    # 2026-08-21): the check runs and is reported on every trade, but does not
-    # touch the trade decision until it is switched on from /agree.
-    HTF_CHOICES = ("off", "M15", "M30", "H1")
-
-    def htf_enforce(self) -> str:
-        return self.get_choice("htf_enforce", self.HTF_CHOICES, "off")
-
-    def set_htf_enforce(self, value: str) -> None:
-        self.set_choice("htf_enforce", value, self.HTF_CHOICES)
-
-    # --- EMA-200 (own-timeframe) agreement: same idea, simpler shape ------
-    # No timeframe choice here (there IS no higher timeframe -- BUY/SELL vs
-    # the strategy's own EMA200): "off" (report only) or "on" (enforce).
-    # Default "off" for BOTH strategies (owner 2026-08-22): "switch off the
-    # confirmation ema200 by default for m5 and m15 ... we get them in
-    # reporting".
-    EMA200_CHOICES = ("off", "on")
-
-    def ema200_enforce(self) -> str:
-        return self.get_choice("ema200_enforce", self.EMA200_CHOICES, "off")
-
-    def set_ema200_enforce(self, value: str) -> None:
-        self.set_choice("ema200_enforce", value, self.EMA200_CHOICES)
-
-    # --- RSI(14) 70/30 agreement, M15 lane only (owner "go" 2026-09-07) ---
-    # Sweep 2026-09-02: M15+RSI-70 nets +7% at -33% max dd, better in BOTH
-    # halves -- the one indicator filter that passed; on M5 it FAILS both
-    # halves, so the EA's M5 lane is not eligible and ignores this rule.
-    # Default "on": evidence-earned, and it would have refused the
-    # 2026-09-07 oversold SELL (RSI 26) that lost the day.
-    RSI_CHOICES = ("off", "on")
-
-    def rsi_enforce(self) -> str:
-        return self.get_choice("rsi_enforce", self.RSI_CHOICES, "on")
-
-    def set_rsi_enforce(self, value: str) -> None:
-        self.set_choice("rsi_enforce", value, self.RSI_CHOICES)
-
-    # --- Pyramid adds on the M15 lane (owner "go" 2026-09-07) --------------
-    # Every M15 result the house trusts was measured as a pure ride (FIXED,
-    # no adds). Live ADR mode adds and ratchets: on 2026-09-07 an add at a
-    # spike low moved the shared stop from 4444 to 4422 and a wick took
-    # both legs out for -$56 where the ride exits at -$16. Default "off" =
-    # no adds on the M15 lane; the M5 lane's adds are untouched either way.
-    ADDS_CHOICES = ("off", "on")
-
-    def m15_adds(self) -> str:
-        return self.get_choice("m15_adds", self.ADDS_CHOICES, "off")
-
-    def set_m15_adds(self, value: str) -> None:
-        self.set_choice("m15_adds", value, self.ADDS_CHOICES)
-
-    def create_proposal(self, kind: str, direction: str, strategy_id: str,
-                       price: float, signal_id: int | None) -> int:
-        with self._lock:
-            cur = self.conn.execute(
-                "INSERT INTO proposals(created_ts, kind, direction, strategy_id,"
-                " price, signal_id) VALUES(?,?,?,?,?,?)",
-                (int(time.time()), kind, direction, strategy_id, price, signal_id))
-            self.conn.commit()
-            return cur.lastrowid
-
-    def get_proposal(self, pid: int) -> dict | None:
-        cur = self.conn.execute(
-            "SELECT * FROM proposals WHERE id=?", (pid,))
-        row = cur.fetchone()
-        return self._row_to_dict(cur, row)
-
-    def pending_proposal(self, kind: str | None = None, status: str = "pending") -> dict | None:
-        q = "SELECT * FROM proposals WHERE status=?"
-        args = [status]
-        if kind:
-            q += " AND kind=?"
-            args.append(kind)
-        cur = self.conn.execute(q + " ORDER BY id DESC LIMIT 1", tuple(args))
-        row = cur.fetchone()
-        return self._row_to_dict(cur, row)
-
-    def active_proposal(self) -> dict | None:
-        """Newest live proposal, preferring pending over approved over
-        dispatched -- one query instead of the old three-status loop."""
-        cur = self.conn.execute(
-            "SELECT * FROM proposals WHERE status IN ('pending','approved','dispatched')"
-            " ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1"
-            " ELSE 2 END, id DESC LIMIT 1")
-        return self._row_to_dict(cur, cur.fetchone())
-
-    def set_proposal_status(self, pid: int, status: str, expected: str | None = None) -> bool:
-        """Unconditional UPDATE when `expected` is None (default) -- existing
-        callers keep their old semantics unchanged. When `expected` is
-        given, the UPDATE is guarded on the row's CURRENT status
-        (WHERE id=? AND status=?) to close a TOCTOU race -- e.g. a Telegram
-        approve tap landing after /analyze already expired the same row, or
-        the /heartbeat TTL sweep racing the EA's /proposal-result callback.
-        Returns whether the transition actually applied (always True when
-        expected is None, since that path is unconditional by design)."""
-        now = int(time.time())
-        with self._lock, self.conn:
-            if expected is not None:
-                cur = self.conn.execute(
-                    "UPDATE proposals SET status=? WHERE id=? AND status=?",
-                    (status, pid, expected))
-                if cur.rowcount != 1:
-                    return False
-            else:
-                self.conn.execute("UPDATE proposals SET status=? WHERE id=?", (status, pid))
-            if status in ("approved", "skipped", "expired", "blocked"):
-                self.conn.execute(
-                    "UPDATE proposals SET decided_ts=? WHERE id=? AND decided_ts IS NULL",
-                    (now, pid))
-            if status == "executed":
-                self.conn.execute(
-                    "UPDATE proposals SET executed_ts=? WHERE id=?", (now, pid))
-        return True
-
-    def set_proposal_message(self, pid: int, tg_message_id: int) -> None:
-        with self._lock:
-            self.conn.execute(
-                "UPDATE proposals SET tg_message_id=? WHERE id=?", (tg_message_id, pid))
-            self.conn.commit()
-
-    def last_executed_entry(self) -> dict | None:
-        """Newest executed entry proposal -- used to resolve an exit
-        proposal's (informational-only) direction."""
-        cur = self.conn.execute(
-            "SELECT * FROM proposals WHERE kind='entry' AND status='executed'"
-            " ORDER BY id DESC LIMIT 1")
-        row = cur.fetchone()
-        return self._row_to_dict(cur, row)
-
-    def pop_approved_command(self) -> dict | None:
-        # UPDATE...RETURNING atomically updates the oldest approved row and returns it.
-        # Explicit commit() ensures durability under concurrent access (check_same_thread=False).
-        # Without commit, the transaction remains open and a crash/restart could revert to 'approved'.
-        with self._lock:
-            cur = self.conn.execute(
-                "UPDATE proposals SET status='dispatched' "
-                "WHERE id = (SELECT id FROM proposals WHERE status='approved' ORDER BY id ASC LIMIT 1) "
-                "RETURNING *")
-            row = cur.fetchone()
-            row_dict = self._row_to_dict(cur, row) if row else None
-            # Commit to persist. sqlite3 may auto-commit UPDATE...RETURNING that finds 0 rows,
-            # so wrap in try/except; if already committed, error is benign.
-            try:
-                self.conn.commit()
-            except sqlite3.OperationalError:
-                pass  # "no transaction is active" means UPDATE found 0 rows and auto-committed
-            return row_dict
-
-    def _rows_older_than(self, status: str, older_than_s: int) -> list:
-        """Rows in `status` whose decided_ts is more than `older_than_s`
-        seconds old. Used by the /heartbeat TTL sweeps (I1/I4): 'approved'
-        rows use decided_ts as the approval time; 'dispatched' rows have no
-        dedicated dispatch timestamp, so decided_ts (set once, at approval,
-        and never touched again by pop_approved_command) is reused as a
-        lower bound -- see the COMMAND_RESULT_TTL_S comment in main.py."""
-        cutoff = int(time.time()) - older_than_s
-        cur = self.conn.execute(
-            "SELECT * FROM proposals WHERE status=? AND decided_ts IS NOT NULL"
-            " AND decided_ts < ? ORDER BY id ASC", (status, cutoff))
-        rows = cur.fetchall()
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in rows]
-
-    def stale_approved(self, older_than_s: int) -> list:
-        return self._rows_older_than("approved", older_than_s)
-
-    def stale_dispatched(self, older_than_s: int) -> list:
-        return self._rows_older_than("dispatched", older_than_s)
+        return row_to_dict(cur, row)

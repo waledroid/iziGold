@@ -75,6 +75,12 @@ def _replay():
     # Same again for the M15 agreement filter, which became a default on
     # 2026-08-20, after this pin was captured. Off here = like-for-like.
     bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF = 0, "tag", "M5"
+    # Same again for the first-add gate, which split from the shared add
+    # trigger on 2026-10-01, after this pin was captured. 1.0 here =
+    # like-for-like; the strict pin below tracks the shipped 2.0 default.
+    bt.FIRST_ADD_TRIGGER_ATR = 1.0
+    # The pin was captured with the historical 360m daily exposure budget.
+    bt.EXPO_MIN = 360
     # The golden pins HalfTrend alone. Lane selection is passed explicitly
     # into run() (not a mutated module global), so drive it the same way
     # main() does: bt.lanes_for("ht") -> {"ht"} -- today the only lane
@@ -93,6 +99,8 @@ def _replay_strict():
     assert bt.CONFIRM_CLOSES == 2, "2 waiting bars is supposed to be the default"
     assert (bt.BIAS_EMA, bt.BIAS_MODE, bt.BIAS_TF) == (55, "skip", "M15"), \
         "M15 EMA-55 agreement is supposed to be the default"
+    # The pin was captured with the historical 360m daily exposure budget.
+    bt.EXPO_MIN = 360
     # The golden pins HalfTrend alone -- see the note in _replay() above.
     trades, bal, max_dd, _valley = bt.run(
         candles, 4000.0, False, bt.lanes_for("ht"))

@@ -275,6 +275,34 @@ button {
     </fieldset>
 
     <fieldset>
+      <legend>🪙 Bitcoin / Crypto asset (coexists with Gold)</legend>
+      <div class="row">
+        <div>
+          <label>Broker BTC symbol</label>
+          <input name="btc_symbol" placeholder="BTCUSD (or BTCUSDT / BTCUSDm)" value="BTCUSD">
+        </div>
+        <div>
+          <label>Risk % per BTC trade</label>
+          <input name="btc_risk_pct" type="number" step="0.1" value="0.5">
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div>
+          <label>Default BTC strategy lane</label>
+          <select name="btc_lane">
+            <option value="iziBit5" selected>iziBit5 (M5 Quick Momentum — Recommended)</option>
+            <option value="iziBit15">iziBit15 (M15 Trend Ride)</option>
+          </select>
+        </div>
+        <div style="display:flex; align-items:center; padding-top:22px;">
+          <input type="checkbox" name="btc_enabled" id="btc_en" checked style="width:auto; margin-right:8px; cursor:pointer;">
+          <label for="btc_en" style="margin:0; font-weight:normal; cursor:pointer;">Enable Bitcoin trading</label>
+        </div>
+      </div>
+      <p class="note" style="margin-top:8px;">Runs on your existing MT5 account. Auto-spawns an M5 chart with magic number 20260730.</p>
+    </fieldset>
+
+    <fieldset>
       <legend>Account &amp; consent</legend>
       <div class="row">
         <div><label>Broker</label><input name="broker_name"></div>
@@ -306,7 +334,7 @@ const f=document.getElementById('f');
 fetch('/api/profile').then(r=>r.json()).then(({profile})=>{
  if(!profile)return;
  for(const el of f.elements){ if(!el.name) continue;
-  if(el.type==='checkbox') el.checked=!!profile[el.name];
+  if(el.type==='checkbox') { if(profile[el.name]!=null) el.checked=!!profile[el.name]; }
   else if(profile[el.name]!=null) el.value=profile[el.name]; }
 });
 f.onsubmit=async e=>{e.preventDefault();

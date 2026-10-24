@@ -30,7 +30,8 @@ def test_range_lists_strategies(client):
     assert r["symbol"] == "XAUUSD"
     assert r["range"]["count"] == 500
     ids = {s["id"]: s["supported"] for s in r["strategies"]}
-    assert ids == {"halftrend_ema_v1": True, "halftrend_m15_v1": True,
+    assert ids == {"iziGold5": True, "iziGold15": True,
+                   "izi5": True, "izi15": True,
                    "boll_stochrsi": False}
 
 
@@ -39,13 +40,13 @@ def test_start_validates(client, monkeypatch):
     bad = [
         ({"strategy": "boll_stochrsi", "start": "2023-11-14", "end": "2023-11-16"},
          "not yet supported"),
-        ({"strategy": "halftrend_ema_v1", "start": "2030-01-01", "end": "2030-02-01"},
+        ({"strategy": "izi5", "start": "2030-01-01", "end": "2030-02-01"},
          "no candles"),
-        ({"strategy": "halftrend_ema_v1", "start": "2023-11-16", "end": "2023-11-14"},
+        ({"strategy": "izi5", "start": "2023-11-16", "end": "2023-11-14"},
          "start must be before end"),
-        ({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
+        ({"strategy": "izi5", "start": "2023-11-14",
           "end": "2023-11-16", "balance": -5}, "balance"),
-        ({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
+        ({"strategy": "izi5", "start": "2023-11-14",
           "end": "2023-11-16", "balance": 100}, "balance"),
         ({"strategy": "nope", "start": "2023-11-14", "end": "2023-11-16"},
          "unknown strategy"),
@@ -58,7 +59,7 @@ def test_start_validates(client, monkeypatch):
 
 def test_start_rejects_nan_balance(client):
     seed_candles(client)
-    raw = json.dumps({"strategy": "halftrend_ema_v1", "start": "2023-11-14",
+    raw = json.dumps({"strategy": "izi5", "start": "2023-11-14",
                       "end": "2023-11-16", "balance": float("nan")}, allow_nan=True)
     r = client.post("/api/backtest", content=raw,
                     headers={"content-type": "application/json"})
@@ -73,7 +74,7 @@ def test_start_rejects_sparse_range(client):
         {"t": 1704067200 + 300 * i, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 0}
         for i in range(50)])
     r = client.post("/api/backtest", json={
-        "strategy": "halftrend_ema_v1", "start": "2024-01-01", "end": "2024-01-01"})
+        "strategy": "izi5", "start": "2024-01-01", "end": "2024-01-01"})
     assert r.status_code == 400
     detail = r.json()["detail"]
     assert "50" in detail and "300" in detail
@@ -90,11 +91,11 @@ def test_start_and_status_roundtrip(client, monkeypatch):
     from app import backtest_runner
     monkeypatch.setattr(backtest_runner, "start_run", fake_start)
     r = client.post("/api/backtest", json={
-        "strategy": "halftrend_m15_v1", "start": "2023-11-14",
+        "strategy": "izi15", "start": "2023-11-14",
         "end": "2023-11-16", "balance": 5000, "risk_pct": 2.0})
     assert r.status_code == 200
     rid = r.json()["run_id"]
-    assert captured["strategy"] == "halftrend_m15_v1"
+    assert captured["strategy"] == "izi15"
     assert captured["entry_mode"] == "adr"            # default applied
     assert captured["start_ts"] < captured["end_ts"]
     row = client.get(f"/api/backtest/{rid}").json()
@@ -113,7 +114,7 @@ def test_busy_returns_409(client, monkeypatch):
 
     monkeypatch.setattr(backtest_runner, "start_run", busy)
     r = client.post("/api/backtest", json={
-        "strategy": "halftrend_ema_v1", "start": "2023-11-14", "end": "2023-11-16"})
+        "strategy": "izi5", "start": "2023-11-14", "end": "2023-11-16"})
     assert r.status_code == 409
 
 
@@ -141,7 +142,7 @@ def test_startup_reconciles_orphaned_running_run(tmp_path, monkeypatch):
     from app.db import SignalDb
     db_path = str(tmp_path / "orphan.db")
     pre = SignalDb(db_path)
-    rid = pre.insert_backtest_run(json.dumps({"strategy": "halftrend_ema_v1"}))
+    rid = pre.insert_backtest_run(json.dumps({"strategy": "izi5"}))
     assert pre.get_backtest_run(rid)["status"] == "running"
     client = make_client(db_path, monkeypatch)
     row = client.app.state.db.get_backtest_run(rid)

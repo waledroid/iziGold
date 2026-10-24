@@ -38,7 +38,7 @@ def _app(latest_heartbeat=None, pending_switch=None, db=None):
         latest_heartbeat=latest_heartbeat, pending_switch=pending_switch, db=db))
 
 
-def _hb(active="halftrend_ema_v1", equity=10250.5, ts=1234567890.0, algo_trading=True):
+def _hb(active="izi5", equity=10250.5, ts=1234567890.0, algo_trading=True):
     position = types.SimpleNamespace(ticket=1, direction="BUY", lots=0.1,
                                      open_price=2400.0, sl=2390.0, profit=12.5)
     hb = types.SimpleNamespace(
@@ -261,10 +261,10 @@ def test_status_no_heartbeat_yet():
 
 
 def test_status_with_heartbeat_contains_equity_and_strategy():
-    app = _app(latest_heartbeat=_hb(active="halftrend_ema_v1", equity=10250.5))
+    app = _app(latest_heartbeat=_hb(active="izi5", equity=10250.5))
     reply = handle_command("/status", app)
     assert "10250.5" in reply
-    assert "halftrend_ema_v1" in reply
+    assert "izi5" in reply
 
 
 def test_status_ea_connection_fresh_heartbeat_shows_connected():
@@ -353,10 +353,10 @@ def test_bal_without_db_keeps_single_line():
 
 def test_stats_includes_per_strategy_realized_pnl():
     db = FakeDb(stats={"total": 3, "resolved": 2, "ai_correct_pct": 50.0,
-                       "by_strategy": {"halftrend_ema_v1": {
+                       "by_strategy": {"izi5": {
                            "signals": 3, "resolved": 2, "hit_pct": 66.7,
                            "avg_move": 1.2}}},
-                strat_pnl={"halftrend_ema_v1": (102.0, 4)})
+                strat_pnl={"izi5": (102.0, 4)})
     app = _app(db=db)
     reply = handle_command("/stats", app)
     assert "+$102.00" in reply
@@ -381,14 +381,14 @@ def test_mode_marks_active_buttons():
 
 
 def test_mode_lists_pending_switch():
-    app = _app(latest_heartbeat=_hb(), pending_switch="halftrend_m15_v1",
+    app = _app(latest_heartbeat=_hb(), pending_switch="izi15",
                db=FakeDb())
     text, _ = handle_command("/mode", app)
-    assert "pending: halftrend_m15_v1" in text
+    assert "pending: izi15" in text
 
 
 def test_mode_marks_active_strategy_button():
-    app = _app(latest_heartbeat=_hb(active="halftrend_m15_v1"), db=FakeDb())
+    app = _app(latest_heartbeat=_hb(active="izi15"), db=FakeDb())
     _, keyboard = handle_command("/mode", app)
     labels = {b["text"] for row in keyboard["inline_keyboard"] for b in row}
     assert any(l.startswith("● ") and "M15" in l for l in labels)
@@ -423,30 +423,30 @@ def test_switch_and_strategy_commands_are_gone():
     # Consolidated into /mode's M5/M15 buttons (2026-08-26); the old typed
     # /switch and the /strategy button list must no longer dispatch.
     app = _app(db=FakeDb())
-    assert handle_command("/switch halftrend_m15_v1", app) is None
+    assert handle_command("/switch izi15", app) is None
     assert handle_command("/strategy", app) is None
 
 
 def test_stats_includes_by_strategy_id():
     db = FakeDb(stats={"total": 3, "resolved": 2, "ai_correct_pct": 50.0,
-                       "by_strategy": {"halftrend_ema_v1": {
+                       "by_strategy": {"izi5": {
                            "signals": 3, "resolved": 2, "hit_pct": 66.7,
                            "avg_move": 1.2}}})
     app = _app(db=db)
     reply = handle_command("/stats", app)
-    assert "halftrend_ema_v1" in reply
+    assert "izi5" in reply
 
 
 def test_history_lists_recent_trades():
     db = FakeDb(trades=[{"id": 1, "ts": 1234567890, "event": "open",
-                         "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+                         "strategy_id": "izi5", "direction": "BUY",
                          "lots": 0.1, "price": 2400.0, "sl": 2390.0,
                          "reason": "signal", "ticket": 1,
                          "screenshot_path": None, "profit": 0.0,
                          "render_path": None}])
     app = _app(db=db)
     reply = handle_command("/history", app)
-    assert "halftrend_ema_v1" in reply
+    assert "izi5" in reply
     assert "BUY" in reply
 
 
@@ -455,7 +455,7 @@ def test_history_open_trade_omits_pl():
     row must not print a misleading "P/L 0.0" -- only close events carry
     a real P/L."""
     db = FakeDb(trades=[{"id": 1, "ts": 1234567890, "event": "open",
-                         "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+                         "strategy_id": "izi5", "direction": "BUY",
                          "lots": 0.1, "price": 2400.0, "sl": 2390.0,
                          "reason": "signal", "ticket": 1,
                          "screenshot_path": None, "profit": 0.0,
@@ -469,7 +469,7 @@ def test_history_close_trade_includes_pl_even_when_negative():
     """A break-even or losing close (profit 0.0 or negative) is still a
     real close outcome and must be shown, not treated as falsy/missing."""
     db = FakeDb(trades=[{"id": 2, "ts": 1234567890, "event": "close",
-                         "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+                         "strategy_id": "izi5", "direction": "BUY",
                          "lots": 0.1, "price": 2400.0, "sl": 2390.0,
                          "reason": "sl hit", "ticket": 1,
                          "screenshot_path": None, "profit": -3.2,
@@ -889,8 +889,8 @@ def test_mode_command_returns_buttons(client):
     text, markup = out
     assert "manual" in text.lower()
     datas = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
-    assert set(datas) == {"mode:auto", "mode:manual", "tmode:adr", "tmode:fixed",
-                          "strat:halftrend_ema_v1", "strat:halftrend_m15_v1"}
+    assert set(datas) == {"mode:auto", "mode:manual", "tmode:adr", "tmode:fixed", "tmode:hybrid",
+                          "strat:iziGold5", "strat:iziGold15"}
 
 
 def test_mode_callback_switches(client):
@@ -974,12 +974,13 @@ def _status_lines(monkeypatch, healthz):
 
 
 def test_miniapp_healthz_url_follows_configured_port():
-    """The /status probe must target MINIAPP_PORT, never a hard-coded 9001
-    (incident 2026-08-19: the mini-app moved port and every hard-coded
-    probe silently reported it down)."""
+    """The /status probe follows the explicit Docker URL when configured and
+    otherwise derives localhost from MINIAPP_PORT."""
     from app import telegram as tg
     from app.config import settings
-    assert tg._MINIAPP_HEALTHZ_URL == f"http://127.0.0.1:{settings.miniapp_port}/healthz"
+    expected = (settings.miniapp_health_url or
+                f"http://127.0.0.1:{settings.miniapp_port}/healthz")
+    assert tg._MINIAPP_HEALTHZ_URL == expected
     assert tg._miniapp_healthz_url().endswith(f":{settings.miniapp_port}/healthz")
 
 

@@ -5,3 +5,12 @@
 .venv/
 .env
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
+__pycache__/
+.pytest_cache/
+.run/
+*.log
+.vscode/
+backups/

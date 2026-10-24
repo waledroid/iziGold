@@ -67,17 +67,17 @@ def test_shadows_logged_active_proposed_once(client):
     # signals are logged but never drive proposals.
     from app import main
     payload = _payload("BUY")
-    payload["strategy_id"] = "halftrend_ema_v1"
+    payload["strategy_id"] = "izi5"
     payload["shadows"] = [{"strategy_id": "stub", "signal": "SELL"},
                           {"strategy_id": "quiet", "signal": "NONE"}]
     r = client.post("/analyze", json=payload)
     assert r.status_code == 200
     rows = main.app.state.db.conn.execute(
         "SELECT strategy_id, signal, is_active FROM signals ORDER BY id").fetchall()
-    assert rows == [("halftrend_ema_v1", "BUY", 1), ("stub", "SELL", 0)]
+    assert rows == [("izi5", "BUY", 1), ("stub", "SELL", 0)]
     proposals = main.app.state.db.conn.execute(
         "SELECT strategy_id FROM proposals").fetchall()
-    assert proposals == [("halftrend_ema_v1",)]   # active signal only; shadows never propose
+    assert proposals == [("izi5",)]   # active signal only; shadows never propose
 
 
 def test_old_style_request_tagged_unknown(client):
@@ -92,14 +92,14 @@ def test_old_style_request_tagged_unknown(client):
 def test_analyze_records_timeframe(client):
     payload = _payload("BUY")
     payload["timeframe"] = "M5"
-    payload["strategy_id"] = "halftrend_ema_v1"
+    payload["strategy_id"] = "izi5"
     payload["shadows"] = [{"strategy_id": "stub", "signal": "SELL"}]
     client.post("/analyze", json=payload)
     from app import main
     rows = main.app.state.db.conn.execute(
         "SELECT strategy_id, timeframe FROM signals ORDER BY id").fetchall()
-    assert rows == [("halftrend_ema_v1", "M5"), ("stub", "M5")]
-    assert "halftrend_ema_v1 @M5" in main.app.state.db.stats()["by_strategy"]
+    assert rows == [("izi5", "M5"), ("stub", "M5")]
+    assert "izi5 @M5" in main.app.state.db.stats()["by_strategy"]
 
 
 @pytest.fixture

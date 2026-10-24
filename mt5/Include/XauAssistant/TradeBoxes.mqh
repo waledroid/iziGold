@@ -28,13 +28,23 @@ private:
    double   m_sl;
    datetime m_openTime;
 
-   color RiskColor()   { return C'66,32,36'; }
-   color ProfitColor() { return C'26,56,44'; }
+   color RiskColor()   { return C'44,29,37'; }   // blend(#e74c3c, #131722, .12) -- config/chart_spec.json
+   color ProfitColor() { return C'22,45,43'; }   // blend(#2ecc71, #131722, .12) -- config/chart_spec.json
 
    string RiskName()   { return RiskNameFor(m_ticket); }
    string ProfitName() { return ProfitNameFor(m_ticket); }
+   string TpName()     { return TpNameFor(m_ticket); }
+   string Tp2Name()    { return Tp2NameFor(m_ticket); }
+   string SlName()     { return SlNameFor(m_ticket); }
+   string EntryName()  { return EntryNameFor(m_ticket); }
+   string BadgeName()  { return BadgeNameFor(m_ticket); }
    static string RiskNameFor(long ticket)   { return XAU_TR_PREFIX + (string)ticket + "_r"; }
    static string ProfitNameFor(long ticket) { return XAU_TR_PREFIX + (string)ticket + "_g"; }
+   static string TpNameFor(long ticket)     { return XAU_TR_PREFIX + (string)ticket + "_tp"; }
+   static string Tp2NameFor(long ticket)    { return XAU_TR_PREFIX + (string)ticket + "_tp2"; }
+   static string SlNameFor(long ticket)     { return XAU_TR_PREFIX + (string)ticket + "_sl"; }
+   static string EntryNameFor(long ticket)  { return XAU_TR_PREFIX + (string)ticket + "_en"; }
+   static string BadgeNameFor(long ticket)  { return XAU_TR_PREFIX + (string)ticket + "_b"; }
 
    // Creates the rectangle on first use, otherwise just moves its anchors —
    // avoids ObjectDelete/ObjectCreate churn every bar.
@@ -56,6 +66,55 @@ private:
          ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
          ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
          ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p2);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, name, OBJPROP_FILL, true);
+         ObjectSetInteger(0, name, OBJPROP_BACK, true);
+        }
+     }
+
+   void DrawTrendLine(string name, datetime t1, double p1, datetime t2, double p2, color clr, ENUM_LINE_STYLE style, string label)
+     {
+      if(ObjectFind(0, name) < 0)
+        {
+         if(!ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2)) return;
+         ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+         ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+         ObjectSetString(0, name, OBJPROP_TEXT, label);
+        }
+      else
+        {
+         ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);
+         ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
+         ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);
+         ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p2);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+         ObjectSetString(0, name, OBJPROP_TEXT, label);
+        }
+     }
+
+   void DrawTextLabel(string name, datetime t, double p, string txt, color clr)
+     {
+      if(ObjectFind(0, name) < 0)
+        {
+         if(!ObjectCreate(0, name, OBJ_TEXT, 0, t, p)) return;
+         ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+         ObjectSetString(0, name, OBJPROP_FONT, "Segoe UI");
+         ObjectSetString(0, name, OBJPROP_TEXT, txt);
+         ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+        }
+      else
+        {
+         ObjectSetInteger(0, name, OBJPROP_TIME, 0, t);
+         ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p);
+         ObjectSetString(0, name, OBJPROP_TEXT, txt);
         }
      }
 
@@ -107,6 +166,11 @@ private:
         {
          ObjectDelete(0, RiskNameFor(tickets[i]));
          ObjectDelete(0, ProfitNameFor(tickets[i]));
+         ObjectDelete(0, TpNameFor(tickets[i]));
+         ObjectDelete(0, Tp2NameFor(tickets[i]));
+         ObjectDelete(0, SlNameFor(tickets[i]));
+         ObjectDelete(0, EntryNameFor(tickets[i]));
+         ObjectDelete(0, BadgeNameFor(tickets[i]));
         }
      }
 
@@ -118,9 +182,6 @@ public:
    void OnOpen(long ticket, string dir, double entry, double sl)
      {
       m_active   = true;
-      // A ticket <= 0 (defensive only — TradeManager always passes the real
-      // order ticket) would collide box names across trades, so fall back to
-      // a timestamp to keep naming unique rather than draw into a stale box.
       m_ticket   = (ticket > 0) ? ticket : (long)TimeCurrent();
       m_dir      = dir;
       m_entry    = entry;
@@ -128,30 +189,122 @@ public:
       m_openTime = iTime(_Symbol, PERIOD_CURRENT, 0);
       datetime t2 = m_openTime + PeriodSeconds(PERIOD_CURRENT);
       if(sl > 0)
-         DrawRect(RiskName(), m_openTime, MathMax(entry, sl), t2, MathMin(entry, sl), RiskColor());
-      ObjectDelete(0, ProfitName());   // no green box until price moves favorable
+        {
+         double rDist = MathAbs(entry - sl);
+         if(rDist > 0)
+           {
+            double tpPrice = (dir == "BUY") ? entry + 1.5 * rDist : entry - 1.5 * rDist;
+
+            // Pure shaded Risk (Red) and Target (Green) zones without border outlines - TradingView style
+            DrawRect(RiskName(), m_openTime, MathMax(entry, sl), t2, MathMin(entry, sl), RiskColor());
+            DrawRect(ProfitName(), m_openTime, MathMax(entry, tpPrice), t2, MathMin(entry, tpPrice), ProfitColor());
+
+            // Target, SL, and Entry projection lines
+            DrawTrendLine(TpName(), m_openTime, tpPrice, t2, tpPrice, C'46,204,113', STYLE_DASH, StringFormat("TP (1.5R): %.2f", tpPrice));
+            DrawTrendLine(SlName(), m_openTime, sl, t2, sl, C'231,76,60', STYLE_DASH, StringFormat("SL: %.2f", sl));
+            DrawTrendLine(EntryName(), m_openTime, entry, t2, entry, C'180,180,180', STYLE_DOT, StringFormat("Entry: %.2f", entry));
+           }
+         else
+           {
+            DrawRect(RiskName(), m_openTime, MathMax(entry, sl), t2, MathMin(entry, sl), RiskColor());
+           }
+        }
       Prune();
      }
 
-   // Re-arms tracking after an EA reload (recompile auto-reload, terminal
-   // restart, chart re-attach) that happened while a basket was already
-   // open. Without this, m_active resets to false on construction and the
-   // live box would freeze stale forever — OnBarUpdate/OnClose both
-   // early-return on !m_active, so nothing would ever finalize it at the
-   // real exit. Call once from OnInit, after TradeManager.Init().
-   //
-   // Scans PositionsTotal() for this EA's own positions on _Symbol and
-   // adopts the OLDEST one (lowest POSITION_TICKET) as the basket anchor —
-   // same "tracks the FIRST entry" semantics OnOpen already uses, just
-   // approximated after the fact for a pyramided basket since the earlier
-   // legs' original open events are lost across the reload.
-   //
-   // Ticket source matches OnOpen's: TradeManager passes
-   // (long)m_trade.ResultOrder() there, which — for a hedging-mode market
-   // order producing a brand-new position — equals that position's
-   // POSITION_TICKET, so reusing POSITION_TICKET here targets the SAME
-   // object names OnOpen already created; DrawRect's ObjectFind guard means
-   // this moves the existing rectangle rather than duplicating it.
+   void RecoverLastTradeFromHistory(long magic)
+     {
+      datetime fromTime = TimeCurrent() - 7 * 86400;
+      datetime toTime = TimeCurrent() + 60;
+      if(!HistorySelect(fromTime, toTime)) return;
+
+      int totalDeals = HistoryDealsTotal();
+      long lastPosId = -1;
+      datetime exitTime = 0;
+      double exitPrice = 0;
+
+      for(int i = totalDeals - 1; i >= 0; i--)
+        {
+         ulong dealTicket = HistoryDealGetTicket(i);
+         if(dealTicket <= 0) continue;
+         if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+         if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != magic) continue;
+         long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+         if(entryType == DEAL_ENTRY_OUT)
+           {
+            lastPosId = (long)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+            exitTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+            exitPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+            break;
+           }
+        }
+      if(lastPosId <= 0) return;
+
+      datetime entryTime = 0;
+      double entryPrice = 0;
+      string dir = "";
+      for(int i = 0; i < totalDeals; i++)
+        {
+         ulong dealTicket = HistoryDealGetTicket(i);
+         if(dealTicket <= 0) continue;
+         if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+         if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != magic) continue;
+         if((long)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) == lastPosId)
+           {
+            long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+            if(entryType == DEAL_ENTRY_IN)
+              {
+               entryTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+               entryPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+               long ptype = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+               dir = (ptype == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+               break;
+              }
+           }
+        }
+      if(entryTime <= 0 || entryPrice <= 0) return;
+
+      double sl = 0;
+      for(int i = 0; i < HistoryOrdersTotal(); i++)
+        {
+         ulong ordTicket = HistoryOrderGetTicket(i);
+         if(ordTicket <= 0) continue;
+         if((long)HistoryOrderGetInteger(ordTicket, ORDER_POSITION_ID) == lastPosId)
+           {
+            double ordSl = HistoryOrderGetDouble(ordTicket, ORDER_SL);
+            if(ordSl > 0) { sl = ordSl; break; }
+           }
+        }
+
+      if(sl <= 0)
+        {
+         string initialRKey = "XAU_INITIAL_R_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol;
+         double initR = GlobalVariableGet(initialRKey);
+         if(initR > 0)
+            sl = (dir == "BUY") ? entryPrice - initR : entryPrice + initR;
+        }
+
+      if(sl <= 0) return;
+
+      int inShift = iBarShift(_Symbol, PERIOD_CURRENT, entryTime, false);
+      datetime openBar = (inShift >= 0) ? iTime(_Symbol, PERIOD_CURRENT, inShift) : entryTime;
+      int outShift = iBarShift(_Symbol, PERIOD_CURRENT, exitTime, false);
+      datetime exitBar = (outShift >= 0) ? iTime(_Symbol, PERIOD_CURRENT, outShift) + PeriodSeconds(PERIOD_CURRENT) : exitTime;
+
+      double rDist = MathAbs(entryPrice - sl);
+      if(rDist <= 0) return;
+      double tpPrice = (dir == "BUY") ? entryPrice + 1.5 * rDist : entryPrice - 1.5 * rDist;
+
+      long tk = lastPosId;
+      DrawRect(RiskNameFor(tk), openBar, MathMax(entryPrice, sl), exitBar, MathMin(entryPrice, sl), RiskColor());
+      DrawRect(ProfitNameFor(tk), openBar, MathMax(entryPrice, tpPrice), exitBar, MathMin(entryPrice, tpPrice), ProfitColor());
+
+      DrawTrendLine(TpNameFor(tk), openBar, tpPrice, exitBar, tpPrice, C'46,204,113', STYLE_DASH, StringFormat("TP (1.5R): %.2f", tpPrice));
+      DrawTrendLine(SlNameFor(tk), openBar, sl, exitBar, sl, C'231,76,60', STYLE_DASH, StringFormat("SL: %.2f", sl));
+      DrawTrendLine(EntryNameFor(tk), openBar, entryPrice, exitBar, entryPrice, C'180,180,180', STYLE_DOT, StringFormat("Entry: %.2f", entryPrice));
+      Prune();
+     }
+
    void RecoverFromPositions(long magic)
      {
       long     oldestTicket = -1;
@@ -174,64 +327,83 @@ public:
             openTime     = (datetime)PositionGetInteger(POSITION_TIME);
            }
         }
-      if(oldestTicket <= 0) return;   // nothing open — nothing to recover
+      if(oldestTicket <= 0)
+        {
+         RecoverLastTradeFromHistory(magic);
+         return;
+        }
 
       m_active   = true;
       m_ticket   = oldestTicket;
       m_dir      = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
       m_entry    = entry;
       m_sl       = sl;
-      m_openTime = (openTime > 0) ? openTime : iTime(_Symbol, PERIOD_CURRENT, 0);
-      // Re-anchor immediately rather than waiting for the next closed bar —
-      // if the box objects still exist (normal case: only the in-memory
-      // class state was lost, not the chart), this just moves their anchors;
-      // if they were somehow removed too, this recreates them.
+      int shift = (openTime > 0) ? iBarShift(_Symbol, PERIOD_CURRENT, openTime, false) : 0;
+      m_openTime = (shift >= 0) ? iTime(_Symbol, PERIOD_CURRENT, shift) : iTime(_Symbol, PERIOD_CURRENT, 0);
+      datetime tNow = iTime(_Symbol, PERIOD_CURRENT, 0);
+      datetime t2 = tNow + PeriodSeconds(PERIOD_CURRENT);
       if(m_sl > 0)
-         DrawRect(RiskName(), m_openTime, MathMax(m_entry, m_sl),
-                  iTime(_Symbol, PERIOD_CURRENT, 0), MathMin(m_entry, m_sl), RiskColor());
+        {
+         double rDist = MathAbs(m_entry - m_sl);
+         if(rDist > 0)
+           {
+            double tpPrice  = (m_dir == "BUY") ? m_entry + 1.5 * rDist : m_entry - 1.5 * rDist;
+
+            DrawRect(RiskName(), m_openTime, MathMax(m_entry, m_sl), t2, MathMin(m_entry, m_sl), RiskColor());
+            DrawRect(ProfitName(), m_openTime, MathMax(m_entry, tpPrice), t2, MathMin(m_entry, tpPrice), ProfitColor());
+
+            DrawTrendLine(TpName(), m_openTime, tpPrice, t2, tpPrice, C'46,204,113', STYLE_DASH, StringFormat("TP (1.5R): %.2f", tpPrice));
+            DrawTrendLine(SlName(), m_openTime, m_sl, t2, m_sl, C'231,76,60', STYLE_DASH, StringFormat("SL: %.2f", m_sl));
+            DrawTrendLine(EntryName(), m_openTime, m_entry, t2, m_entry, C'180,180,180', STYLE_DOT, StringFormat("Entry: %.2f", m_entry));
+           }
+         else
+           {
+            DrawRect(RiskName(), m_openTime, MathMax(m_entry, m_sl), t2, MathMin(m_entry, m_sl), RiskColor());
+           }
+        }
+      Prune();
      }
 
-   // Runs once per closed TRADE-TF bar (caller gates on OpenCount() > 0) — on
-   // a chart displaying a higher timeframe this fires multiple times per
-   // visible candle (e.g. 3x per M15 bar when trading M5); each call is
-   // idempotent (re-anchors to the same box), so redraws are harmless.
+   // Runs once per closed TRADE-TF bar (caller gates on OpenCount() > 0)
    void OnBarUpdate()
      {
       if(!m_active) return;
       datetime barTime = iTime(_Symbol, PERIOD_CURRENT, 0);
-      double   lastClose = iClose(_Symbol, PERIOD_CURRENT, 1);
-      if(barTime <= 0 || lastClose <= 0) return;
+      if(barTime <= 0) return;
+      datetime t2 = barTime + PeriodSeconds(PERIOD_CURRENT);
 
-      if(m_sl > 0) ExtendRightEdge(RiskName(), barTime);
-
-      bool favorable = (m_dir == "BUY")  ? (lastClose > m_entry) :
-                       (m_dir == "SELL") ? (lastClose < m_entry) : false;
-      if(favorable)
-         DrawRect(ProfitName(), m_openTime, MathMax(m_entry, lastClose),
-                  barTime, MathMin(m_entry, lastClose), ProfitColor());
-      else
-         ObjectDelete(0, ProfitName());
+      if(m_sl > 0)
+        {
+         ExtendRightEdge(RiskName(), t2);
+         ExtendRightEdge(ProfitName(), t2);
+         ExtendRightEdge(TpName(), t2);
+         ExtendRightEdge(SlName(), t2);
+         ExtendRightEdge(EntryName(), t2);
+        }
      }
 
-   // Fires once, on the basket-FINAL close (caller gates on the same
-   // basketGone condition CUiSink already computes for strategy bookkeeping).
-   // Freezes the right edge and clears m_active so no later OnBarUpdate call
-   // can reopen/redraw this basket's boxes.
+   // Fires once, on the basket-FINAL close
    void OnClose(double exitPrice)
      {
       if(!m_active) return;
       datetime closeTime = TimeCurrent();
-      if(m_sl > 0) ExtendRightEdge(RiskName(), closeTime);
+      int exitShift = iBarShift(_Symbol, PERIOD_CURRENT, closeTime, false);
+      datetime exitBar = (exitShift >= 0) ? iTime(_Symbol, PERIOD_CURRENT, exitShift) + PeriodSeconds(PERIOD_CURRENT) : closeTime;
 
-      bool favorable = exitPrice > 0 &&
-                       ((m_dir == "BUY"  && exitPrice > m_entry) ||
-                        (m_dir == "SELL" && exitPrice < m_entry));
-      if(favorable)
-         DrawRect(ProfitName(), m_openTime, MathMax(m_entry, exitPrice),
-                  closeTime, MathMin(m_entry, exitPrice), ProfitColor());
-      else
-         ObjectDelete(0, ProfitName());   // losing trade: red box only
+      if(m_sl > 0)
+        {
+         ExtendRightEdge(RiskName(), exitBar);
+         ExtendRightEdge(ProfitName(), exitBar);
+         ExtendRightEdge(TpName(), exitBar);
+         ExtendRightEdge(SlName(), exitBar);
+         ExtendRightEdge(EntryName(), exitBar);
+        }
 
+      m_active = false;
+     }
+
+   void Clear()
+     {
       m_active = false;
      }
   };

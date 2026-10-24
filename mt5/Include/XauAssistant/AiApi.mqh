@@ -1,6 +1,7 @@
 #ifndef XAU_AIAPI_MQH
 #define XAU_AIAPI_MQH
 #include <XauAssistant/Strategy.mqh>
+#include <XauAssistant/Transport.mqh>
 
 struct AiResponse
   {
@@ -15,7 +16,7 @@ struct AiResponse
 class CAiApi
   {
 private:
-   string m_url;
+   CTransport *m_t;
    int    m_timeout;
    ENUM_TIMEFRAMES m_tf;
 
@@ -83,7 +84,10 @@ private:
      }
 
 public:
-   void Init(string url, int timeout_ms, ENUM_TIMEFRAMES tf) { m_url = url; m_timeout = timeout_ms; m_tf = tf; }
+   void Init(CTransport *transport, int timeout_ms, ENUM_TIMEFRAMES tf)
+     { m_t = transport; m_timeout = timeout_ms; m_tf = tf; }
+
+   void SetTimeframe(ENUM_TIMEFRAMES tf) { m_tf = tf; }
 
    bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
                 ENUM_SIGNAL &shadowSigs[], AiResponse &out,
@@ -94,19 +98,12 @@ public:
       string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs,
                               sprMin, sprAvg, sprMax, newsBlackout);   // 300 bars so EMA200 has warmup in renders
       if(json == "") return false;
-      char req[], res[];
-      StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("POST", m_url, "Content-Type: application/json\r\n",
-                            m_timeout, req, res, resp_headers);
-      if(code != 200)
+      string body = m_t.Request("POST", "/analyze", json);
+      if(body == "")
         {
-         Print("AiApi: WebRequest failed code=", code, " err=", GetLastError(),
-               " (is the URL whitelisted in Tools>Options>Expert Advisors?)");
+         Print("AiApi: analyze failed (transport=", m_t.Mode(), ")");
          return false;
         }
-      string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
       out.direction    = ExtractString(body, "direction");
       out.confidence   = ExtractNumber(body, "confidence");
       out.regime       = ExtractString(body, "regime");

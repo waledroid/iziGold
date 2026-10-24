@@ -17,29 +17,31 @@ def _app(db):
     hb = types.SimpleNamespace(
         equity=1000.0, balance=1000.0, floating_pl=0.0, positions=[],
         kill_switch=False, hwm=0.0, exposure_min=0, window_open=True,
-        spread_points=0.0, active_strategy="halftrend_ema_v1",
+        spread_points=0.0, active_strategy="izi5",
         algo_trading=True)
     return types.SimpleNamespace(state=types.SimpleNamespace(
         db=db, latest_heartbeat=(time.time(), hb), pending_switch=None,
         pending_channel=None))
 
 
-def test_entry_mode_kv_roundtrip_defaults_adr(tmp_path):
+def test_entry_mode_kv_roundtrip_defaults_hybrid(tmp_path):
     db = _db(tmp_path)
-    assert db.entry_mode() == "adr"
+    assert db.entry_mode() == "hybrid"
     db.set_entry_mode("fixed")
     assert db.entry_mode() == "fixed"
+    db.set_entry_mode("adr")
+    assert db.entry_mode() == "adr"
     with pytest.raises(ValueError):
         db.set_entry_mode("yolo")
 
 
-def test_mode_command_shows_both_states_and_six_buttons(tmp_path):
+def test_mode_command_shows_both_states_and_seven_buttons(tmp_path):
     app = _app(_db(tmp_path))
     text, keyboard = handle_command("/mode", app)
     assert "Execution mode" in text and "Entry mode" in text
     flat = [b["callback_data"] for row in keyboard["inline_keyboard"] for b in row]
-    assert flat == ["mode:auto", "mode:manual", "tmode:adr", "tmode:fixed",
-                    "strat:halftrend_ema_v1", "strat:halftrend_m15_v1"]
+    assert flat == ["mode:auto", "mode:manual", "tmode:adr", "tmode:fixed", "tmode:hybrid",
+                    "strat:iziGold5", "strat:iziGold15"]
 
 
 def test_tmode_callback_sets_kv_and_names_next_trade(tmp_path):
@@ -48,6 +50,9 @@ def test_tmode_callback_sets_kv_and_names_next_trade(tmp_path):
     edit_text, toast = handle_callback("tmode:fixed", app)
     assert db.entry_mode() == "fixed"
     assert "FIXED" in edit_text and "next" in edit_text.lower()
+    edit_text, _ = handle_callback("tmode:hybrid", app)
+    assert db.entry_mode() == "hybrid"
+    assert "HYBRID" in edit_text
     edit_text, _ = handle_callback("tmode:adr", app)
     assert db.entry_mode() == "adr"
 
@@ -55,12 +60,12 @@ def test_tmode_callback_sets_kv_and_names_next_trade(tmp_path):
 def test_tmode_callback_rejects_unknown_value(tmp_path):
     db = _db(tmp_path)
     _, toast = handle_callback("tmode:yolo", _app(db))
-    assert db.entry_mode() == "adr"
+    assert db.entry_mode() == "hybrid"
 
 
 def test_config_shows_entry_mode(tmp_path):
     app = _app(_db(tmp_path))
-    assert "entry mode: adr" in handle_command("/config", app)
+    assert "entry mode: hybrid" in handle_command("/config", app)
 
 
 def test_heartbeat_response_carries_entry_mode(tmp_path, monkeypatch):
@@ -68,13 +73,14 @@ def test_heartbeat_response_carries_entry_mode(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
     monkeypatch.setenv("FORECASTER", "fake")
+    monkeypatch.setenv("AGENT_ENABLED", "false")
     monkeypatch.setenv("DB_PATH", str(tmp_path / "hb_em.db"))
     from app import config, main
     importlib.reload(config)
     importlib.reload(main)
     hb = {"equity": 1.0, "balance": 1.0, "floating_pl": 0.0}
     with TestClient(main.app) as client:
-        assert client.post("/heartbeat", json=hb).json()["entry_mode"] == "adr"
+        assert client.post("/heartbeat", json=hb).json()["entry_mode"] == "hybrid"
         main.app.state.db.set_entry_mode("fixed")
         assert client.post("/heartbeat", json=hb).json()["entry_mode"] == "fixed"
         # old EA payload (no entry_mode field) still validates

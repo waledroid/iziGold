@@ -3,6 +3,7 @@
 // and string-scan extraction style; every failure path returns "" silently.
 #ifndef XAU_UIAPI_MQH
 #define XAU_UIAPI_MQH
+#include <XauAssistant/Transport.mqh>
 
 // Implemented by the EA so TradeManager can report trade events without
 // knowing about UiApi or the active strategy id — TradeManager stays
@@ -21,7 +22,9 @@ public:
    virtual void OnTradeEvent(string event, string dir, double lots, double price,
                              double sl, string reason, long ticket = 0,
                              double profit = 0.0, double tp = 0.0,
-                             bool isFinal = true, string entryMode = "") = 0;
+                             bool isFinal = true, string entryMode = "",
+                             double slippagePts = 0.0, int execMs = 0,
+                             double reqPrice = 0.0) = 0;
    // FIXED-mode target alert: the basket crossed the ADR profit target for
    // the first time — the ride continues, the owner gets a tap-to-exit
    // notice. Default no-op so sinks that don't care keep compiling.
@@ -31,8 +34,7 @@ public:
 class CUiApi
   {
 private:
-   string   m_baseUrl;
-   string   m_url;
+   CTransport *m_t;
    int      m_timeout;
    long     m_magic;
    ENUM_TIMEFRAMES m_tf;
@@ -87,6 +89,7 @@ private:
          first = false;
          json += "{\"ticket\":" + (string)(long)ticket +
                  ",\"direction\":\"" + dir + "\"" +
+                 ",\"symbol\":\"" + _Symbol + "\"" +
                  ",\"lots\":" + DoubleToString(lots, 2) +
                  ",\"open_price\":" + DoubleToString(openPrice, _Digits) +
                  ",\"sl\":" + DoubleToString(sl, _Digits) +
@@ -103,37 +106,24 @@ private:
       Print(msg);
      }
 
-   // Shared WebRequest POST plumbing for the fire-and-forget JSON endpoints
-   // (heartbeat excluded — it needs the response body back for parsing).
-   // Returns true on HTTP 200, false (with a throttled warning) otherwise.
+   // Shared request plumbing for the fire-and-forget JSON endpoints.
+   // Returns true on HTTP 200 / relay success.
    bool Post(string path, string json)
      {
-      char req[], res[];
-      StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("POST", m_baseUrl + path, "Content-Type: application/json\r\n",
-                            m_timeout, req, res, resp_headers);
-      if(code != 200)
-        {
-         WarnThrottled(StringFormat(
-            "UiApi: %s WebRequest failed code=%d err=%d (is the URL whitelisted in Tools>Options>Expert Advisors?)",
-            path, code, GetLastError()));
-         return false;
-        }
-      return true;
+      return (m_t.Request("POST", path, json) != "");
      }
 
 public:
-   void Init(string baseUrl, int timeout_ms, long magic, ENUM_TIMEFRAMES tf)
+   void Init(CTransport *transport, int timeout_ms, long magic, ENUM_TIMEFRAMES tf)
      {
-      m_baseUrl = baseUrl;
-      m_url     = baseUrl + "/heartbeat";
+      m_t       = transport;
       m_timeout = timeout_ms;
       m_magic   = magic;
       m_tf      = tf;
       m_lastWarn = 0;
      }
+
+   void SetTimeframe(ENUM_TIMEFRAMES tf) { m_tf = tf; }
 
    // Returns the requested strategy id to switch to, or "" if none/failed.
    // outputs: runtime execution mode ("auto"/"manual"/"" when absent),
@@ -146,12 +136,18 @@ public:
    string PostHeartbeat(double equity, double balance, double floating_pl,
                         bool kill_switch, double hwm, int exposure_min,
                         bool window_open, double spread_points, string active_strategy,
-                        bool algo_trading, string entryMode,
-                        string &mode, string &entryMode_out, string &cmd,
+                         bool algo_trading, string entryMode,
+                         int heartbeatSecIn,
+                         string &mode, string &entryMode_out, string &cmd,
                         long &cmdId, string &cmdDir, string &htfEnforce_out,
                         string &ema200Enforce_out,
-                        string &rsiEnforce_out, string &m15Adds_out,
-                        double daily_loss_pct = 0.0, bool brake_reset = false,
+                         string &rsiEnforce_out, string &m15Adds_out,
+                         bool &entriesPaused_out,
+                         int &heartbeatSec_out,
+                         double &riskPct_out, double &maxDdPct_out,
+                         double &profitTargetPct_out, int &winStart_out,
+                         int &winEnd_out, int &maxExpoMin_out,
+                         double daily_loss_pct = 0.0, bool brake_reset = false,
                         string newsJson = "", int newsBlackoutMin = 0)
      {
       // Forming (bar 0) OHLC for the service's /chart real-time render.
@@ -188,8 +184,10 @@ public:
                     ",\"bar_l\":" + DoubleToString(bar_l, 2) +
                     ",\"bar_c\":" + DoubleToString(bar_c, 2) +
                     ",\"entry_mode\":\"" + entryMode + "\"" +
-                    ",\"daily_loss_pct\":" + DoubleToString(daily_loss_pct, 1) +
-                    ",\"brake_reset\":" + (brake_reset ? "true" : "false");
+                    ",\"heartbeat_sec\":" + (string)heartbeatSecIn +
+                     ",\"daily_loss_pct\":" + DoubleToString(daily_loss_pct, 1) +
+                     ",\"brake_reset\":" + (brake_reset ? "true" : "false") +
+                     ",\"symbol\":\"" + _Symbol + "\"";
       // Upcoming high-impact USD events (NewsGuard.UpcomingJson) + blackout
       // radius, for /news and the pre-blackout heads-up. Omitted entirely
       // when the guard is off/empty-handed — pydantic defaults cover it.
@@ -198,23 +196,16 @@ public:
                  ",\"news_blackout_min\":" + (string)newsBlackoutMin;
       json += "}";
 
-      char req[], res[];
-      StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("POST", m_url, "Content-Type: application/json\r\n",
-                            m_timeout, req, res, resp_headers);
-      if(code != 200)
+      string body = m_t.Request("POST", "/heartbeat", json);
+      if(body == "")
         {
-         WarnThrottled(StringFormat(
-            "UiApi: WebRequest failed code=%d err=%d (is the URL whitelisted in Tools>Options>Expert Advisors?)",
-            code, GetLastError()));
+         WarnThrottled(StringFormat("UiApi: heartbeat failed (transport=%s)", m_t.Mode()));
          return "";
         }
-      string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
       // "switch_to":null never matches the quoted-string pattern below, so it
       // naturally falls through to "" — no special-casing needed.
       string switch_to = ExtractString(body, "switch_to");
+      string target_sym = ExtractString(body, "target_symbol");
 
       mode = ExtractString(body, "mode");
       entryMode_out = ExtractString(body, "entry_mode");
@@ -230,8 +221,21 @@ public:
       // 2026-09-07: RSI 70/30 enforcement (M15 lane) and the M15 adds
       // switch ride the same heartbeat. An old service that sends neither
       // leaves them "" and the EA inputs stay in charge.
-      rsiEnforce_out    = ExtractString(body, "rsi_enforce");
-      m15Adds_out       = ExtractString(body, "m15_adds");
+       rsiEnforce_out    = ExtractString(body, "rsi_enforce");
+       m15Adds_out       = ExtractString(body, "m15_adds");
+       // Supervisory-agent governor (2026-09-20): true = pause NEW auto
+       // entries. Absent/false for an older service keeps trading exactly as
+       // before (fail-open).
+       entriesPaused_out = (StringFind(body, "\"entries_paused\":true") >= 0);
+       // Service-authoritative heartbeat interval (0/absent = keep the EA's
+       // own input, so an older service changes nothing).
+       heartbeatSec_out = (int)ExtractNumber(body, "heartbeat_sec");
+       riskPct_out       = ExtractNumber(body, "risk_per_trade_pct");
+       maxDdPct_out      = ExtractNumber(body, "max_drawdown_pct");
+       profitTargetPct_out = ExtractNumber(body, "profit_target_pct");
+       winStart_out      = (int)ExtractNumber(body, "window_start_hour");
+       winEnd_out        = (int)ExtractNumber(body, "window_end_hour");
+       maxExpoMin_out    = (int)ExtractNumber(body, "max_daily_exposure_min");
       cmd = ""; cmdId = 0; cmdDir = "";
       int cpos = StringFind(body, "\"command\":{");
       if(cpos >= 0)
@@ -239,9 +243,16 @@ public:
          string tail = StringSubstr(body, cpos);
          cmd    = ExtractString(tail, "cmd");
          cmdDir = ExtractString(tail, "direction");
+         int tkpos = StringFind(tail, "\"ticket\":");
+         if(tkpos >= 0)
+            cmdDir = (string)(long)ExtractNumber(tail, "ticket");
          int idpos = StringFind(tail, "\"proposal_id\":");
          if(idpos >= 0)
             cmdId = StringToInteger(StringSubstr(tail, idpos + 14));
+         if(target_sym != "" && target_sym != _Symbol)
+           {
+            cmd = ""; cmdId = 0; cmdDir = "";
+           }
         }
 
       return switch_to;
@@ -284,11 +295,14 @@ public:
                        double profit = 0.0, double tp = 0.0, bool isFinal = true,
                        string entryMode = "", int htfAgree = -1, int ema200Agree = -1,
                        int newsBlackout = -1, int rsiAgree = -1,
-                       int srAgree = -1, string srTier = "")
+                       int srAgree = -1, string srTier = "",
+                       double slippagePts = 0.0, int execMs = 0,
+                       double reqPrice = 0.0)
      {
       string json = "{\"event\":\"" + event + "\"" +
                     ",\"strategy_id\":\"" + strategyId + "\"" +
                     ",\"direction\":\"" + dir + "\"" +
+                    ",\"symbol\":\"" + _Symbol + "\"" +
                     ",\"lots\":" + DoubleToString(lots, 2) +
                     ",\"price\":" + DoubleToString(price, _Digits) +
                     ",\"sl\":" + DoubleToString(sl, _Digits) +
@@ -303,22 +317,20 @@ public:
                     ",\"news_blackout\":" + (string)newsBlackout +
                     ",\"rsi_agree\":" + (string)rsiAgree +
                     ",\"sr_agree\":" + (string)srAgree +
-                    ",\"sr_tier\":\"" + srTier + "\"}";
+                    ",\"sr_tier\":\"" + srTier + "\"";
+      if(slippagePts != 0.0) json += ",\"slippage_pts\":" + DoubleToString(slippagePts, 1);
+      if(execMs > 0) json += ",\"exec_ms\":" + (string)execMs;
+      if(reqPrice > 0.0) json += ",\"req_price\":" + DoubleToString(reqPrice, _Digits);
+      json += "}";
 
       char req[], res[];
       StringToCharArray(json, req, 0, StringLen(json), CP_UTF8);
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("POST", m_baseUrl + "/trade-event", "Content-Type: application/json\r\n",
-                            m_timeout, req, res, resp_headers);
-      if(code != 200)
+      string body = m_t.Request("POST", "/trade-event", json);
+      if(body == "")
         {
-         WarnThrottled(StringFormat(
-            "UiApi: trade-event WebRequest failed code=%d err=%d (is the URL whitelisted in Tools>Options>Expert Advisors?)",
-            code, GetLastError()));
+         WarnThrottled(StringFormat("UiApi: trade-event failed (transport=%s)", m_t.Mode()));
          return -1;
         }
-      string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
       double id = ExtractNumber(body, "id");
       return (id >= 0) ? (long)id : -1;
      }
@@ -332,19 +344,12 @@ public:
    // re-reporting closes the service already knows about.
    long GetLastCloseTicket()
      {
-      char req[], res[];
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("GET", m_baseUrl + "/api/last-close-ticket", "",
-                            m_timeout, req, res, resp_headers);
-      if(code != 200)
+      string body = m_t.Request("GET", "/api/last-close-ticket", "");
+      if(body == "")
         {
-         WarnThrottled(StringFormat(
-            "UiApi: last-close-ticket WebRequest failed code=%d err=%d",
-            code, GetLastError()));
+         WarnThrottled(StringFormat("UiApi: last-close-ticket failed (transport=%s)", m_t.Mode()));
          return -1;
         }
-      string body = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
       double t = ExtractNumber(body, "ticket");
       return (t >= 0) ? (long)t : -1;
      }
@@ -369,21 +374,10 @@ public:
       FileDelete(filename);
       if(readCount <= 0) return;
 
-      // WebRequest requires a char[] body; copy the raw bytes across.
-      char bytes[];
-      ArrayResize(bytes, readCount);
-      for(int i = 0; i < readCount; i++) bytes[i] = (char)raw[i];
-
-      char res[];
-      string resp_headers;
-      ResetLastError();
-      int code = WebRequest("POST", m_baseUrl + "/screenshot?event=" + (string)tradeId,
-                            "Content-Type: application/octet-stream\r\n",
-                            m_timeout, bytes, res, resp_headers);
-      if(code != 200)
-         WarnThrottled(StringFormat(
-            "UiApi: screenshot WebRequest failed code=%d err=%d (is the URL whitelisted in Tools>Options>Expert Advisors?)",
-            code, GetLastError()));
+      // Transport handles binary: raw over HTTP, base64 in file-relay mode.
+      if(!m_t.PostBinary("/screenshot?event=" + (string)tradeId, raw, readCount))
+         WarnThrottled(StringFormat("UiApi: screenshot upload failed (transport=%s)",
+                                    m_t.Mode()));
      }
   };
 #endif

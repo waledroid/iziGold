@@ -52,9 +52,12 @@ def _group_baskets(rows: list[dict], cap: int | None = BASKETS_MAX) -> list[dict
         event = r.get("event")
         if event in ("open", "add"):
             if current is None:
+                strat_id = r.get("strategy_id") or ""
+                sym = r.get("symbol") or ("BTCUSD" if "bit" in strat_id.lower() else "XAUUSD")
                 current = {"direction": r.get("direction"), "entries": [], "exit": None,
                            "pl": 0.0, "entry_mode": (r.get("entry_mode") or "adr"),
-                           "strategy_id": r.get("strategy_id"), "reason": None}
+                           "strategy_id": r.get("strategy_id"), "reason": None,
+                           "symbol": sym}
             current["entries"].append(
                 {"ts": r.get("ts"), "price": r.get("price"),
                  "lots": r.get("lots"), "htf_agree": r.get("htf_agree"),
@@ -182,6 +185,7 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
     has_news = "news_blackout" in cols
     has_rsi = "rsi_agree" in cols
     has_sr = "sr_agree" in cols
+    has_sym = "symbol" in cols
     sel = ("SELECT id, ts, event, direction, lots, price, profit, final, "
            + ("entry_mode" if has_mode else "''") + ", "
            + ("reason" if has_reason else "''") + ", "
@@ -191,14 +195,15 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
            + ("news_blackout" if has_news else "-1") + ", "
            + ("rsi_agree" if has_rsi else "-1") + ", "
            + ("sr_agree" if has_sr else "-1") + ", "
-           + ("sr_tier" if has_sr else "''")
+           + ("sr_tier" if has_sr else "''") + ", "
+           + ("symbol" if has_sym else "'XAUUSD'")
            + " FROM trades WHERE ts >= ? AND ts < ? ORDER BY id ASC")
     raw = conn.execute(sel, (start_utc - REPORT_LOOKBACK_S, end_utc)).fetchall()
     rows = [{"id": r[0], "ts": r[1], "event": r[2], "direction": r[3], "lots": r[4],
              "price": r[5], "profit": r[6], "final": r[7], "entry_mode": r[8],
              "reason": r[9], "strategy_id": r[10], "htf_agree": r[11],
              "ema200_agree": r[12], "news_blackout": r[13], "rsi_agree": r[14],
-             "sr_agree": r[15], "sr_tier": r[16]}
+             "sr_agree": r[15], "sr_tier": r[16], "symbol": r[17] or "XAUUSD"}
             for r in raw]
     baskets = [b for b in _group_baskets(rows, cap=None)
                if b.get("exit") and isinstance(b["exit"].get("ts"), (int, float))
@@ -296,6 +301,7 @@ def _fetch_closed_baskets(conn: sqlite3.Connection, start_utc: int, end_utc: int
             "open_ts": open_ts, "close_ts": close_ts,
             "day": _server_date(close_ts).isoformat(),
             "time": _server_hhmm(close_ts),
+            "symbol": b.get("symbol") or "XAUUSD",
             "direction": direction or None,
             "mode": (b.get("entry_mode") or "adr").lower(),
             "entries": len(entries),
@@ -341,6 +347,71 @@ def _fmt_day_label(day: _dt.date) -> str:
     return day.strftime("%b %d").replace(" 0", " ")
 
 
+def _summarize_baskets(baskets: list[dict]) -> dict:
+    n = len(baskets)
+    wins = sum(1 for b in baskets if b["pl"] > 0)
+    losses = sum(1 for b in baskets if b["pl"] < 0)
+    pl = round(sum(b["pl"] for b in baskets), 2)
+    win_pct = round(100.0 * wins / n, 1) if n else 0.0
+    gold_b = [b for b in baskets if "BTC" not in (b.get("symbol") or "XAUUSD").upper()]
+    btc_b = [b for b in baskets if "BTC" in (b.get("symbol") or "XAUUSD").upper()]
+    return {
+        "pl": pl,
+        "trades": n,
+        "wins": wins,
+        "losses": losses,
+        "win_pct": win_pct,
+        "gold": {
+            "pl": round(sum(b["pl"] for b in gold_b), 2),
+            "trades": len(gold_b),
+            "wins": sum(1 for b in gold_b if b["pl"] > 0),
+            "losses": sum(1 for b in gold_b if b["pl"] < 0),
+        },
+        "btc": {
+            "pl": round(sum(b["pl"] for b in btc_b), 2),
+            "trades": len(btc_b),
+            "wins": sum(1 for b in btc_b if b["pl"] > 0),
+            "losses": sum(1 for b in btc_b if b["pl"] < 0),
+        },
+    }
+
+
+def _empty_period_summary() -> dict:
+    zero_asset = {"pl": 0.0, "trades": 0, "wins": 0, "losses": 0}
+    zero = {"pl": 0.0, "trades": 0, "wins": 0, "losses": 0, "win_pct": 0.0,
+            "gold": dict(zero_asset), "btc": dict(zero_asset)}
+    return {"today": dict(zero), "week": dict(zero), "month": dict(zero)}
+
+
+def build_periodic_summary(conn: sqlite3.Connection, now_utc: int | None = None) -> dict:
+    """Single-source Daily (Today), Weekly (This Week), and Monthly (This Month)
+    performance summary with Gold vs Bitcoin breakdown."""
+    import time as _time
+    now_s = int(_time.time()) if now_utc is None else int(now_utc)
+    today_day = _server_date(now_s)
+    today_start, today_end = _server_day_bounds_utc(today_day)
+    monday = today_day - _dt.timedelta(days=today_day.weekday())
+    week_start, _ = _server_day_bounds_utc(monday)
+    week_end = week_start + 7 * 86400
+    month_start, month_end = _server_month_bounds_utc(today_day.year, today_day.month)
+
+    span_start = min(today_start, week_start, month_start)
+    span_end = max(today_end, week_end, month_end)
+    try:
+        all_baskets = _fetch_closed_baskets(conn, span_start, span_end)
+    except Exception:
+        return _empty_period_summary()
+
+    today_b = [b for b in all_baskets if today_start <= b["close_ts"] < today_end]
+    week_b = [b for b in all_baskets if week_start <= b["close_ts"] < week_end]
+    month_b = [b for b in all_baskets if month_start <= b["close_ts"] < month_end]
+    return {
+        "today": _summarize_baskets(today_b),
+        "week": _summarize_baskets(week_b),
+        "month": _summarize_baskets(month_b),
+    }
+
+
 def _report_month(conn: sqlite3.Connection, year: int, month: int) -> dict:
     start, end = _server_month_bounds_utc(year, month)
     baskets = _fetch_closed_baskets(conn, start, end)
@@ -356,11 +427,14 @@ def _report_month(conn: sqlite3.Connection, year: int, month: int) -> dict:
         for r in rows:
             regimes[r["regime"] or "unknown"] = regimes.get(r["regime"] or "unknown", 0) + 1
         last = max(rows, key=lambda r: r["close_ts"])
+        gold_pl = round(sum(r["pl"] for r in rows if "BTC" not in (r.get("symbol") or "XAUUSD").upper()), 2)
+        btc_pl = round(sum(r["pl"] for r in rows if "BTC" in (r.get("symbol") or "XAUUSD").upper()), 2)
         days.append({
             "date": day,
             "label": _fmt_day_label(_dt.date.fromisoformat(day)),
             "trades": len(rows), "wins": wins, "losses": losses,
             "pl": round(sum(r["pl"] for r in rows), 2),
+            "gold_pl": gold_pl, "btc_pl": btc_pl,
             "balance_end": last["balance_after"],
             "regimes": regimes,
         })
@@ -380,6 +454,7 @@ def _report_month(conn: sqlite3.Connection, year: int, month: int) -> dict:
         "view": "month", "month": f"{year:04d}-{month:02d}",
         "server_utc_offset_h": SERVER_UTC_OFFSET_H,
         "days": days,
+        "periods": build_periodic_summary(conn),
         "footer": {
             "pl": round(sum(b["pl"] for b in baskets), 2),
             "trades": n, "wins": wins,
@@ -406,8 +481,12 @@ def _report_day(conn: sqlite3.Connection, day: _dt.date) -> dict:
         "label": _fmt_day_label(day),
         "server_utc_offset_h": SERVER_UTC_OFFSET_H,
         "rows": rows,
-        "footer": {"pl": round(sum(r["pl"] for r in rows), 2), "trades": n, "wins": wins,
-                   "losses": sum(1 for r in rows if r["pl"] < 0)},
+        "periods": build_periodic_summary(conn),
+        "footer": {
+            "pl": round(sum(r["pl"] for r in rows), 2),
+            "trades": n, "wins": wins,
+            "losses": sum(1 for r in rows if r["pl"] < 0),
+        },
     }
 
 
@@ -415,9 +494,11 @@ def _empty_report(view: str, key: str) -> dict:
     if view == "day":
         return {"view": "day", "date": key, "label": "", "rows": [],
                 "server_utc_offset_h": SERVER_UTC_OFFSET_H,
+                "periods": _empty_period_summary(),
                 "footer": {"pl": 0.0, "trades": 0, "wins": 0, "losses": 0}}
     return {"view": "month", "month": key, "days": [],
             "server_utc_offset_h": SERVER_UTC_OFFSET_H,
+            "periods": _empty_period_summary(),
             "footer": {"pl": 0.0, "trades": 0, "wins": 0, "win_pct": None,
                        "best_day": None, "worst_day": None},
             "regime_winrates": {}, "equity": []}

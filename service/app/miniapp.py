@@ -26,9 +26,8 @@ from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import miniapp_auth
+from app import chart_spec, miniapp_auth, overlays, preview
 from app.config import settings
-from app.indicators import ema, halftrend, macd, rsi
 from app.models import Candle
 from app.reports import (_empty_report, _group_baskets, _report_day,
                           _report_month, _server_date)
@@ -215,44 +214,14 @@ def history(tf: str, _=Depends(require_viewer)):
     if tf not in TFS:
         raise HTTPException(status_code=400, detail=f"unknown tf {tf}")
     rows = list(state.candles[tf])
-    return {"tf": tf, "candles": rows, **_indicator_series(rows, tf),
-            "sr_zones": _sr_zone_payload(state.candles)}
-
-
-# Trading-EMA length per timeframe: the M15 lane trades EMA 50 (owner
-# 2026-08-31, sweep-checked), everything else keeps 55. The "ema55" key
-# below is the series SLOT the frontend binds to, not a promise about the
-# length — the legend label follows the tab's timeframe in miniapp.html.
-_TRADE_EMA_LEN = {"M15": 50}
-
-
-def _indicator_series(rows: list[dict], tf: str = "M5") -> dict:
-    """EMA-9/21/trade/200 + HalfTrend(amplitude=4), computed fresh from the
-    ring buffer on every request (<=500 candles: cheap, no cache needed).
-    Uses the exact same app.indicators math the render.py trade-chart PNGs
-    use, so the mini-app overlays match the EA's live MT5 chart.
-    ema()/halftrend() already degrade to all-None/empty for short input
-    (see their docstrings), so a <2-candle TF naturally yields empty/null
-    arrays here without any special-casing.
-    """
-    closes = [r["c"] for r in rows]
+    # Pre-entry preview (2026-09-24): the lane that trades this TF. Fail-open
+    # (None when there's no candle data or no visible setup).
+    lane = "iziGold15" if tf == "M15" else "iziGold5"
     candle_objs = [Candle(**r) for r in rows]
-    ht = halftrend(candle_objs, amplitude=4)
-    # RSI + MACD sub-panel series (owner 2026-09-02): served for EVERY
-    # timeframe tab; the frontend's panel-plugin registry decides which
-    # panes actually render (see PANEL_PLUGINS in miniapp.html).
-    macd_line, macd_signal, macd_hist = macd(closes)
-    return {
-        "ema9": ema(closes, 9),
-        "ema21": ema(closes, 21),
-        "ema55": ema(closes, _TRADE_EMA_LEN.get(tf, 55)),
-        "ema200": ema(closes, 200),
-        "halftrend": [({"v": e[0], "trend": e[1]} if e else None) for e in ht],
-        "rsi": rsi(closes, 14),
-        "macd_line": macd_line,
-        "macd_signal": macd_signal,
-        "macd_hist": macd_hist,
-    }
+    return {"tf": tf, "candles": rows, **overlays.indicator_series(rows, tf),
+            "sr_zones": _sr_zone_payload(state.candles),
+            "preview": preview.build_preview(candle_objs, lane),
+            "chart": chart_spec.spec_payload()}
 
 
 TRADES_DEFAULT_LIMIT = 50

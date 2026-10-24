@@ -82,6 +82,8 @@ public:
       m_adxHandle = iADX(_Symbol, m_tf, 14);
       m_magicCount = 0;
       AddMagic(magic);
+      if(m_maxExpoMin <= 0)
+         GlobalVariableSet(ExpoKey(), 0.0);
      }
 
    // Register an additional magic number whose deals count toward the
@@ -95,7 +97,24 @@ public:
          if(m_magics[i] == m) return;                  // already registered
       if(m_magicCount >= ArraySize(m_magics)) return;   // no free slot
       m_magics[m_magicCount++] = m;
-     }
+      }
+
+    // Runtime values are owned by the SQLite-backed service and delivered on
+    // heartbeat. Keep the EA inputs as bootstrap defaults for offline startup.
+    void ApplyRuntimeConfig(double riskPct, double maxDdPct,
+                           int winStart, int winEnd, int maxExpoMin)
+      {
+       if(riskPct > 0.0) m_riskPct = riskPct;
+       if(maxDdPct > 0.0) m_maxDdPct = maxDdPct;
+       if(winStart >= 0 && winStart <= 23) m_winStart = winStart;
+       if(winEnd >= 0 && winEnd <= 24) m_winEnd = winEnd;
+       if(maxExpoMin >= 0)
+         {
+          m_maxExpoMin = maxExpoMin;
+          if(m_maxExpoMin <= 0)
+             GlobalVariableSet(ExpoKey(), 0.0);
+         }
+      }
 
    // True if `m` is one of the registered magics.
    bool HasMagic(long m)
@@ -119,10 +138,14 @@ public:
       // comment always claimed "of ours"; the code did not (found 2026-08-21).
       // Now filtered on symbol AND any registered magic, which also makes it
       // correct for a second lane.
-      if(OwnPositionOpen())
+      if(m_maxExpoMin > 0 && OwnPositionOpen())
         {
          double mins = GlobalVariableGet(ExpoKey());
          GlobalVariableSet(ExpoKey(), mins + PeriodSeconds(m_tf) / 60.0);
+        }
+      else if(m_maxExpoMin <= 0)
+        {
+         GlobalVariableSet(ExpoKey(), 0.0);
         }
       // Hard-kill safety (incident 2026-08-31): globals reach gvariables.dat
       // only on a clean terminal shutdown, so a power cut rolls back every
@@ -151,10 +174,24 @@ public:
    // Read-only wrappers for the UI heartbeat (Task 4) — expose internals without
    // changing risk-decision behavior.
    double HighWaterMark()      { return GlobalVariableGet(Key("HWM")); }
-   int    ExposureMinutesUsed(){ return (int)GlobalVariableGet(ExpoKey()); }
+   int    ExposureMinutesUsed()
+     {
+      if(m_maxExpoMin <= 0) return 0;
+      return (int)GlobalVariableGet(ExpoKey());
+     }
    double RiskPct()             { return m_riskPct; }
+   bool   IsWeekendClosed()
+     {
+      bool isCrypto = (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "ETH") >= 0);
+      if(isCrypto) return false;
+      MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+      return (dt.day_of_week == 6 || (dt.day_of_week == 0 && dt.hour < 23));
+     }
+
    bool   InTradingWindow()
      {
+      if(IsWeekendClosed()) return false;
+      if(m_winStart == 0 && m_winEnd >= 24) return true;
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
       return dt.hour >= m_winStart && dt.hour < m_winEnd;
      }
@@ -202,6 +239,16 @@ public:
    // stale pre-loss figure for up to a full bar.
    void InvalidateDailyCache() { m_dlCacheBar = 0; }
 
+   double DailyLossThresholdUsd()
+     {
+      if(m_maxDailyLossPct <= 0) return 0.0;
+      double realized = TodayRealized() - BrakeBase();
+      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
+      if(dayStartBal <= 0) return 0.0;
+      double minFloor = MathMin(dayStartBal * 0.20, 15.0);
+      return MathMax(dayStartBal * m_maxDailyLossPct / 100.0, minFloor);
+     }
+
    // Daily loss brake: true when today's realized loss has reached
    // MaxDailyLossPct% of the day's starting balance (approximated as
    // current balance minus today's realized P/L). Blocks NEW exposure only —
@@ -214,9 +261,9 @@ public:
       if(m_maxDailyLossPct <= 0) return false;
       double realized = TodayRealized() - BrakeBase();
       if(realized >= 0) return false;
-      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
-      if(dayStartBal <= 0) return false;                         // fail-open on nonsense state
-      return realized <= -dayStartBal * m_maxDailyLossPct / 100.0;
+      double threshold = DailyLossThresholdUsd();
+      if(threshold <= 0) return false;                         // fail-open on nonsense state
+      return realized <= -threshold;
      }
 
    // Brake awareness (2026-08-18): today's realized loss (since the reset
@@ -228,9 +275,7 @@ public:
       if(m_maxDailyLossPct <= 0) return 0.0;
       double realized = TodayRealized() - BrakeBase();
       if(realized >= 0) return 0.0;
-      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - realized;
-      if(dayStartBal <= 0) return 0.0;
-      double threshold = dayStartBal * m_maxDailyLossPct / 100.0;
+      double threshold = DailyLossThresholdUsd();
       if(threshold <= 0) return 0.0;
       return -realized / threshold * 100.0;
      }
@@ -239,13 +284,6 @@ public:
      {
       double realized = TodayRealized() - BrakeBase();
       return (realized < 0) ? -realized : 0.0;
-     }
-   double DailyLossThresholdUsd()
-     {
-      if(m_maxDailyLossPct <= 0) return 0.0;
-      double realized = TodayRealized() - BrakeBase();
-      double dayStartBal = AccountInfoDouble(ACCOUNT_BALANCE) - MathMin(realized, 0.0);
-      return (dayStartBal > 0) ? dayStartBal * m_maxDailyLossPct / 100.0 : 0.0;
      }
    double MaxDailyLossPct() { return m_maxDailyLossPct; }
    double MaxDdPct()        { return m_maxDdPct; }
@@ -362,6 +400,13 @@ public:
       return adx[0] >= m_adxThreshold;
      }
 
+   double GetCurrentAdx()
+     {
+      double adx[];
+      if(CopyBuffer(m_adxHandle, 0, 1, 1, adx) != 1) return 0.0;
+      return adx[0];
+     }
+
    // newsOverride (owner request 2026-09-01): a Telegram-approved "execute"
    // is the OWNER deciding to trade INSIDE a blackout — the news gate must
    // not refuse their explicit yes. Every other guard still applies to an
@@ -371,9 +416,9 @@ public:
      {
       why = "";
       if(KillSwitchTripped())                          { why = "kill switch tripped"; return false; }
-      MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-      if(dt.hour < m_winStart || dt.hour >= m_winEnd)  { why = "outside trading window"; return false; }
-      if(GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
+      if(IsWeekendClosed())                            { why = "weekend market closed"; return false; }
+      if(!InTradingWindow())                           { why = "outside trading window"; return false; }
+      if(m_maxExpoMin > 0 && GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
       if(DailyLossBreached())                          { why = "daily loss limit"; return false; }
       if(!newsOverride && NewsBlackout())              { why = "news blackout"; return false; }
       long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -403,6 +448,9 @@ public:
       double eq = AccountInfoDouble(ACCOUNT_EQUITY);
       double hwm = GlobalVariableGet(Key("HWM"));
       double dd = (hwm > 0) ? (1.0 - eq / hwm) * 100.0 : 0.0;
+      if(m_maxExpoMin <= 0)
+         return StringFormat("MoneyWatch: risk %.2f%%/trade, DD %.1f%% of %.1f%% limit, expo OFF",
+                             m_riskPct, dd, m_maxDdPct);
       return StringFormat("MoneyWatch: risk %.2f%%/trade, DD %.1f%% of %.1f%% limit, expo %.0f/%d min",
                           m_riskPct, dd, m_maxDdPct, GlobalVariableGet(ExpoKey()), m_maxExpoMin);
      }

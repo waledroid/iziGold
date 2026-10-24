@@ -218,7 +218,7 @@ ok "MetaEditor:      $METAEDITOR"
 
 # config/strategy.json is the single source of truth for the parameters
 # mirrored between the EA and scripts/backtest.py (both registered
-# strategies, halftrend_ema_v1 and halftrend_m15_v1, read their block from
+# strategies, izi5 and izi15, read their block from
 # it). backtest.py raises at import time when it's missing, which otherwise
 # surfaces many phases later as an opaque pytest collection error in the
 # Test gate — catch it here instead, plainly, while it's still cheap to fix.
@@ -956,8 +956,8 @@ cat <<'EOF'
   active one places trades, the other shadow-logs its signals so the two can be
   compared on the same live market:
 
-    halftrend_ema_v1   M5   <- active by default
-    halftrend_m15_v1   M15  shadow (3 waiting bars, EMA-200 confirmation)
+    izi5   M5   <- active by default
+    izi15   M15  shadow (3 waiting bars, EMA-200 confirmation)
 
   Switch with the M5/M15 buttons on /mode in Telegram — it applies on the next bar, no recompile.
   The chart's own timeframe is display only; each strategy trades its own.

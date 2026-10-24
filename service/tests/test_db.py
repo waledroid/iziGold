@@ -47,9 +47,9 @@ def test_insert_records_strategy(tmp_path):
     db.insert_signal(bar_time=1, symbol="XAUUSD", signal="BUY", price=3000.0,
                      direction="bullish", confidence=0.8, regime="trend",
                      verdict="confirm", mode="grading", ai_available=True,
-                     strategy_id="halftrend_ema_v1", is_active=False)
+                     strategy_id="izi5", is_active=False)
     row = db.conn.execute("SELECT strategy_id, is_active FROM signals").fetchone()
-    assert row == ("halftrend_ema_v1", 0)
+    assert row == ("izi5", 0)
 
 
 def test_per_strategy_stats(tmp_path):

@@ -52,7 +52,7 @@ def _hb_with_position():
     pos = types.SimpleNamespace(ticket=1, direction="BUY", lots=0.1,
                                 open_price=2400.0, sl=2390.0, profit=1.0)
     return (1234567890.0, types.SimpleNamespace(
-        positions=[pos], active_strategy="halftrend_ema_v1"))
+        positions=[pos], active_strategy="izi5"))
 
 
 def test_exitnow_flat_is_noop(client):
@@ -93,7 +93,7 @@ def test_brakereset_round_trip(client):
     the tapped message into the confirmation."""
     app = client.app
     hb = {"equity": 1.0, "balance": 1.0, "floating_pl": 0.0, "positions": [],
-          "active_strategy": "halftrend_ema_v1", "daily_loss_pct": 72.5}
+          "active_strategy": "izi5", "daily_loss_pct": 72.5}
     client.post("/heartbeat", json=hb)
     tg = _RecTg()
     app.state.telegram = tg
@@ -101,7 +101,7 @@ def test_brakereset_round_trip(client):
     assert edit is None and "resetting" in toast
     row = app.state.db.pending_proposal(kind="reset_brake", status="approved")
     assert row is not None and row["tg_message_id"] == 99
-    assert row["strategy_id"] == "halftrend_ema_v1"
+    assert row["strategy_id"] == "izi5"
     # second tap while in flight: guarded
     edit, toast = handle_callback("brakereset:1", app, message_id=100)
     assert toast == "reset already approved"

@@ -38,7 +38,7 @@ def _hb_payload(news=(), blackout=30):
 
 def _app_hb(news=(), blackout=30, ts=None):
     hb = types.SimpleNamespace(
-        positions=[], active_strategy="halftrend_m15_v1", algo_trading=True,
+        positions=[], active_strategy="izi15", algo_trading=True,
         news=[types.SimpleNamespace(**e) for e in news],
         news_blackout_min=blackout)
     return (ts if ts is not None else time.time(), hb)

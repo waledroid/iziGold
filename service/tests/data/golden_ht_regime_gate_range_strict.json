@@ -40,12 +40,12 @@
    "lane": "ht",
    "dir": "SELL",
    "entry": 3965.5,
-   "legs": 2,
+   "legs": 1,
    "exit": 3967.55,
    "why": "reversal",
-   "pl": -11.33
+   "pl": -4.5
   }
  ],
- "final_balance": 3862.64,
- "max_dd": 137.36
+ "final_balance": 3869.47,
+ "max_dd": 130.53
 }

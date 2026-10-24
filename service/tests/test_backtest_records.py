@@ -5,8 +5,10 @@ import json
 from tests.test_backtest_golden import BARS, _load_bt
 
 
-def _trades():
+def _trades(first_add_atr=None):
     bt = _load_bt()
+    if first_add_atr is not None:
+        bt.FIRST_ADD_TRIGGER_ATR = first_add_atr
     return bt.run(json.loads(BARS.read_text()), 4000.0, False)[0]
 
 
@@ -40,6 +42,24 @@ def test_a_trade_with_adds_records_more_stop_moves_than_a_single_leg_trade():
     assert any(len(t["stop_history"]) > 1 for t in multi)
 
 
+def test_first_add_uses_a_stricter_gate_than_later_adds():
+    """Lowering only the first-add gate must add legs; raising it must not
+    somehow add MORE. This proves FIRST_ADD_TRIGGER_ATR is wired into the
+    add path separately from ADD_TRIGGER_ATR."""
+    candles = json.loads(BARS.read_text())
+    strict_bt = _load_bt()
+    strict_trades = strict_bt.run(candles, 4000.0, False)[0]
+    relaxed_bt = _load_bt()
+    relaxed_bt.FIRST_ADD_TRIGGER_ATR = relaxed_bt.ADD_TRIGGER_ATR
+    relaxed_trades = relaxed_bt.run(candles, 4000.0, False)[0]
+
+    def add_legs(trades):
+        return sum(len(t["legs"]) - 1 for t in trades)
+
+    assert relaxed_bt.FIRST_ADD_TRIGGER_ATR < strict_bt.FIRST_ADD_TRIGGER_ATR
+    assert add_legs(relaxed_trades) > add_legs(strict_trades)
+
+
 def test_tp_is_a_price_on_the_profitable_side_of_entry():
     for t in _trades():
         if t["tp"] is None:
@@ -67,7 +87,7 @@ def test_tp_tracks_the_legs_so_a_target_exit_never_lands_short_of_it():
     The invariant: a basket that exited "profit target" filled at or beyond
     its tp, directionally. (Beyond, not exactly at: the replay acts on bar
     closes, so the fill overshoots the price where the target was crossed.)"""
-    trades = _trades()
+    trades = _trades(first_add_atr=1.0)
     tg = [t for t in trades if t["why"] == "profit target"]
     assert tg, "the slice must contain at least one target exit"
     assert any(len(t["legs"]) > 1 for t in tg), \

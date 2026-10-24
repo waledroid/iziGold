@@ -44,7 +44,7 @@ def _pos(direction="SELL"):
 
 def _hb(positions=(), ts=None):
     return (ts if ts is not None else time.time(), types.SimpleNamespace(
-        positions=list(positions), active_strategy="halftrend_m15_v1",
+        positions=list(positions), active_strategy="izi15",
         bar_c=4623.50, entry_mode="fixed", algo_trading=True))
 
 

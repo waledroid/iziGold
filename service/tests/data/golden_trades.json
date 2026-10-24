@@ -102,15 +102,6 @@
   {
    "lane": "ht",
    "dir": "BUY",
-   "entry": 4105.84,
-   "legs": 2,
-   "exit": 4112.1,
-   "why": "flatten",
-   "pl": 56.18
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
    "entry": 4140.72,
    "legs": 2,
    "exit": 4132.81,
@@ -151,7 +142,7 @@
    "legs": 1,
    "exit": 4194.98,
    "why": "stop",
-   "pl": -38.51
+   "pl": -30.81
   },
   {
    "lane": "ht",
@@ -160,7 +151,7 @@
    "legs": 1,
    "exit": 4192.02,
    "why": "stop",
-   "pl": -37.62
+   "pl": -28.22
   },
   {
    "lane": "ht",
@@ -233,15 +224,6 @@
    "exit": 4213.86,
    "why": "reversal",
    "pl": -25.96
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4213.86,
-   "legs": 1,
-   "exit": 4231.85,
-   "why": "stop",
-   "pl": -36.37
   },
   {
    "lane": "ht",
@@ -714,15 +696,6 @@
   {
    "lane": "ht",
    "dir": "SELL",
-   "entry": 4000.44,
-   "legs": 2,
-   "exit": 4004.45,
-   "why": "stop",
-   "pl": -58.18
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
    "entry": 3999.76,
    "legs": 1,
    "exit": 4007.74,
@@ -786,20 +759,11 @@
   {
    "lane": "ht",
    "dir": "BUY",
-   "entry": 4011.47,
-   "legs": 1,
-   "exit": 4007.21,
-   "why": "stop",
-   "pl": -40.16
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
    "entry": 3991.18,
    "legs": 2,
    "exit": 3986.17,
    "why": "stop",
-   "pl": -40.4
+   "pl": -45.61
   },
   {
    "lane": "ht",
@@ -871,7 +835,7 @@
    "legs": 2,
    "exit": 3973.11,
    "why": "profit lock",
-   "pl": 22.88
+   "pl": 27.24
   },
   {
    "lane": "ht",
@@ -898,7 +862,7 @@
    "legs": 2,
    "exit": 4014.85,
    "why": "profit lock",
-   "pl": 11.66
+   "pl": 12.54
   },
   {
    "lane": "ht",
@@ -935,15 +899,6 @@
    "exit": 3984.56,
    "why": "reversal",
    "pl": -32.94
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3984.56,
-   "legs": 3,
-   "exit": 3977.19,
-   "why": "flatten",
-   "pl": 74.8
   },
   {
    "lane": "ht",
@@ -1027,6 +982,6 @@
    "pl": -43.4
   }
  ],
- "final_balance": 3906.3,
- "max_dd": 468.06
+ "final_balance": 3927.16,
+ "max_dd": 466.31
 }

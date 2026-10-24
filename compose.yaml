@@ -1,0 +1,92 @@
+services:
+  main:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+      args:
+        INSTALL_MODEL: ${INSTALL_MODEL:-false}
+    env_file:
+      - path: ./service/.env
+        required: false
+    environment:
+      DB_PATH: /data/xau_assistant.db
+      SCREENSHOT_DIR: /data/screenshots
+      MINIAPP_PORT: 9101
+      MINIAPP_HEALTH_URL: http://miniapp:9101/healthz
+    command: uvicorn app.main:app --host 0.0.0.0 --port 9000
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - xau-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    init: true
+    restart: unless-stopped
+
+  miniapp:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+      args:
+        INSTALL_MODEL: ${INSTALL_MODEL:-false}
+    env_file:
+      - path: ./service/.env
+        required: false
+    environment:
+      DB_PATH: /data/xau_assistant.db
+      SCREENSHOT_DIR: /data/screenshots
+      MINIAPP_PORT: 9101
+    command: uvicorn app.miniapp:app --host 0.0.0.0 --port 9101
+    ports:
+      - "127.0.0.1:9101:9101"
+    volumes:
+      - xau-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:9101/healthz', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    init: true
+    restart: unless-stopped
+
+  tunnel:
+    profiles: ["tunnel", "cf-tunnel"]
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --url http://miniapp:9101
+    depends_on:
+      miniapp:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ngrok:
+    profiles: ["ngrok"]
+    image: ngrok/ngrok:latest
+    env_file:
+      - path: ./service/.env
+        required: false
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exec ngrok http --url=\"$$NGROK_DOMAIN\" --inspect=false miniapp:9101"]
+    depends_on:
+      miniapp:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  xau-data:

@@ -251,6 +251,26 @@ def test_history_includes_indicator_arrays_aligned_to_candles(client):
     for e in non_null_ht:
         assert set(e) == {"v", "trend"}
         assert e["trend"] in (0, 1)
+    # MACD is intentionally absent from chart payloads; the shared chart
+    # spec and optional preview band travel with every history response.
+    assert "macd_line" not in body
+    assert "macd_signal" not in body
+    assert "macd_hist" not in body
+    assert body["chart"]["panels"]["macd"] is False
+    assert body["chart"]["preview"]["enabled_default"] is False
+    assert "preview" in body
+
+
+def test_history_carries_shared_chart_spec_and_preview_key(client):
+    _push(client, {"candles": {"M5": [_candle(1000 + 300 * i, 4000.0 + i)
+                                     for i in range(80)]}})
+    body = client.get("/api/history", params={"tf": "M5"}).json()
+    assert body["chart"]["panels"] == {"rsi": False, "macd": False}
+    assert body["chart"]["preview"]["enabled_default"] is False
+    assert "preview" in body
+    if body["preview"] is not None:
+        assert set(body["preview"]) == {
+            "active", "direction", "entry", "sl", "tp", "reason"}
 
 
 def test_history_short_buffer_has_warmup_nulls(client):
@@ -777,7 +797,14 @@ def test_history_sr_zones_empty_without_tier_data(client):
     assert body["sr_zones"] == []
 
 
-def test_page_has_the_sr_pool(client):
+def test_page_has_outline_only_sr_and_preview_controls(client):
     html = client.get("/").text
-    assert "initSrPool" in html and "setSrZones" in html
-    assert "173,216,230" in html and "255,245,157" in html
+    assert "setSrZones" in html
+    assert "OBJPROP_FILL" not in html
+    assert "initSrPool" not in html
+    assert "addBaselineSeries" not in html
+    assert "macd:" not in html
+    assert "previewBtn" in html
+    assert "renderPreview" in html
+    assert "configurePanels" in html
+    assert "applyChartSeries" in html

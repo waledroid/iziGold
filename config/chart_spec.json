@@ -1,0 +1,35 @@
+{
+  "_meta": "Single source of truth for every chart surface: the MT5 terminal chart (native MQL5 objects), the Telegram trade-event + /chart PNG renders (service/app/render.py), the dashboard (service/app/static/dashboard.html) and the Telegram mini-app (service/app/static/miniapp.html). One palette, one set of indicator parameters. Colors are stored as #RRGGBB hex; each renderer derives its own format from app.chart_spec (matplotlib rgba, CSS hex, and MQL C'R,G,B' literals). S/R zones are outline-only everywhere: unblended border color, no fill. Filled trade-box colors remain pre-blended on MT5 because MT5 chart objects cannot be translucent -- the parity test re-derives those literals with blend(base, theme.background, alpha). Change a colour or parameter here, not in a renderer. When changing this file, update mt5/Include/XauAssistant (SrBoxes.mqh / TradeBoxes.mqh / Strategies/HalfTrendEma.mqh) and recompile the EA in MetaEditor on Windows.",
+  "theme": {
+    "background": "#131722",
+    "grid": "#2a2e39",
+    "foreground": "#c9d1d9"
+  },
+  "series": {
+    "halftrend": { "up": "#1e90ff", "down": "#ff4500", "width": 2, "label": "HalfTrend" },
+    "ema9": { "color": "#888888", "width": 1, "label": "EMA 9" },
+    "ema21": { "color": "#888888", "width": 1, "label": "EMA 21" },
+    "ema_trade": { "color": "#f5c542", "width": 2, "label": "EMA {n}" },
+    "ema200": { "color": "#a78bfa", "width": 2, "label": "EMA 200" }
+  },
+  "trade_ema_len": { "M15": 50, "default": 55 },
+  "panels": {
+    "rsi": false,
+    "macd": false
+  },
+  "sr_zones": {
+    "support": { "color": "#add8e6" },
+    "resistance": { "color": "#fff59d" },
+    "outline": { "fill": false, "width": 1, "style": "dashed" }
+  },
+  "trade_boxes": {
+    "risk": { "color": "#e74c3c", "alpha": 0.12 },
+    "profit": { "color": "#2ecc71", "alpha": 0.12 }
+  },
+  "preview": {
+    "enabled_default": false,
+    "entry": { "color": "#9aa5b8", "width": 1, "style": "dashed" },
+    "sl": { "color": "#e74c3c", "width": 1, "style": "dashed" },
+    "tp": { "color": "#2ecc71", "width": 1, "style": "dashed" }
+  }
+}

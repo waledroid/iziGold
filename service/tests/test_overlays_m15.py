@@ -1,4 +1,5 @@
-from app.main import _resample_m15, _OVERLAY_BUILDERS
+from app.main import _OVERLAY_BUILDERS
+from app.overlays import _resample_m15
 from app.models import Candle
 
 
@@ -22,7 +23,7 @@ def test_m15_overlays_align_with_m5_list():
     candles = [m5(900 + 300 * i, 100.0 + i)
                for i in range(600)]              # 600 M5 bars = 200 M15 bars
     closes = [c.c for c in candles]
-    out = _OVERLAY_BUILDERS["halftrend_m15_v1"](candles, closes)
+    out = _OVERLAY_BUILDERS["izi15"](candles, closes)
     assert set(out) == {"halftrend", "ema55", "ema200"}
     for arr in out.values():
         assert len(arr) == len(candles)          # 1:1 with /api/candles

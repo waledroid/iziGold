@@ -4,6 +4,7 @@
 #include <XauAssistant/Strategy.mqh>
 #include <XauAssistant/RiskManager.mqh>
 #include <XauAssistant/UiApi.mqh>
+#include <XauAssistant/SrZones.mqh>
 
 class CTradeManager
   {
@@ -19,10 +20,36 @@ private:
    // Global EnablePyramiding (m_pyramid) still wins when false.
    bool          m_addsAllowed;
    int           m_maxPos;
-   double        m_addTriggerAtr, m_targetPct, m_stopAtrMult;
+   double        m_addTriggerAtr, m_firstAddTriggerAtr, m_targetPct, m_stopAtrMult;
    double        m_trailLockPct, m_trailActivateR;
    double        m_lastEntryPrice;
    double        m_ratios[3];
+   // Phase 2: 1.5R partial scale-out and stagnation exit parameters
+   bool          m_partialScaleOutEnabled;
+   double        m_partialScaleOutR;
+   double        m_partialScaleOutPct;
+   bool          m_stagnationExitEnabled;
+   int           m_stagnationBars;
+   double        m_stagnationMaxR;
+   double        m_stagnationMaxAdx;
+   // Phase 3: Pullback limit order entry parameters
+   bool          m_pullbackLimitEnabled;
+   double        m_pullbackLimitAtr;
+   int           m_pullbackExpirationBars;
+   // S/R wall awareness for pyramid adds & partial profit taking
+   CSrZoneSet   *m_srZones;
+   string        m_srTiers;
+   double        m_srPyramidRoomAtr;
+   bool          m_srPyramidGuard;
+   // Fixed sizing state
+   bool          m_useFixedLot;
+   double        m_fixedLots;
+   // Reversal exit & continuation re-entry state
+   bool          m_reversalExitEnabled;
+   double        m_reversalMinPeakAtr;
+   double        m_reversalThresholdAtr;
+   bool          m_enableContinuationReentry;
+
 
    string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    string PeakKey() { return "XAU_PEAK_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
@@ -35,11 +62,26 @@ private:
    // 1 = this FIXED basket already sent its one target alert (restart-safe;
    // reset to 0 on every basket open)
    string TpAlertKey()    { return "XAU_TP_ALERTED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   // Phase 2: Per-basket partial scale-out flag and initial risk (R)
+   string PartialTakenKey() { return "XAU_PARTIAL_TAKEN_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string InitialRKey()     { return "XAU_INITIAL_R_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   // Heavy reversal exit & continuation re-entry keys
+   string PeakAdvanceKey()  { return "XAU_PEAK_ADV_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryArmedKey() { return "XAU_REENTRY_ARMED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryDirKey()   { return "XAU_REENTRY_DIR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryPriceKey() { return "XAU_REENTRY_PX_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
 
-   // "adr"/"fixed" string for the CURRENT basket's mode — used to tag trade
+
+   // "adr"/"fixed"/"hybrid" string for the CURRENT basket's mode — used to tag trade
    // events (open/add/close) with the mode that basket was actually running
    // under, independent of whatever the runtime switch has moved on to.
-   string CurrentEntryModeStr() { return (GlobalVariableGet(BasketModeKey()) > 0.5) ? "fixed" : "adr"; }
+   string CurrentEntryModeStr()
+     {
+      double m = GlobalVariableGet(BasketModeKey());
+      if(m > 1.5) return "hybrid";
+      if(m > 0.5) return "fixed";
+      return "adr";
+     }
 
    // FixedLots is a direct target size (not a risk ceiling that must never
    // be exceeded like CalcLots' output), so round to the nearest step
@@ -55,6 +97,32 @@ private:
       return MathMin(MathMax(lots, vmin), vmax);
      }
 
+   double AdaptiveVolumeCeiling(double equity, string symbol)
+     {
+      double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      if(step <= 0) step = 0.01;
+      if(StringFind(symbol, "BTC") >= 0 || StringFind(symbol, "btc") >= 0)
+        {
+         if(equity < 500.0) return 0.01;
+         double maxBtc = MathMin(MathMax(equity * 0.000015, 0.01), 0.10);
+         return MathFloor(maxBtc / step) * step;
+        }
+      // Gold (XAUUSD)
+      if(equity <= 200.0) return 0.01;
+      if(equity <= 500.0) return 0.02;
+      if(equity <= 2000.0) return 0.05;
+      // Pro/Expansion tier ($2,000+): smooth compounding
+      double maxGold = MathMin(MathMax(equity * 0.000024, 0.05), 0.15);
+      return MathFloor(maxGold / step) * step;
+     }
+
+   int AdaptiveMaxPositions(double equity)
+     {
+      if(equity <= 200.0) return 1;
+      if(equity <= 500.0) return 2;
+      return m_maxPos;
+     }
+
    int CountOwn()
      {
       int n = 0;
@@ -63,17 +131,6 @@ private:
             PositionGetInteger(POSITION_MAGIC) == m_magic &&
             PositionGetString(POSITION_SYMBOL) == _Symbol) n++;
       return n;
-     }
-
-   double BasketProfit()
-     {
-      double p = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-         if(PositionGetTicket(i) > 0 &&
-            PositionGetInteger(POSITION_MAGIC) == m_magic &&
-            PositionGetString(POSITION_SYMBOL) == _Symbol)
-            p += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-      return p;
      }
 
    long OwnType()
@@ -245,19 +302,140 @@ private:
      }
 
 public:
+   double BasketProfit()
+     {
+      double p = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+         if(PositionGetTicket(i) > 0 &&
+            PositionGetInteger(POSITION_MAGIC) == m_magic &&
+            PositionGetString(POSITION_SYMBOL) == _Symbol)
+            p += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      return p;
+     }
+
+   bool CloseTicket(ulong tk)
+     {
+      if(tk <= 0) return false;
+      return m_trade.PositionClose(tk);
+     }
+
    void Init(CRiskManager *risk, long magic, bool pyramid, int maxPos,
-             double addAtr, double targetPct, double stopAtrMult,
+             double addAtr, double firstAddAtr, double targetPct, double stopAtrMult,
              double trailLockPct, double trailActivateR,
              CTradeEventSink *sink = NULL)
      {
       m_risk = risk; m_magic = magic; m_pyramid = pyramid; m_maxPos = maxPos;
-      m_addTriggerAtr = addAtr; m_targetPct = targetPct; m_stopAtrMult = stopAtrMult;
+      m_addTriggerAtr = addAtr; m_firstAddTriggerAtr = firstAddAtr;
+      m_targetPct = targetPct; m_stopAtrMult = stopAtrMult;
       m_trailLockPct = trailLockPct; m_trailActivateR = trailActivateR;
       m_sink = sink;
       m_addsAllowed = true;
       m_trade.SetExpertMagicNumber(magic);
       m_ratios[0] = 1.0; m_ratios[1] = 0.7; m_ratios[2] = 0.4;
+      m_partialScaleOutEnabled = true;
+      m_partialScaleOutR = 1.5;
+      m_partialScaleOutPct = 0.50;
+      m_stagnationExitEnabled = true;
+      m_stagnationBars = 20;
+      m_stagnationMaxR = 0.20;
+      m_stagnationMaxAdx = 10.0;
+      m_pullbackLimitEnabled = false;
+      m_pullbackLimitAtr = 0.30;
+      m_pullbackExpirationBars = 3;
+      m_srZones = NULL;
+      m_srTiers = "H4,H1,M15";
+      m_srPyramidRoomAtr = 1.0;
+      m_srPyramidGuard = true;
+      m_useFixedLot = true;
+      m_fixedLots = 0.03;
+      m_reversalExitEnabled = true;
+      m_reversalMinPeakAtr = 1.5;
+      m_reversalThresholdAtr = 1.0;
+      m_enableContinuationReentry = true;
      }
+
+   void SetSrZones(CSrZoneSet *zones, string tiers = "H4,H1,M15", double roomAtr = 1.0, bool guard = true)
+     {
+      m_srZones = zones;
+      m_srTiers = tiers;
+      m_srPyramidRoomAtr = roomAtr;
+      m_srPyramidGuard = guard;
+     }
+
+   void SetFixedSizing(bool useFixed, double lots = 0.03)
+     {
+      m_useFixedLot = useFixed;
+      m_fixedLots = lots;
+     }
+
+   void SetReversalExit(bool enabled, double minPeakAtr = 1.5, double thrAtr = 1.0, bool enableReentry = true)
+     {
+      m_reversalExitEnabled = enabled;
+      m_reversalMinPeakAtr = minPeakAtr;
+      m_reversalThresholdAtr = thrAtr;
+      m_enableContinuationReentry = enableReentry;
+     }
+
+   ENUM_SIGNAL GetReentryDir()
+     {
+      if(GlobalVariableGet(ReentryArmedKey()) < 0.5) return SIGNAL_NONE;
+      long ptype = (long)GlobalVariableGet(ReentryDirKey());
+      return (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+     }
+
+   bool CheckContinuationReentry(double atr_value, bool conditionStillTrue, ENUM_SIGNAL &outSig, double &outSl)
+     {
+      outSig = SIGNAL_NONE;
+      outSl = 0.0;
+      if(!m_enableContinuationReentry || GlobalVariableGet(ReentryArmedKey()) < 0.5)
+         return false;
+
+      // If market condition is no longer true (e.g. trend broken), cancel re-entry
+      if(!conditionStillTrue)
+        {
+         GlobalVariableSet(ReentryArmedKey(), 0);
+         Print("TradeManager: continuation re-entry cancelled — trend condition no longer valid");
+         return false;
+        }
+
+      long ptype = (long)GlobalVariableGet(ReentryDirKey());
+      ENUM_SIGNAL dir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+      double close1 = iClose(_Symbol, _Period, 1);
+      double open1  = iOpen(_Symbol, _Period, 1);
+      double close2 = iClose(_Symbol, _Period, 2);
+
+      // Require candle in trend direction + price moving back in trend
+      bool momentumConfirmed = false;
+      if(dir == SIGNAL_BUY && close1 > open1 && close1 >= close2)
+         momentumConfirmed = true;
+      else if(dir == SIGNAL_SELL && close1 < open1 && close1 <= close2)
+         momentumConfirmed = true;
+
+      if(!momentumConfirmed) return false;
+
+      // Check S/R wall: make sure we aren't re-entering straight into opposing wall
+      if(m_srZones != NULL && atr_value > 0)
+        {
+         string wallTier = "";
+         double currentPx = (dir == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(m_srZones.Verdict(dir, currentPx, m_srPyramidRoomAtr * atr_value, m_srTiers, wallTier) == 0)
+           {
+            PrintFormat("TradeManager: continuation re-entry waiting — opposing %s wall ahead", wallTier);
+            return false;
+           }
+        }
+
+      // Confirmed! Disarm latch and emit re-entry
+      GlobalVariableSet(ReentryArmedKey(), 0);
+      outSig = dir;
+      double currentPx = (dir == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      outSl = (dir == SIGNAL_BUY) ? currentPx - m_stopAtrMult * atr_value : currentPx + m_stopAtrMult * atr_value;
+      PrintFormat("TradeManager: continuation re-entry CONFIRMED for %s at %s, SL=%s",
+                  (dir == SIGNAL_BUY ? "BUY" : "SELL"), DoubleToString(currentPx, _Digits), DoubleToString(outSl, _Digits));
+      return true;
+     }
+
+
 
    int OpenCount() { return CountOwn(); }
 
@@ -284,7 +462,8 @@ public:
    // at least one leg moved; `detail` carries the human-readable outcome
    // either way (rendered verbatim into the Telegram edit).
    // Called by the EA before each Manage() with the active lane's answer.
-   void SetAddsAllowed(bool v) { m_addsAllowed = v; }
+    void SetAddsAllowed(bool v) { m_addsAllowed = v; }
+    void SetProfitTargetPct(double value) { if(value >= 0.0) m_targetPct = value; }
 
    bool MoveStopsTight(string &detail)
      {
@@ -326,7 +505,92 @@ public:
       return false;
      }
 
+   void SetPartialScaleOut(bool enabled, double r = 1.5, double pct = 0.50)
+     {
+      m_partialScaleOutEnabled = enabled;
+      m_partialScaleOutR = r;
+      m_partialScaleOutPct = pct;
+     }
+
+   void SetStagnationExit(bool enabled, int bars = 20, double maxR = 0.20, double maxAdx = 10.0)
+     {
+      m_stagnationExitEnabled = enabled;
+      m_stagnationBars = bars;
+      m_stagnationMaxR = maxR;
+      m_stagnationMaxAdx = maxAdx;
+     }
+
+   void SetPullbackLimit(bool enabled, double atrDiscount = 0.30, int expireBars = 3)
+     {
+      m_pullbackLimitEnabled = enabled;
+      m_pullbackLimitAtr = atrDiscount;
+      m_pullbackExpirationBars = expireBars;
+     }
+
+
+   bool CloseHalf(string &detail)
+     {
+      int count = CountOwn();
+      if(count == 0) { detail = "nothing open"; return false; }
+      int closed = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
+            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         double vol = PositionGetDouble(POSITION_VOLUME);
+         double halfVol = ClampToVolume(vol * 0.5);
+         if(halfVol > 0 && halfVol < vol)
+           {
+            if(m_trade.PositionClosePartial(tk, halfVol)) closed++;
+           }
+         else if(vol > 0)
+           {
+            if(m_trade.PositionClose(tk)) closed++;
+           }
+        }
+      if(closed > 0)
+        {
+         detail = StringFormat("closed 50%% on %d legs", closed);
+         return true;
+        }
+      detail = "could not partial close";
+      return false;
+     }
+
+   bool MoveStopsBreakeven(string &detail)
+     {
+      long ptype = OwnType();
+      if(ptype < 0) { detail = "nothing open"; return false; }
+      bool isBuy = (ptype == POSITION_TYPE_BUY);
+      int total = 0, moved = 0;
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+        {
+         ulong tk = PositionGetTicket(i);
+         if(tk == 0 || PositionGetInteger(POSITION_MAGIC) != m_magic ||
+            PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         total++;
+         double openPx = PositionGetDouble(POSITION_PRICE_OPEN);
+         double curSl = PositionGetDouble(POSITION_SL);
+         bool tightens = (curSl == 0) || (isBuy ? openPx > curSl : openPx < curSl);
+         if(!tightens) continue;
+         if(m_trade.PositionModify(tk, openPx, PositionGetDouble(POSITION_TP)))
+            moved++;
+         else
+            Print("TradeManager: move_sl_be failed #", tk, " sl ", DoubleToString(openPx, _Digits),
+                  " retcode ", m_trade.ResultRetcode());
+        }
+      if(moved > 0)
+        {
+         detail = StringFormat("SL moved to Breakeven (%d of %d legs)", moved, total);
+         return true;
+        }
+      detail = (total > 0) ? "SL already at or past breakeven" : "nothing open";
+      return false;
+     }
+
    void CloseAll(string reason)
+
      {
       // Capture the basket direction/size/profit BEFORE closing — after the
       // loop below there are no own positions left to read them from.
@@ -347,6 +611,7 @@ public:
             m_trade.PositionClose(tk);
         }
       GlobalVariableSet(PeakKey(), 0);
+      GlobalVariableSet(PeakAdvanceKey(), 0);
       Print("TradeManager: closed all (", reason, ")");
 
       // One "close" event per CloseAll call (not per ticket), only when there
@@ -383,7 +648,7 @@ public:
    // entries pass false, so their blackout behaviour is unchanged.
    bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0,
                 bool entryModeFixed = false, double fixedLots = 0.0,
-                bool newsOverride = false)
+                bool newsOverride = false, int entryMode = -1)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return false; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return false;
@@ -411,38 +676,227 @@ public:
       else sl = (sig == SIGNAL_BUY) ? price - m_stopAtrMult * atr_value
                                     : price + m_stopAtrMult * atr_value;
       double sl_points = MathAbs(price - sl) / _Point;
-      double lots = entryModeFixed ? ClampToVolume(fixedLots) : m_risk.CalcLots(sl_points, m_ratios[0]);
+      int effectiveEntryMode = entryMode;
+      if(effectiveEntryMode < 0)
+         effectiveEntryMode = (entryModeFixed || m_useFixedLot) ? 1 : 0;
+
+      double lots = 0.0;
+      if(effectiveEntryMode == 2)
+        {
+         // Hybrid Sizing: Dynamic Risk % with Equity-Adaptive Guardrails ($50 - $5,000)
+         double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+         if(eq <= 0) eq = AccountInfoDouble(ACCOUNT_BALANCE);
+         double dyn = m_risk.CalcLots(sl_points, m_ratios[0]);
+         double minAllowed = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         if(minAllowed <= 0) minAllowed = 0.01;
+         double maxAllowed = AdaptiveVolumeCeiling(eq, _Symbol);
+         if(maxAllowed < minAllowed) maxAllowed = minAllowed;
+
+         if(StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0)
+           {
+            lots = (dyn > 0) ? dyn : minAllowed;
+           }
+         else
+           {
+            double targetLots = (m_fixedLots > 0) ? m_fixedLots : (fixedLots > 0 ? fixedLots : 0.03);
+            if(dyn <= 0) dyn = targetLots;
+            lots = dyn;
+           }
+         lots = MathMin(MathMax(lots, minAllowed), maxAllowed);
+         lots = ClampToVolume(lots);
+        }
+      else if(effectiveEntryMode == 1)
+        {
+         lots = ClampToVolume(m_fixedLots > 0 ? m_fixedLots : fixedLots);
+        }
+      else
+        {
+         lots = m_risk.CalcLots(sl_points, m_ratios[0]);
+        }
       if(lots <= 0) return false;
-      bool ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
-                                    : m_trade.Sell(lots, _Symbol, 0, sl);
+      ulong t0 = GetTickCount64();
+      bool ok = false;
+      if(m_pullbackLimitEnabled && atr_value > 0)
+        {
+         double limitPrice = (sig == SIGNAL_BUY) ? price - m_pullbackLimitAtr * atr_value
+                                                 : price + m_pullbackLimitAtr * atr_value;
+         limitPrice = NormalizeDouble(limitPrice, _Digits);
+         datetime expireTime = TimeCurrent() + m_pullbackExpirationBars * (int)MathMax(PeriodSeconds(), 300);
+         ok = (sig == SIGNAL_BUY) ? m_trade.BuyLimit(lots, limitPrice, _Symbol, sl, 0, ORDER_TIME_SPECIFIED, expireTime)
+                                  : m_trade.SellLimit(lots, limitPrice, _Symbol, sl, 0, ORDER_TIME_SPECIFIED, expireTime);
+         if(!ok)
+           {
+            // Fail-open fallback: execute at market if limit order rejected
+            ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
+                                     : m_trade.Sell(lots, _Symbol, 0, sl);
+           }
+        }
+      else
+        {
+         ok = (sig == SIGNAL_BUY) ? m_trade.Buy(lots, _Symbol, 0, sl)
+                                  : m_trade.Sell(lots, _Symbol, 0, sl);
+        }
+      ulong execMs = GetTickCount64() - t0;
+
+      double fillPrice = m_trade.ResultPrice();
+      if(fillPrice <= 0.0) fillPrice = price;
+      double slippagePts = (sig == SIGNAL_BUY) ? (fillPrice - price) / _Point : (price - fillPrice) / _Point;
       if(ok)
         {
-         m_lastEntryPrice = price;
+         m_lastEntryPrice = fillPrice;
          GlobalVariableSet(CycleKey(), AccountInfoDouble(ACCOUNT_BALANCE));
          GlobalVariableSet(PeakKey(), 0);
-         GlobalVariableSet(BasketModeKey(), entryModeFixed ? 1 : 0);
+         GlobalVariableSet(BasketModeKey(), (double)effectiveEntryMode);
+         GlobalVariableSet(PeakAdvanceKey(), 0);
+         GlobalVariableSet(ReentryArmedKey(), 0);
          GlobalVariableSet(TpAlertKey(), 0);   // fresh basket, alert re-armed
+         double initialR = MathAbs(fillPrice - sl);
+         GlobalVariableSet(InitialRKey(), initialR);
+         GlobalVariableSet(PartialTakenKey(), 0);
          // Basket-open state must survive a hard kill (2026-08-31); the
          // per-tick PeakKey update below stays UNflushed on purpose — a
          // rolled-back peak only locks profit earlier, the safe direction.
          GlobalVariablesFlush();
+
          if(m_sink != NULL)
            {
             string dir = (sig == SIGNAL_BUY) ? "BUY" : "SELL";
             string openReason = wasReversal ? "reversal" : ("signal " + dir);
-            m_sink.OnTradeEvent("open", dir, lots, price, sl, openReason,
+            m_sink.OnTradeEvent("open", dir, lots, fillPrice, sl, openReason,
                                 (long)m_trade.ResultOrder(), 0.0,
-                                entryModeFixed ? 0.0 : BasketTargetPrice(),
-                                true, entryModeFixed ? "fixed" : "adr");
+                                (effectiveEntryMode == 0) ? BasketTargetPrice() : 0.0,
+                                true, CurrentEntryModeStr(),
+                                slippagePts, (int)execMs, price);
            }
         }
       return ok;
      }
 
-   void Manage(double atr_value, bool conditionStillTrue)
+   void Manage(double atr_value, bool conditionStillTrue, double adx_value = 0.0)
      {
       int n = CountOwn();
       if(n == 0) return;
+
+      // --- Phase 2: Stagnation Exit ---
+      // If trade open for >= stagnationBars, chopping within +/- 0.2R, and ADX < 10
+      if(m_stagnationExitEnabled && n > 0)
+        {
+         double initR = GlobalVariableGet(InitialRKey());
+         if(initR > 0)
+           {
+            datetime oldestTime = 0;
+            double oldestOpenPx = 0.0;
+            for(int i = PositionsTotal() - 1; i >= 0; i--)
+              {
+               ulong tk = PositionGetTicket(i);
+               if(tk > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+                  PositionGetString(POSITION_SYMBOL) == _Symbol)
+                 {
+                  datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+                  if(oldestTime == 0 || t < oldestTime)
+                    {
+                     oldestTime = t;
+                     oldestOpenPx = PositionGetDouble(POSITION_PRICE_OPEN);
+                    }
+                 }
+              }
+            if(oldestTime > 0)
+              {
+               int barsHeld = (int)((TimeCurrent() - oldestTime) / MathMax(PeriodSeconds(), 300));
+               if(barsHeld >= m_stagnationBars)
+                 {
+                  long ptype = OwnType();
+                  double currentPx = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                                  : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                  double pnlPts = MathAbs(currentPx - oldestOpenPx);
+                  if(pnlPts <= m_stagnationMaxR * initR && (adx_value <= 0.0 || adx_value < m_stagnationMaxAdx))
+                    {
+                     CloseAll(StringFormat("stagnation exit (bars=%d, adx=%.1f)", barsHeld, adx_value));
+                     return;
+                    }
+                 }
+              }
+           }
+        }
+
+      // --- Phase 2: 1.5R Partial Profit Scale-Out ---
+      // When profit >= 1.5R, scale out 50% and ratchet remaining stop to breakeven
+      // --- Phase 2: 1.5R Partial Profit Scale-Out & Breakeven Lock ---
+      // When profit >= 1.5R OR opposing S/R wall reached in profit >= 0.8R
+      if(m_partialScaleOutEnabled && GlobalVariableGet(PartialTakenKey()) < 0.5)
+        {
+         double initR = GlobalVariableGet(InitialRKey());
+         if(initR > 0)
+           {
+            long ptype = OwnType();
+            double currentPx = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                            : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double advance = (ptype == POSITION_TYPE_BUY) ? currentPx - m_lastEntryPrice
+                                                          : m_lastEntryPrice - currentPx;
+            bool hitSrWall = false;
+            string wallTier = "";
+            if(m_srZones != NULL && advance >= 0.8 * initR)
+              {
+               ENUM_SIGNAL pdir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+               double roomPts = 0.5 * atr_value;
+               if(m_srZones.Verdict(pdir, currentPx, roomPts, m_srTiers, wallTier) == 0)
+                  hitSrWall = true;
+              }
+            if(advance >= m_partialScaleOutR * initR || hitSrWall)
+              {
+               ulong oldestTk = 0;
+               double oldestVol = 0.0;
+               datetime oldestTime = 0;
+               double oldestOpenPx = 0.0;
+               for(int i = PositionsTotal() - 1; i >= 0; i--)
+                 {
+                  ulong tk = PositionGetTicket(i);
+                  if(tk > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+                     PositionGetString(POSITION_SYMBOL) == _Symbol)
+                    {
+                     datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+                     if(oldestTime == 0 || t < oldestTime)
+                       {
+                        oldestTk = tk;
+                        oldestVol = PositionGetDouble(POSITION_VOLUME);
+                        oldestTime = t;
+                        oldestOpenPx = PositionGetDouble(POSITION_PRICE_OPEN);
+                       }
+                    }
+                 }
+               if(oldestTk > 0 && oldestVol > 0)
+                 {
+                  double closeVol = ClampToVolume(oldestVol * m_partialScaleOutPct);
+                  if(closeVol > 0 && closeVol < oldestVol)
+                    {
+                     if(m_trade.PositionClosePartial(oldestTk, closeVol))
+                       {
+                        GlobalVariableSet(PartialTakenKey(), 1);
+                        string pReason = hitSrWall ? StringFormat("S/R wall (%s) partial scale-out", wallTier)
+                                                   : "1.5R partial scale-out";
+                        PrintFormat("TradeManager: %s executed #%I64u vol %.2f", pReason, oldestTk, closeVol);
+                        m_trade.PositionModify(oldestTk, oldestOpenPx, PositionGetDouble(POSITION_TP));
+                        if(m_sink != NULL)
+                          {
+                           string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+                           m_sink.OnTradeEvent("partial_close", dir, closeVol, currentPx, oldestOpenPx,
+                                               pReason, (long)oldestTk, 0.0,
+                                               BasketTargetPrice(), true, CurrentEntryModeStr());
+                          }
+                       }
+                    }
+                  else if(oldestVol <= 0.01)
+                    {
+                     // Cannot split minimum lot (0.01); protect trade by moving SL to Breakeven
+                     GlobalVariableSet(PartialTakenKey(), 1);
+                     m_trade.PositionModify(oldestTk, oldestOpenPx, PositionGetDouble(POSITION_TP));
+                     PrintFormat("TradeManager: breakeven stop set on #%I64u at %.2f (vol=%.2f)", oldestTk, oldestOpenPx, oldestVol);
+                    }
+                 }
+              }
+           }
+        }
+
       // FIXED baskets skip adds + profit target + profit lock entirely —
       // pure trend ride to a confirmed reversal or the shared stop, neither
       // of which lives in Manage() (reversal is OnSignal's close-and-open;
@@ -453,7 +907,47 @@ public:
       // the ride still WATCHES the ADR target level and tells the owner
       // (Telegram, with a tap-to-exit button) the first time it's crossed.
       // The ride itself continues; only the owner's tap ends it early.
-      if(GlobalVariableGet(BasketModeKey()) > 0.5)
+      // --- Heavy Reversal Exit & Peak Advance Tracking ---
+      long ptype = OwnType();
+      double currentPx = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                      : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double advance = (ptype == POSITION_TYPE_BUY) ? currentPx - m_lastEntryPrice
+                                                    : m_lastEntryPrice - currentPx;
+      double peakAdv = GlobalVariableGet(PeakAdvanceKey());
+      if(advance > peakAdv)
+        {
+         peakAdv = advance;
+         GlobalVariableSet(PeakAdvanceKey(), peakAdv);
+        }
+
+      if(m_reversalExitEnabled && atr_value > 0)
+        {
+         double minPeakPts = m_reversalMinPeakAtr * atr_value;
+         if(peakAdv >= minPeakPts)
+           {
+            double pullbackPts = peakAdv - advance;
+            double thresholdPts = m_reversalThresholdAtr * atr_value;
+            if(pullbackPts >= thresholdPts)
+              {
+               if(m_enableContinuationReentry)
+                 {
+                  GlobalVariableSet(ReentryArmedKey(), 1.0);
+                  GlobalVariableSet(ReentryDirKey(), (double)ptype);
+                  GlobalVariableSet(ReentryPriceKey(), currentPx);
+                 }
+               string revReason = StringFormat("heavy reversal exit (peak=%.1f ATR, pullback=%.1f ATR >= %.1f thr)",
+                                               peakAdv / atr_value, pullbackPts / atr_value, m_reversalThresholdAtr);
+               CloseAll(revReason);
+               return;
+              }
+           }
+        }
+
+      int bmode = (int)MathRound(GlobalVariableGet(BasketModeKey()));
+      // bmode: 0 = ADR, 1 = FIXED, 2 = HYBRID
+
+      // Pure FIXED baskets: alert on target and return (skip profit target close, profit lock, adds)
+      if(bmode == 1)
         {
          double cycleBalFixed = GlobalVariableGet(CycleKey());
          if(m_targetPct > 0 && cycleBalFixed > 0 &&
@@ -468,10 +962,17 @@ public:
            }
          return;
         }
-      // profit target: close everything at +targetPct of cycle-start balance
-      double cycleBal = GlobalVariableGet(CycleKey());
-      if(m_targetPct > 0 && cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
-        { CloseAll("profit target"); return; }
+
+      // ADR baskets: close everything at +targetPct of cycle-start balance
+      if(bmode == 0)
+        {
+         double cycleBal = GlobalVariableGet(CycleKey());
+         if(m_targetPct > 0 && cycleBal > 0 && BasketProfit() >= cycleBal * m_targetPct / 100.0)
+           { CloseAll("profit target"); return; }
+        }
+      // HYBRID baskets: Stage 1 has already banked 50% profit; the remaining runner
+      // does NOT exit on m_targetPct, but continues riding the trend freely!
+
       // proportional profit lock: once peak basket profit reaches TrailActivateR
       // times the per-trade risk budget, close the basket if profit falls back
       // to TrailLockPct% of that peak — locks in gains without a fixed target.
@@ -480,24 +981,56 @@ public:
          double profit = BasketProfit();
          double peak = GlobalVariableGet(PeakKey());
          if(profit > peak) { peak = profit; GlobalVariableSet(PeakKey(), peak); }
-         double riskBudget = GlobalVariableGet(CycleKey()) * m_risk.RiskPct() / 100.0;
+         double cycleBal = GlobalVariableGet(CycleKey());
+         double riskBudget = cycleBal * m_risk.RiskPct() / 100.0;
+         if(riskBudget <= 0 && (GlobalVariableGet(BasketModeKey()) > 0.5 || m_useFixedLot))
+           {
+            double initR = GlobalVariableGet(InitialRKey());
+            double tick_val = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+            double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+            if(tick_size > 0 && tick_val > 0)
+               riskBudget = m_fixedLots * (initR / tick_size) * tick_val;
+           }
          if(riskBudget > 0 && peak >= m_trailActivateR * riskBudget &&
             profit <= peak * m_trailLockPct / 100.0)
            { CloseAll("profit lock"); return; }
         }
+
       // pyramid: add only in profit, only while condition true, shrinking size
-      if(!m_pyramid || !m_addsAllowed || !conditionStillTrue || n >= m_maxPos) return;
+      double eqPyramid = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(eqPyramid <= 0) eqPyramid = AccountInfoDouble(ACCOUNT_BALANCE);
+      int maxAllowedPos = (bmode == 2) ? AdaptiveMaxPositions(eqPyramid) : m_maxPos;
+      if(!m_pyramid || !m_addsAllowed || !conditionStillTrue || n >= maxAllowedPos) return;
       if(BasketProfit() <= 0) return;               // never add in loss
-      long ptype = -1;
+      // In HYBRID mode: require that Leg 1 has already reached Stage 1 (partial profit banked and SL at BE)
+      if(bmode == 2 && GlobalVariableGet(PartialTakenKey()) < 0.5) return;
+      ptype = -1;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
          if(PositionGetTicket(i) > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
             PositionGetString(POSITION_SYMBOL) == _Symbol)
            { ptype = PositionGetInteger(POSITION_TYPE); break; }
       double price = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                                                   : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double advance = (ptype == POSITION_TYPE_BUY) ? price - m_lastEntryPrice
-                                                    : m_lastEntryPrice - price;
-      if(advance < m_addTriggerAtr * atr_value) return;
+      advance = (ptype == POSITION_TYPE_BUY) ? price - m_lastEntryPrice
+                                             : m_lastEntryPrice - price;
+      double needTriggerAtr = (n == 1) ? m_firstAddTriggerAtr : m_addTriggerAtr;
+      if(advance < needTriggerAtr * atr_value) return;
+
+      // S/R wall guard: NEVER add into an opposing support/resistance wall
+      if(m_srPyramidGuard && m_srZones != NULL)
+        {
+         string wallTier = "";
+         ENUM_SIGNAL addDir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+         double roomPts = m_srPyramidRoomAtr * atr_value;
+         int srVerdict = m_srZones.Verdict(addDir, price, roomPts, m_srTiers, wallTier);
+         if(srVerdict == 0)
+           {
+            PrintFormat("TradeManager: pyramid add BLOCKED — opposing %s wall within %.1f ATR",
+                        wallTier, m_srPyramidRoomAtr);
+            return;
+           }
+        }
+
       // Daily loss brake gates adds too — an add is NEW exposure. Manage()
       // deliberately bypasses CanEnter (window/exposure/spread must not
       // strand a live basket mid-management), so this one money gate is
@@ -509,7 +1042,22 @@ public:
       if(m_risk.NewsBlackout())
         { Print("TradeManager: pyramid add blocked — news blackout"); return; }
       double sl_points = m_stopAtrMult * atr_value / _Point;
-      double lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
+      double lots = 0.0;
+      if(bmode == 1 || m_useFixedLot)
+        {
+         lots = ClampToVolume(m_fixedLots * m_ratios[MathMin(n, 2)]);
+         if(lots <= 0) lots = ClampToVolume(m_fixedLots);
+        }
+      else if(bmode == 2)
+        {
+         // Hybrid pyramid add: scaled diminish from base size
+         lots = ClampToVolume(m_fixedLots * m_ratios[MathMin(n, 2)]);
+         if(lots <= 0) lots = ClampToVolume(0.01);
+        }
+      else
+        {
+         lots = m_risk.CalcLots(sl_points, m_ratios[MathMin(n, 2)]);
+        }
       if(lots <= 0) return;
       // Cap each add at 70% of the previous (newest existing) own leg's
       // size — adds must never outweigh veterans. Growing late legs were the
@@ -540,18 +1088,24 @@ public:
       // level right away, so the leg still needs its own stop from birth).
       double addSl = (ptype == POSITION_TYPE_BUY) ? price - m_stopAtrMult * atr_value
                                                   : price + m_stopAtrMult * atr_value;
+      ulong t0 = GetTickCount64();
       bool ok = (ptype == POSITION_TYPE_BUY) ? m_trade.Buy(lots, _Symbol, 0, addSl)
                                              : m_trade.Sell(lots, _Symbol, 0, addSl);
+      ulong execMs = GetTickCount64() - t0;
+      double fillPrice = m_trade.ResultPrice();
+      if(fillPrice <= 0.0) fillPrice = price;
+      double slippagePts = (ptype == POSITION_TYPE_BUY) ? (fillPrice - price) / _Point : (price - fillPrice) / _Point;
       if(ok)
         {
-         m_lastEntryPrice = price;
+         m_lastEntryPrice = fillPrice;
          RatchetBasketStop();
          if(m_sink != NULL)
            {
             string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-            m_sink.OnTradeEvent("add", dir, lots, price, addSl, "pyramid add",
+            m_sink.OnTradeEvent("add", dir, lots, fillPrice, addSl, "pyramid add",
                                 (long)m_trade.ResultOrder(), 0.0, BasketTargetPrice(),
-                                true, CurrentEntryModeStr());
+                                true, CurrentEntryModeStr(),
+                                slippagePts, (int)execMs, price);
            }
         }
      }

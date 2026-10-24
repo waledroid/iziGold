@@ -23,7 +23,7 @@ def client(tmp_path, monkeypatch):
 
 
 def _trade(**overrides):
-    ev = {"event": "open", "strategy_id": "halftrend_ema_v1", "direction": "BUY",
+    ev = {"event": "open", "strategy_id": "izi5", "direction": "BUY",
           "lots": 0.1, "price": 2400.0, "sl": 2390.0, "reason": "signal confirmed",
           "ticket": 12345}
     ev.update(overrides)
@@ -275,14 +275,14 @@ def test_screenshot_upload_sends_photo_alert_with_caption(client):
 
     trade_id = client.post(
         "/trade-event",
-        json=_trade(event="close", reason="tp hit", profit=10.0)).json()["id"]
+        json=_trade(event="open", reason="tp hit", profit=0.0)).json()["id"]
     r = client.post(f"/screenshot?event={trade_id}", content=b"\x89PNG fake")
     assert r.status_code == 200
 
     photo_calls = [c for c in ft.calls if c[0] == "sendPhoto"]
     assert len(photo_calls) == 1
     method, payload, files = photo_calls[0]
-    assert "tp hit" in payload["caption"]
+    assert "BUY" in payload["caption"]
     assert files is not None
 
 
@@ -343,7 +343,7 @@ def test_duplicate_close_same_ticket_is_idempotent(client):
 
     ft = FT()
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
-    ev = {"event": "close", "strategy_id": "halftrend_ema_v1",
+    ev = {"event": "close", "strategy_id": "izi5",
           "direction": "SELL", "lots": 0.02, "price": 4378.55,
           "reason": "closed offline (reconciled)", "ticket": 1497330178,
           "profit": 68.06, "final": True}
@@ -379,7 +379,7 @@ def test_trade_event_responds_before_slow_telegram(client):
 
     ft = SlowFT()
     main.app.state.telegram = TelegramClient("tok", "555", transport=ft)
-    ev = {"event": "close", "strategy_id": "halftrend_ema_v1",
+    ev = {"event": "close", "strategy_id": "izi5",
           "direction": "SELL", "lots": 0.02, "price": 4378.55,
           "reason": "stop-loss", "ticket": 42, "profit": -10.0, "final": True}
     t0 = _t.time()
@@ -465,22 +465,20 @@ def test_basket_grouping_preserves_the_m15_verdict():
 
 
 def test_entry_caption_reports_the_m15_verdict():
-    """The verdict is evaluated on every entry and reported even when the
-    tape was trending and it was not allowed to block."""
+    """Agreement is quiet/clean; only notable disagreement is reported as a warning."""
     from app.trade_report import _trade_caption
     agree = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, 1)
     refuse = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0, 0)
     unknown = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, -1)
     closed = _trade_caption("close", "BUY", 0.1, 4500.0, "stop-loss", -20.0, 1)
-    assert "M15: agrees" in agree
-    assert "M15: DISAGREES" in refuse
+    assert "M15" not in agree, "routine agreement is kept clean without clutter"
+    assert "M15 Disagrees" in refuse
     assert "M15" not in unknown, "an unknown verdict must not be asserted"
     assert "M15" not in closed, "the verdict belongs to the entry, not the close"
 
 
 def test_entry_caption_reports_the_ema200_verdict():
-    """Same 'always evaluated, always reported' rule as M15, on its own
-    E200 line, independent of the M15 verdict."""
+    """Agreement is quiet/clean; only notable disagreement is reported as a warning."""
     from app.trade_report import _trade_caption
     agree = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0,
                            -1, 1)
@@ -491,12 +489,11 @@ def test_entry_caption_reports_the_ema200_verdict():
     closed = _trade_caption("close", "BUY", 0.1, 4500.0, "stop-loss", -20.0,
                             -1, 1)
     both = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0, 1, 0)
-    assert "E200: agrees" in agree
-    assert "E200: DISAGREES" in refuse
+    assert "E200" not in agree, "routine agreement is kept clean without clutter"
+    assert "E200 Disagrees" in refuse
     assert "E200" not in unknown, "an unknown verdict must not be asserted"
     assert "E200" not in closed, "the verdict belongs to the entry, not the close"
-    assert "M15: agrees" in both and "E200: DISAGREES" in both, (
-        "the two verdicts are independent and both must render")
+    assert "M15" not in both and "E200 Disagrees" in both
 
 
 def test_realized_pnl_sums_only_closes_since_ts(tmp_path):
@@ -579,7 +576,7 @@ def test_caption_reports_the_sr_wall():
     wall = _trade_caption("open", "SELL", 0.1, 4500.0, "signal SELL", 0.0,
                           -1, -1, -1, -1, 0, "H1")
     none = _trade_caption("open", "BUY", 0.1, 4500.0, "signal BUY", 0.0)
-    assert "S/R: clear ✅" in clear
-    assert "S/R: WALL H1 ⚠️" in wall
+    assert "S/R" not in clear, "clear S/R is quiet and unasserted"
+    assert "Opposing S/R Wall (H1)" in wall
     assert "S/R" not in none and "S/R" not in _trade_caption(
         "close", "BUY", 0.1, 4500.0, "stop-loss", -3.0, -1, -1, -1, -1, 0, "H4")

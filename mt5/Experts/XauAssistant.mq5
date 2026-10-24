@@ -20,16 +20,23 @@
 #include <XauAssistant/ChartPanels.mqh>
 #include <XauAssistant/Reconciler.mqh>
 #include <XauAssistant/UiSink.mqh>
+#include <XauAssistant/VolumeProfile.mqh>
 
 enum ENUM_EXEC_MODE { EXEC_MANUAL, EXEC_AUTO };
 
 input ENUM_EXEC_MODE ExecutionMode          = EXEC_AUTO;   // AUTO on attach (owner 2026-08-20). NOTE: the SERVICE is the authority — it sends `mode` every heartbeat and the EA obeys; this input only sets the mode until the first heartbeat lands.
 input bool           AllowLiveTrading       = true;    // owner 2026-08-20: drag-and-go. WARNING: this is the ONLY gate stopping AUTO from trading a REAL account on attach. Set false to restore it.
-input ENUM_TIMEFRAMES TradeTimeframe        = PERIOD_M5; // trading TF — chart TF is visual only
+input ENUM_TIMEFRAMES TradeTimeframe        = PERIOD_M15; // trading TF — chart TF is visual only
 input string         ApiUrl                 = "http://127.0.0.1:9000/analyze";
 input int            ApiTimeoutMs           = 3000;
 input string         UiBaseUrl              = "http://127.0.0.1:9000";
-input int            HeartbeatSec           = 5;
+// How the EA reaches the service. AUTO probes /health once and picks the
+// working path, falling back to the file relay if WebRequest is refused (4014).
+// On Linux/Wine the WebRequest allowlist does not persist across restarts, so
+// the relay is what keeps the EA connected with no GUI work; on native Windows
+// HTTP wins and nothing changes.
+input ENUM_XAU_TRANSPORT TransportMode      = XAU_TRANSPORT_AUTO;
+input int            HeartbeatSec           = 1;       // live service/UI heartbeat; DB persistence is downsampled
 input int            UiTimeoutMs            = 1000;
 input double         RiskPerTradePct        = 1.0; // raised 0.5→1.0 on 2026-08-09: week sweep +$610 vs +$421 at DD 7.2% vs 3.8%; 1.5%+ trips the kill switch
 input double         MaxDrawdownPct         = 10.0;
@@ -39,27 +46,40 @@ input int            NewsBlackoutMin        = 30;  // blackout radius: minutes b
 input bool           EnablePyramiding       = true;
 input int            MaxPositions           = 3;
 input double         AddTriggerATR          = 1.0;
+input double         FirstAddTriggerATR     = 3.0;  // first pyramid add needs 3x ATR from entry; later adds keep AddTriggerATR
 input double         ProfitTargetPct        = 2.0;  // basket banks at +2% of cycle balance; 0 = off
 input double         TrailLockPct           = 50;  // keep this % of peak basket profit once armed; 0 = off
 input double         TrailActivateR         = 1.0; // arm lock when peak profit >= this multiple of the per-trade risk budget
 input double         StopAtrMult            = 2.0;
 input double         MaxSpreadPoints        = 500;
 input int            TradingWindowStartHour = 4;   // server time; skips rollover (23-01) + thin Tokyo open (01-04)
-input int            TradingWindowEndHour   = 23;  // rollover/maintenance 23-01 stays excluded (hostile spreads)
-input int            MaxDailyExposureMin    = 360; // 6h/day: fits one long trend ride + normal trades (raised from 180 after it blocked post-win entries, 2026-08-07)
+input int            TradingWindowEndHour   = 22;  // pre-rollover hour (22-23 server) cut: backtest 17mo showed it is the single worst hour (-$1.3k); window 4-22 nets +133% vs +90% at 4-23
+input int            MaxDailyExposureMin    = 0;   // daily open-position minutes budget; 0 = off / unlimited
 input int            FlattenBeforeBreakMin  = 5;   // close ALL positions this many min before the 23:59 break; 0 = off
 input double         AdxTrendThreshold      = 10.0; // near-permissive: week sweep 2026-08-06 showed 10 beats 20/25 on P/L AND drawdown; blocks only dead-flat tape
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
 input bool           ApplyChartTheme        = true;
 
-enum ENUM_ENTRY_MODE { ENTRY_ADR = 0, ENTRY_FIXED = 1 };
-input ENUM_ENTRY_MODE EntryMode  = ENTRY_ADR;  // ADR = 1% risk + adds/targets; FIXED = fixed lots, pure ride
-input double          FixedLots  = 0.05;       // FIXED-mode entry size (broker-clamped)
+enum ENUM_ENTRY_MODE { ENTRY_ADR = 0, ENTRY_FIXED = 1, ENTRY_HYBRID = 2 };
+input ENUM_ENTRY_MODE EntryMode  = ENTRY_HYBRID; // ADR = 1% risk; FIXED = 0.03; HYBRID = risk-calibrated 0.03 + 1.5R partial bank + runner
+input bool           UseFixedLot = false;        // force fixed lot sizing (false lets EntryMode rule)
+input double         FixedLots   = 0.03;         // fixed trade size (broker-clamped, default 0.03)
 
-input string ActiveStrategy = "halftrend_ema_v1"; // which registered strategy trades
+input group "Trade Protection & Reversal Management"
+input bool           SrPyramidGuard            = true; // lock out pyramid adds near opposing S/R walls
+input double         SrPyramidRoomAtr          = 1.0;  // block pyramid add if opposing S/R wall is within this ATR
+input bool           EnablePartialScaleOut     = true; // reap 50% profit at 1.5R or opposing S/R wall + move SL to BE
+input double         PartialScaleOutR          = 1.5;  // partial scale-out target in R-multiples
+input double         PartialScaleOutPct        = 0.50; // fraction of position to close on partial scale-out
+input bool           EnableReversalExit        = true; // exit basket on heavy pullback from profit peak
+input double         ReversalMinPeakAtr        = 1.5;  // minimum peak ATR advance required before reversal exit arms
+input double         ReversalThresholdAtr      = 1.0;  // pullback ATR from peak that triggers reversal exit
+input bool           EnableContinuationReentry = true; // re-enter when trend resumes after heavy reversal exit
 
-input group "HalfTrend M5 (halftrend_ema_v1)"
+input string ActiveStrategy = "iziGold15"; // which registered strategy trades
+
+input group "Gold M5 (iziGold5)"
 input int    HtAmplitude    = 4;                  // Half Trend amplitude
 input int    EmaLength      = 55;                 // confirmation EMA
 input int    ConfirmCloses  = 2;                  // waiting bars after the HT arrow; entry bar (next) must OPEN beyond EMA, else signal dead until next flip (2 since 2026-08-20: 1 backtested worst in every window)
@@ -70,13 +90,13 @@ input double CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal cl
 input bool   HtfConfirm     = true;       // require higher-TF agreement before an entry: BUY needs price ABOVE the HTF EMA, SELL below (2026-08-20)
 input ENUM_TIMEFRAMES HtfConfirmTf = PERIOD_M15;  // the agreeing timeframe (M15 while trading M5)
 input int    HtfConfirmEma  = 55;        // EMA length on HtfConfirmTf, read at shift 1 (last CLOSED HTF bar)
-input bool   HtfChopOnly    = true;      // run the M15 check ONLY in choppy tape; in a trend it does not gate at all (2026-08-21)
+input bool   HtfChopOnly    = false;     // strengthened HTF filter: gate ALWAYS on higher-TF EMA (false = gate all day, true = in chop only)
 input int    HtfChopBars    = 48;        // path-efficiency window, trade-TF bars (48 = 4h of M5)
 input double HtfChopEffMax  = 0.08;      // below this efficiency the tape counts as choppy; 0.06-0.10 measured as one plateau
 input double HtfConfirmBufferATR = 2.0;  // price must CLEAR that EMA by this x ATR(14); 0 = side-only (pre-2026-08-20). 2.0 = middle of the 1.0-5.0 plateau that is profitable in BOTH backtest halves
 input bool   Ema200Confirm  = false;     // EMA-200 (own timeframe) agreement: BUY needs price above EMA200, SELL below (2026-08-22). ALWAYS evaluated/reported (M15 column's E200); this only controls whether it may BLOCK an entry -- default off, per owner "switch off by default ... we get them in reporting"
 
-input group "HalfTrend M15 (halftrend_m15_v1) — second lane, owner runs ONE at a time via ActiveStrategy"
+input group "Gold M15 (iziGold15) — second lane, owner runs ONE at a time via ActiveStrategy"
 input int    M15Amplitude    = 4;                  // Half Trend amplitude (same as M5 default)
 input int    M15EmaLength    = 50;                 // confirmation EMA. 45→50 on 2026-08-31 (owner request, sweep-checked same day: 50 nets +$10,069 vs 45's +$9,945 over 17 mo, better in BOTH halves, same dd — 45/50 sit on one plateau). 55→45 history: 2026-08-27 sweep, "55 calls the entry late on M15"
 input int    M15ConfirmCloses = 1;                 // waiting bars after the HT arrow (M5 uses 2). 2026-08-25 trend-rider sweep (FIXED ride, 30 configs x 3 windows): confirm 1 + 1.5 ATR stop = +$9,674/17mo, BOTH halves positive, lowest dd ($1,365) — old 3 was tuned for ADR/target style and loses H1 in ride mode
@@ -91,6 +111,28 @@ input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal
 input bool   M15Ema200Confirm = false;   // EMA-200 (own timeframe) agreement, same rule as M5's Ema200Confirm above; default off
 input bool   M15RsiConfirm    = true;    // RSI(14) 70/30 agreement may BLOCK an M15 entry (owner "go" 2026-09-07). Sweep 2026-09-02: +7% net at -33% max dd, better in BOTH halves; the 2026-09-07 oversold SELL (RSI 26) that lost the day would have been refused. The M5 lane is NOT eligible (fails both halves) and only reports. Service /agree override wins over this input.
 input bool   M15EnableAdds    = false;   // pyramid adds on the M15 lane (owner "go" 2026-09-07). false = pure ride, the recipe every trusted M15 number was measured on; the live ADR add + halfway ratchet turned a -$16 ride exit into -$56 on 2026-09-07. Global EnablePyramiding still applies. Service /agree override wins.
+
+input group "Bitcoin M5 (iziBit5) — BTC/USDT M5 lane"
+input int    Btc5Amplitude          = 4;                  // Half Trend amplitude
+input int    Btc5EmaLength          = 55;                 // confirmation EMA
+input int    Btc5ConfirmCloses      = 2;                  // waiting bars after HT arrow
+input double Btc5StopBufferATR      = 1.0;                // pad wick stop by k*ATR
+input int    Btc5HtfConfirmEma      = 55;                 // higher-TF bias EMA
+input double Btc5HtfConfirmBufferATR= 1.5;                // price must clear higher-TF EMA by this x ATR
+input double Btc5HtfChopEffMax      = 0.08;               // chop threshold
+input int    Btc5HtfChopBars        = 48;                 // chop path window
+
+input group "Bitcoin M15 (iziBit15) — BTC/USDT M15 lane"
+input int    Btc15Amplitude         = 4;                  // Half Trend amplitude
+input int    Btc15EmaLength         = 50;                 // confirmation EMA
+input int    Btc15ConfirmCloses     = 1;                  // waiting bars after HT arrow
+input double Btc15ConfirmClearATR   = 0.3;                // confirm close must clear EMA by k*ATR
+input double Btc15StopBufferATR     = 1.75;               // pad wick stop by k*ATR
+
+input group "Multi-Asset Coexistence & Auto-Spawn"
+input bool            AutoSpawnBtcChart      = true;     // Auto-spawn BTC chart if not open (runs once on Gold instance)
+input string          BtcPreferredSymbol     = "BTCUSD"; // Preferred Bitcoin symbol name
+input ENUM_TIMEFRAMES BtcTimeframe           = PERIOD_M5;  // Timeframe for spawned Bitcoin chart
 
 input group "BollStochRsi (boll_stochrsi)"
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
@@ -113,16 +155,19 @@ input int    SsShortStartHour = -1;  // PM-fix fade SHORT, -1 = off. The academi
 input int    SsShortEndHour  = -1;
 
 input group "Chart panels — plugin indicators below the candles (display only)"
-input bool   ShowRsiPanel  = true;   // attach RSI(14) in its own subwindow (chart TF); false = remove
-input bool   ShowMacdPanel = true;   // attach MACD(12,26,9) in its own subwindow (chart TF); false = remove
+input bool   ShowRsiPanel  = false;  // RSI removed from charts; true re-attaches RSI(14) in its own subwindow (chart TF)
+input bool   ShowMacdPanel = false;  // MACD removed from charts; true re-attaches MACD(12,26,9) in its own subwindow (chart TF)
 
-input group "S/R zones — three timeframe tiers drawn as boxes (spec 2026-09-05); REPORT-ONLY, never blocks"
-input bool   ShowSrBoxes     = true;          // draw the zone boxes on the chart (light blue support / light yellow resistance)
-input string SrTiers         = "H4,H1,M15";   // tiers the verdict honours (drawing always shows all three)
-input double SrRoomAtr       = 1.0;           // "wall" = opposing box within this x ATR(14, lane TF) of the entry, or containing it
-input int    SrPivotWing     = 3;             // fractal wing: bars each side a swing must dominate
-input double SrMinHeightAtr  = 0.15;          // box height floor, x tier ATR(14)
-input double SrMaxHeightAtr  = 0.60;          // box height cap, x tier ATR(14)
+input group "S/R zones — three timeframe tiers drawn as outlines (spec 2026-09-05); REPORT-ONLY, never blocks"
+input bool   ShowSrBoxes          = true;          // draw the zone outlines on the chart (light blue support / light yellow resistance; no fill)
+input bool   SrNearestOnly        = true;          // battleground filter: draw only nearest active Resistance & Support (eliminates screen clutter)
+input int    SrMaxSpanBars        = 40;            // max historical bars to span backwards (0 = full history; 40 keeps chart clean)
+input double SrVisualMaxHeightPts = 250;           // max visual box height in points (250 pts = $2.50 / 25 pips; 0 = uncapped)
+input string SrTiers              = "H4,H1,M15";   // tiers the verdict honours (drawing always shows all three)
+input double SrRoomAtr            = 1.0;           // "wall" = opposing box within this x ATR(14, lane TF) of the entry, or containing it
+input int    SrPivotWing          = 3;             // fractal wing: bars each side a swing must dominate
+input double SrMinHeightAtr       = 0.05;          // box height floor, x tier ATR(14) (reduced from 0.15 for precision)
+input double SrMaxHeightAtr       = 0.20;          // box height cap, x tier ATR(14) (reduced from 0.60 for precision)
 input double SrMergeAtr      = 0.50;          // a pivot within this of a box merges into it (adds a touch)
 input double SrBreakAtr      = 0.50;          // a CLOSE beyond a box by this kills it (a wick does not)
 input int    SrKeepPerRole   = 3;             // nearest boxes kept per role per tier (3 -> at most 18 boxes)
@@ -130,15 +175,27 @@ input int    SrLookbackH4    = 300;           // seeding depth per tier, tier ba
 input int    SrLookbackH1    = 400;
 input int    SrLookbackM15   = 400;
 
+input group "Volume Profile (VPVR)"
+input bool            ShowVolumeProfile = true;   // Draw Volume Profile on chart
+input ENUM_VP_ANCHOR  VpAnchor          = VP_ANCHOR_RIGHT_MARGIN; // Alignment: RIGHT_MARGIN (unobstructed candles), RANGE_BG, or ENTRY_BAR
+input ENUM_VP_THEME   VpTheme           = VP_THEME_INSTITUTIONAL; // Palette: INSTITUTIONAL (slate/gold) or NEON_CLASSIC
+input bool            VpShowDelta       = true;   // Show buy (emerald) vs sell (crimson) volume delta split
+input int             VpLookbackBars    = 100;    // Lookback bars for Volume Profile calculation
+input int             VpBins            = 28;     // Price bucket count
+input double          VpValueAreaPct    = 0.70;   // Value Area volume percentage (0.70 = 70%)
+input int             VpMaxBarWidth     = 16;     // Max histogram bar width in chart bars
+
 CStrategyRegistry g_registry;
 CAlerts        g_alerts;
 CAiApi         g_api;
 CUiApi         g_ui;
+CTransport     g_transport;
 CSignalManager g_sm;
 CNewsGuard     g_news;
 CRiskManager   g_risk;
 CTradeManager  g_trades;
 CTradeBoxes    g_tradeBoxes;
+CVolumeProfile g_volumeProfile;
 int            g_atrHandle = INVALID_HANDLE;
 CChartPanels   g_chartPanels;
 CSrZoneSet     g_srZones;   // shared by every lane: zones are not lane-specific
@@ -166,10 +223,18 @@ datetime       g_lastBar = 0;
 bool           g_debugFired = false;
 string         g_pendingSwitch = "";
 ENUM_EXEC_MODE g_execMode = EXEC_MANUAL;
+// Supervisory-agent governor: when true, NEW auto entries are refused while
+// open-basket management, exits and every risk gate keep working. Distinct
+// from MANUAL mode on purpose (the owner's mode is not overwritten).
+bool g_agentPaused = false;
+// Effective heartbeat interval. MT5 keeps a chart EA's SAVED input values
+// across recompiles, so a changed source default never reaches a running
+// instance; the service is authoritative and the EA re-arms its timer.
+int g_heartbeatSec = 0;
 ENUM_ENTRY_MODE g_entryMode = ENTRY_ADR;
 
 // --- Per-bar spread telemetry (ea-scope spec §3) ---------------------------
-// OnTimer samples SYMBOL_SPREAD every HeartbeatSec (5 s) into an
+// OnTimer samples SYMBOL_SPREAD every HeartbeatSec (1 s) into an
 // accumulator; when OnTick sees a new bar it snapshots the accumulator as
 // the CLOSED bar's min/avg/max (posted with /analyze) and resets it for the
 // forming bar. All zeros when no samples landed (fresh attach, weekend).
@@ -274,9 +339,9 @@ int OnInit()
    srp.wing = SrPivotWing; srp.minHeightAtr = SrMinHeightAtr; srp.maxHeightAtr = SrMaxHeightAtr;
    srp.mergeAtr = SrMergeAtr; srp.breakAtr = SrBreakAtr; srp.keepPerRole = SrKeepPerRole;
    g_srZones.Init(srp, SrLookbackH4, SrLookbackH1, SrLookbackM15);
-   g_srBoxes.Init(&g_srZones, ShowSrBoxes);
+   g_srBoxes.Init(&g_srZones, ShowSrBoxes, SrNearestOnly, SrMaxSpanBars, SrVisualMaxHeightPts);
    g_registry.Register(new CStrategy());   // "stub" — kept as a shadow baseline
-   CHalfTrendEmaStrategy *laneM5 = new CHalfTrendEmaStrategy("halftrend_ema_v1", TradeTimeframe, HtAmplitude, EmaLength,
+   CHalfTrendEmaStrategy *laneM5 = new CHalfTrendEmaStrategy("iziGold5", PERIOD_M5, HtAmplitude, EmaLength,
                        ConfirmCloses, StopBufferATR,
                        CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
                        HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR,
@@ -291,7 +356,7 @@ int OnInit()
    // this lane (owner 2026-08-22: "for this m15 the only confirmation is the
    // ema 200") -- htfConfirm=false with placeholder HTF args that are never
    // used (no M15Htf* inputs exist to source them from any more).
-   CHalfTrendEmaStrategy *laneM15 = new CHalfTrendEmaStrategy("halftrend_m15_v1", PERIOD_M15, M15Amplitude, M15EmaLength,
+   CHalfTrendEmaStrategy *laneM15 = new CHalfTrendEmaStrategy("iziGold15", PERIOD_M15, M15Amplitude, M15EmaLength,
                        M15ConfirmCloses, M15StopBufferATR,
                        M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
                        false, PERIOD_H1, 55, 0.0, false, 48, 0.08, M15Ema200Confirm,
@@ -300,45 +365,99 @@ int OnInit()
                        M15EnableAdds, true);     // adds switchable on this lane only
    laneM15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
    g_registry.Register(laneM15);
-   g_registry.Register(new CBollStochRsiStrategy(TradeTimeframe, BbPeriod, BbDev, TrendCloses,
-                       SqueezeLookback, SqueezePctile, ExpansionBars,
-                       RsiPeriod, StochPeriod, KSmooth, DSmooth));
-   // Session-structure drift shadow (research 2026-08-30): long the Asia
-   // drift window, evidence in SessionStructure.mqh's header. Shadow-only
-   // until its SQLite hit-rate earns more; NOTE if ever made active, the
-   // shared TradingWindowStartHour=4 blocks its 01-04 entries — the window
-   // input must be widened deliberately (spreads at 01-04 are hostile,
-   // which is WHY those hours were excluded; the drift may not survive them).
-   g_registry.Register(new CSessionStructureStrategy(TradeTimeframe,
-                       SsWin1StartHour, SsWin1EndHour,
-                       SsWin2StartHour, SsWin2EndHour,
-                       SsShortStartHour, SsShortEndHour));
-   if(!g_registry.SetActive(ActiveStrategy))
+
+   // Bitcoin M5 lane (iziBit5)
+   CHalfTrendEmaStrategy *laneBtc5 = new CHalfTrendEmaStrategy("iziBit5", PERIOD_M5, Btc5Amplitude, Btc5EmaLength,
+                       Btc5ConfirmCloses, Btc5StopBufferATR,
+                       CatchupEnabled, CatchupMaxAgeBars, CatchupMaxChaseATR,
+                       HtfConfirm, HtfConfirmTf, Btc5HtfConfirmEma, Btc5HtfConfirmBufferATR,
+                       HtfChopOnly, Btc5HtfChopBars, Btc5HtfChopEffMax, Ema200Confirm);
+   laneBtc5.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   g_registry.Register(laneBtc5);
+
+   // Bitcoin M15 lane (iziBit15)
+   CHalfTrendEmaStrategy *laneBtc15 = new CHalfTrendEmaStrategy("iziBit15", PERIOD_M15, Btc15Amplitude, Btc15EmaLength,
+                       Btc15ConfirmCloses, Btc15StopBufferATR,
+                       M15CatchupEnabled, M15CatchupMaxAgeBars, M15CatchupMaxChaseATR,
+                       false, PERIOD_H1, 55, 0.0, false, 48, 0.08, M15Ema200Confirm,
+                       Btc15ConfirmClearATR,
+                       M15RsiConfirm, true,
+                       M15EnableAdds, true);
+   laneBtc15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   g_registry.Register(laneBtc15);
+
+   string effectiveStrat = ActiveStrategy;
+   long   effectiveMagic = MagicNumber;
+
+   // Multi-Asset smart defaults (Gold vs Bitcoin):
+   // If attached to a Bitcoin chart, default to iziBit5 (or iziBit15 if M15 chart)
+   // and offset MagicNumber so both Gold and BTC instances operate concurrently.
+   if(StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0)
      {
-      g_alerts.Notify("XauAssistant: unknown ActiveStrategy '" + ActiveStrategy + "'");
+      if(effectiveStrat == "izi5" || effectiveStrat == "izi15" ||
+         effectiveStrat == "iziGold5" || effectiveStrat == "iziGold15" ||
+         effectiveStrat == "iziBit5" || effectiveStrat == "iziBit15")
+        {
+         effectiveStrat = (Period() == PERIOD_M15) ? "iziBit15" : "iziBit5";
+        }
+      if(effectiveMagic == 20260729)
+         effectiveMagic = 20260730;
+     }
+   else
+     {
+      // Gold chart: map legacy aliases or select default based on chart timeframe
+      if(effectiveStrat == "izi5") effectiveStrat = "iziGold5";
+      else if(effectiveStrat == "izi15") effectiveStrat = "iziGold15";
+      else if(effectiveStrat == "iziBit5" || effectiveStrat == "iziBit15")
+        {
+         effectiveStrat = (Period() == PERIOD_M15) ? "iziGold15" : "iziGold5";
+        }
+      else if(effectiveStrat == "iziGold5" && Period() == PERIOD_M15)
+        {
+         effectiveStrat = "iziGold15";
+        }
+     }
+
+   if(!g_registry.SetActive(effectiveStrat))
+     {
+      g_alerts.Notify("iziBot: unknown ActiveStrategy '" + effectiveStrat + "'");
       return INIT_FAILED;
      }
    g_recon.MigrateGlobalKeys();
    if(ApplyChartTheme) ApplyDarkTheme();
+
+   // Chart view configuration: shift end of chart from right border (20% margin) + autoscroll
+   ChartSetInteger(0, CHART_SHIFT, true);
+   ChartSetDouble(0, CHART_SHIFT_SIZE, 20.0);
+   ChartSetInteger(0, CHART_AUTOSCROLL, true);
    g_registry.Active().EnablePaint(true);
-   g_api.Init(ApiUrl, ApiTimeoutMs, TradeTimeframe);
-   g_ui.Init(UiBaseUrl, UiTimeoutMs, MagicNumber, TradeTimeframe);
-   g_recon.Init(MagicNumber, &g_ui, ActiveStrategy);
-   g_uiSink.Init(&g_registry, &g_ui, &g_tradeBoxes, &g_recon, &g_news);
+   ENUM_TIMEFRAMES activeTf = TradeTimeframe;
+   if(g_registry.Active() != NULL && g_registry.Active().TradeTf() != PERIOD_CURRENT)
+      activeTf = g_registry.Active().TradeTf();
+   g_transport.Init(UiBaseUrl, MathMax(ApiTimeoutMs, UiTimeoutMs), TransportMode);
+   g_api.Init(GetPointer(g_transport), ApiTimeoutMs, activeTf);
+   g_ui.Init(GetPointer(g_transport), UiTimeoutMs, effectiveMagic, activeTf);
+   g_recon.Init(effectiveMagic, &g_ui, effectiveStrat);
+   g_volumeProfile.Init(ShowVolumeProfile, VpLookbackBars, VpBins, VpValueAreaPct, VpAnchor, VpTheme, VpShowDelta, VpMaxBarWidth);
+   g_uiSink.Init(&g_registry, &g_ui, &g_tradeBoxes, &g_recon, &g_news, &g_volumeProfile);
    // Key shapes are settled (MigrateGlobalKeys) and g_ui is initialized
    // (base URL/timeout) — safe to back-fill any offline closes now.
    g_recon.ReconcileOfflineCloses();
    g_news.Init(NewsGuardEnabled, NewsBlackoutMin);
    g_risk.Init(RiskPerTradePct, MaxDrawdownPct, MaxSpreadPoints, AdxTrendThreshold,
                TradingWindowStartHour, TradingWindowEndHour, MaxDailyExposureMin,
-               MaxDailyLossPct, MagicNumber, TradeTimeframe, &g_news);
-   g_trades.Init(&g_risk, MagicNumber, EnablePyramiding, MaxPositions,
-                 AddTriggerATR, ProfitTargetPct, StopAtrMult,
+               MaxDailyLossPct, effectiveMagic, TradeTimeframe, &g_news);
+   g_trades.Init(&g_risk, effectiveMagic, EnablePyramiding, MaxPositions,
+                 AddTriggerATR, FirstAddTriggerATR, ProfitTargetPct, StopAtrMult,
                  TrailLockPct, TrailActivateR, &g_uiSink);
+   g_trades.SetSrZones(&g_srZones, SrTiers, SrPyramidRoomAtr, SrPyramidGuard);
+   g_trades.SetFixedSizing(UseFixedLot || (g_entryMode == ENTRY_FIXED), FixedLots);
+   g_trades.SetPartialScaleOut(EnablePartialScaleOut, PartialScaleOutR, PartialScaleOutPct);
+   g_trades.SetReversalExit(EnableReversalExit, ReversalMinPeakAtr, ReversalThresholdAtr, EnableContinuationReentry);
    // Re-arm chart box tracking if a basket was already open before this
    // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
    // otherwise the live box would never receive its final OnClose.
-   g_tradeBoxes.RecoverFromPositions(MagicNumber);
+   g_tradeBoxes.RecoverFromPositions(effectiveMagic);
    // Repaint fix (2026-08-26): g_lastBar survives a chart-timeframe switch
    // (MQL5 keeps module globals on REASON_CHARTCHANGE), so after OnDeinit
    // wiped the painted lines, OnTick's new-bar gate would defer the
@@ -348,8 +467,10 @@ int OnInit()
    // the already-guarded recompile/restart path.
    g_lastBar = 0;
    SyncAtrToActiveLane();
+   if(ShowVolumeProfile) g_volumeProfile.DrawOnEntry(0, 0, VpLookbackBars);
    g_chartPanels.Init(ShowRsiPanel, ShowMacdPanel);
-   EventSetTimer(HeartbeatSec);
+   g_heartbeatSec = (HeartbeatSec >= 1 && HeartbeatSec <= 60) ? HeartbeatSec : 1;
+   EventSetTimer(g_heartbeatSec);
    if(Period() != TradeTimeframe)
       PrintFormat("XauAssistant: trading TF %s (chart %s — visual only)",
                   StringSubstr(EnumToString(TradeTimeframe), 7),
@@ -360,7 +481,11 @@ int OnInit()
 void OnTick()
   {
    if(!IsOwner()) return;   // superseded — OnTimer will remove this instance
-   datetime bar = iTime(_Symbol, TradeTimeframe, 0);
+   ENUM_TIMEFRAMES barTf = TradeTimeframe;
+   CStrategy *active = g_registry.Active();
+   if(active != NULL && active.TradeTf() != PERIOD_CURRENT)
+      barTf = active.TradeTf();
+   datetime bar = iTime(_Symbol, barTf, 0);
    if(bar == 0 || bar == g_lastBar) return;   // 0 = transient resync (non-chart-TF series); act once per new bar
    g_lastBar = bar;
    RollSpreadBar();               // freeze the closed bar's spread aggregates
@@ -426,6 +551,139 @@ void OnTimer()
          ChartClose(cid);
         }
      }
+
+   // One-shot auto-spawn of Bitcoin chart from the Gold instance
+   static bool g_btcSpawnChecked = false;
+   if(AutoSpawnBtcChart && !g_btcSpawnChecked && (StringFind(_Symbol, "XAU") >= 0 || StringFind(_Symbol, "xau") >= 0))
+     {
+      g_btcSpawnChecked = true;
+      bool btcRunning = false;
+      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+        {
+         string sym = ChartSymbol(cid);
+         if(StringFind(sym, "BTC") >= 0 || StringFind(sym, "btc") >= 0)
+           {
+            string ea = ChartGetString(cid, CHART_EXPERT_NAME);
+            if(ea != "")
+              {
+               btcRunning = true;
+               break;
+              }
+            else
+              {
+               PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
+               bool ok = ChartApplyTemplate(cid, "iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "XauAssistant.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\XauAssistant.tpl");
+               if(ok)
+                 {
+                  btcRunning = true;
+                  break;
+                 }
+               else
+                 {
+                  PrintFormat("XauAssistant: ChartApplyTemplate failed on chart %I64d (err=%d)", cid, GetLastError());
+                 }
+              }
+           }
+        }
+      if(!btcRunning)
+        {
+         string btcCandidates[] = {BtcPreferredSymbol, "BTCUSD", "BTCUSDT", "BTCUSD.a", "BTCUSDm", "BTCUSDto"};
+         string btcSym = "";
+         bool is_custom = false;
+         for(int i = 0; i < ArraySize(btcCandidates); i++)
+           {
+            if(SymbolExist(btcCandidates[i], is_custom))
+              {
+               btcSym = btcCandidates[i];
+               break;
+              }
+           }
+         if(btcSym != "")
+           {
+            SymbolSelect(btcSym, true);
+            long btcCid = ChartOpen(btcSym, BtcTimeframe);
+            if(btcCid > 0)
+              {
+               PrintFormat("iziBot: auto-spawned %s %s chart (id %I64d)",
+                           btcSym, EnumToString(BtcTimeframe), btcCid);
+               bool ok = ChartApplyTemplate(btcCid, "iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(btcCid, "XauAssistant.tpl");
+               if(!ok) ok = ChartApplyTemplate(btcCid, "\\Files\\iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(btcCid, "\\Files\\XauAssistant.tpl");
+               if(!ok) PrintFormat("XauAssistant: ChartApplyTemplate failed on %I64d (err=%d)", btcCid, GetLastError());
+              }
+           }
+         else
+           {
+            Print("iziBot: auto-spawn BTC skipped (no matching Bitcoin symbol found in Market Watch)");
+           }
+        }
+     }
+
+   // One-shot auto-spawn of Gold M15 chart from the Bitcoin instance
+   static bool g_xauSpawnChecked = false;
+   if(AutoSpawnBtcChart && !g_xauSpawnChecked && (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0))
+     {
+      g_xauSpawnChecked = true;
+      bool xauRunning = false;
+      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+        {
+         string sym = ChartSymbol(cid);
+         if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "xau") >= 0 || StringFind(sym, "GOLD") >= 0 || StringFind(sym, "gold") >= 0)
+           {
+            string ea = ChartGetString(cid, CHART_EXPERT_NAME);
+            if(ea != "")
+              {
+               xauRunning = true;
+               break;
+              }
+            else
+              {
+               PrintFormat("iziBot: found %s chart (id %I64d) without EA, applying template...", sym, cid);
+               bool ok = ChartApplyTemplate(cid, "iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "XauAssistant.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(cid, "\\Files\\XauAssistant.tpl");
+               if(ok) { xauRunning = true; break; }
+              }
+           }
+        }
+      if(!xauRunning)
+        {
+         string xauCandidates[] = {"XAUUSD", "GOLD", "XAUUSD.a", "XAUUSDm", "XAUUSDto"};
+         string xauSym = "";
+         bool is_custom = false;
+         for(int i = 0; i < ArraySize(xauCandidates); i++)
+           {
+            if(SymbolExist(xauCandidates[i], is_custom))
+              {
+               xauSym = xauCandidates[i];
+               break;
+              }
+           }
+         if(xauSym != "")
+           {
+            SymbolSelect(xauSym, true);
+            long xauCid = ChartOpen(xauSym, PERIOD_M15);
+            if(xauCid > 0)
+              {
+               PrintFormat("iziBot: auto-spawned %s M15 chart (id %I64d)", xauSym, xauCid);
+               bool ok = ChartApplyTemplate(xauCid, "iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(xauCid, "XauAssistant.tpl");
+               if(!ok) ok = ChartApplyTemplate(xauCid, "\\Files\\iziBot.tpl");
+               if(!ok) ok = ChartApplyTemplate(xauCid, "\\Files\\XauAssistant.tpl");
+               if(!ok) PrintFormat("iziBot: ChartApplyTemplate failed on %I64d (err=%d)", xauCid, GetLastError());
+              }
+           }
+         else
+           {
+            Print("iziBot: auto-spawn Gold skipped (no matching Gold symbol found in Market Watch)");
+           }
+        }
+     }
    // At most once per 60s: back-fill any close reports missed while MT5 or
    // the service was down (fail-open, throttled — see ReconcileOfflineCloses).
    static datetime g_lastRecon = 0;
@@ -437,25 +695,56 @@ void OnTimer()
    FlattenBeforeBreak();
    double equity      = AccountInfoDouble(ACCOUNT_EQUITY);
    double balance     = AccountInfoDouble(ACCOUNT_BALANCE);
-   double floating_pl = equity - balance;
+   double floating_pl = (g_trades.OpenCount() > 0) ? g_trades.BasketProfit() : 0.0;
    CStrategy *active  = g_registry.Active();
    string activeId    = (active != NULL) ? active.Id() : "unknown";
    double spreadPts   = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    SampleSpread(spreadPts);
 
    string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "", ema200Enforce = "";
-   string rsiEnforce = "", m15Adds = "";
+    string rsiEnforce = "", m15Adds = "";
+    bool   entriesPausedResp = false;
+    int    heartbeatSecResp = 0;
+    double runtimeRiskPct = -1.0, runtimeMaxDdPct = -1.0;
+    double runtimeProfitTargetPct = -1.0;
+    int runtimeWinStart = -1, runtimeWinEnd = -1, runtimeMaxExpoMin = -1;
    long cmdId = 0;
    bool algoTrading = TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0;
-   string entryModeStr = (g_entryMode == ENTRY_FIXED) ? "fixed" : "adr";
+   string entryModeStr = (g_entryMode == ENTRY_HYBRID) ? "hybrid" : ((g_entryMode == ENTRY_FIXED) ? "fixed" : "adr");
    string sw = g_ui.PostHeartbeat(equity, balance, floating_pl,
                                   g_risk.KillSwitchTripped(), g_risk.HighWaterMark(),
                                   g_risk.ExposureMinutesUsed(), g_risk.InTradingWindow(),
                                   spreadPts, activeId, algoTrading, entryModeStr,
+                                  g_heartbeatSec,
                                   mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce, ema200Enforce,
-                                  rsiEnforce, m15Adds,
-                                  g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday(),
-                                  g_news.UpcomingJson(), NewsBlackoutMin);
+                                   rsiEnforce, m15Adds,
+                                   entriesPausedResp,
+                                   heartbeatSecResp,
+                                   runtimeRiskPct, runtimeMaxDdPct,
+                                   runtimeProfitTargetPct, runtimeWinStart,
+                                   runtimeWinEnd, runtimeMaxExpoMin,
+                                   g_risk.DailyLossUsedPct(), g_risk.BrakeResetToday(),
+                                   g_news.UpcomingJson(), NewsBlackoutMin);
+    g_risk.ApplyRuntimeConfig(runtimeRiskPct, runtimeMaxDdPct,
+                              runtimeWinStart, runtimeWinEnd, runtimeMaxExpoMin);
+    g_trades.SetProfitTargetPct(runtimeProfitTargetPct);
+    // Supervisory-agent governor: log only on a change so the Experts log
+    // stays readable across the 1 s heartbeat.
+    if(entriesPausedResp != g_agentPaused)
+      {
+       g_agentPaused = entriesPausedResp;
+       Print("XauAssistant: agent governor -> ",
+             (g_agentPaused ? "new entries PAUSED" : "new entries ACTIVE"));
+      }
+    // Service-authoritative heartbeat interval: re-arm only on a real change
+    // so a 1 s beat does not churn the timer every tick.
+    if(heartbeatSecResp >= 1 && heartbeatSecResp <= 60 && heartbeatSecResp != g_heartbeatSec)
+      {
+       g_heartbeatSec = heartbeatSecResp;
+       EventKillTimer();
+       EventSetTimer(g_heartbeatSec);
+       Print("XauAssistant: heartbeat interval -> ", g_heartbeatSec, "s (from service)");
+      }
    // Push the /agree settings to every strategy (shadows included, so their
    // logged verdicts match what the active one would do).
    if(htfEnforce != "")
@@ -516,14 +805,14 @@ void OnTimer()
    // the NEXT entry only — any already-open basket keeps running under the
    // mode captured in its sticky global (TradeManager.BasketModeKey) at
    // open, untouched here.
-   if(entryModeResp == "adr" || entryModeResp == "fixed")
+   if(entryModeResp == "adr" || entryModeResp == "fixed" || entryModeResp == "hybrid")
      {
-      ENUM_ENTRY_MODE want = (entryModeResp == "fixed") ? ENTRY_FIXED : ENTRY_ADR;
+      ENUM_ENTRY_MODE want = (entryModeResp == "hybrid") ? ENTRY_HYBRID : ((entryModeResp == "fixed") ? ENTRY_FIXED : ENTRY_ADR);
       if(want != g_entryMode)
         {
          g_entryMode = want;
-         Print("XauAssistant: entry mode -> ", (want == ENTRY_FIXED ? "FIXED" : "ADR"),
-               " (from Telegram) — applies to the next trade");
+         string mstr = (want == ENTRY_HYBRID ? "HYBRID" : (want == ENTRY_FIXED ? "FIXED" : "ADR"));
+         Print("iziBot: entry mode -> ", mstr, " — applies to the next trade");
         }
      }
 
@@ -555,8 +844,8 @@ void OnTimer()
             bool opened = false;
             if(atrVal > 0 && act != NULL)
                opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir),
-                                          g_entryMode == ENTRY_FIXED, FixedLots,
-                                          true);   // owner-approved: news override honoured inside OnSignal too
+                                          (g_entryMode == ENTRY_FIXED), FixedLots,
+                                          true, (int)g_entryMode);   // owner-approved
             bool ok = opened || g_trades.BasketDirection() == dir;
             g_ui.PostProposalResult(cmdId, ok,
                                     ok ? "opened" : "blocked by risk checks");
@@ -599,6 +888,46 @@ void OnTimer()
       bool ok = g_trades.MoveStopsTight(detail);
       g_ui.PostProposalResult(cmdId, ok, detail);
      }
+   else if(cmd == "move_sl_be")
+     {
+      string detail = "";
+      bool ok = g_trades.MoveStopsBreakeven(detail);
+      g_ui.PostProposalResult(cmdId, ok, detail);
+     }
+   else if(cmd == "close_half")
+     {
+      string detail = "";
+      bool ok = g_trades.CloseHalf(detail);
+      g_ui.PostProposalResult(cmdId, ok, detail);
+     }
+
+   else if(cmd == "close_ticket")
+     {
+      ulong tk = (ulong)StringToInteger(cmdDir);
+      bool ok = false;
+      if(tk > 0)
+        {
+         ok = g_trades.CloseTicket(tk);
+         if(!ok)
+           {
+            for(int pi = PositionsTotal() - 1; pi >= 0; pi--)
+              {
+               if(PositionGetTicket(pi) == tk)
+                 {
+                  ok = g_trades.CloseTicket(tk);
+                  break;
+                 }
+              }
+           }
+        }
+      if(!ok && g_trades.OpenCount() == 1)
+        {
+         g_trades.CloseAll("remote exit fallback");
+         ok = (g_trades.OpenCount() == 0);
+        }
+      g_ui.PostProposalResult(cmdId, ok, ok ? "position closed" : "position close failed");
+     }
+
    else if(cmd == "close_all")
      {
       int before = g_trades.OpenCount();
@@ -621,6 +950,8 @@ void OnDeinit(const int reason)
    EventKillTimer();
    g_chartPanels.Deinit();
    g_srBoxes.Clear();
+   g_volumeProfile.Clear();
+   g_tradeBoxes.Clear();
    CStrategy *a = g_registry.Active();
    if(a != NULL) a.ClearPaint();
    g_registry.Clear();
@@ -687,6 +1018,8 @@ void ProcessBar()
    // confirm on this bar is judged against zones that include it.
    g_srZones.Update();
    g_srBoxes.Redraw();
+   if(ShowVolumeProfile && g_volumeProfile.AnchorMode() == VP_ANCHOR_RIGHT_MARGIN)
+      g_volumeProfile.DrawOnEntry(0, 0, VpLookbackBars);
 
    // Apply any pending remote strategy switch only at the bar boundary.
    if(g_pendingSwitch != "")
@@ -703,6 +1036,11 @@ void ProcessBar()
          if(oldActive != NULL) oldActive.EnablePaint(false);
          g_registry.Active().EnablePaint(true);
          SyncAtrToActiveLane();
+         if(g_registry.Active().TradeTf() != PERIOD_CURRENT)
+           {
+            g_api.SetTimeframe(g_registry.Active().TradeTf());
+            g_ui.SetTimeframe(g_registry.Active().TradeTf());
+           }
          // Print only — no MT5 Alert() popup (owner 2026-09-02: the service
          // re-asserts the lane after EVERY EA reinit, so the popup fired on
          // every restart and became noise). The switch is still visible in
@@ -738,10 +1076,23 @@ void ProcessBar()
    if(g_trades.OpenCount() > 0) g_tradeBoxes.OnBarUpdate();
 
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
-   if(g_execMode == EXEC_AUTO && atrVal > 0)
-     {
-      bool opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig),
-                                      g_entryMode == ENTRY_FIXED, FixedLots);
+    if(g_execMode == EXEC_AUTO && atrVal > 0)
+      {
+      // Supervisory-agent governor: a paused agent refuses NEW entries only.
+      // The strategy is told the entry was rejected (same contract as a risk
+      // refusal) so it cannot hold a phantom position; Manage() below still
+      // runs, so an open basket keeps its target/lock/stop management.
+      bool opened = false;
+      if(!g_agentPaused)
+        {
+         opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig),
+                                    (g_entryMode == ENTRY_FIXED), FixedLots,
+                                    false, (int)g_entryMode);
+        }
+      else if(sig == SIGNAL_BUY || sig == SIGNAL_SELL)
+        {
+         active.OnEntryRejected(sig);
+        }
       // A same-direction signal into an already-open basket is a legitimate
       // early return (false) — not a rejection, since the strategy's
       // virtual position is still validly tracking that basket (basket
@@ -752,7 +1103,7 @@ void ProcessBar()
       // partly open and no new position opened, so the real basket is
       // still the opposite direction of sig. Either way the strategy needs
       // to drop its virtual position rather than believe it holds sig.
-      if(!opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.BasketDirection() != sig)
+      if(!g_agentPaused && !opened && (sig == SIGNAL_BUY || sig == SIGNAL_SELL) && g_trades.BasketDirection() != sig)
         {
          active.OnEntryRejected(sig);
          string why = "";
@@ -764,7 +1115,26 @@ void ProcessBar()
       // The active lane decides whether pyramid adds are allowed this bar
       // (2026-09-07: the M15 lane rides without adds by default).
       g_trades.SetAddsAllowed(active.AllowsAdds());
-      g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir));
+      g_trades.Manage(atrVal, active.ConditionStillTrue(basketDir == SIGNAL_NONE ? sig : basketDir), g_risk.GetCurrentAdx());
+
+      // Check continuation re-entry if basket exited on heavy reversal but trend is still intact
+      if(g_trades.OpenCount() == 0 && !g_agentPaused)
+        {
+         ENUM_SIGNAL armedDir = g_trades.GetReentryDir();
+         if(armedDir != SIGNAL_NONE && active.ConditionStillTrue(armedDir))
+           {
+            ENUM_SIGNAL reSig = SIGNAL_NONE;
+            double reSl = 0.0;
+            if(g_trades.CheckContinuationReentry(atrVal, true, reSig, reSl))
+              {
+               bool reOpened = g_trades.OnSignal(reSig, atrVal, reSl,
+                                                 (g_entryMode == ENTRY_FIXED), FixedLots,
+                                                 false, (int)g_entryMode);
+               if(reOpened)
+                  g_ui.PostNotify("🔄 AUTO continuation re-entry: " + SignalToString(reSig));
+              }
+           }
+        }
      }
    // MANUAL-mode baskets (opened via a Telegram-approved "execute" command
    // in OnTimer) never pass through the AUTO branch above, so without this
@@ -775,8 +1145,9 @@ void ProcessBar()
    else if(g_execMode == EXEC_MANUAL && g_trades.OpenCount() > 0 && atrVal > 0)
      {
       g_trades.SetAddsAllowed(active.AllowsAdds());
-      g_trades.Manage(atrVal, active.ConditionStillTrue(g_trades.BasketDirection()));
+      g_trades.Manage(atrVal, active.ConditionStillTrue(g_trades.BasketDirection()), g_risk.GetCurrentAdx());
      }
+
 
    if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)
      {
@@ -789,6 +1160,12 @@ void ProcessBar()
    bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r,
                            g_barSprMin, g_barSprAvg, g_barSprMax, g_risk.NewsBlackout());
    if(sig == SIGNAL_NONE) return;        // shadows logged; nothing to alert
+   if(ShowVolumeProfile)
+     {
+      double entryP = (sig == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                                          : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      g_volumeProfile.DrawOnEntry(g_lastBar, entryP, VpLookbackBars);
+     }
    string report = g_sm.BuildReport(sig, r, ok) + "\n" + g_risk.Status();
    g_alerts.Draw(sig, report);
    g_alerts.Notify(report);
