@@ -49,6 +49,11 @@ private:
    double        m_reversalMinPeakAtr;
    double        m_reversalThresholdAtr;
    bool          m_enableContinuationReentry;
+   // S/R wall exit & breakout continuation state
+   bool          m_enableSrExit;
+   double        m_srExitRoomAtr;
+   double        m_srExitMinProfitR;
+   string        m_srExitOverride;
 
 
    string CycleKey() { return "XAU_CYCLE_BAL_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
@@ -66,10 +71,11 @@ private:
    string PartialTakenKey() { return "XAU_PARTIAL_TAKEN_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    string InitialRKey()     { return "XAU_INITIAL_R_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    // Heavy reversal exit & continuation re-entry keys
-   string PeakAdvanceKey()  { return "XAU_PEAK_ADV_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
-   string ReentryArmedKey() { return "XAU_REENTRY_ARMED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
-   string ReentryDirKey()   { return "XAU_REENTRY_DIR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
-   string ReentryPriceKey() { return "XAU_REENTRY_PX_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string PeakAdvanceKey()   { return "XAU_PEAK_ADV_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryArmedKey()  { return "XAU_REENTRY_ARMED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryDirKey()    { return "XAU_REENTRY_DIR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentryPriceKey()  { return "XAU_REENTRY_PX_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string ReentrySrWallKey() { return "XAU_REENTRY_SR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
 
 
    // "adr"/"fixed"/"hybrid" string for the CURRENT basket's mode — used to tag trade
@@ -352,6 +358,10 @@ public:
       m_reversalMinPeakAtr = 1.5;
       m_reversalThresholdAtr = 1.0;
       m_enableContinuationReentry = true;
+      m_enableSrExit = true;
+      m_srExitRoomAtr = 0.3;
+      m_srExitMinProfitR = 0.3;
+      m_srExitOverride = "";
      }
 
    void SetSrZones(CSrZoneSet *zones, string tiers = "H4,H1,M15", double roomAtr = 1.0, bool guard = true)
@@ -360,6 +370,26 @@ public:
       m_srTiers = tiers;
       m_srPyramidRoomAtr = roomAtr;
       m_srPyramidGuard = guard;
+     }
+
+   void SetSrExit(bool enable, double roomAtr = 0.3, double minProfitR = 0.3)
+     {
+      m_enableSrExit = enable;
+      m_srExitRoomAtr = roomAtr;
+      m_srExitMinProfitR = minProfitR;
+     }
+
+   void SetSrExitOverride(string v)
+     {
+      if(v == "off" || v == "on" || v == "")
+         m_srExitOverride = v;
+     }
+
+   bool SrExitEnforced()
+     {
+      if(m_srExitOverride == "off") return false;
+      if(m_srExitOverride == "on")  return true;
+      return m_enableSrExit;
      }
 
    void SetFixedSizing(bool useFixed, double lots = 0.03)
@@ -394,6 +424,7 @@ public:
       if(!conditionStillTrue)
         {
          GlobalVariableSet(ReentryArmedKey(), 0);
+         GlobalVariableSet(ReentrySrWallKey(), 0);
          Print("TradeManager: continuation re-entry cancelled — trend condition no longer valid");
          return false;
         }
@@ -427,6 +458,7 @@ public:
 
       // Confirmed! Disarm latch and emit re-entry
       GlobalVariableSet(ReentryArmedKey(), 0);
+      GlobalVariableSet(ReentrySrWallKey(), 0);
       outSig = dir;
       double currentPx = (dir == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
       outSl = (dir == SIGNAL_BUY) ? currentPx - m_stopAtrMult * atr_value : currentPx + m_stopAtrMult * atr_value;
@@ -749,6 +781,7 @@ public:
          GlobalVariableSet(BasketModeKey(), (double)effectiveEntryMode);
          GlobalVariableSet(PeakAdvanceKey(), 0);
          GlobalVariableSet(ReentryArmedKey(), 0);
+         GlobalVariableSet(ReentrySrWallKey(), 0);
          GlobalVariableSet(TpAlertKey(), 0);   // fresh basket, alert re-armed
          double initialR = MathAbs(fillPrice - sl);
          GlobalVariableSet(InitialRKey(), initialR);
@@ -918,6 +951,35 @@ public:
         {
          peakAdv = advance;
          GlobalVariableSet(PeakAdvanceKey(), peakAdv);
+        }
+
+      // --- S/R Wall Exit & Breakout Continuation Arming ---
+      // When approaching or touching an opposing S/R wall in profit, exit all trades to bank gains
+      if(SrExitEnforced() && m_srZones != NULL && atr_value > 0)
+        {
+         double initR = GlobalVariableGet(InitialRKey());
+         double minAdvance = (initR > 0) ? (m_srExitMinProfitR * initR) : (0.3 * atr_value);
+         if(advance >= minAdvance && BasketProfit() > 0)
+           {
+            ENUM_SIGNAL pdir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+            double roomPts = m_srExitRoomAtr * atr_value;
+            string wallTier = "";
+            if(m_srZones.Verdict(pdir, currentPx, roomPts, m_srTiers, wallTier) == 0)
+              {
+               if(m_enableContinuationReentry)
+                 {
+                  GlobalVariableSet(ReentryArmedKey(), 1.0);
+                  GlobalVariableSet(ReentryDirKey(), (double)ptype);
+                  GlobalVariableSet(ReentryPriceKey(), currentPx);
+                  GlobalVariableSet(ReentrySrWallKey(), 1.0);
+                 }
+               string srReason = StringFormat("S/R wall (%s) exit (advance=%.1f ATR)",
+                                              wallTier, advance / atr_value);
+               PrintFormat("TradeManager: %s — closing all positions to bank profit at wall", srReason);
+               CloseAll(srReason);
+               return;
+              }
+           }
         }
 
       if(m_reversalExitEnabled && atr_value > 0)

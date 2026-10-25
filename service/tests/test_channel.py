@@ -82,6 +82,9 @@ class _KvDb:
     def rsi_enforce(self):
         return self.kv.get("rsi_enforce") or "on"
 
+    def sr_enforce(self):
+        return self.kv.get("sr_enforce") or "on"
+
     def m15_adds(self):
         return self.kv.get("m15_adds") or "off"
 

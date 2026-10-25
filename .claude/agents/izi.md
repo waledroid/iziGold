@@ -4407,6 +4407,34 @@ and §6/§7b (ops). The through-line worth remembering:
   - Eliminates silent non-execution confusion for operators observing signals on MT5 charts.
 
 
+# 39. S/R Wall Trading Guard, Dynamic Wall Exits & Breakout Re-Entry (2026-10-25)
+
+- **Problem & Motivation**:
+  - Previously, S/R zone agreement (`sr_agree`) was strictly report-only (`SrZones.mqh`, `HalfTrendEma.mqh`). For example, on 2026-10-25 an `iziBit5` BUY was executed at `80,589` directly inside an M15 resistance zone `[80546.84, 80628.56]`, right into a ceiling.
+  - Furthermore, once in a trade, positions rode into opposing walls without capturing peak gains before major S/R bounces.
+- **Architectural Solution & Multi-Layer Enforcement**:
+  1. **S/R Entry Guard (`HalfTrendEma.mqh`)**:
+     - `SrEnforceEntry` (input default `true`, overridable via heartbeat `sr_enforce` `"on"`/`"off"`, `SrEnforced()`).
+     - In `Evaluate()`, if `m_lastSrAgree == 0 && SrEnforced()`, the signal is formally refused:
+       `PrintFormat("%s: %s refused — S/R WALL: %s %s inside/within %.2f ATR ... — S/R wall gate is ENFORCING", ...);`
+       `return SIGNAL_NONE;`
+     - Blocks entering BUYs directly into resistance ceilings and SELLs directly into support floors.
+  2. **In-Trade S/R Wall Exit (`TradeManager.mqh`)**:
+     - `EnableSrExit` (default `true`), `SrExitRoomAtr` (default `0.3` ATR), `SrExitMinProfitR` (default `0.3R`).
+     - In `Manage()`, when an open basket advances favorably (`advance >= minAdvance && BasketProfit() > 0`) and price approaches within `SrExitRoomAtr` of the opposing S/R wall (or enters the zone, `m_srZones.Verdict(...) == 0`):
+       - The EA immediately exits the basket: `CloseAll("S/R wall (<TIER>) exit")` to lock in banked profits.
+       - Dispatches trade close event and Telegram alert: `🧱 S/R Wall Exit (<TIER>): banking profit at wall`.
+  3. **Breakout Continuation Re-Entry (`TradeManager.mqh`)**:
+     - On S/R exit, `TradeManager` arms continuation re-entry with flag `ReentrySrWallKey() = 1.0`.
+     - `CheckContinuationReentry()` monitors closed bars: while price remains contained by the wall (`m_srZones.Verdict(...) == 0`), it waits patiently without re-entering.
+     - As soon as price breaks through and closes beyond the wall (`Verdict == 1`), momentum confirms in the trend direction, and the underlying HalfTrend thesis remains intact (`conditionStillTrue`), `CheckContinuationReentry()` confirms re-entry, entering fresh lots with an ATR stop to ride the breakout continuation.
+  4. **Cross-Stack Runtime Control**:
+     - `service/app/repos/kv_profile.py`: `sr_enforce()` / `set_sr_enforce()` with `SR_CHOICES = ("off", "on")`, defaulting to `"on"`.
+     - `service/app/models.py`: `HeartbeatResponse.sr_enforce` delivers the authoritative setting to MT5 on every beat.
+     - `service/app/tg/`: `/rules` and `/agree` include interactive `S/R Wall Guard & Exit: ENFORCING` status and 1-click toggles.
+
+
+
 
 
 

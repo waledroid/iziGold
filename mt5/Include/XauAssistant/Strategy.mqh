@@ -71,6 +71,9 @@ public:
    // behind a 0, "" otherwise.
    virtual int    LastSrAgree() const { return -1; }
    virtual string LastSrTier()  const { return ""; }
+   // Runtime toggle for S/R Wall gate: "" follow EA input, "off" report only, "on" enforce.
+   virtual void SetSrOverride(string v) {}
+   virtual void SetSrConfirm(bool confirm) {}
    virtual void ClearPaint() {}
    // Stable identifier — flows through the API into SQLite per-strategy stats.
    virtual string      Id() { return "stub"; }

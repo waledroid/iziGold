@@ -63,6 +63,15 @@ def _cb_rsi(parts, app, db, message_id):
     return (None, "unknown")
 
 
+def _cb_sr(parts, app, db, message_id):
+    if len(parts) > 1 and parts[1] in db.SR_CHOICES:
+        db.set_sr_enforce(parts[1])
+        if parts[1] == "off":
+            return ("S/R Wall Gate → CHECK ONLY (report only).", "sr: off")
+        return ("S/R Wall Gate → ENFORCING (blocks wall entries & exits on wall touch).", "sr: on")
+    return (None, "unknown")
+
+
 def _cb_adds(parts, app, db, message_id):
     if len(parts) > 1 and parts[1] in db.ADDS_CHOICES:
         db.set_m15_adds(parts[1])
@@ -351,6 +360,7 @@ CALLBACKS = {
     "ai": _cb_ai,
     "e200": _cb_e200,
     "rsi": _cb_rsi,
+    "sr": _cb_sr,
     "adds": _cb_adds,
     "strat": _cb_strat,
     "prop": _cb_prop,

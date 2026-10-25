@@ -536,6 +536,7 @@ async def heartbeat(hb: HeartbeatRequest):
         htf_enforce=runtime["htf_enforce"],
         ema200_enforce=runtime["ema200_enforce"],
         rsi_enforce=runtime["rsi_enforce"],
+        sr_enforce=runtime.get("sr_enforce", "on"),
         m15_adds=runtime["m15_adds"],
         entries_paused=app.state.db.entries_paused(hb_sym),
         risk_per_trade_pct=runtime["risk_per_trade_pct"],

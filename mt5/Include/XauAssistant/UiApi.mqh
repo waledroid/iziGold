@@ -142,6 +142,7 @@ public:
                         long &cmdId, string &cmdDir, string &htfEnforce_out,
                         string &ema200Enforce_out,
                          string &rsiEnforce_out, string &m15Adds_out,
+                         string &srEnforce_out,
                          bool &entriesPaused_out,
                          int &heartbeatSec_out,
                          double &riskPct_out, double &maxDdPct_out,
@@ -223,6 +224,7 @@ public:
       // leaves them "" and the EA inputs stay in charge.
        rsiEnforce_out    = ExtractString(body, "rsi_enforce");
        m15Adds_out       = ExtractString(body, "m15_adds");
+       srEnforce_out     = ExtractString(body, "sr_enforce");
        // Supervisory-agent governor (2026-09-20): true = pause NEW auto
        // entries. Absent/false for an older service keeps trading exactly as
        // before (fail-open).

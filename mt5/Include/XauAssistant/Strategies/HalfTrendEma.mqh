@@ -123,6 +123,8 @@ private:
    CSrZoneSet *m_srZones;
    string      m_srTiers;
    double      m_srRoomAtr;
+   bool        m_srConfirm;
+   string      m_srOverride;
    int         m_lastSrAgree;   // 1 clear / 0 wall / -1 not evaluated
    string      m_lastSrTier;    // strongest wall's tier behind a 0
 
@@ -408,7 +410,8 @@ public:
         m_rsiHandle(INVALID_HANDLE), m_confirmRsi(-1), m_lastRsiAgree(-1),
         m_rsiConfirm(rsiConfirm), m_rsiEligible(rsiEligible), m_rsiOverride(""),
         m_allowAdds(allowAdds), m_addsEligible(addsEligible), m_addsOverride(""),
-        m_srZones(NULL), m_srTiers(""), m_srRoomAtr(0.0), m_lastSrAgree(-1), m_lastSrTier(""),
+        m_srZones(NULL), m_srTiers(""), m_srRoomAtr(0.0), m_srConfirm(true), m_srOverride(""),
+        m_lastSrAgree(-1), m_lastSrTier(""),
         m_prevPaintBar(0), m_prevHt(0), m_prevEma(0),
         m_prevEma9(0), m_prevEma21(0), m_prevEma200(0)
      {
@@ -598,6 +601,29 @@ public:
         }
      }
 
+   bool SrEnforced()
+     {
+      if(m_srOverride == "off") return false;
+      if(m_srOverride == "on")  return true;
+      return m_srConfirm;
+     }
+
+   virtual void SetSrOverride(string v) override
+     {
+      if(v == "off" || v == "on" || v == "")
+        {
+         if(v != m_srOverride && v != "")
+            Print(m_id + ": S/R Wall agreement -> ",
+                  v == "off" ? "CHECK ONLY (will not block)" : "ENFORCING");
+         m_srOverride = v;
+        }
+     }
+
+   virtual void SetSrConfirm(bool confirm) override
+     {
+      m_srConfirm = confirm;
+     }
+
    virtual string Id() { return m_id; }
    virtual ENUM_TIMEFRAMES TradeTf() { return m_tf; }
    virtual int LastRsiAgree() const { return m_lastRsiAgree; }
@@ -686,7 +712,7 @@ public:
             if(CopyBuffer(m_atrHandle, 0, 1, 1, srAb) == 1 && srAb[0] > 0)
                room = m_srRoomAtr * srAb[0];
             m_lastSrAgree = m_srZones.Verdict(wanted, m_confirmClose, room, m_srTiers, m_lastSrTier);
-            if(m_lastSrAgree == 0)
+            if(m_lastSrAgree == 0 && !SrEnforced())
                Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                      " — S/R WALL: ", m_lastSrTier,
                      (wanted == SIGNAL_BUY ? " resistance" : " support"),
@@ -727,6 +753,17 @@ public:
                   " refused — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
                   (wanted == SIGNAL_BUY ? " (>=70 overbought)" : " (<=30 oversold)"),
                   " — the 70/30 rule is enforcing on this lane");
+            return SIGNAL_NONE;
+           }
+         // S/R wall gate: blocks BUY when approaching resistance, blocks SELL when approaching support
+         if(m_lastSrAgree == 0 && SrEnforced())
+           {
+            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                  " refused — S/R WALL: ", m_lastSrTier,
+                  (wanted == SIGNAL_BUY ? " resistance" : " support"),
+                  " inside/within ", DoubleToString(m_srRoomAtr, 2), " ATR of ",
+                  DoubleToString(m_confirmClose, 2),
+                  " — S/R wall gate is ENFORCING");
             return SIGNAL_NONE;
            }
          if(m_trend == 0)

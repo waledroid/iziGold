@@ -125,6 +125,8 @@ class HeartbeatResponse(BaseModel):
     # RSI(14) 70/30 agreement -- the EA applies it on its M15 lane only
     # (the M5 lane is not eligible: the filter fails both halves there).
     rsi_enforce: str = "on"
+    # S/R Wall agreement -- blocks opposing wall entries and exits open trades on wall touch
+    sr_enforce: str = "on"
     # Pyramid adds on the M15 lane: "off" = pure ride (the validated
     # recipe), "on" = ADR adds as before. The M5 lane is unaffected.
     m15_adds: str = "off"

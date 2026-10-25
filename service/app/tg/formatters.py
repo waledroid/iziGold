@@ -511,6 +511,8 @@ def _format_agree(app) -> tuple:
     e200_on = e200 == "on"
     rsi = db.rsi_enforce()
     rsi_on = rsi == "on"
+    sr = db.sr_enforce()
+    sr_on = sr == "on"
     adds = db.m15_adds()
     adds_on = adds == "on"
     body = (
@@ -518,6 +520,7 @@ def _format_agree(app) -> tuple:
         f"• HTF Bias (M5): {'ENFORCING on ' + cur if on else 'CHECK ONLY (off, reported)'}\n"
         f"• EMA-200 (M5/M15): {'ENFORCING' if e200_on else 'CHECK ONLY (off, reported)'}\n"
         f"• RSI 70/30 (M15 lane only): {'ENFORCING' if rsi_on else 'CHECK ONLY (off)'}\n"
+        f"• S/R Wall Guard & Exit: {'ENFORCING' if sr_on else 'CHECK ONLY (off)'}\n"
         f"• Pyramid adds on the M15 lane: {'ON (ADR adds)' if adds_on else 'OFF (pure ride)'}"
     )
     row = [(("● " if cur == c else "") + ("Off (report only)" if c == "off" else c),
@@ -528,10 +531,13 @@ def _format_agree(app) -> tuple:
     rsi_row = [(("● " if rsi == c else "")
                + ("RSI off (report only)" if c == "off" else "RSI enforcing"),
                f"rsi:{c}") for c in db.RSI_CHOICES]
+    sr_row = [(("● " if sr == c else "")
+              + ("S/R off (report only)" if c == "off" else "S/R enforcing"),
+              f"sr:{c}") for c in db.SR_CHOICES]
     adds_row = [(("● " if adds == c else "")
                 + ("M15 adds off (ride)" if c == "off" else "M15 adds on"),
                 f"adds:{c}") for c in db.ADDS_CHOICES]
-    return (body, kb([row[:2], row[2:], e200_row, rsi_row, adds_row]))
+    return (body, kb([row[:2], row[2:], e200_row, rsi_row, sr_row, adds_row]))
 
 
 def _format_ai(app) -> tuple:
@@ -590,7 +596,7 @@ def _format_config(app, redacted=False) -> str:
         f"• Strategy: {hb.active_strategy if hb else '?'}\n"
         f"• Balance: {bal} | Equity: {eq}\n"
         f"• Window: {'OPEN' if hb and hb.window_open else 'CLOSED'} · Guard: {'TRIPPED' if hb and hb.kill_switch else 'OK'}\n"
-        f"• HTF: {db.htf_enforce()} | EMA200: {db.ema200_enforce()} | RSI: {db.rsi_enforce()} | Adds: {db.m15_adds()}"
+        f"• HTF: {db.htf_enforce()} | EMA200: {db.ema200_enforce()} | RSI: {db.rsi_enforce()} | S/R: {db.sr_enforce()} | Adds: {db.m15_adds()}"
     )
 
 

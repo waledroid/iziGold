@@ -76,6 +76,9 @@ input bool           EnableReversalExit        = true; // exit basket on heavy p
 input double         ReversalMinPeakAtr        = 1.5;  // minimum peak ATR advance required before reversal exit arms
 input double         ReversalThresholdAtr      = 1.0;  // pullback ATR from peak that triggers reversal exit
 input bool           EnableContinuationReentry = true; // re-enter when trend resumes after heavy reversal exit
+input bool           EnableSrExit              = true; // exit trade when approaching/touching opposing S/R wall in profit
+input double         SrExitRoomAtr             = 0.3;  // exit distance to opposing S/R wall (x ATR)
+input double         SrExitMinProfitR          = 0.3;  // min profit advance in R before S/R exit activates
 
 input string ActiveStrategy = "iziGold15"; // which registered strategy trades
 
@@ -158,9 +161,10 @@ input group "Chart panels — plugin indicators below the candles (display only)
 input bool   ShowRsiPanel  = false;  // RSI removed from charts; true re-attaches RSI(14) in its own subwindow (chart TF)
 input bool   ShowMacdPanel = false;  // MACD removed from charts; true re-attaches MACD(12,26,9) in its own subwindow (chart TF)
 
-input group "S/R zones — three timeframe tiers drawn as outlines (spec 2026-09-05); REPORT-ONLY, never blocks"
+input group "S/R zones — three timeframe tiers drawn as outlines (spec 2026-09-05)"
 input bool   ShowSrBoxes          = true;          // draw the zone outlines on the chart (light blue support / light yellow resistance; no fill)
 input bool   SrNearestOnly        = true;          // battleground filter: draw only nearest active Resistance & Support (eliminates screen clutter)
+input bool   SrEnforceEntry       = true;          // block new entries approaching or inside opposing S/R wall
 input int    SrMaxSpanBars        = 40;            // max historical bars to span backwards (0 = full history; 40 keeps chart clean)
 input double SrVisualMaxHeightPts = 250;           // max visual box height in points (250 pts = $2.50 / 25 pips; 0 = uncapped)
 input string SrTiers              = "H4,H1,M15";   // tiers the verdict honours (drawing always shows all three)
@@ -347,6 +351,7 @@ int OnInit()
                        HtfConfirm, HtfConfirmTf, HtfConfirmEma, HtfConfirmBufferATR,
                        HtfChopOnly, HtfChopBars, HtfChopEffMax, Ema200Confirm);
    laneM5.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   laneM5.SetSrConfirm(SrEnforceEntry);
    g_registry.Register(laneM5);
    // Second, independently-parameterised HalfTrend lane trading M15 (owner
    // request 2026-08-22): same rules, own inputs, shadow-evaluated every bar
@@ -364,6 +369,7 @@ int OnInit()
                        M15RsiConfirm, true,      // RSI 70/30: eligible to enforce (sweep-earned)
                        M15EnableAdds, true);     // adds switchable on this lane only
    laneM15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   laneM15.SetSrConfirm(SrEnforceEntry);
    g_registry.Register(laneM15);
 
    // Bitcoin M5 lane (iziBit5)
@@ -373,6 +379,7 @@ int OnInit()
                        HtfConfirm, HtfConfirmTf, Btc5HtfConfirmEma, Btc5HtfConfirmBufferATR,
                        HtfChopOnly, Btc5HtfChopBars, Btc5HtfChopEffMax, Ema200Confirm);
    laneBtc5.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   laneBtc5.SetSrConfirm(SrEnforceEntry);
    g_registry.Register(laneBtc5);
 
    // Bitcoin M15 lane (iziBit15)
@@ -384,6 +391,7 @@ int OnInit()
                        M15RsiConfirm, true,
                        M15EnableAdds, true);
    laneBtc15.SetSrZones(&g_srZones, SrTiers, SrRoomAtr);
+   laneBtc15.SetSrConfirm(SrEnforceEntry);
    g_registry.Register(laneBtc15);
 
    string effectiveStrat = ActiveStrategy;
@@ -454,6 +462,7 @@ int OnInit()
    g_trades.SetFixedSizing(UseFixedLot || (g_entryMode == ENTRY_FIXED), FixedLots);
    g_trades.SetPartialScaleOut(EnablePartialScaleOut, PartialScaleOutR, PartialScaleOutPct);
    g_trades.SetReversalExit(EnableReversalExit, ReversalMinPeakAtr, ReversalThresholdAtr, EnableContinuationReentry);
+   g_trades.SetSrExit(EnableSrExit, SrExitRoomAtr, SrExitMinProfitR);
    // Re-arm chart box tracking if a basket was already open before this
    // OnInit (recompile auto-reload, terminal restart, chart re-attach) —
    // otherwise the live box would never receive its final OnClose.
@@ -716,7 +725,7 @@ void OnTimer()
    SampleSpread(spreadPts);
 
    string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "", ema200Enforce = "";
-    string rsiEnforce = "", m15Adds = "";
+   string rsiEnforce = "", m15Adds = "", srEnforce = "";
     bool   entriesPausedResp = g_agentPaused;
     int    heartbeatSecResp = 0;
     double runtimeRiskPct = -1.0, runtimeMaxDdPct = -1.0;
@@ -732,6 +741,7 @@ void OnTimer()
                                   g_heartbeatSec,
                                   mode, entryModeResp, cmd, cmdId, cmdDir, htfEnforce, ema200Enforce,
                                    rsiEnforce, m15Adds,
+                                   srEnforce,
                                    entriesPausedResp,
                                    heartbeatSecResp,
                                    runtimeRiskPct, runtimeMaxDdPct,
@@ -786,6 +796,15 @@ void OnTimer()
          CStrategy *st4 = g_registry.Get(si4);
          if(st4 != NULL) st4.SetAddsOverride(m15Adds);
         }
+   if(srEnforce != "")
+     {
+      for(int si5 = 0; si5 < g_registry.Count(); si5++)
+        {
+         CStrategy *st5 = g_registry.Get(si5);
+         if(st5 != NULL) st5.SetSrOverride(srEnforce);
+        }
+      g_trades.SetSrExitOverride(srEnforce);
+     }
    if(sw != "") g_pendingSwitch = sw;
 
    // Brake & kill-switch awareness (2026-08-18): once-per-crossing Telegram

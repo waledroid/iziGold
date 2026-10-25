@@ -30,6 +30,7 @@ class KvProfileRepoMixin:
     HTF_CHOICES = ("off", "M15", "M30", "H1")
     EMA200_CHOICES = ("off", "on")
     RSI_CHOICES = ("off", "on")
+    SR_CHOICES = ("off", "on")
     ADDS_CHOICES = ("off", "on")
 
     DYNAMIC_STRATEGY_CHOICES = ("off", "auto")
@@ -114,6 +115,7 @@ class KvProfileRepoMixin:
             "htf_enforce": self.htf_enforce(),
             "ema200_enforce": self.ema200_enforce(),
             "rsi_enforce": self.rsi_enforce(),
+            "sr_enforce": self.sr_enforce(),
             "m15_adds": self.m15_adds(),
             "risk_per_trade_pct": number("risk_per_trade_pct", 1.0, float),
             "max_drawdown_pct": number("max_drawdown_pct", 10.0, float),
@@ -184,6 +186,12 @@ class KvProfileRepoMixin:
 
     def set_rsi_enforce(self, value: str) -> None:
         self.set_choice("rsi_enforce", value, self.RSI_CHOICES)
+
+    def sr_enforce(self) -> str:
+        return self.get_choice("sr_enforce", self.SR_CHOICES, "on")
+
+    def set_sr_enforce(self, value: str) -> None:
+        self.set_choice("sr_enforce", value, self.SR_CHOICES)
 
     def m15_adds(self) -> str:
         return self.get_choice("m15_adds", self.ADDS_CHOICES, "off")

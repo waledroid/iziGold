@@ -89,6 +89,9 @@ class FakeDb:
     def rsi_enforce(self):
         return getattr(self, "_rsi", "on")
 
+    def sr_enforce(self):
+        return getattr(self, "_sr", "on")
+
     def m15_adds(self):
         return getattr(self, "_adds", "off")
 
@@ -368,6 +371,7 @@ def test_config_shows_confirmation_gates():
     reply = handle_command("/config", app)
     assert "HTF: M15" in reply
     assert "EMA200: on" in reply
+    assert "S/R: on" in reply
 
 
 def test_mode_marks_active_buttons():
@@ -1154,6 +1158,33 @@ def test_heartbeat_carries_the_ema200_agree_setting(client):
     body = client.post("/heartbeat", json={
         "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
     assert body["ema200_enforce"] == "on"
+
+
+def test_agree_menu_offers_sr_toggle_and_heartbeat(client):
+    from app.telegram import handle_command, handle_callback
+    app = client.app
+    text, markup = handle_command("/agree", app)
+    assert "S/R Wall Guard & Exit" in text
+    labels = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert "sr:off" in labels and "sr:on" in labels
+    texts = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert "● S/R enforcing" in texts
+
+    # Toggle off
+    reply, toast = handle_callback("sr:off", app)
+    assert app.state.db.sr_enforce() == "off"
+    assert "CHECK ONLY" in reply
+    hb_body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert hb_body["sr_enforce"] == "off"
+
+    # Toggle on
+    reply, toast = handle_callback("sr:on", app)
+    assert app.state.db.sr_enforce() == "on"
+    assert "ENFORCING" in reply
+    hb_body = client.post("/heartbeat", json={
+        "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()
+    assert hb_body["sr_enforce"] == "on"
     client.app.state.db.set_ema200_enforce("off")
     body = client.post("/heartbeat", json={
         "equity": 10000.0, "balance": 10000.0, "floating_pl": 0.0}).json()

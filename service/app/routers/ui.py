@@ -220,6 +220,7 @@ def ui_rules(body: dict, request: Request = None):
                "htf_enforce": db.set_htf_enforce,
                "ema200_enforce": db.set_ema200_enforce,
                "rsi_enforce": db.set_rsi_enforce,
+               "sr_enforce": db.set_sr_enforce,
                "m15_adds": db.set_m15_adds}
     if key not in setters:
         raise HTTPException(status_code=400, detail="unknown rule key")
@@ -382,6 +383,7 @@ def ui_state(request: Request = None):
                       "htf_enforce": target_app.state.db.htf_enforce(),
                       "ema200_enforce": target_app.state.db.ema200_enforce(),
                       "rsi_enforce": target_app.state.db.rsi_enforce(),
+                      "sr_enforce": target_app.state.db.sr_enforce(),
                       "m15_adds": target_app.state.db.m15_adds()},
             "agent": agent_info,
             "proposal": proposal,

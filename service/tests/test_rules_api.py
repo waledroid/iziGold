@@ -37,7 +37,9 @@ def test_state_exposes_rules(client):
                           "ema200_enforce": "off",
                           # 2026-09-07: RSI 70/30 enforced on the M15 lane by
                           # default (evidence-earned), M15 adds off (pure ride)
-                          "rsi_enforce": "on", "m15_adds": "off"}
+                          "rsi_enforce": "on",
+                          "sr_enforce": "on",
+                          "m15_adds": "off"}
     assert s["agent"]["enabled"] is False
     assert s["agent"]["status"] == "off"
 
@@ -48,6 +50,11 @@ def test_post_rules_roundtrip(client):
     assert client.get("/api/state").json()["rules"]["htf_enforce"] == "M15"
     assert client.post("/api/rules",
                        json={"key": "ema200_enforce", "value": "on"}).status_code == 200
+    assert client.post("/api/rules",
+                       json={"key": "sr_enforce", "value": "off"}).status_code == 200
+    assert client.get("/api/state").json()["rules"]["sr_enforce"] == "off"
+    assert client.post("/api/rules",
+                       json={"key": "sr_enforce", "value": "on"}).status_code == 200
     assert client.post("/api/rules",
                        json={"key": "entry_mode", "value": "fixed"}).status_code == 200
     assert client.post("/api/rules",
