@@ -717,7 +717,7 @@ void OnTimer()
 
    string mode = "", entryModeResp = "", cmd = "", cmdDir = "", htfEnforce = "", ema200Enforce = "";
     string rsiEnforce = "", m15Adds = "";
-    bool   entriesPausedResp = false;
+    bool   entriesPausedResp = g_agentPaused;
     int    heartbeatSecResp = 0;
     double runtimeRiskPct = -1.0, runtimeMaxDdPct = -1.0;
     double runtimeProfitTargetPct = -1.0;
@@ -742,9 +742,8 @@ void OnTimer()
     g_risk.ApplyRuntimeConfig(runtimeRiskPct, runtimeMaxDdPct,
                               runtimeWinStart, runtimeWinEnd, runtimeMaxExpoMin);
     g_trades.SetProfitTargetPct(runtimeProfitTargetPct);
-    // Supervisory-agent governor: log only on a change so the Experts log
-    // stays readable across the 1 s heartbeat.
-    if(entriesPausedResp != g_agentPaused)
+    // Supervisory-agent governor: update only on valid heartbeat responses and real changes
+    if(mode != "" && entriesPausedResp != g_agentPaused)
       {
        g_agentPaused = entriesPausedResp;
        Print("XauAssistant: agent governor -> ",
@@ -1106,6 +1105,11 @@ void ProcessBar()
       else if(sig == SIGNAL_BUY || sig == SIGNAL_SELL)
         {
          active.OnEntryRejected(sig);
+         string symLabel = (StringFind(_Symbol, "BTC") >= 0 ? "₿ BTC" : "🥇 Gold");
+         PrintFormat("iziBot: %s %s signal skipped — %s auto-entries are currently PAUSED (tap [%s: ▶️ PLAY] in Telegram to resume)",
+                     _Symbol, SignalToString(sig), _Symbol, symLabel);
+         g_ui.PostNotify(StringFormat("⏸️ AUTO %s (%s) skipped: auto-entries PAUSED\nTap [ %s: ▶️ PLAY ] to resume.",
+                                      SignalToString(sig), _Symbol, symLabel));
         }
       // A same-direction signal into an already-open basket is a legitimate
       // early return (false) — not a rejection, since the strategy's

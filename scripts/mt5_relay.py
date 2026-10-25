@@ -106,31 +106,46 @@ def call(service: str, key: str, method: str, path: str, body, body_b64) -> tupl
         return 0, ""
 
 
+def process_one_req(req_path: Path, sandbox: Path, service: str, key: str,
+                    last_ids: dict[str, int]) -> bool:
+    try:
+        request = json.loads(req_path.read_text(encoding="utf-8"))
+        rid = int(request.get("id", 0))
+        fname = req_path.name
+        if rid != last_ids.get(fname, -1):
+            status, body = call(service, key, request.get("method", "POST"),
+                                request.get("path", "/"),
+                                request.get("body"), request.get("body_b64"))
+            flat = body.replace("\r", " ").replace("\n", " ")
+            # Derive corresponding response file name from request file name:
+            # xau_relay_req.json -> xau_relay_resp.json
+            # xau_relay_req_BTCUSD.json -> xau_relay_resp_BTCUSD.json
+            suffix = fname[len(RELAY_REQ.replace(".json", "")):-len(".json")]
+            resp_name = f"xau_relay_resp{suffix}.json"
+            tmp = sandbox / (resp_name + ".tmp")
+            tmp.write_text(f"{rid} {status}\n{flat}\n", encoding="utf-8")
+            os.replace(tmp, sandbox / resp_name)  # atomic: EA never reads a partial file
+            last_ids[fname] = rid
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def serve(prefix: Path, service: str, key: str, once: bool = False,
           explicit_files: Path | None = None) -> int:
     sandbox = explicit_files if explicit_files is not None else files_dir(prefix)
     if sandbox is None or not sandbox.is_dir():
         print(f"mt5_relay: no MQL5/Files sandbox found", file=sys.stderr)
         return 1
-    req_path = sandbox / RELAY_REQ
-    resp_path = sandbox / RELAY_RESP
     print(f"mt5_relay: watching {sandbox} -> {service}", flush=True)
-    last_id = 0
+    last_ids: dict[str, int] = {}
     while True:
         try:
-            if req_path.exists():
-                request = json.loads(req_path.read_text(encoding="utf-8"))
-                rid = int(request.get("id", 0))
-                if rid != last_id:
-                    status, body = call(service, key, request.get("method", "POST"),
-                                        request.get("path", "/"),
-                                        request.get("body"), request.get("body_b64"))
-                    flat = body.replace("\r", " ").replace("\n", " ")
-                    tmp = sandbox / (RELAY_RESP + ".tmp")
-                    tmp.write_text(f"{rid} {status}\n{flat}\n", encoding="utf-8")
-                    os.replace(tmp, resp_path)          # atomic: EA never reads a half file
-                    last_id = rid
-                    if once:
+            for req_file in list(sandbox.glob("xau_relay_req*.json")):
+                if not req_file.name.endswith(".tmp"):
+                    handled = process_one_req(req_file, sandbox, service, key, last_ids)
+                    if handled and once:
                         return 0
         except Exception:
             pass                                    # never die: the EA must keep trading

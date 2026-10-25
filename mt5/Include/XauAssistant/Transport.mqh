@@ -34,6 +34,9 @@ private:
    string m_mode;        // "HTTP" | "FILE"
    long   m_nextId;
    datetime m_lastWarn;
+   string m_reqFile;
+   string m_tmpFile;
+   string m_respFile;
 
    void WarnThrottled(string msg)
      {
@@ -102,22 +105,26 @@ private:
       else if(body != "") req += ",\"body\":" + body + "}";
       else req += ",\"body\":null}";
 
-      int h = FileOpen(XAU_RELAY_TMP, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_READ);
+      string targetTmp  = (m_tmpFile != "")  ? m_tmpFile  : XAU_RELAY_TMP;
+      string targetReq  = (m_reqFile != "")  ? m_reqFile  : XAU_RELAY_REQ;
+      string targetResp = (m_respFile != "") ? m_respFile : XAU_RELAY_RESP;
+
+      int h = FileOpen(targetTmp, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_READ);
       if(h == INVALID_HANDLE)
         { WarnThrottled("Transport: cannot write relay request"); return false; }
       FileWriteString(h, req);
       FileClose(h);
-      FileDelete(XAU_RELAY_REQ);
-      if(!FileMove(XAU_RELAY_TMP, 0, XAU_RELAY_REQ, FILE_REWRITE))
+      FileDelete(targetReq);
+      if(!FileMove(targetTmp, 0, targetReq, FILE_REWRITE))
         { WarnThrottled("Transport: relay request move failed"); return false; }
 
       uint timeout = (uint)MathMax(m_timeout, 250);
       uint start = GetTickCount();
       while(GetTickCount() - start < timeout)
         {
-         if(FileIsExist(XAU_RELAY_RESP))
+         if(FileIsExist(targetResp))
            {
-            int r = FileOpen(XAU_RELAY_RESP,
+            int r = FileOpen(targetResp,
                              FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE);
             if(r != INVALID_HANDLE)
               {
@@ -129,7 +136,7 @@ private:
                long status = (sp > 0) ? StringToInteger(StringSubstr(line1, sp + 1)) : 0;
                if(gotId == id)
                  {
-                  FileDelete(XAU_RELAY_RESP);
+                  FileDelete(targetResp);
                   ok = (status == 200);
                   out = (ok ? payload : "");
                   return true;                              // a real answer, ok or not
@@ -149,6 +156,11 @@ public:
       m_timeout = timeoutMs;
       m_nextId = 0;
       m_lastWarn = 0;
+      string sym = _Symbol;
+      StringReplace(sym, "/", "_");
+      m_reqFile  = "xau_relay_req_" + sym + ".json";
+      m_tmpFile  = "xau_relay_req_" + sym + ".tmp";
+      m_respFile = "xau_relay_resp_" + sym + ".json";
       if(mode == XAU_TRANSPORT_FILE)      m_mode = "FILE";
       else if(mode == XAU_TRANSPORT_HTTP) m_mode = "HTTP";
       else

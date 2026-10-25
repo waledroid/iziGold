@@ -4392,6 +4392,22 @@ and §6/§7b (ops). The through-line worth remembering:
      - Launcher verification checks `state["heartbeats"]` for both `XAUUSD` and `BTCUSD`, waiting until both active peers report before marking the sequence complete.
 
 
+# 38. Multi-Symbol File Relay Concurrency & Paused Entry Observability (2026-10-25)
+
+- **File Relay Contention & Per-Symbol Pipes (`Transport.mqh`, `scripts/mt5_relay.py`)**:
+  - Previously, all running EA instances shared a single `xau_relay_req.json` / `xau_relay_resp.json` pair. When Gold and Bitcoin instances beat simultaneously at 1-second cadence, requests collided and overwrote one another, causing 3-second relay timeouts and failed heartbeats.
+  - Solution: `Transport.mqh` now scopes relay files per symbol (`xau_relay_req_<Symbol>.json` and `xau_relay_resp_<Symbol>.json`).
+  - `scripts/mt5_relay.py` watches all `xau_relay_req*.json` files concurrently, dispatches the HTTP call, and writes back to the corresponding `xau_relay_resp*.json` atomically. Contention is eliminated.
+- **Heartbeat Timeout State Retention (`iziBot.mq5`)**:
+  - `entriesPausedResp` in `OnTimer()` previously initialized to `false`. When a heartbeat request timed out, it defaulted to `false` and logged `agent governor -> new entries ACTIVE`, then flipped back to `new entries PAUSED` on the next successful beat.
+  - Initializing `entriesPausedResp = g_agentPaused` and updating `g_agentPaused` only when `mode != ""` prevents state flapping during transient network/relay latency.
+- **Paused Entry Observability (`iziBot.mq5`)**:
+  - When a valid BUY/SELL signal confirms on a chart while that asset's auto-entries are paused (`entries_paused` / `entries_paused_btc`), the EA now explicitly prints to the MT5 log and dispatches a notification via `g_ui.PostNotify`:
+    `⏸️ AUTO SELL (BTCUSD) skipped: auto-entries PAUSED (tap [ ₿ BTC: ▶️ PLAY ] to resume)`.
+  - Eliminates silent non-execution confusion for operators observing signals on MT5 charts.
+
+
+
 
 
 
