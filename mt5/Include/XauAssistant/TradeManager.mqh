@@ -76,6 +76,7 @@ private:
    string ReentryDirKey()    { return "XAU_REENTRY_DIR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    string ReentryPriceKey()  { return "XAU_REENTRY_PX_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
    string ReentrySrWallKey() { return "XAU_REENTRY_SR_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
+   string SrRakedKey()       { return "XAU_SR_RAKED_" + (string)AccountInfoInteger(ACCOUNT_LOGIN) + "_" + _Symbol; }
 
 
    // "adr"/"fixed"/"hybrid" string for the CURRENT basket's mode — used to tag trade
@@ -782,6 +783,7 @@ public:
          GlobalVariableSet(PeakAdvanceKey(), 0);
          GlobalVariableSet(ReentryArmedKey(), 0);
          GlobalVariableSet(ReentrySrWallKey(), 0);
+         GlobalVariableSet(SrRakedKey(), 0);
          GlobalVariableSet(TpAlertKey(), 0);   // fresh basket, alert re-armed
          double initialR = MathAbs(fillPrice - sl);
          GlobalVariableSet(InitialRKey(), initialR);
@@ -953,31 +955,111 @@ public:
          GlobalVariableSet(PeakAdvanceKey(), peakAdv);
         }
 
-      // --- S/R Wall Exit & Breakout Continuation Arming ---
-      // When approaching or touching an opposing S/R wall in profit, exit all trades to bank gains
+      // --- S/R Wall Profit Rake: Close pyramid adds, protect runner with BE stop ---
+      // When approaching or touching an opposing S/R wall in profit, rake in pyramid gains
+      // and leave a single base runner with Breakeven stop to ride any breakout or exit on sharp reversal.
       if(SrExitEnforced() && m_srZones != NULL && atr_value > 0)
         {
+         ENUM_SIGNAL pdir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
+         double roomPts = m_srExitRoomAtr * atr_value;
+         string wallTier = "";
+         int srVerdict = m_srZones.Verdict(pdir, currentPx, roomPts, m_srTiers, wallTier);
+
+         // Once cleared past the wall into open space, re-arm rake for any higher tier wall
+         if(srVerdict == 1 && GlobalVariableGet(SrRakedKey()) > 0.5)
+            GlobalVariableSet(SrRakedKey(), 0);
+
          double initR = GlobalVariableGet(InitialRKey());
          double minAdvance = (initR > 0) ? (m_srExitMinProfitR * initR) : (0.3 * atr_value);
-         if(advance >= minAdvance && BasketProfit() > 0)
+         if(srVerdict == 0 && advance >= minAdvance && BasketProfit() > 0 && GlobalVariableGet(SrRakedKey()) < 0.5)
            {
-            ENUM_SIGNAL pdir = (ptype == POSITION_TYPE_BUY) ? SIGNAL_BUY : SIGNAL_SELL;
-            double roomPts = m_srExitRoomAtr * atr_value;
-            string wallTier = "";
-            if(m_srZones.Verdict(pdir, currentPx, roomPts, m_srTiers, wallTier) == 0)
+            GlobalVariableSet(SrRakedKey(), 1.0);
+            int totalPos = CountOwn();
+            ulong oldestTk = 0;
+            datetime oldestTime = 0;
+            double oldestOpenPx = 0.0;
+            double oldestVol = 0.0;
+
+            // Identify the original base trade
+            for(int i = PositionsTotal() - 1; i >= 0; i--)
               {
-               if(m_enableContinuationReentry)
+               ulong tk = PositionGetTicket(i);
+               if(tk > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+                  PositionGetString(POSITION_SYMBOL) == _Symbol)
                  {
-                  GlobalVariableSet(ReentryArmedKey(), 1.0);
-                  GlobalVariableSet(ReentryDirKey(), (double)ptype);
-                  GlobalVariableSet(ReentryPriceKey(), currentPx);
-                  GlobalVariableSet(ReentrySrWallKey(), 1.0);
+                  datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+                  if(oldestTime == 0 || t < oldestTime)
+                    {
+                     oldestTk = tk;
+                     oldestTime = t;
+                     oldestOpenPx = PositionGetDouble(POSITION_PRICE_OPEN);
+                     oldestVol = PositionGetDouble(POSITION_VOLUME);
+                    }
                  }
-               string srReason = StringFormat("S/R wall (%s) exit (advance=%.1f ATR)",
-                                              wallTier, advance / atr_value);
-               PrintFormat("TradeManager: %s — closing all positions to bank profit at wall", srReason);
-               CloseAll(srReason);
-               return;
+              }
+
+            // Case A: Multiple positions (pyramid adds exist) -> Close all adds, keep base runner
+            if(totalPos > 1 && oldestTk > 0)
+              {
+               int closedAdds = 0;
+               double closedAddVol = 0.0;
+               for(int i = PositionsTotal() - 1; i >= 0; i--)
+                 {
+                  ulong tk = PositionGetTicket(i);
+                  if(tk > 0 && tk != oldestTk &&
+                     PositionGetInteger(POSITION_MAGIC) == m_magic &&
+                     PositionGetString(POSITION_SYMBOL) == _Symbol)
+                    {
+                     double v = PositionGetDouble(POSITION_VOLUME);
+                     if(m_trade.PositionClose(tk))
+                       {
+                        closedAdds++;
+                        closedAddVol += v;
+                       }
+                    }
+                 }
+               // Lock base runner at Breakeven
+               m_trade.PositionModify(oldestTk, oldestOpenPx, PositionGetDouble(POSITION_TP));
+               string rakeReason = StringFormat("S/R wall (%s) profit rake: banked %d adds (%.2f lots), runner active with BE stop",
+                                                wallTier, closedAdds, closedAddVol);
+               PrintFormat("TradeManager: %s", rakeReason);
+               if(m_sink != NULL)
+                 {
+                  string dirStr = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+                  m_sink.OnTradeEvent("close", dirStr, closedAddVol, currentPx, oldestOpenPx,
+                                      rakeReason, (long)oldestTk, 0.0,
+                                      BasketTargetPrice(), false, CurrentEntryModeStr());
+                 }
+              }
+            // Case B: Single position -> Take 50% partial profit & move stop to Breakeven
+            else if(totalPos == 1 && oldestTk > 0 && oldestVol > 0)
+              {
+               double closeVol = ClampToVolume(oldestVol * 0.50);
+               if(closeVol > 0 && closeVol < oldestVol)
+                 {
+                  if(m_trade.PositionClosePartial(oldestTk, closeVol))
+                    {
+                     GlobalVariableSet(PartialTakenKey(), 1);
+                     m_trade.PositionModify(oldestTk, oldestOpenPx, PositionGetDouble(POSITION_TP));
+                     string rakeReason = StringFormat("S/R wall (%s) de-risk: banked 50%% (%.2f lots), runner active with BE stop",
+                                                      wallTier, closeVol);
+                     PrintFormat("TradeManager: %s", rakeReason);
+                     if(m_sink != NULL)
+                       {
+                        string dirStr = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+                        m_sink.OnTradeEvent("partial_close", dirStr, closeVol, currentPx, oldestOpenPx,
+                                            rakeReason, (long)oldestTk, 0.0,
+                                            BasketTargetPrice(), false, CurrentEntryModeStr());
+                       }
+                    }
+                 }
+               else
+                 {
+                  // Indivisible lot (e.g. 0.01) -> ratchet SL to Breakeven
+                  m_trade.PositionModify(oldestTk, oldestOpenPx, PositionGetDouble(POSITION_TP));
+                  PrintFormat("TradeManager: S/R wall (%s) de-risk: breakeven stop set on #%I64u at %.2f (vol=%.2f)",
+                              wallTier, oldestTk, oldestOpenPx, oldestVol);
+                 }
               }
            }
         }

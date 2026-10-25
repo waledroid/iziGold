@@ -4419,15 +4419,16 @@ and §6/§7b (ops). The through-line worth remembering:
        `PrintFormat("%s: %s refused — S/R WALL: %s %s inside/within %.2f ATR ... — S/R wall gate is ENFORCING", ...);`
        `return SIGNAL_NONE;`
      - Blocks entering BUYs directly into resistance ceilings and SELLs directly into support floors.
-  2. **In-Trade S/R Wall Exit (`TradeManager.mqh`)**:
+  2. **In-Trade S/R Wall Profit Rake & Breakeven Runner (`TradeManager.mqh`)**:
      - `EnableSrExit` (default `true`), `SrExitRoomAtr` (default `0.3` ATR), `SrExitMinProfitR` (default `0.3R`).
      - In `Manage()`, when an open basket advances favorably (`advance >= minAdvance && BasketProfit() > 0`) and price approaches within `SrExitRoomAtr` of the opposing S/R wall (or enters the zone, `m_srZones.Verdict(...) == 0`):
-       - The EA immediately exits the basket: `CloseAll("S/R wall (<TIER>) exit")` to lock in banked profits.
-       - Dispatches trade close event and Telegram alert: `🧱 S/R Wall Exit (<TIER>): banking profit at wall`.
-  3. **Breakout Continuation Re-Entry (`TradeManager.mqh`)**:
-     - On S/R exit, `TradeManager` arms continuation re-entry with flag `ReentrySrWallKey() = 1.0`.
-     - `CheckContinuationReentry()` monitors closed bars: while price remains contained by the wall (`m_srZones.Verdict(...) == 0`), it waits patiently without re-entering.
-     - As soon as price breaks through and closes beyond the wall (`Verdict == 1`), momentum confirms in the trend direction, and the underlying HalfTrend thesis remains intact (`conditionStillTrue`), `CheckContinuationReentry()` confirms re-entry, entering fresh lots with an ATR stop to ride the breakout continuation.
+       - If multiple positions exist (pyramid adds active): closes **all add-on positions** to bank realized profit, while retaining the original base runner and ratcheting its Stop Loss to **Breakeven** (`oldestOpenPx`).
+       - If a single position exists: banks a **50% partial scale-out** into cash balance and ratchets the remaining runner's Stop Loss to **Breakeven** (or sets BE stop for indivisible 0.01 lots).
+       - The single runner continues active in the market:
+         - **If a sharp reversal happens off the wall**: `EnableReversalExit` catches the pullback from peak and liquidates the runner with banked profit, or the Breakeven stop protects against adverse drawdown ($0 risk).
+         - **If price breaks through and crosses the wall**: the runner rides the breakout continuously from its original entry price without spread penalty or re-entry friction. Once clear of the wall, normal pyramid adding unlocks.
+  3. **Breakout Re-Arming & S/R State Retention**:
+     - `SrRakedKey()` persists the raked state across ticks. When price cleanly punches through the wall into open territory (`Verdict == 1`), `SrRakedKey()` resets, re-arming the profit rake for any subsequent higher-tier wall encountered down the road.
   4. **Cross-Stack Runtime Control**:
      - `service/app/repos/kv_profile.py`: `sr_enforce()` / `set_sr_enforce()` with `SR_CHOICES = ("off", "on")`, defaulting to `"on"`.
      - `service/app/models.py`: `HeartbeatResponse.sr_enforce` delivers the authoritative setting to MT5 on every beat.
