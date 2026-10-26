@@ -102,6 +102,7 @@ The onboarding settings page (`/onboarding`) includes dedicated Bitcoin asset co
 (`btc_symbol`, `btc_risk_pct`, `btc_lane`, `btc_enabled`), persisted in SQLite `profile`
 and exposed via `runtime_config()` to govern the multi-asset launcher and EA instances.
 The Telegram interface is streamlined for ultra-fast mobile operations with minimal text,
+clean grouped sections separated by dashed divider lines (`----------------------------------------`),
 clean micro-cards, and a persistent reply dock featuring two big security toggle buttons:
 `[ 🥇 Gold: ⏹️ STOP ]` (or `▶️ PLAY`) and `[ ₿ BTC: ⏹️ STOP ]` (or `▶️ PLAY`).
 Toggling STOP immediately freezes new automated entries for that specific asset

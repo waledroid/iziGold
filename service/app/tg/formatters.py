@@ -222,6 +222,7 @@ def _format_status(app, redacted=False) -> str:
     session_line = f"🕒 {market_session()}"
     miniapp_line = _miniapp_line()
     ai_line = _ai_status_line(app)
+    sep = "----------------------------------------"
     if latest is None and not hbs:
         return f"{session_line}\n{connection}\n{miniapp_line}\n{ai_line}\nno heartbeat yet"
 
@@ -233,6 +234,7 @@ def _format_status(app, redacted=False) -> str:
         if any(getattr(h, "algo_trading", True) is False for _, h in hbs.values()):
             lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")
         lines.append(ai_line)
+        lines.append(sep)
         if not redacted:
             total_floating = sum(getattr(h, "floating_pl", 0.0) for _, h in hbs.values())
             lines.append(f"💰 {primary_hb.equity} equity · {primary_hb.balance} balance "
@@ -240,6 +242,7 @@ def _format_status(app, redacted=False) -> str:
             money = _money_line(app)
             if money:
                 lines.append(money)
+            lines.append(sep)
 
         all_positions = []
         for sym, (_, h) in sorted(hbs.items()):
@@ -258,6 +261,9 @@ def _format_status(app, redacted=False) -> str:
                 state_label = " · ⚡ RUNNING (24/7)"
             else:
                 state_label = " · 🟢 RUNNING"
+            price_val = getattr(h, "bar_c", 0.0) or 0.0
+            price_str = f" · ${price_val:,.1f}" if "BTC" in sym.upper() else f" · ${price_val:.2f}"
+            lines.append(f"🎯 [{badge} {sym}] {st} · {mode}{price_str}{state_label}")
             if h.kill_switch:
                 lines.append(f"⛔ [{badge} {sym}] KILL SWITCH TRIPPED — trading halted")
             else:
@@ -269,12 +275,10 @@ def _format_status(app, redacted=False) -> str:
                 if daily_loss_pct > 0:
                     prot += f" · daily loss {daily_loss_pct:.0f}%"
                 lines.append(prot)
-            price_val = getattr(h, "bar_c", 0.0) or 0.0
-            price_str = f" · ${price_val:,.1f}" if "BTC" in sym.upper() else f" · ${price_val:.2f}"
-            lines.append(f"🎯 [{badge} {sym}] {st} · {mode}{price_str}{state_label}")
             for p in h.positions:
                 all_positions.append((sym, p))
 
+        lines.append(sep)
         if all_positions:
             lines.append(f"📬 Positions ({len(all_positions)}):")
             for sym, p in all_positions:
@@ -313,12 +317,14 @@ def _format_status(app, redacted=False) -> str:
     if getattr(hb, "algo_trading", True) is False:
         lines.append("⚠️ ALGO TRADING OFF — MT5 cannot execute trades")
     lines.append(ai_line)
+    lines.append(sep)
     if not redacted:
         lines.append(f"💰 {hb.equity} equity · {hb.balance} balance "
                      f"· {hb.floating_pl:+g} floating")
         money = _money_line(app)
         if money:
             lines.append(money)
+        lines.append(sep)
     from app.config import is_weekend_market
     sym_name = getattr(hb, "symbol", "XAUUSD")
     if "XAU" in sym_name.upper() and is_weekend_market():
@@ -329,6 +335,7 @@ def _format_status(app, redacted=False) -> str:
         protection,
         f"🎯 {strategy} · {mode}{state_label}",
     ]
+    lines.append(sep)
     positions = hb.positions
     if positions:
         lines.append(f"📬 Positions ({len(positions)}):")
@@ -347,14 +354,17 @@ def _format_stats(app) -> str:
         return "no stats yet"
     pnl = (app.state.db.strategy_pnl()
            if hasattr(app.state.db, "strategy_pnl") else {})
-    lines = ["📈 Stats by strategy:"]
+    sep = "----------------------------------------"
+    lines = ["📈 Stats by strategy:", sep]
     for sid, s in by_strategy.items():
-        line = (f"{sid}: {s['signals']} signals, {s['resolved']} resolved, "
+        line = (f"• {sid}: {s['signals']} signals, {s['resolved']} resolved, "
                 f"{s['hit_pct']}% hit, avg move {s['avg_move']}")
         if sid in pnl:
             total, n = pnl[sid]
             line += f", P/L {_fmt_money(total)} over {n} trades"
         lines.append(line)
+    lines.append(sep)
+    lines.append(f"Total resolved: {stats.get('resolved', 0)} signals")
     return "\n".join(lines)
 
 
@@ -364,17 +374,18 @@ def _format_report(app) -> tuple:
     from app.tg.keyboards import REPORT_INLINE_KB
     db = getattr(app.state, "db", None)
     conn = getattr(db, "conn", None) if db is not None else None
+    sep = "----------------------------------------"
     if conn is None:
-        return ("📊 Performance Report\n\nNo database connection.", REPORT_INLINE_KB())
+        return (f"📊 Performance Report\n{sep}\nNo database connection.", REPORT_INLINE_KB())
     periods = build_periodic_summary(conn)
-    lines = ["📊 Performance Report"]
+    lines = ["📊 Performance Report", sep]
     for label, key in (("📅 Today", "today"), ("🗓 This Week", "week"), ("📆 This Month", "month")):
         p = periods[key]
         if p["trades"] == 0:
-            lines.append(f"\n{label}: $0.00 (0 trades)")
+            lines.append(f"{label}: $0.00 (0 trades)")
         else:
             lines.append(
-                f"\n{label}: {_fmt_money(p['pl'])} "
+                f"{label}: {_fmt_money(p['pl'])} "
                 f"({p['wins']}W / {p['losses']}L · {p['win_pct']:.0f}%)"
             )
             g = p["gold"]
@@ -383,7 +394,8 @@ def _format_report(app) -> tuple:
                 f"  🥇 Gold: {_fmt_money(g['pl'])} ({g['trades']})  ·  "
                 f"₿ BTC: {_fmt_money(b['pl'])} ({b['trades']})"
             )
-    return ("\n".join(lines), REPORT_INLINE_KB())
+        lines.append(sep)
+    return ("\n".join(lines[:-1]), REPORT_INLINE_KB())
 
 
 def _fmt_money(amount: float) -> str:
@@ -418,7 +430,8 @@ def _format_history(app) -> str:
     trades = app.state.db.recent_trades(10)
     if not trades:
         return "no trade history yet"
-    lines = ["🕘 Last trades:"]
+    sep = "----------------------------------------"
+    lines = ["🕘 Last trades:", sep]
     closed_total, closed_n = 0.0, 0
     for t in trades:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t["ts"]))
@@ -435,6 +448,7 @@ def _format_history(app) -> str:
             closed_n += 1
         lines.append(line)
     if closed_n:
+        lines.append(sep)
         lines.append(f"Σ closed shown: {_fmt_money(closed_total)} ({closed_n})")
     return "\n".join(lines)
 
@@ -452,7 +466,8 @@ def _format_balance(app, redacted=False) -> str:
     text = (f"💰 Balance: ${hb.balance:.2f} | Equity: ${hb.equity:.2f} | "
             f"Floating: {floating}")
     money = _money_line(app)
-    return f"{text}\n{money}" if money else text
+    sep = "----------------------------------------"
+    return f"{text}\n{sep}\n{money}" if money else text
 
 
 def _format_mode(app) -> tuple:
@@ -539,8 +554,10 @@ def _format_agree(app) -> tuple:
     sr_on = sr == "on"
     adds = db.m15_adds()
     adds_on = adds == "on"
+    sep = "----------------------------------------"
     body = (
-        "🎛️ Strategy Confirmation Gates & Filters\n\n"
+        "🎛️ Strategy Confirmation Gates & Filters\n"
+        f"{sep}\n"
         f"• HTF Bias (M5): {'ENFORCING on ' + cur if on else 'CHECK ONLY (off, reported)'}\n"
         f"• EMA-200 (M5/M15): {'ENFORCING' if e200_on else 'CHECK ONLY (off, reported)'}\n"
         f"• RSI 70/30 (M15 lane only): {'ENFORCING' if rsi_on else 'CHECK ONLY (off)'}\n"
@@ -582,16 +599,18 @@ def _format_ai(app) -> tuple:
     except Exception:
         pass
 
+    sep = "----------------------------------------"
     body = (
         "🤖 AI Supervisor\n"
+        f"{sep}\n"
         f"• Status: {st_text}\n"
         f"• Model: {model}\n"
-        f"• Role: Risk & Context Supervision{acc_text}\n\n"
+        f"• Role: Risk & Context Supervision{acc_text}\n"
+        f"{sep}\n"
         "Use /ai on or /ai off to toggle."
     )
     btn_text = "🔴 Turn AI OFF" if ai_on else "🟢 Turn AI ON"
     btn_val = "ai:off" if ai_on else "ai:on"
-    return (body, kb([[ (btn_text, btn_val) ]]))
     return (body, kb([[ (btn_text, btn_val) ]]))
 
 
@@ -614,12 +633,15 @@ def _format_config(app, redacted=False) -> str:
     hb = latest[1] if latest else None
     bal = REDACTED if redacted else (f"${hb.balance:.2f}" if hb else "?")
     eq = REDACTED if redacted else (f"${hb.equity:.2f}" if hb else "?")
+    sep = "----------------------------------------"
     return (
         "⚙️ Config\n"
+        f"{sep}\n"
         f"• Mode: {db.exec_mode()} | entry mode: {db.entry_mode()}\n"
         f"• Strategy: {hb.active_strategy if hb else '?'}\n"
         f"• Balance: {bal} | Equity: {eq}\n"
         f"• Window: {'OPEN' if hb and hb.window_open else 'CLOSED'} · Guard: {'TRIPPED' if hb and hb.kill_switch else 'OK'}\n"
+        f"{sep}\n"
         f"• HTF: {db.htf_enforce()} | EMA200: {db.ema200_enforce()} | RSI: {db.rsi_enforce()} | S/R: {db.sr_enforce()} | Adds: {db.m15_adds()}"
     )
 
