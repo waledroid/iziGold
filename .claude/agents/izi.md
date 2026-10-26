@@ -4446,7 +4446,7 @@ and §6/§7b (ops). The through-line worth remembering:
 - **Architectural Solution & Multi-Layer Enforcement**:
   1. **Profile-Only Startup Config (`scripts/mt5-start.ini`)**:
      - Removed `Symbol`, `Period`, and `Expert` overrides from `[StartUp]`.
-     - `[StartUp]` strictly specifies `Profile=Default`. The `Default` profile contains exclusively `chart01.chr` (XAUUSD M15) and `chart02.chr` (BTCUSD M5) with `iziBot` attached, preventing MT5 from spawning a 3rd window on launch.
+     - `[StartUp]` strictly specifies `Profile=Default`. The `Default` profile contains exclusively `chart01.chr` (XAUUSD M15) and `chart02.chr` (BTCUSD M15) with `iziBot` attached, preventing MT5 from spawning a 3rd window on launch.
   2. **Launcher Pre-Launch Chart Scrub (`launch.py`)**:
      - Updated `ensure_chart_templates()` to unlink all `chart*.chr` files except `chart01.chr` and `chart02.chr` across all detected MT5 directories (`Profiles/Charts/Default`, `MQL5/Profiles/Charts/Default`).
      - Added an immediate `ensure_chart_templates()` execution inside `launch_mt5()` right before spawning the detached MT5 process, ensuring any stale charts flushed during terminal shutdown are scrubbed before startup.
@@ -4457,6 +4457,30 @@ and §6/§7b (ops). The through-line worth remembering:
        - If the Bitcoin owner detects another Bitcoin chart (`cid != ChartID()`), it closes it via `ChartClose(cid)`.
        - If any chart is neither Gold nor Bitcoin, it is closed immediately via `ChartClose(cid)`.
      - When an instance is superseded (`!IsOwner()`), it immediately calls `ChartClose(ChartID())`, ensuring duplicate chart windows vanish rather than remaining as empty orphaned windows.
+
+
+# 41. Bitcoin Default Timeframe Unified to M15 (iziBit15) (2026-10-26)
+
+- **Motivation**:
+  - The operator requested aligning Bitcoin (`BTCUSD`) trading to M15 (`iziBit15`), mirroring Gold (`iziGold15`), rather than M5 quick scalping.
+- **Changes Across the Stack**:
+  1. **Launcher Pre-Provisioning (`launch.py`)**:
+     - `btc_data` chart configuration updated from `period_size=5` to `period_size=15`.
+     - `Default` profile `chart02.chr` opens BTCUSD on M15 with `iziBot` attached.
+  2. **EA Timeframe & Strategy Defaults (`iziBot.mq5` / `XauAssistant.mq5`)**:
+     - `input ENUM_TIMEFRAMES BtcTimeframe = PERIOD_M15;` (was `PERIOD_M5`).
+     - In `OnInit()`, when attached to a Bitcoin chart, default strategy selection resolves to `iziBit15` (or `iziBit5` if explicitly attached to an M5 chart).
+  3. **Backend Service & Routing Alignment**:
+     - `service/app/asset_registry.py`: `default_lane="iziBit15"` for `BTCUSD`.
+     - `service/app/repos/kv_profile.py`: `btc_lane` profile fallback set to `"iziBit15"`.
+     - `service/app/db.py`: `profile.btc_lane` default column definition updated to `'iziBit15'`.
+     - `service/app/routers/ea.py`: Heartbeat handler authoritatively delivers `switch_to = stored_btc` (default `iziBit15` from `active_strategy_btcusd`) to Bitcoin EA instances.
+     - `service/app/tg/commands.py`: `strat_default = "iziBit15" if is_btc else "iziGold15"`.
+  4. **Frontend UI & Onboarding**:
+     - `dashboard.js`: Default tab for BTC switch set to `iziBit15`.
+     - `dashboard.html`: Weekend banner references active trading on `iziBit15 (BTCUSD)`.
+     - `onboarding.html`: `iziBit15 (M15 Trend Ride — Recommended)` is pre-selected.
+
 
 
 

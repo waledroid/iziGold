@@ -135,7 +135,7 @@ input double Btc15StopBufferATR     = 1.75;               // pad wick stop by k*
 input group "Multi-Asset Coexistence & Auto-Spawn"
 input bool            AutoSpawnBtcChart      = true;     // Auto-spawn BTC chart if not open (runs once on Gold instance)
 input string          BtcPreferredSymbol     = "BTCUSD"; // Preferred Bitcoin symbol name
-input ENUM_TIMEFRAMES BtcTimeframe           = PERIOD_M5;  // Timeframe for spawned Bitcoin chart
+input ENUM_TIMEFRAMES BtcTimeframe           = PERIOD_M15; // Timeframe for spawned Bitcoin chart (M15 default)
 
 input group "BollStochRsi (boll_stochrsi)"
 input int    BbPeriod        = 20;   // boll_stochrsi: Bollinger period
@@ -398,7 +398,7 @@ int OnInit()
    long   effectiveMagic = MagicNumber;
 
    // Multi-Asset smart defaults (Gold vs Bitcoin):
-   // If attached to a Bitcoin chart, default to iziBit5 (or iziBit15 if M15 chart)
+   // If attached to a Bitcoin chart, default to iziBit15 (or iziBit5 if M5 chart)
    // and offset MagicNumber so both Gold and BTC instances operate concurrently.
    if(StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0)
      {
@@ -406,7 +406,7 @@ int OnInit()
          effectiveStrat == "iziGold5" || effectiveStrat == "iziGold15" ||
          effectiveStrat == "iziBit5" || effectiveStrat == "iziBit15")
         {
-         effectiveStrat = (Period() == PERIOD_M15) ? "iziBit15" : "iziBit5";
+         effectiveStrat = (Period() == PERIOD_M5) ? "iziBit5" : "iziBit15";
         }
       if(effectiveMagic == 20260729)
          effectiveMagic = 20260730;

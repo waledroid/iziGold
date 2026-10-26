@@ -408,7 +408,7 @@ def ensure_chart_templates(data_dirs: list[Path] | Path, dry_run: bool) -> None:
     izibot_tpl = ROOT / "mt5" / "Templates" / "iziBot.tpl"
     xau_tpl = ROOT / "mt5" / "Templates" / "XauAssistant.tpl"
     xau_data = make_chart_chr("XAUUSD", "Gold vs US Dollar", 15, 130000000000000001)
-    btc_data = make_chart_chr("BTCUSD", "Bitcoin vs US Dollar", 5, 130000000000000002)
+    btc_data = make_chart_chr("BTCUSD", "Bitcoin vs US Dollar", 15, 130000000000000002)
     order_data = "chart01.chr\r\nchart02.chr\r\n".encode("utf-16")
 
     for d in data_dirs:
@@ -447,7 +447,7 @@ def ensure_chart_templates(data_dirs: list[Path] | Path, dry_run: bool) -> None:
                 (cdir / "chart02.chr").write_bytes(btc_data)
                 (cdir / "order.wnd").write_bytes(order_data)
 
-    Progress.note("multi-asset chart profiles and templates installed across all MT5 targets (XAUUSD M15 + BTCUSD M5)")
+    Progress.note("multi-asset chart profiles and templates installed across all MT5 targets (XAUUSD M15 + BTCUSD M15)")
 
 
 def install_ea_sources(system: str, prefix: Path, editor: Path | None,

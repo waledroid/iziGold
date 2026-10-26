@@ -51,7 +51,7 @@ ASSETS: Dict[str, AssetSpec] = {
         default_lot=0.01,
         lot_step=0.01,
         strategy_lanes=("iziBit5", "iziBit15"),
-        default_lane="iziBit5",
+        default_lane="iziBit15",
     ),
 }
 

@@ -467,6 +467,10 @@ async def heartbeat(hb: HeartbeatRequest):
     if not switch_to and hb_sym == "XAUUSD":
         if stored and hb.active_strategy != stored and "bit" not in stored.lower():
             switch_to = stored
+    elif not switch_to and ("BTC" in hb_sym.upper()):
+        stored_btc = app.state.db.get_kv("active_strategy_btcusd") or "iziBit15"
+        if stored_btc and hb.active_strategy != stored_btc:
+            switch_to = stored_btc
     if switch_to and hb.active_strategy == switch_to:
         if hb_sym in pending_switches:
             del pending_switches[hb_sym]

@@ -288,5 +288,5 @@ def test_btc_profile_defaults(tmp_path):
     rc = db.runtime_config()
     assert rc["btc_symbol"] == "BTCUSD"
     assert rc["btc_risk_pct"] == 0.5
-    assert rc["btc_lane"] == "iziBit5"
+    assert rc["btc_lane"] == "iziBit15"
     assert rc["btc_enabled"] is True

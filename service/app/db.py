@@ -300,7 +300,7 @@ class SignalDb(
             ("miniapp_direct_link", "TEXT"),
             ("btc_symbol", "TEXT DEFAULT 'BTCUSD'"),
             ("btc_risk_pct", "REAL DEFAULT 0.5"),
-            ("btc_lane", "TEXT DEFAULT 'iziBit5'"),
+            ("btc_lane", "TEXT DEFAULT 'iziBit15'"),
             ("btc_enabled", "INTEGER DEFAULT 1"),
         ):
             if col not in profile_cols:

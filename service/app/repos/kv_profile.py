@@ -126,7 +126,7 @@ class KvProfileRepoMixin:
             "allow_live_trading": True,
             "btc_symbol": str(profile.get("btc_symbol") or "BTCUSD").strip(),
             "btc_risk_pct": number("btc_risk_pct", 0.5, float),
-            "btc_lane": str(profile.get("btc_lane") or "iziBit5").strip(),
+            "btc_lane": str(profile.get("btc_lane") or "iziBit15").strip(),
             "btc_enabled": bool(profile.get("btc_enabled", 1)),
         }
 

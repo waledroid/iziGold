@@ -52,7 +52,7 @@ def _handle_asset_toggle(app, symbol: str, stop: bool):
     is_btc = "BTC" in symbol.upper()
     badge = "₿ BTCUSD" if is_btc else "🥇 XAUUSD"
     btn_label = "₿ BTC" if is_btc else "🥇 Gold"
-    strat_default = "iziBit5" if is_btc else "iziGold15"
+    strat_default = "iziBit15" if is_btc else "iziGold15"
     strat_id = getattr(hb, "active_strategy", strat_default) or strat_default
 
     if stop:

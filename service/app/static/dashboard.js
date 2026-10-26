@@ -384,7 +384,7 @@ function switchAsset(sym, userInitiated = false){
   if(_activeAsset === sym) return;
   _activeAsset = sym;
   if(sym === 'BTCUSD'){
-    if(!_activeTab.startsWith('iziBit')) _activeTab = 'iziBit5';
+    if(!_activeTab.startsWith('iziBit')) _activeTab = 'iziBit15';
   } else {
     if(_activeTab.startsWith('iziBit')) _activeTab = 'iziGold15';
   }
