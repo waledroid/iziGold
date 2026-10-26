@@ -356,29 +356,30 @@ body {
 
 .btn-close-deal {
   font-family: inherit;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 900;
-  width: 2.6rem;
-  min-width: 2.6rem;
-  height: 24px;
+  width: 4.5rem;
+  min-width: 4.5rem;
+  height: 32px;
   line-height: 1;
   padding: 0;
-  border-radius: 6px;
-  background: rgba(244, 63, 94, 0.15);
-  border: 1px solid rgba(244, 63, 94, 0.4);
+  border-radius: 8px;
+  background: rgba(244, 63, 94, 0.18);
+  border: 1px solid rgba(244, 63, 94, 0.45);
   color: #fb7185;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: all 0.15s ease;
+  box-shadow: 0 0 8px rgba(244, 63, 94, 0.15);
 }
 .btn-close-deal:hover {
-  background: rgba(244, 63, 94, 0.35);
+  background: rgba(244, 63, 94, 0.4);
   color: #ffffff;
   border-color: #f43f5e;
-  box-shadow: 0 0 8px rgba(244, 63, 94, 0.5);
-  transform: scale(1.08);
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.6);
+  transform: scale(1.06);
 }
 
 .micro-nav {
