@@ -250,6 +250,7 @@ def launch_mt5(system: str, terminal: Path, prefix: Path, dry_run: bool,
             stop_mt5(system, prefix, dry_run)
             if not dry_run:
                 time.sleep(2)
+        ensure_chart_templates(find_all_mt5_data_dirs(system, prefix), dry_run)
         command = [str(terminal), f"/config:{ROOT / 'scripts' / 'mt5-start.ini'}"]
         start_detached(command)
         return
@@ -258,6 +259,7 @@ def launch_mt5(system: str, terminal: Path, prefix: Path, dry_run: bool,
             Progress.note("Wine MT5 is already running")
             return
         stop_mt5(system, prefix, dry_run)
+    ensure_chart_templates(find_all_mt5_data_dirs(system, prefix), dry_run)
     command = ["wine", str(terminal)]
     config = ROOT / "scripts" / "mt5-start.ini"
     if config.exists():
@@ -419,7 +421,9 @@ def ensure_chart_templates(data_dirs: list[Path] | Path, dry_run: bool) -> None:
         ]
         chart_dirs = [
             terminal_root / "Profiles" / "Charts" / "Default",
+            terminal_root / "MQL5" / "Profiles" / "Charts" / "Default",
             d / "Profiles" / "Charts" / "Default",
+            d.parent / "Profiles" / "Charts" / "Default",
         ]
 
         if not dry_run:

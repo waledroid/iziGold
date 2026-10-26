@@ -4435,6 +4435,31 @@ and §6/§7b (ops). The through-line worth remembering:
      - `service/app/tg/`: `/rules` and `/agree` include interactive `S/R Wall Guard & Exit: ENFORCING` status and 1-click toggles.
 
 
+# 40. Strict Two-Chart Multi-Asset Startup Enforcement (2026-10-26)
+
+- **Problem & Root Cause**:
+  - Whenever MT5 was booted, 3 charts were opening instead of exactly 2.
+  - Root cause was three-fold:
+    1. `scripts/mt5-start.ini` specified both `Profile=Default` AND `Symbol=XAUUSD` / `Period=M15` / `Expert=iziBot`. MT5 processed the `Default` profile (opening the pre-provisioned XAUUSD and BTCUSD charts) and then spawned an extra 3rd chart for `Symbol=XAUUSD`.
+    2. When MT5 exited cleanly, its window manager flushed all open windows back to the `Default` profile directory, saving `chart03.chr` alongside `chart01.chr` and `chart02.chr`.
+    3. The EA's chart housekeeping in `iziBot.mq5` was one-shot (running only once at tick 3) and skipped charts that had an expert attached or mismatched timeframes.
+- **Architectural Solution & Multi-Layer Enforcement**:
+  1. **Profile-Only Startup Config (`scripts/mt5-start.ini`)**:
+     - Removed `Symbol`, `Period`, and `Expert` overrides from `[StartUp]`.
+     - `[StartUp]` strictly specifies `Profile=Default`. The `Default` profile contains exclusively `chart01.chr` (XAUUSD M15) and `chart02.chr` (BTCUSD M5) with `iziBot` attached, preventing MT5 from spawning a 3rd window on launch.
+  2. **Launcher Pre-Launch Chart Scrub (`launch.py`)**:
+     - Updated `ensure_chart_templates()` to unlink all `chart*.chr` files except `chart01.chr` and `chart02.chr` across all detected MT5 directories (`Profiles/Charts/Default`, `MQL5/Profiles/Charts/Default`).
+     - Added an immediate `ensure_chart_templates()` execution inside `launch_mt5()` right before spawning the detached MT5 process, ensuring any stale charts flushed during terminal shutdown are scrubbed before startup.
+  3. **Continuous Strict 2-Chart Housekeeping (`iziBot.mq5` / `XauAssistant.mq5`)**:
+     - Supersonically fast periodic housekeeping runs every 5s in `OnTimer()`:
+       - Uses `IsGoldSymbol()` and `IsBtcSymbol()` helpers.
+       - If the Gold owner detects another Gold chart (`cid != ChartID()`), it closes it via `ChartClose(cid)`.
+       - If the Bitcoin owner detects another Bitcoin chart (`cid != ChartID()`), it closes it via `ChartClose(cid)`.
+       - If any chart is neither Gold nor Bitcoin, it is closed immediately via `ChartClose(cid)`.
+     - When an instance is superseded (`!IsOwner()`), it immediately calls `ChartClose(ChartID())`, ensuring duplicate chart windows vanish rather than remaining as empty orphaned windows.
+
+
+
 
 
 

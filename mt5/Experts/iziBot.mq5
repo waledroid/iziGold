@@ -543,39 +543,69 @@ bool ApplyIziTemplate(long chartId)
    return false;
   }
 
+bool IsGoldSymbol(const string sym)
+  {
+   return (StringFind(sym, "XAU") >= 0 || StringFind(sym, "xau") >= 0 ||
+           StringFind(sym, "GOLD") >= 0 || StringFind(sym, "gold") >= 0);
+  }
+
+bool IsBtcSymbol(const string sym)
+  {
+   return (StringFind(sym, "BTC") >= 0 || StringFind(sym, "btc") >= 0);
+  }
+
 void OnTimer()
   {
-   // Single-instance guard: a newer attachment claimed ownership — step down.
+   // Single-instance guard: a newer attachment claimed ownership — step down and close duplicate chart.
    if(!IsOwner())
      {
-      PrintFormat("XauAssistant: superseded by a newer instance on %s — removing this one (chart %I64d)",
+      PrintFormat("iziBot: superseded by a newer instance on %s — closing duplicate chart (id %I64d)",
                   _Symbol, ChartID());
-      ExpertRemove();
+      ChartClose(ChartID());
       return;
      }
-   // One-shot housekeeping ~15 s after attach (3rd tick — after any takeover
-   // has settled): close leftover expert-less charts on OUR symbol+trade TF.
-   // These are exactly the charts previous [StartUp] boots opened (or a
-   // superseded instance vacated); without this they accumulate one per boot.
-   // Charts on other timeframes (the owner's viewing charts) are never touched.
-   static int  g_guardTicks = 0;
-   static bool g_chartsCleaned = false;
-   if(!g_chartsCleaned && ++g_guardTicks >= 3)
+
+   // Continuous strict 2-chart housekeeping:
+   // MT5 must ONLY have exactly two charts: one Gold chart and one Bitcoin chart.
+   // Any duplicate chart of our asset or non-whitelisted chart is closed.
+   static datetime g_lastHousekeepingTime = 0;
+   datetime nowHb = TimeCurrent();
+   if(nowHb - g_lastHousekeepingTime >= 5)
      {
-      g_chartsCleaned = true;
-      for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
+      g_lastHousekeepingTime = nowHb;
+      long cid = ChartFirst();
+      while(cid >= 0)
         {
-         if(cid == ChartID()) continue;
-         if(ChartSymbol(cid) != _Symbol || ChartPeriod(cid) != TradeTimeframe) continue;
-         if(ChartGetString(cid, CHART_EXPERT_NAME) != "") continue;
-         PrintFormat("XauAssistant: closing leftover %s chart without an EA (id %I64d)", _Symbol, cid);
-         ChartClose(cid);
+         long nextCid = ChartNext(cid);
+         if(cid != ChartID())
+           {
+            string cSym = ChartSymbol(cid);
+            bool isGold = IsGoldSymbol(cSym);
+            bool isBtc  = IsBtcSymbol(cSym);
+
+            if(IsGoldSymbol(_Symbol) && isGold)
+              {
+               PrintFormat("iziBot: closing duplicate Gold chart (sym=%s, id=%I64d)", cSym, cid);
+               ChartClose(cid);
+              }
+            else if(IsBtcSymbol(_Symbol) && isBtc)
+              {
+               PrintFormat("iziBot: closing duplicate Bitcoin chart (sym=%s, id=%I64d)", cSym, cid);
+               ChartClose(cid);
+              }
+            else if(!isGold && !isBtc)
+              {
+               PrintFormat("iziBot: closing non-whitelisted chart (sym=%s, id=%I64d)", cSym, cid);
+               ChartClose(cid);
+              }
+           }
+         cid = nextCid;
         }
      }
 
    // Periodic auto-spawn / template re-attachment of Bitcoin chart from the Gold instance
    static datetime g_lastBtcSpawnCheck = 0;
-   if(AutoSpawnBtcChart && (StringFind(_Symbol, "XAU") >= 0 || StringFind(_Symbol, "xau") >= 0))
+   if(AutoSpawnBtcChart && IsGoldSymbol(_Symbol))
      {
       datetime now = TimeCurrent();
       if(now - g_lastBtcSpawnCheck >= 15)
@@ -585,7 +615,7 @@ void OnTimer()
          for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
            {
             string sym = ChartSymbol(cid);
-            if(StringFind(sym, "BTC") >= 0 || StringFind(sym, "btc") >= 0)
+            if(IsBtcSymbol(sym))
               {
                string ea = ChartGetString(cid, CHART_EXPERT_NAME);
                if(ea != "")
@@ -643,7 +673,7 @@ void OnTimer()
 
    // Periodic auto-spawn of Gold M15 chart from the Bitcoin instance
    static datetime g_lastXauSpawnCheck = 0;
-   if(AutoSpawnBtcChart && (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0))
+   if(AutoSpawnBtcChart && IsBtcSymbol(_Symbol))
      {
       datetime now = TimeCurrent();
       if(now - g_lastXauSpawnCheck >= 15)
@@ -653,7 +683,7 @@ void OnTimer()
          for(long cid = ChartFirst(); cid >= 0; cid = ChartNext(cid))
            {
             string sym = ChartSymbol(cid);
-            if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "xau") >= 0 || StringFind(sym, "GOLD") >= 0 || StringFind(sym, "gold") >= 0)
+            if(IsGoldSymbol(sym))
               {
                string ea = ChartGetString(cid, CHART_EXPERT_NAME);
                if(ea != "")
