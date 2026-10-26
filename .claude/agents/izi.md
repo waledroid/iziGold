@@ -4469,7 +4469,7 @@ and §6/§7b (ops). The through-line worth remembering:
      - `Default` profile `chart02.chr` opens BTCUSD on M15 with `iziBot` attached.
   2. **EA Timeframe & Strategy Defaults (`iziBot.mq5` / `XauAssistant.mq5`)**:
      - `input ENUM_TIMEFRAMES BtcTimeframe = PERIOD_M15;` (was `PERIOD_M5`).
-     - In `OnInit()`, when attached to a Bitcoin chart, default strategy selection resolves to `iziBit15` (or `iziBit5` if explicitly attached to an M5 chart).
+     - In `OnInit()`, when attached to a Bitcoin chart, strategy selection is locked to `iziBit15` (M15), ensuring Bitcoin trades strictly in the 15-minute timeframe.
   3. **Backend Service & Routing Alignment**:
      - `service/app/asset_registry.py`: `default_lane="iziBit15"` for `BTCUSD`.
      - `service/app/repos/kv_profile.py`: `btc_lane` profile fallback set to `"iziBit15"`.

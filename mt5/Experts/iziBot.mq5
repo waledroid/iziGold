@@ -398,16 +398,11 @@ int OnInit()
    long   effectiveMagic = MagicNumber;
 
    // Multi-Asset smart defaults (Gold vs Bitcoin):
-   // If attached to a Bitcoin chart, default to iziBit15 (or iziBit5 if M5 chart)
-   // and offset MagicNumber so both Gold and BTC instances operate concurrently.
+   // Bitcoin strictly trades on M15 (iziBit15) per operator mandate.
+   // Offset MagicNumber so both Gold and BTC instances operate concurrently.
    if(StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "btc") >= 0)
      {
-      if(effectiveStrat == "izi5" || effectiveStrat == "izi15" ||
-         effectiveStrat == "iziGold5" || effectiveStrat == "iziGold15" ||
-         effectiveStrat == "iziBit5" || effectiveStrat == "iziBit15")
-        {
-         effectiveStrat = (Period() == PERIOD_M5) ? "iziBit5" : "iziBit15";
-        }
+      effectiveStrat = "iziBit15";
       if(effectiveMagic == 20260729)
          effectiveMagic = 20260730;
      }
