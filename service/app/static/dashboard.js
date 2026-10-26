@@ -190,9 +190,6 @@ async function state(){
       const isE200 = _rules.ema200_enforce==='on';
       $('rE200').className = 'filter-toggle ' + (isE200 ? 'active' : '');
 
-      const isAdds = _rules.m15_adds==='on';
-      $('rAdds').className = 'filter-toggle ' + (isAdds ? 'active' : '');
-
       const isDyn = _rules.dynamic_strategy==='auto';
       if($('rDyn')){
         $('rDyn').className = 'filter-toggle ' + (isDyn ? 'active' : '');
@@ -206,7 +203,6 @@ async function state(){
       let activeGates = 0;
       if(_rules.htf_enforce && _rules.htf_enforce !== 'off') activeGates++;
       if(isE200) activeGates++;
-      if(isAdds) activeGates++;
       if(isDyn) activeGates++;
       if($('gatesCount')) $('gatesCount').textContent = `${activeGates} on`;
     }
