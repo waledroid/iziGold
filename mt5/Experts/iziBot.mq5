@@ -56,22 +56,26 @@ input int            TradingWindowStartHour = 4;   // server time; skips rollove
 input int            TradingWindowEndHour   = 22;  // pre-rollover hour (22-23 server) cut: backtest 17mo showed it is the single worst hour (-$1.3k); window 4-22 nets +133% vs +90% at 4-23
 input int            MaxDailyExposureMin    = 0;   // daily open-position minutes budget; 0 = off / unlimited
 input int            FlattenBeforeBreakMin  = 5;   // close ALL positions this many min before the 23:59 break; 0 = off
-input double         AdxTrendThreshold      = 10.0; // near-permissive: week sweep 2026-08-06 showed 10 beats 20/25 on P/L AND drawdown; blocks only dead-flat tape
+input double         AdxTrendThreshold      = 20.0; // institutional momentum gate: filter dead tape and chop
 input bool           DebugFireTestSignal    = false;
 input long           MagicNumber            = 20260729;
 input bool           ApplyChartTheme        = true;
 
 enum ENUM_ENTRY_MODE { ENTRY_ADR = 0, ENTRY_FIXED = 1, ENTRY_HYBRID = 2 };
-input ENUM_ENTRY_MODE EntryMode  = ENTRY_HYBRID; // ADR = 1% risk; FIXED = 0.03; HYBRID = risk-calibrated 0.03 + 1.5R partial bank + runner
+input ENUM_ENTRY_MODE EntryMode  = ENTRY_HYBRID; // ADR = 1% risk; FIXED = 0.03; HYBRID = risk-calibrated 0.03 + Multi-Stage TP
 input bool           UseFixedLot = false;        // force fixed lot sizing (false lets EntryMode rule)
 input double         FixedLots   = 0.03;         // fixed trade size (broker-clamped, default 0.03)
 
-input group "Trade Protection & Reversal Management"
+input group "Trade Protection & Multi-Stage TP (1:1 Ratio)"
 input bool           SrPyramidGuard            = true; // lock out pyramid adds near opposing S/R walls
 input double         SrPyramidRoomAtr          = 1.0;  // block pyramid add if opposing S/R wall is within this ATR
-input bool           EnablePartialScaleOut     = true; // reap 50% profit at 1.5R or opposing S/R wall + move SL to BE
-input double         PartialScaleOutR          = 1.5;  // partial scale-out target in R-multiples
-input double         PartialScaleOutPct        = 0.50; // fraction of position to close on partial scale-out
+input bool           EnableMultiStageTp        = true; // enable 1:1 TP1 + TP2 + TP3 runner management
+input double         Tp1RatioR                 = 1.0;  // TP1 at 1:1 ratio (1.0R): bank 50% profit & move SL to BE
+input double         Tp1LotsPct                = 0.50; // 50% scale-out at TP1
+input double         Tp2RatioR                 = 2.0;  // TP2 at 2.0R: bank 50% of runner (25% total) & lock SL at +1.0R
+input double         Tp2LotsPct                = 0.50; // 50% scale-out of remaining runner
+input double         Tp3RatioR                 = 0.0;  // TP3 full target in R (0 = let runner ride until HT flip)
+input double         Tp3LotsPct                = 0.0;
 input bool           EnableReversalExit        = true; // exit basket on heavy pullback from profit peak
 input double         ReversalMinPeakAtr        = 1.5;  // minimum peak ATR advance required before reversal exit arms
 input double         ReversalThresholdAtr      = 1.0;  // pullback ATR from peak that triggers reversal exit
@@ -111,7 +115,7 @@ input double M15CatchupMaxChaseATR = 1.0;   // max adverse run beyond the signal
 // No higher-timeframe agreement on this lane (owner 2026-08-22): the M15
 // lane's only confirmation is its own EMA200 below -- the M15Htf* inputs
 // that used to sit here are gone rather than left wired to nothing.
-input bool   M15Ema200Confirm = false;   // EMA-200 (own timeframe) agreement, same rule as M5's Ema200Confirm above; default off
+input bool   M15Ema200Confirm = true;    // EMA-200 (own timeframe) agreement: BUY needs price above EMA200, SELL below
 input bool   M15RsiConfirm    = true;    // RSI(14) 70/30 agreement may BLOCK an M15 entry (owner "go" 2026-09-07). Sweep 2026-09-02: +7% net at -33% max dd, better in BOTH halves; the 2026-09-07 oversold SELL (RSI 26) that lost the day would have been refused. The M5 lane is NOT eligible (fails both halves) and only reports. Service /agree override wins over this input.
 input bool   M15EnableAdds    = false;   // pyramid adds on the M15 lane (owner "go" 2026-09-07). false = pure ride, the recipe every trusted M15 number was measured on; the live ADR add + halfway ratchet turned a -$16 ride exit into -$56 on 2026-09-07. Global EnablePyramiding still applies. Service /agree override wins.
 
@@ -130,7 +134,7 @@ input int    Btc15Amplitude         = 4;                  // Half Trend amplitud
 input int    Btc15EmaLength         = 50;                 // confirmation EMA
 input int    Btc15ConfirmCloses     = 1;                  // waiting bars after HT arrow
 input double Btc15ConfirmClearATR   = 0.3;                // confirm close must clear EMA by k*ATR
-input double Btc15StopBufferATR     = 1.75;               // pad wick stop by k*ATR
+input double Btc15StopBufferATR     = 2.00;               // pad wick stop by k*ATR (2.00 for crypto wicks)
 
 input group "Multi-Asset Coexistence & Auto-Spawn"
 input bool            AutoSpawnBtcChart      = true;     // Auto-spawn BTC chart if not open (runs once on Gold instance)
@@ -455,7 +459,7 @@ int OnInit()
                  TrailLockPct, TrailActivateR, &g_uiSink);
    g_trades.SetSrZones(&g_srZones, SrTiers, SrPyramidRoomAtr, SrPyramidGuard);
    g_trades.SetFixedSizing(UseFixedLot || (g_entryMode == ENTRY_FIXED), FixedLots);
-   g_trades.SetPartialScaleOut(EnablePartialScaleOut, PartialScaleOutR, PartialScaleOutPct);
+   g_trades.SetPartialScaleOut(EnableMultiStageTp, Tp1RatioR, Tp1LotsPct, Tp2RatioR, Tp2LotsPct, Tp3RatioR, Tp3LotsPct);
    g_trades.SetReversalExit(EnableReversalExit, ReversalMinPeakAtr, ReversalThresholdAtr, EnableContinuationReentry);
    g_trades.SetSrExit(EnableSrExit, SrExitRoomAtr, SrExitMinProfitR);
    // Re-arm chart box tracking if a basket was already open before this

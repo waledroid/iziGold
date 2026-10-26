@@ -28,6 +28,10 @@ private:
    bool          m_partialScaleOutEnabled;
    double        m_partialScaleOutR;
    double        m_partialScaleOutPct;
+   double        m_partialScaleOutR2;
+   double        m_partialScaleOutPct2;
+   double        m_partialScaleOutR3;
+   double        m_partialScaleOutPct3;
    bool          m_stagnationExitEnabled;
    int           m_stagnationBars;
    double        m_stagnationMaxR;
@@ -342,6 +346,10 @@ public:
       m_partialScaleOutEnabled = true;
       m_partialScaleOutR = 1.5;
       m_partialScaleOutPct = 0.50;
+      m_partialScaleOutR2 = 0.0;
+      m_partialScaleOutPct2 = 0.0;
+      m_partialScaleOutR3 = 0.0;
+      m_partialScaleOutPct3 = 0.0;
       m_stagnationExitEnabled = true;
       m_stagnationBars = 20;
       m_stagnationMaxR = 0.20;
@@ -538,11 +546,17 @@ public:
       return false;
      }
 
-   void SetPartialScaleOut(bool enabled, double r = 1.5, double pct = 0.50)
+   void SetPartialScaleOut(bool enabled, double r = 1.5, double pct = 0.50,
+                           double r2 = 0.0, double pct2 = 0.0,
+                           double r3 = 0.0, double pct3 = 0.0)
      {
       m_partialScaleOutEnabled = enabled;
       m_partialScaleOutR = r;
       m_partialScaleOutPct = pct;
+      m_partialScaleOutR2 = r2;
+      m_partialScaleOutPct2 = pct2;
+      m_partialScaleOutR3 = r3;
+      m_partialScaleOutPct3 = pct3;
      }
 
    void SetStagnationExit(bool enabled, int bars = 20, double maxR = 0.20, double maxAdx = 10.0)
@@ -928,6 +942,85 @@ public:
                      PrintFormat("TradeManager: breakeven stop set on #%I64u at %.2f (vol=%.2f)", oldestTk, oldestOpenPx, oldestVol);
                     }
                  }
+              }
+           }
+        }
+
+      // --- Stage 2: TP2 (e.g. 2.0R) Scale-Out & Profit Lock (+1.0R SL) ---
+      if(m_partialScaleOutEnabled && m_partialScaleOutR2 > 0 && GlobalVariableGet(PartialTakenKey()) >= 0.5 && GlobalVariableGet(PartialTakenKey()) < 1.5)
+        {
+         double initR = GlobalVariableGet(InitialRKey());
+         if(initR > 0)
+           {
+            long ptype = OwnType();
+            double currentPx = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                            : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double advance = (ptype == POSITION_TYPE_BUY) ? currentPx - m_lastEntryPrice
+                                                          : m_lastEntryPrice - currentPx;
+            if(advance >= m_partialScaleOutR2 * initR)
+              {
+               ulong oldestTk = 0;
+               double oldestVol = 0.0;
+               datetime oldestTime = 0;
+               double oldestOpenPx = 0.0;
+               for(int i = PositionsTotal() - 1; i >= 0; i--)
+                 {
+                  ulong tk = PositionGetTicket(i);
+                  if(tk > 0 && PositionGetInteger(POSITION_MAGIC) == m_magic &&
+                     PositionGetString(POSITION_SYMBOL) == _Symbol)
+                    {
+                     datetime t = (datetime)PositionGetInteger(POSITION_TIME);
+                     if(oldestTime == 0 || t < oldestTime)
+                       {
+                        oldestTk = tk;
+                        oldestVol = PositionGetDouble(POSITION_VOLUME);
+                        oldestTime = t;
+                        oldestOpenPx = PositionGetDouble(POSITION_PRICE_OPEN);
+                       }
+                    }
+                 }
+               if(oldestTk > 0 && oldestVol > 0)
+                 {
+                  double closeVol = ClampToVolume(oldestVol * m_partialScaleOutPct2);
+                  if(closeVol > 0 && closeVol < oldestVol)
+                    {
+                     if(m_trade.PositionClosePartial(oldestTk, closeVol))
+                       {
+                        GlobalVariableSet(PartialTakenKey(), 2);
+                        double newSl = (ptype == POSITION_TYPE_BUY) ? (oldestOpenPx + m_partialScaleOutR * initR)
+                                                                    : (oldestOpenPx - m_partialScaleOutR * initR);
+                        m_trade.PositionModify(oldestTk, newSl, PositionGetDouble(POSITION_TP));
+                        PrintFormat("TradeManager: TP2 (%.1fR) executed #%I64u vol %.2f (SL locked at %.2f)",
+                                    m_partialScaleOutR2, oldestTk, closeVol, newSl);
+                        if(m_sink != NULL)
+                          {
+                           string dir = (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+                           m_sink.OnTradeEvent("tp2_close", dir, closeVol, currentPx, oldestOpenPx,
+                                               StringFormat("TP2 (%.1fR) profit lock", m_partialScaleOutR2),
+                                               (long)oldestTk, 0.0, BasketTargetPrice(), true, CurrentEntryModeStr());
+                          }
+                       }
+                    }
+                 }
+              }
+           }
+        }
+
+      // --- Stage 3: TP3 (e.g. 3.0R) Scale-Out / Final Target ---
+      if(m_partialScaleOutEnabled && m_partialScaleOutR3 > 0 && GlobalVariableGet(PartialTakenKey()) >= 1.5 && GlobalVariableGet(PartialTakenKey()) < 2.5)
+        {
+         double initR = GlobalVariableGet(InitialRKey());
+         if(initR > 0)
+           {
+            long ptype = OwnType();
+            double currentPx = (ptype == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                                                            : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double advance = (ptype == POSITION_TYPE_BUY) ? currentPx - m_lastEntryPrice
+                                                          : m_lastEntryPrice - currentPx;
+            if(advance >= m_partialScaleOutR3 * initR)
+              {
+               CloseAll(StringFormat("TP3 (%.1fR) full target", m_partialScaleOutR3));
+               GlobalVariableSet(PartialTakenKey(), 3);
               }
            }
         }

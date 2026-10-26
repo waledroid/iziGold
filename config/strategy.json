@@ -8,7 +8,7 @@
     "add_trigger_atr": 1.0,
     "first_add_trigger_atr": 3.0,
     "max_positions": 3,
-    "adx_trend_threshold": 10.0,
+    "adx_trend_threshold": 20.0,
     "max_daily_exposure_min": 0,
     "trading_window_start_hour": 4,
     "trading_window_end_hour": 22
@@ -46,7 +46,7 @@
       "confirm_clear_atr": 0.3,
       "ema_length": 50,
       "ht_amplitude": 4,
-      "stop_buffer_atr": 1.75
+      "stop_buffer_atr": 2.0
     }
   }
 }

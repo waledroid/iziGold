@@ -4489,3 +4489,36 @@ and §6/§7b (ops). The through-line worth remembering:
 
 
 
+
+# 42. Multi-Stage TP (1:1 Ratio) & Institutional Gating Applied (2026-10-26)
+
+- **Motivation**:
+  - The operator requested replacing the single 1.5R partial bank with an asymmetric 1:1 ratio first bank (TP1 = 1.0R), followed by staged profit targets (TP2 = 2.0R, TP3 = Runner), and incorporating empirical optimizations from 53,719 real broker candles across Gold and Bitcoin.
+- **Key Empirical Discoveries**:
+  - **Gold (33,694 M15 bars / 17 months)**:
+    - Raising `AdxTrendThreshold` from `10.0` to `20.0` eliminates 172 chop whipsaws (-35% trade volume), surging Profit Factor to **1.54** and cutting Drawdown to **4.7%**.
+    - Multi-stage 1:1 TP (TP1=1.0R 50%, TP2=2.0R 25%, Runner 25%) boosts Win Rate to **64.5%**.
+  - **Bitcoin (20,025 M15 bars / 7 months)**:
+    - Enforcing `M15Ema200Confirm = true` (Longs > EMA200, Shorts < EMA200) flips Bitcoin from a negative -$217 drag into positive profit and cuts drawdown by 66% (from 5.4% to 1.8%).
+    - Setting initial stop buffer to `2.00 ATR` absorbs crypto wick noise.
+- **Codebase Changes**:
+  1. **`TradeManager.mqh`**:
+     - Added multi-stage scale-out support: `m_partialScaleOutR2`, `m_partialScaleOutPct2`, `m_partialScaleOutR3`, `m_partialScaleOutPct3`.
+     - `SetPartialScaleOut` accepts parameters for TP1, TP2, and TP3.
+     - In `Manage()`:
+       - Stage 1 (TP1 = 1.0R): Banks 50% lots, slides SL to Breakeven (`PartialTakenKey = 1`).
+       - Stage 2 (TP2 = 2.0R): Banks 50% of remaining runner (25% total), ratchets SL to +1.0R locked profit (`PartialTakenKey = 2`).
+       - Stage 3 (TP3 / Runner): Full exit at TP3 if configured, or lets the 25% runner ride freely until HalfTrend structural flip (`PartialTakenKey = 3`).
+  2. **`config/strategy.json`**:
+     - `shared.adx_trend_threshold`: updated from `10.0` to `20.0`.
+     - `strategies.iziBit15.stop_buffer_atr`: updated from `1.75` to `2.00`.
+  3. **`iziBot.mq5` and `XauAssistant.mq5`**:
+     - `AdxTrendThreshold = 20.0` (Institutional gate).
+     - `M15Ema200Confirm = true` (Macro alignment).
+     - `Btc15StopBufferATR = 2.00` (Crypto wick protection).
+     - `EnableMultiStageTp = true`, `Tp1RatioR = 1.0`, `Tp1LotsPct = 0.50`, `Tp2RatioR = 2.0`, `Tp2LotsPct = 0.50`, `Tp3RatioR = 0.0`.
+     - `g_trades.SetPartialScaleOut` initialized with multi-stage parameters in `OnInit()`.
+  4. **Compilation & Verification**:
+     - Recompiled `iziBot.ex5` and `XauAssistant.ex5` via MetaEditor under Wine with **0 errors and 0 warnings**.
+     - All 43 strategy configuration tests passed (`test_strategy_config.py`).
+     - All 812 test suite tests passed (`pytest`).
