@@ -138,6 +138,7 @@ function switchDockTab(tabId){
     if(el) el.style.display = (id === tabId) ? 'block' : 'none';
   });
   $('dockSigControls').style.display = (tabId === 'signals') ? 'block' : 'none';
+  if(tabId === 'signals') signals();
 }
 
 async function state(){
@@ -1225,12 +1226,16 @@ async function signals(){
     const list=signals.filter(s=>flt==='all'||(flt==='active'?s.is_active:!s.is_active));
     $('sig').innerHTML='<thead><tr><th>Time</th><th>Strategy</th><th>Signal</th><th>AI Forecast</th><th>Verdict</th><th>Outcome</th></tr></thead><tbody>'+
       list.map(s=>{
-        const vBadge = s.verdict === 'CONFIRMED' ? 'chip-pos' : (s.verdict === 'VETO' ? 'chip-neg' : 'chip-gold');
+        const isRefused = !!s.refusal_reason || s.verdict === 'REFUSED';
+        const vBadge = isRefused ? 'chip-neg' : (s.verdict === 'CONFIRMED' ? 'chip-pos' : (s.verdict === 'VETO' ? 'chip-neg' : 'chip-gold'));
         const sigBadge = s.signal === 'BUY' ? 'chip-pos' : (s.signal === 'SELL' ? 'chip-neg' : 'chip-muted');
+        const verdictContent = isRefused
+          ? `<span class="chip chip-neg" style="font-weight:700;">⛔ REFUSED</span><div style="font-size:10px;color:var(--text-muted);margin-top:2px;max-width:240px;line-height:1.2;">${esc(s.refusal_reason || 'Gate blocked')}</div>`
+          : `<span class="chip ${vBadge}">${esc(s.verdict)}</span>`;
         return `<tr><td class="mono" style="font-size:11px;color:var(--text-muted);">${new Date(s.created_ts*1000).toLocaleTimeString()}</td><td><b>${esc(s.strategy_id||'—')}</b>${s.timeframe?' <span class="chip chip-muted">'+esc(s.timeframe)+'</span>':''}</td>`+
         `<td><span class="chip ${sigBadge}">${s.signal}</span></td>`+
         `<td>${s.direction} <span class="chip chip-gold mono">${fmt(100*s.confidence,0)}%</span></td>`+
-        `<td><span class="chip ${vBadge}">${s.verdict}</span></td>`+
+        `<td>${verdictContent}</td>`+
         `<td class="mono">${s.outcome_move==null?'<span style="color:var(--text-dim)">—</span>':fmt(s.outcome_move)}</td></tr>`;
       }).join('')+'</tbody>';
   } catch(e) {

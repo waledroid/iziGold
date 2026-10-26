@@ -82,6 +82,30 @@ def format_report(req, resp) -> str:
             f"Mode: {resp.mode}")
 
 
+def format_refused_signal(req, resp, refusal_reason: str) -> str:
+    sym = getattr(req, "symbol", "XAUUSD")
+    badge = get_asset(sym).badge
+    tf = getattr(req, "timeframe", "M15")
+    sig = getattr(req, "signal", "BUY")
+    strat = getattr(req, "strategy_id", "izi")
+    price = req.candles[-1].c if req.candles else 0.0
+
+    if getattr(resp, "grade_pending", False):
+        ai = "grading…"
+    else:
+        ai = (f"{resp.direction} {resp.confidence:.0%}"
+              if resp.ai_available else "AI unavailable ❌")
+
+    return (
+        f"⚠️ {badge} [{sym} {tf}] {sig} Signal Formed ({strat})\n"
+        f"⛔ <b>Order REFUSED</b>: {refusal_reason}\n\n"
+        f"📍 Bar Close: {price:.2f}\n"
+        f"🤖 AI Forecast: {ai}\n"
+        f"🌊 Market Regime: {resp.regime}\n"
+        f"🕒 {market_session()}"
+    )
+
+
 def format_proposal(kind, direction, price, resp, symbol: str = "XAUUSD") -> str:
     if getattr(resp, "grade_pending", False):
         ai = "grading…"

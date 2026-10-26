@@ -493,7 +493,7 @@ def install_ea_sources(system: str, prefix: Path, editor: Path | None,
             inst_experts = install_root / "MQL5" / "Experts"
             inst_includes = install_root / "MQL5" / "Include" / "XauAssistant"
             inst_experts.mkdir(parents=True, exist_ok=True)
-            for mq_name in ("iziBot.mq5", "XauAssistant.mq5"):
+            for mq_name in ("iziBot.mq5", "XauAssistant.mq5", "LabBot.mq5"):
                 src = ROOT / "mt5" / "Experts" / mq_name
                 if src.exists():
                     shutil.copy2(src, inst_experts / mq_name)
@@ -509,6 +509,16 @@ def install_ea_sources(system: str, prefix: Path, editor: Path | None,
         run(command, check=False, dry_run=dry_run, env=wine_env(prefix),
             cwd=alias_root)
         output = install_root / "MQL5" / "Experts" / "iziBot.ex5"
+
+        # Also compile LabBot.mq5 if present
+        lab_source = install_root / "MQL5" / "Experts" / "LabBot.mq5"
+        if lab_source.exists():
+            lab_cmd = ["wine", r"C:\MT5\MetaEditor64.exe",
+                       r"/compile:C:\MT5\MQL5\Experts\LabBot.mq5",
+                       r"/inc:C:\MT5\MQL5",
+                       "/log"]
+            run(lab_cmd, check=False, dry_run=dry_run, env=wine_env(prefix),
+                cwd=alias_root)
     if not dry_run:
         # Freshness, not existence: MetaEditor can exit 0 without producing a
         # new .ex5 (an existing instance, a stale lock, a silent skip), and
@@ -537,6 +547,16 @@ def install_ea_sources(system: str, prefix: Path, editor: Path | None,
                         try:
                             if dest.resolve() != output.resolve():
                                 shutil.copy2(output, dest)
+                        except OSError:
+                            pass
+            lab_output = install_root / "MQL5" / "Experts" / "LabBot.ex5" if install_root else None
+            if lab_output and lab_output.exists():
+                for dest_dir in dest_dirs:
+                    if dest_dir is not None:
+                        dest = dest_dir / "LabBot.ex5"
+                        try:
+                            if dest.resolve() != lab_output.resolve():
+                                shutil.copy2(lab_output, dest)
                         except OSError:
                             pass
     else:

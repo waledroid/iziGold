@@ -281,7 +281,14 @@ strategies (`Strategies/` behind `CStrategy`; only `ActiveStrategy` trades,
 others are logged shadows) → AUTO executes FIRST → POSTs `/analyze` with
 signal (incl. NONE) + 300 candles → service grades (direction/confidence),
 classifies regime classically (ADX+ATR in `regime.py`, not the AI), logs,
-alerts. NONE posts drive lazy outcome resolution (16-bar horizon) — never
+alerts. When an entry setup forms but is blocked by any gate (Strategy gates:
+S/R Wall, EMA200, RSI 70/30, HTF; Risk gates: ADX < 20.0, Daily Loss Brake,
+Trading Window, Spread, News Blackout, Supervisory Agent Pause), the EA does
+NOT remain silent: it captures the raw signal and exact reason via `LastRawSignal()`
+and `LastRefusalReason()`, forwards `refusal_reason` in `/analyze`, displays
+a local chart alert box, records `verdict='REFUSED'` in `signals`, updates the Webapp
+Signal Stream table with `⛔ REFUSED` and the reason, and dispatches a dedicated
+Telegram alert with full market telemetry. NONE posts drive lazy outcome resolution (16-bar horizon) — never
 "optimize them away". Each `/analyze` ALSO upserts its candles into the
 persistent `candles` table (2026-08-24, §5b) inside a swallow-everything
 `try` — the dashboard chart and the Backtest page read history from there,

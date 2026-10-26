@@ -73,6 +73,7 @@ from app.tg.formatters import (
     _period_starts,
     format_pinned_help,
     format_proposal,
+    format_refused_signal,
     format_report,
     market_session,
     market_session_short,

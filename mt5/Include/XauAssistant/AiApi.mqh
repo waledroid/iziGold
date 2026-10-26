@@ -23,7 +23,7 @@ private:
    string BuildJson(ENUM_SIGNAL sig, int count, string strategyId,
                     string &shadowIds[], ENUM_SIGNAL &shadowSigs[],
                     double sprMin, double sprAvg, double sprMax,
-                    bool newsBlackout)
+                    bool newsBlackout, string refusalReason = "")
      {
       MqlRates rates[];
       // shift 1 = last CLOSED bar; the forming bar is never sent
@@ -54,6 +54,15 @@ private:
               ",\"spread_avg\":" + DoubleToString(sprAvg, 2) +
               ",\"spread_max\":" + DoubleToString(sprMax, 2) +
               ",\"news_blackout\":" + (newsBlackout ? "true" : "false");
+      if(refusalReason != "")
+        {
+         string clean = refusalReason;
+         StringReplace(clean, "\\", "\\\\");
+         StringReplace(clean, "\"", "\\\"");
+         StringReplace(clean, "\r", "");
+         StringReplace(clean, "\n", " ");
+         json += ",\"refusal_reason\":\"" + clean + "\"";
+        }
       return json + "}";
      }
 
@@ -92,11 +101,11 @@ public:
    bool Analyze(ENUM_SIGNAL sig, string strategyId, string &shadowIds[],
                 ENUM_SIGNAL &shadowSigs[], AiResponse &out,
                 double sprMin = 0.0, double sprAvg = 0.0, double sprMax = 0.0,
-                bool newsBlackout = false)
+                bool newsBlackout = false, string refusalReason = "")
      {
       out.ai_available = false;
       string json = BuildJson(sig, 300, strategyId, shadowIds, shadowSigs,
-                              sprMin, sprAvg, sprMax, newsBlackout);   // 300 bars so EMA200 has warmup in renders
+                              sprMin, sprAvg, sprMax, newsBlackout, refusalReason);   // 300 bars so EMA200 has warmup in renders
       if(json == "") return false;
       string body = m_t.Request("POST", "/analyze", json);
       if(body == "")

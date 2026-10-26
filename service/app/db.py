@@ -22,7 +22,8 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS signals (
   direction TEXT, confidence REAL, regime TEXT, verdict TEXT,
   mode TEXT, ai_available INTEGER,
   outcome_price REAL, outcome_move REAL, ai_correct INTEGER,
-  strategy_id TEXT, is_active INTEGER DEFAULT 1, timeframe TEXT
+  strategy_id TEXT, is_active INTEGER DEFAULT 1, timeframe TEXT,
+  refusal_reason TEXT DEFAULT ''
 )"""
 
 _HB_SCHEMA = """CREATE TABLE IF NOT EXISTS heartbeats (
@@ -293,6 +294,8 @@ class SignalDb(
             self.conn.execute("ALTER TABLE signals ADD COLUMN is_active INTEGER DEFAULT 1")
         if "timeframe" not in cols:
             self.conn.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
+        if "refusal_reason" not in cols:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN refusal_reason TEXT DEFAULT ''")
         profile_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(profile)")}
         for col, col_def in (
             ("ngrok_authtoken", "TEXT"),

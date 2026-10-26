@@ -34,6 +34,7 @@ from app.telegram import (
     PROPOSAL_KB,
     TARGET_KB,
     format_proposal,
+    format_refused_signal,
 )
 from app.ticker import ticker_tick
 from app.trade_report import (
@@ -355,16 +356,34 @@ def analyze(req: AnalyzeRequest):
             bar_time=req.candles[-1].t, spread_min=req.spread_min,
             spread_avg=req.spread_avg, spread_max=req.spread_max)
     if req.signal != "NONE":
+        verdict = "REFUSED" if req.refusal_reason else resp.verdict
         app.state.db.insert_signal(
             bar_time=req.candles[-1].t, symbol=req.symbol, signal=req.signal,
             price=closes[-1], direction=direction, confidence=confidence,
-            regime=regime, verdict=resp.verdict, mode=settings.mode,
+            regime=regime, verdict=verdict, mode=settings.mode,
             ai_available=ai_available, strategy_id=req.strategy_id, is_active=True,
-            timeframe=req.timeframe)
-    try:
-        maybe_propose(req, resp)
-    except Exception:
-        pass
+            timeframe=req.timeframe, refusal_reason=req.refusal_reason)
+
+    if req.signal != "NONE" and req.refusal_reason:
+        tg = getattr(app.state, "telegram", None)
+        if tg is not None:
+            msg = format_refused_signal(req, resp, req.refusal_reason)
+            try:
+                tg.send_message(msg)
+            except Exception:
+                log.exception("failed sending refused signal to telegram owner")
+            cid = _linked_channel(app)
+            if cid is not None:
+                try:
+                    tg.send_message_to(cid, msg)
+                except Exception:
+                    pass
+
+    if not req.refusal_reason:
+        try:
+            maybe_propose(req, resp)
+        except Exception:
+            pass
     for shadow in req.shadows:
         if shadow.signal == "NONE":
             continue

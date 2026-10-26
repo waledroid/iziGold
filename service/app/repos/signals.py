@@ -9,15 +9,16 @@ import time
 class SignalRepoMixin:
     def insert_signal(self, *, bar_time, symbol, signal, price, direction,
                       confidence, regime, verdict, mode, ai_available,
-                      strategy_id="unknown", is_active=True, timeframe="") -> int:
+                      strategy_id="unknown", is_active=True, timeframe="",
+                      refusal_reason="") -> int:
         with self._lock:
             cur = self.conn.execute(
                 "INSERT INTO signals (created_ts, bar_time, symbol, signal, price, direction,"
                 " confidence, regime, verdict, mode, ai_available, strategy_id, is_active,"
-                " timeframe) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " timeframe, refusal_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(time.time()), bar_time, symbol, signal, price, direction,
                  confidence, regime, verdict, mode, int(ai_available),
-                 strategy_id, int(is_active), timeframe))
+                 strategy_id, int(is_active), timeframe, refusal_reason))
             self.conn.commit()
             self._signals_version += 1
             return cur.lastrowid
@@ -96,7 +97,7 @@ class SignalRepoMixin:
     def recent_signals(self, limit: int = 50) -> list:
         cols = ["id", "created_ts", "bar_time", "strategy_id", "timeframe", "signal", "price",
                 "direction", "confidence", "regime", "verdict", "is_active",
-                "outcome_move", "ai_correct"]
+                "outcome_move", "ai_correct", "refusal_reason"]
         rows = self.conn.execute(
             f"SELECT {', '.join(cols)} FROM signals ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()

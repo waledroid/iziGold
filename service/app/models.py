@@ -34,6 +34,7 @@ class AnalyzeRequest(BaseModel):
     # a BUY/SELL arriving with this set raises a Telegram proposal so the
     # owner decides the trade themselves; auto resumes when the window ends).
     news_blackout: bool = False
+    refusal_reason: str = ""
 
 
 class AnalyzeResponse(BaseModel):

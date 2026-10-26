@@ -1130,6 +1130,14 @@ void ProcessBar()
      }
    if(DebugFireTestSignal && !g_debugFired) { sig = SIGNAL_BUY; g_debugFired = true; }
 
+   string refusalReason = "";
+   ENUM_SIGNAL reportSig = sig;
+   if(sig == SIGNAL_NONE && active != NULL && active.LastRefusalReason() != "")
+     {
+      reportSig = active.LastRawSignal();
+      refusalReason = active.LastRefusalReason();
+     }
+
    g_risk.OnBarUpdate();
    double atrBuf[];
    double atrVal = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0;
@@ -1137,8 +1145,8 @@ void ProcessBar()
    if(g_trades.OpenCount() > 0) g_tradeBoxes.OnBarUpdate();
 
    // AUTO mode executes FIRST — the AI is never in the trade path (spec 2.2)
-    if(g_execMode == EXEC_AUTO && atrVal > 0)
-      {
+   if(g_execMode == EXEC_AUTO && atrVal > 0)
+     {
       // Supervisory-agent governor: a paused agent refuses NEW entries only.
       // The strategy is told the entry was rejected (same contract as a risk
       // refusal) so it cannot hold a phantom position; Manage() below still
@@ -1153,11 +1161,10 @@ void ProcessBar()
       else if(sig == SIGNAL_BUY || sig == SIGNAL_SELL)
         {
          active.OnEntryRejected(sig);
+         refusalReason = "auto-entries PAUSED by supervisory agent";
          string symLabel = (StringFind(_Symbol, "BTC") >= 0 ? "₿ BTC" : "🥇 Gold");
          PrintFormat("iziBot: %s %s signal skipped — %s auto-entries are currently PAUSED (tap [%s: ▶️ PLAY] in Telegram to resume)",
                      _Symbol, SignalToString(sig), _Symbol, symLabel);
-         g_ui.PostNotify(StringFormat("⏸️ AUTO %s (%s) skipped: auto-entries PAUSED\nTap [ %s: ▶️ PLAY ] to resume.",
-                                      SignalToString(sig), _Symbol, symLabel));
         }
       // A same-direction signal into an already-open basket is a legitimate
       // early return (false) — not a rejection, since the strategy's
@@ -1175,7 +1182,7 @@ void ProcessBar()
          string why = "";
          if(!g_risk.CanEnter(why)) { /* why set */ }
          else why = "order send failed (check Algo Trading button / broker)";
-         g_ui.PostNotify("🚫 AUTO " + SignalToString(sig) + " not executed: " + why);
+         refusalReason = why;
         }
       ENUM_SIGNAL basketDir = g_trades.BasketDirection();
       // The active lane decides whether pyramid adds are allowed this bar
@@ -1213,9 +1220,16 @@ void ProcessBar()
       g_trades.SetAddsAllowed(active.AllowsAdds());
       g_trades.Manage(atrVal, active.ConditionStillTrue(g_trades.BasketDirection()), g_risk.GetCurrentAdx());
      }
+   else if(g_execMode == EXEC_MANUAL && (sig == SIGNAL_BUY || sig == SIGNAL_SELL))
+     {
+      string why = "";
+      if(!g_risk.CanEnter(why, true))
+        {
+         refusalReason = why;
+        }
+     }
 
-
-   if(sig == SIGNAL_NONE && ArraySize(shadowIds) == 0)
+   if(sig == SIGNAL_NONE && refusalReason == "" && ArraySize(shadowIds) == 0)
      {
       AiResponse quiet;
       g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, quiet,
@@ -1223,9 +1237,19 @@ void ProcessBar()
       return;   // keeps outcome-resolution data flowing (spec 6.3)
      }
    AiResponse r;
-   bool ok = g_api.Analyze(sig, active.Id(), shadowIds, shadowSigs, r,
-                           g_barSprMin, g_barSprAvg, g_barSprMax, g_risk.NewsBlackout());
-   if(sig == SIGNAL_NONE) return;        // shadows logged; nothing to alert
+   bool ok = g_api.Analyze(reportSig, active.Id(), shadowIds, shadowSigs, r,
+                           g_barSprMin, g_barSprAvg, g_barSprMax, g_risk.NewsBlackout(), refusalReason);
+   if(sig == SIGNAL_NONE && refusalReason == "") return;        // shadows logged; nothing to alert
+   if(refusalReason != "")
+     {
+      string refReport = StringFormat("🚫 %s %s REFUSED: %s\n%s",
+                                      _Symbol, SignalToString(reportSig), refusalReason,
+                                      g_sm.BuildReport(reportSig, r, ok));
+      Print("iziBot: " + refReport);
+      g_alerts.Draw(reportSig, refReport);
+      g_alerts.Notify(refReport);
+      return;
+     }
    if(ShowVolumeProfile)
      {
       double entryP = (sig == SIGNAL_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)

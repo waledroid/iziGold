@@ -127,6 +127,8 @@ private:
    string      m_srOverride;
    int         m_lastSrAgree;   // 1 clear / 0 wall / -1 not evaluated
    string      m_lastSrTier;    // strongest wall's tier behind a 0
+   ENUM_SIGNAL m_lastRawSignal;
+   string      m_lastRefusalReason;
 
    int      m_ema9Handle;
    int      m_ema21Handle;
@@ -629,12 +631,16 @@ public:
    virtual int LastRsiAgree() const { return m_lastRsiAgree; }
    virtual int    LastSrAgree() const { return m_lastSrAgree; }
    virtual string LastSrTier()  const { return m_lastSrTier; }
+   virtual ENUM_SIGNAL LastRawSignal() const override { return m_lastRawSignal; }
+   virtual string      LastRefusalReason() const override { return m_lastRefusalReason; }
    // Hand this lane the EA's shared zone engine. Called once from OnInit.
    void SetSrZones(CSrZoneSet *zones, string tiers, double roomAtr)
      { m_srZones = zones; m_srTiers = tiers; m_srRoomAtr = roomAtr; }
 
    virtual ENUM_SIGNAL Evaluate()
      {
+      m_lastRawSignal = SIGNAL_NONE;
+      m_lastRefusalReason = "";
       datetime closed = iTime(_Symbol, m_tf, 1);
       if(closed == 0 || closed == m_lastProcessed) return SIGNAL_NONE;
       if(m_lastProcessed == 0)
@@ -678,7 +684,8 @@ public:
       if(!m_fired && m_confirmShift != 0)
         {
          m_fired = true;
-         int wanted = (m_trend == 0) ? SIGNAL_BUY : SIGNAL_SELL;
+         m_lastRawSignal = (m_trend == 0) ? SIGNAL_BUY : SIGNAL_SELL;
+         int wanted = m_lastRawSignal;
          // Verdict first and ALWAYS -- it is reported whether or not it is
          // allowed to act. Enforcement is separate and chop-only.
          bool htfOk = HtfAgrees(wanted, m_confirmClose);
@@ -729,18 +736,21 @@ public:
                   " — EMA200 DISAGREES but the check is report-only; entering anyway");
          if(!htfOk && HtfEnforced())
            {
+            m_lastRefusalReason = StringFormat("HTF disagrees (%s price %s vs EMA%d)",
+                                               EnumToString(m_htfTf),
+                                               DoubleToString(m_confirmClose, 2),
+                                               m_htfEmaLen);
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " refused — ", EnumToString(m_htfTf), " disagrees (price ",
-                  DoubleToString(m_confirmClose, 2), " on the wrong side of its EMA",
-                  m_htfEmaLen, ")");
+                  " refused — ", m_lastRefusalReason);
             return SIGNAL_NONE;
            }
          if(!e200Ok && Ema200Enforced())
            {
+            m_lastRefusalReason = StringFormat("EMA200 disagrees (price %s vs EMA200 %s)",
+                                               DoubleToString(m_confirmClose, 2),
+                                               DoubleToString(m_confirmEma200, 2));
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " refused — EMA200 disagrees (price ",
-                  DoubleToString(m_confirmClose, 2), " on the wrong side of EMA200 ",
-                  DoubleToString(m_confirmEma200, 2), ")");
+                  " refused — ", m_lastRefusalReason);
             return SIGNAL_NONE;
            }
          // RSI 70/30 gate (owner "go" 2026-09-07): enforced on the M15 lane
@@ -749,23 +759,26 @@ public:
          // other gate (m_fired is already true).
          if(m_lastRsiAgree == 0 && RsiEnforced())
            {
+            m_lastRefusalReason = StringFormat("RSI(14) at %s (%s)",
+                                               DoubleToString(m_confirmRsi, 1),
+                                               (wanted == SIGNAL_BUY ? ">=70 overbought" : "<=30 oversold"));
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " refused — RSI(14) at ", DoubleToString(m_confirmRsi, 1),
-                  (wanted == SIGNAL_BUY ? " (>=70 overbought)" : " (<=30 oversold)"),
-                  " — the 70/30 rule is enforcing on this lane");
+                  " refused — ", m_lastRefusalReason);
             return SIGNAL_NONE;
            }
          // S/R wall gate: blocks BUY when approaching resistance, blocks SELL when approaching support
          if(m_lastSrAgree == 0 && SrEnforced())
            {
+            m_lastRefusalReason = StringFormat("S/R WALL: %s %s within %.2f ATR of %s",
+                                               m_lastSrTier,
+                                               (wanted == SIGNAL_BUY ? "resistance" : "support"),
+                                               m_srRoomAtr,
+                                               DoubleToString(m_confirmClose, 2));
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " refused — S/R WALL: ", m_lastSrTier,
-                  (wanted == SIGNAL_BUY ? " resistance" : " support"),
-                  " inside/within ", DoubleToString(m_srRoomAtr, 2), " ATR of ",
-                  DoubleToString(m_confirmClose, 2),
-                  " — S/R wall gate is ENFORCING");
+                  " refused — ", m_lastRefusalReason);
             return SIGNAL_NONE;
            }
+         m_lastRefusalReason = "";
          if(m_trend == 0)
            {
             Print(m_id + ": BUY confirmed — entry bar opens above EMA",

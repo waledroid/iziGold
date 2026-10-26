@@ -101,5 +101,8 @@ public:
    // a position (blocked, no lots, order-send failure) and no basket is
    // open afterward — i.e. the rejection left nothing tracking the signal.
    virtual void        OnEntryRejected(ENUM_SIGNAL dir) {}
+   // Last raw un-gated signal and refusal reason (for telemetry/alerts when a setup is refused by a guard)
+   virtual ENUM_SIGNAL LastRawSignal() const { return SIGNAL_NONE; }
+   virtual string      LastRefusalReason() const { return ""; }
   };
 #endif

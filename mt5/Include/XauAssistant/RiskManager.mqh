@@ -417,13 +417,13 @@ public:
       why = "";
       if(KillSwitchTripped())                          { why = "kill switch tripped"; return false; }
       if(IsWeekendClosed())                            { why = "weekend market closed"; return false; }
-      if(!InTradingWindow())                           { why = "outside trading window"; return false; }
+      if(!InTradingWindow())                           { why = StringFormat("outside trading window (%02d:00-%02d:00 server)", m_winStart, m_winEnd); return false; }
       if(m_maxExpoMin > 0 && GlobalVariableGet(ExpoKey()) >= m_maxExpoMin) { why = "daily exposure spent"; return false; }
-      if(DailyLossBreached())                          { why = "daily loss limit"; return false; }
+      if(DailyLossBreached())                          { why = StringFormat("daily loss limit (-$%.0f / -$%.0f limit)", DailyLossUsedUsd(), DailyLossThresholdUsd()); return false; }
       if(!newsOverride && NewsBlackout())              { why = "news blackout"; return false; }
       long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      if(spread > m_maxSpread)                         { why = "spread too wide"; return false; }
-      if(!TrendOK())                                   { why = "ADX below threshold"; return false; }
+      if(spread > m_maxSpread)                         { why = StringFormat("spread too wide (%d > %d pts max)", spread, m_maxSpread); return false; }
+      if(!TrendOK())                                   { why = StringFormat("ADX below threshold (%.1f < %.1f)", GetCurrentAdx(), m_adxThreshold); return false; }
       return true;
      }
 

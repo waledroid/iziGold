@@ -86,6 +86,7 @@ from app.tg import (
     _PINNED_EXTRA,
     format_pinned_help,
     format_proposal,
+    format_refused_signal,
     format_report,
     handle_callback,
     handle_channel_post,

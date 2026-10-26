@@ -200,3 +200,40 @@ def test_heartbeat_request_algo_trading_defaults_true():
 def test_heartbeat_accepts_algo_trading_false(client, heartbeat_payload):
     r = client.post("/heartbeat", json={**heartbeat_payload, "algo_trading": False})
     assert r.status_code == 200
+
+
+def test_analyze_refused_signal_stores_refusal_and_reports(client, analyze_payload):
+    app = client.app
+    sent_msgs = []
+    class DummyTg:
+        def send_message(self, text, reply_markup=None):
+            sent_msgs.append(text)
+            return {"ok": True, "result": {"message_id": 123}}
+        def send_message_to(self, chat_id, text, reply_markup=None):
+            sent_msgs.append(text)
+            return {"ok": True}
+    app.state.telegram = DummyTg()
+
+    payload = {
+        **analyze_payload,
+        "signal": "BUY",
+        "strategy_id": "iziGold15",
+        "refusal_reason": "S/R WALL: H4 resistance within 1.00 ATR of 4022.28",
+    }
+    r = client.post("/analyze", json=payload)
+    assert r.status_code == 200
+
+    # Verify signals DB has verdict REFUSED and refusal_reason recorded
+    signals_res = client.get("/api/signals").json()["signals"]
+    assert len(signals_res) > 0
+    latest = signals_res[0]
+    assert latest["signal"] == "BUY"
+    assert latest["verdict"] == "REFUSED"
+    assert "S/R WALL: H4 resistance" in latest["refusal_reason"]
+
+    # Verify Telegram notification was sent with refused notice
+    assert len(sent_msgs) >= 1
+    assert "Order REFUSED" in sent_msgs[0]
+    assert "S/R WALL: H4 resistance" in sent_msgs[0]
+    # Refused signal must NOT create a manual proposal
+    assert app.state.db.pending_proposal() is None
