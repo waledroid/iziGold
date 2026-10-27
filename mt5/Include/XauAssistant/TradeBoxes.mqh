@@ -38,6 +38,7 @@ private:
    string SlName()     { return SlNameFor(m_ticket); }
    string EntryName()  { return EntryNameFor(m_ticket); }
    string BadgeName()  { return BadgeNameFor(m_ticket); }
+   string ArrowName()  { return ArrowNameFor(m_ticket); }
    static string RiskNameFor(long ticket)   { return XAU_TR_PREFIX + (string)ticket + "_r"; }
    static string ProfitNameFor(long ticket) { return XAU_TR_PREFIX + (string)ticket + "_g"; }
    static string TpNameFor(long ticket)     { return XAU_TR_PREFIX + (string)ticket + "_tp"; }
@@ -45,6 +46,7 @@ private:
    static string SlNameFor(long ticket)     { return XAU_TR_PREFIX + (string)ticket + "_sl"; }
    static string EntryNameFor(long ticket)  { return XAU_TR_PREFIX + (string)ticket + "_en"; }
    static string BadgeNameFor(long ticket)  { return XAU_TR_PREFIX + (string)ticket + "_b"; }
+   static string ArrowNameFor(long ticket)  { return XAU_TR_PREFIX + (string)ticket + "_arr"; }
 
    // Creates the rectangle on first use, otherwise just moves its anchors —
    // avoids ObjectDelete/ObjectCreate churn every bar.
@@ -179,7 +181,7 @@ public:
 
    // Fires on the basket's FIRST entry only (TradeManager never emits "open"
    // for pyramid adds — those are a separate "add" event this class ignores).
-   void OnOpen(long ticket, string dir, double entry, double sl)
+   void OnOpen(long ticket, string dir, double entry, double sl, double targetR = 1.5)
      {
       m_active   = true;
       m_ticket   = (ticket > 0) ? ticket : (long)TimeCurrent();
@@ -193,14 +195,14 @@ public:
          double rDist = MathAbs(entry - sl);
          if(rDist > 0)
            {
-            double tpPrice = (dir == "BUY") ? entry + 1.5 * rDist : entry - 1.5 * rDist;
+            double tpPrice = (dir == "BUY") ? entry + targetR * rDist : entry - targetR * rDist;
 
             // Pure shaded Risk (Red) and Target (Green) zones without border outlines - TradingView style
             DrawRect(RiskName(), m_openTime, MathMax(entry, sl), t2, MathMin(entry, sl), RiskColor());
             DrawRect(ProfitName(), m_openTime, MathMax(entry, tpPrice), t2, MathMin(entry, tpPrice), ProfitColor());
 
             // Target, SL, and Entry projection lines
-            DrawTrendLine(TpName(), m_openTime, tpPrice, t2, tpPrice, C'46,204,113', STYLE_DASH, StringFormat("TP (1.5R): %.2f", tpPrice));
+            DrawTrendLine(TpName(), m_openTime, tpPrice, t2, tpPrice, C'46,204,113', STYLE_DASH, StringFormat("TP (%.1fR): %.2f", targetR, tpPrice));
             DrawTrendLine(SlName(), m_openTime, sl, t2, sl, C'231,76,60', STYLE_DASH, StringFormat("SL: %.2f", sl));
             DrawTrendLine(EntryName(), m_openTime, entry, t2, entry, C'180,180,180', STYLE_DOT, StringFormat("Entry: %.2f", entry));
            }
@@ -209,6 +211,34 @@ public:
             DrawRect(RiskName(), m_openTime, MathMax(entry, sl), t2, MathMin(entry, sl), RiskColor());
            }
         }
+
+      // Draw Yellow Up-Arrow (BUY) or Pink Down-Arrow (SELL) at entry candle with breathing room
+      string arrowName = ArrowName();
+      int arrowCode = (dir == "BUY") ? 233 : 234;
+      color arrowColor = (dir == "BUY") ? clrYellow : clrDeepPink;
+      double atrBuffer[];
+      double atrDist = 0.0;
+      int atrH = iATR(_Symbol, PERIOD_CURRENT, 14);
+      if(atrH != INVALID_HANDLE)
+        {
+         if(CopyBuffer(atrH, 0, 0, 1, atrBuffer) == 1 && atrBuffer[0] > 0)
+            atrDist = 0.5 * atrBuffer[0];
+         IndicatorRelease(atrH);
+        }
+      if(atrDist <= 0.0) atrDist = 10 * _Point;
+
+      double arrowPrice = (dir == "BUY") ? (iLow(_Symbol, PERIOD_CURRENT, 0) - atrDist)
+                                         : (iHigh(_Symbol, PERIOD_CURRENT, 0) + atrDist);
+
+      ObjectDelete(0, arrowName);
+      if(ObjectCreate(0, arrowName, OBJ_ARROW, 0, m_openTime, arrowPrice))
+        {
+         ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, arrowCode);
+         ObjectSetInteger(0, arrowName, OBJPROP_COLOR, arrowColor);
+         ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 3);
+         ObjectSetString(0, arrowName, OBJPROP_TOOLTIP, StringFormat("Entry %s @ %.2f", dir, entry));
+        }
+
       Prune();
      }
 

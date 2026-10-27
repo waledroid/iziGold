@@ -906,7 +906,8 @@ void OnTimer()
             if(atrVal > 0 && act != NULL)
                opened = g_trades.OnSignal(dir, atrVal, act.StopPrice(dir),
                                           (g_entryMode == ENTRY_FIXED), FixedLots,
-                                          true, (int)g_entryMode);   // owner-approved
+                                          true, (int)g_entryMode,
+                                          act.RiskRatioMultiplier());   // owner-approved
             bool ok = opened || g_trades.BasketDirection() == dir;
             g_ui.PostProposalResult(cmdId, ok,
                                     ok ? "opened" : "blocked by risk checks");
@@ -1156,7 +1157,8 @@ void ProcessBar()
         {
          opened = g_trades.OnSignal(sig, atrVal, active.StopPrice(sig),
                                     (g_entryMode == ENTRY_FIXED), FixedLots,
-                                    false, (int)g_entryMode);
+                                    false, (int)g_entryMode,
+                                    active.RiskRatioMultiplier());
         }
       else if(sig == SIGNAL_BUY || sig == SIGNAL_SELL)
         {

@@ -519,6 +519,16 @@ def install_ea_sources(system: str, prefix: Path, editor: Path | None,
                        "/log"]
             run(lab_cmd, check=False, dry_run=dry_run, env=wine_env(prefix),
                 cwd=alias_root)
+
+        # Also compile XauAssistant.mq5 if present
+        xau_source = install_root / "MQL5" / "Experts" / "XauAssistant.mq5"
+        if xau_source.exists():
+            xau_cmd = ["wine", r"C:\MT5\MetaEditor64.exe",
+                       r"/compile:C:\MT5\MQL5\Experts\XauAssistant.mq5",
+                       r"/inc:C:\MT5\MQL5",
+                       "/log"]
+            run(xau_cmd, check=False, dry_run=dry_run, env=wine_env(prefix),
+                cwd=alias_root)
     if not dry_run:
         # Freshness, not existence: MetaEditor can exit 0 without producing a
         # new .ex5 (an existing instance, a stale lock, a silent skip), and

@@ -104,5 +104,8 @@ public:
    // Last raw un-gated signal and refusal reason (for telemetry/alerts when a setup is refused by a guard)
    virtual ENUM_SIGNAL LastRawSignal() const { return SIGNAL_NONE; }
    virtual string      LastRefusalReason() const { return ""; }
+   // Adaptive sizing and target multipliers based on Macro EMA-200 alignment
+   virtual double      RiskRatioMultiplier() const { return 1.0; }
+   virtual double      TargetRatioMultiplier() const { return 1.5; }
   };
 #endif

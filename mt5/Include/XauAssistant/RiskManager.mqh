@@ -190,6 +190,8 @@ public:
 
    bool   InTradingWindow()
      {
+      bool isCrypto = (StringFind(_Symbol, "BTC") >= 0 || StringFind(_Symbol, "ETH") >= 0);
+      if(isCrypto) return true; // Crypto has NO trading window limitation -- 24/7 anytime!
       if(IsWeekendClosed()) return false;
       if(m_winStart == 0 && m_winEnd >= 24) return true;
       MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);

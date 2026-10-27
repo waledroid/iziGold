@@ -361,9 +361,10 @@ def ui_state(request: Request = None):
             all_positions.append(pos.model_dump())
 
     curr_equity = (hb.get("equity") if hb else None) or 1000.0
-    from app.config import calculate_adaptive_tier, get_market_status, is_weekend_market
+    from app.config import calculate_adaptive_tier, get_market_status, is_weekend_market, is_gold_active_window
     adaptive_info = calculate_adaptive_tier(curr_equity)
     weekend_active = is_weekend_market()
+    gold_active = is_gold_active_window()
     market_statuses = {
         "XAUUSD": get_market_status("XAUUSD"),
         "BTCUSD": get_market_status("BTCUSD"),
@@ -373,6 +374,7 @@ def ui_state(request: Request = None):
             "heartbeats": hbs_dict,
             "all_positions": all_positions,
             "is_weekend": weekend_active,
+            "is_gold_active": gold_active,
             "market_status": market_statuses,
             "pending_switch": target_app.state.pending_switch,
             "mode": target_app.state.db.exec_mode(),

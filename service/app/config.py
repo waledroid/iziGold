@@ -210,6 +210,29 @@ def is_weekend_market(dt_now: datetime | None = None) -> bool:
     return False
 
 
+def is_gold_active_window(dt_now: datetime | None = None) -> bool:
+    """Return True if gold/traditional financial markets are within active trading hours.
+
+    Gold is closed:
+    1. During weekends (Friday 22:00 UTC to Sunday 22:00 UTC).
+    2. Daily outside 04:00 - 22:00 server time.
+    """
+    if is_weekend_market(dt_now):
+        return False
+    if dt_now is None:
+        dt_now = datetime.now(timezone.utc)
+    elif dt_now.tzinfo is None:
+        dt_now = dt_now.replace(tzinfo=timezone.utc)
+    else:
+        dt_now = dt_now.astimezone(timezone.utc)
+
+    start_hour, end_hour = get_trading_window()
+    hour = dt_now.hour
+    if hour < start_hour or hour >= end_hour:
+        return False
+    return True
+
+
 def get_market_status(symbol: str, dt_now: datetime | None = None) -> dict[str, Any]:
     """Return market open status, schedule description, and reopen info for a symbol."""
     sym = (symbol or "").upper()
@@ -233,6 +256,17 @@ def get_market_status(symbol: str, dt_now: datetime | None = None) -> dict[str, 
             "reason": "weekend_closed",
             "reopens_at": "Sunday 22:00 UTC",
             "message": "Market Closed for Weekend • Reopens Sunday 22:00 UTC",
+        }
+
+    if not is_gold_active_window(dt_now):
+        start_hour, end_hour = get_trading_window()
+        return {
+            "symbol": symbol,
+            "is_crypto": False,
+            "open": False,
+            "reason": "outside_window",
+            "reopens_at": f"{start_hour:02d}:00 Server",
+            "message": f"Gold Session Closed ({end_hour:02d}:00-{start_hour:02d}:00) • Auto-routed to 24/7 Bitcoin",
         }
 
     return {

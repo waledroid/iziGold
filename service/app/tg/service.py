@@ -57,13 +57,13 @@ async def send_manual(app) -> None:
 async def send_photo_snapshot(app, with_miniapp_btn: bool = False, target_symbol: str | None = None) -> None:
     """Render closed candles + the heartbeat's forming bar and send as photo."""
     from app.routers.ea import _mirror
-    from app.config import is_weekend_market
+    from app.config import is_gold_active_window
     tg = app.state.telegram
-    weekend = is_weekend_market()
+    gold_active = is_gold_active_window()
 
     sym = (target_symbol or "").strip().upper()
     if not sym:
-        sym = "BTCUSD" if weekend else "XAUUSD"
+        sym = "XAUUSD" if gold_active else "BTCUSD"
 
     candles = None
     timeframe = "M15"

@@ -150,8 +150,9 @@ async function state(){
     _isWeekend = !!s.is_weekend;
     _marketStatus = s.market_status || null;
 
+    const isGoldClosed = _isWeekend || (s.is_gold_active === false);
     const userPinnedAsset = sessionStorage.getItem('user_selected_asset');
-    if(_isWeekend && !userPinnedAsset && _activeAsset !== 'BTCUSD'){
+    if(isGoldClosed && !userPinnedAsset && _activeAsset !== 'BTCUSD'){
       switchAsset('BTCUSD', false);
     }
     updateMarketClosedBanner();
@@ -1055,7 +1056,7 @@ function buildMarkers(candles,tr){
       m.push({
         time:barTime(candles, chartTs),
         position:t.direction==='BUY'?'belowBar':'aboveBar',
-        color:t.direction==='BUY'?'#10b981':'#f43f5e',
+        color:t.direction==='BUY'?'#ffd700':'#ff1493',
         shape:t.direction==='BUY'?'arrowUp':'arrowDown',
         text:(t.event==='add'?'add ':'')+fmt(t.lots,2)
       });

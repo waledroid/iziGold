@@ -83,7 +83,8 @@ public:
       // pyramided basket must not prematurely close out the box.
       if(event == "open")
         {
-         m_boxes.OnOpen(ticket, dir, price, sl);
+         double targetR = (active != NULL) ? active.TargetRatioMultiplier() : 1.5;
+         m_boxes.OnOpen(ticket, dir, price, sl, targetR);
          if(m_vp != NULL) m_vp.DrawOnEntry(TimeCurrent(), price);
         }
       else if(event == "close" && basketGone)

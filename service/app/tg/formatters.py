@@ -252,9 +252,11 @@ def _format_status(app, redacted=False) -> str:
             if pending and pending != st:
                 st = f"{st} → {pending}"
             is_paused = db.entries_paused(sym) if db else False
-            from app.config import is_weekend_market
+            from app.config import is_weekend_market, is_gold_active_window
             if "XAU" in sym.upper() and is_weekend_market():
                 state_label = " · 🌙 CLOSED (Weekend — reopens Sun 22:00 UTC)"
+            elif "XAU" in sym.upper() and not is_gold_active_window():
+                state_label = " · 🌙 CLOSED (Window 04-22 — reopens 04:00 server)"
             elif is_paused:
                 state_label = " · 🔴 STOPPED"
             elif "BTC" in sym.upper():
@@ -325,10 +327,12 @@ def _format_status(app, redacted=False) -> str:
         if money:
             lines.append(money)
         lines.append(sep)
-    from app.config import is_weekend_market
+    from app.config import is_weekend_market, is_gold_active_window
     sym_name = getattr(hb, "symbol", "XAUUSD")
     if "XAU" in sym_name.upper() and is_weekend_market():
         state_label = " · 🌙 CLOSED (Weekend — reopens Sun 22:00 UTC)"
+    elif "XAU" in sym_name.upper() and not is_gold_active_window():
+        state_label = " · 🌙 CLOSED (Window 04-22 — reopens 04:00 server)"
     else:
         state_label = ""
     lines += [

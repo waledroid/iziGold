@@ -238,7 +238,28 @@ private:
          m_consecAbove = 0; m_consecBelow = 0;  // restart EMA count after flip
          m_confirmShift = 0; m_confirmClose = 0; m_confirmTime = 0; m_confirmEma200 = 0;
          m_confirmRsi = -1;
-         if(m_lastProcessed != 0)   // live bar, not warm-up backfill
+
+         // Check for sharp significant >= 1.0 ATR impulse before/at the flip point
+         double atrBuf[];
+         double atrVal = (CopyBuffer(m_atrHandle, 0, shift, 1, atrBuf) == 1) ? atrBuf[0] : 0.0;
+         double openPrice = iOpen(_Symbol, m_tf, shift);
+         double dirBody = (m_trend == 0) ? (close - openPrice) : (openPrice - close);
+         double prevClose = iClose(_Symbol, m_tf, shift + 1);
+         double dirMove = (m_trend == 0) ? (close - prevClose) : (prevClose - close);
+         bool sharpImpulse = (atrVal > 0.0 && (dirBody >= 1.0 * atrVal || dirMove >= 1.0 * atrVal));
+
+         if(sharpImpulse)
+           {
+            m_confirmShift = shift; m_confirmClose = close; m_confirmTime = iTime(_Symbol, m_tf, shift);
+            double e200Buf[];
+            m_confirmEma200 = (CopyBuffer(m_ema200Handle, 0, shift, 1, e200Buf) == 1) ? e200Buf[0] : 0.0;
+            double rsiBuf[];
+            m_confirmRsi = (m_rsiHandle != INVALID_HANDLE && CopyBuffer(m_rsiHandle, 0, shift, 1, rsiBuf) == 1) ? rsiBuf[0] : -1.0;
+            m_barsSinceFlip = m_confirm;
+            if(m_lastProcessed != 0)
+               Print(m_id + ": ⚡ FAST-TRACK entry armed at flip point — sharp impulse advance (≥ 1.0 ATR)");
+           }
+         else if(m_lastProcessed != 0)   // live bar, not warm-up backfill
             Print(m_id + ": HalfTrend flip to ",
                   m_trend == 0 ? "UP (blue)" : "DOWN (red)",
                   " — strict window armed: the entry bar (", m_confirm,
@@ -560,6 +581,16 @@ public:
      }
 
    virtual int LastEma200Agree() const override { return m_lastEma200Agree; }
+   virtual double RiskRatioMultiplier() const override
+     {
+      // 1.0x full risk when macro EMA-200 agrees; 0.5x scaled risk when counter-trend
+      return (m_lastEma200Agree == 1) ? 1.0 : 0.5;
+     }
+   virtual double TargetRatioMultiplier() const override
+     {
+      // 1.5R target when macro EMA-200 agrees; 1.0R tighter scalp target when counter-trend
+      return (m_lastEma200Agree == 1) ? 1.5 : 1.0;
+     }
 
    // May the RSI 70/30 verdict BLOCK an entry? Service override wins over
    // the EA input; an ineligible lane (M5) never enforces.
@@ -731,24 +762,26 @@ public:
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " — ", EnumToString(m_htfTf), " DISAGREES but the tape is "
                   "trending, so the check does not block; entering anyway");
-         if(!e200Ok && !Ema200Enforced())
-            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " — EMA200 DISAGREES but the check is report-only; entering anyway");
+         if(!e200Ok)
+           {
+            PrintFormat("%s: %s — EMA200 DISAGREES (price %s vs EMA200 %s) -> taking trade with MINIMIZED ratio (0.5x risk, 1.0R target)",
+                        m_id, (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                        DoubleToString(m_confirmClose, 2),
+                        DoubleToString(m_confirmEma200, 2));
+           }
+         else
+           {
+            PrintFormat("%s: %s — EMA200 AGREES (price %s vs EMA200 %s) -> normal ratio (1.0x risk, 1.5R target)",
+                        m_id, (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
+                        DoubleToString(m_confirmClose, 2),
+                        DoubleToString(m_confirmEma200, 2));
+           }
          if(!htfOk && HtfEnforced())
            {
             m_lastRefusalReason = StringFormat("HTF disagrees (%s price %s vs EMA%d)",
                                                EnumToString(m_htfTf),
                                                DoubleToString(m_confirmClose, 2),
                                                m_htfEmaLen);
-            Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
-                  " refused — ", m_lastRefusalReason);
-            return SIGNAL_NONE;
-           }
-         if(!e200Ok && Ema200Enforced())
-           {
-            m_lastRefusalReason = StringFormat("EMA200 disagrees (price %s vs EMA200 %s)",
-                                               DoubleToString(m_confirmClose, 2),
-                                               DoubleToString(m_confirmEma200, 2));
             Print(m_id + ": ", (wanted == SIGNAL_BUY ? "BUY" : "SELL"),
                   " refused — ", m_lastRefusalReason);
             return SIGNAL_NONE;

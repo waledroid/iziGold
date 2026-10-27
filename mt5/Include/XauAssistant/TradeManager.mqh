@@ -695,7 +695,8 @@ public:
    // entries pass false, so their blackout behaviour is unchanged.
    bool OnSignal(ENUM_SIGNAL sig, double atr_value, double stopPrice = 0,
                 bool entryModeFixed = false, double fixedLots = 0.0,
-                bool newsOverride = false, int entryMode = -1)
+                bool newsOverride = false, int entryMode = -1,
+                double riskRatioMult = 1.0)
      {
       if(sig == SIGNAL_EXIT) { CloseAll("strategy EXIT"); return false; }
       if(sig != SIGNAL_BUY && sig != SIGNAL_SELL) return false;
@@ -727,13 +728,14 @@ public:
       if(effectiveEntryMode < 0)
          effectiveEntryMode = (entryModeFixed || m_useFixedLot) ? 1 : 0;
 
+      double effectiveRatio = m_ratios[0] * MathMax(riskRatioMult, 0.1);
       double lots = 0.0;
       if(effectiveEntryMode == 2)
         {
          // Hybrid Sizing: Dynamic Risk % with Equity-Adaptive Guardrails ($50 - $5,000)
          double eq = AccountInfoDouble(ACCOUNT_EQUITY);
          if(eq <= 0) eq = AccountInfoDouble(ACCOUNT_BALANCE);
-         double dyn = m_risk.CalcLots(sl_points, m_ratios[0]);
+         double dyn = m_risk.CalcLots(sl_points, effectiveRatio);
          double minAllowed = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
          if(minAllowed <= 0) minAllowed = 0.01;
          double maxAllowed = AdaptiveVolumeCeiling(eq, _Symbol);
@@ -746,7 +748,7 @@ public:
          else
            {
             double targetLots = (m_fixedLots > 0) ? m_fixedLots : (fixedLots > 0 ? fixedLots : 0.03);
-            if(dyn <= 0) dyn = targetLots;
+            if(dyn <= 0) dyn = targetLots * riskRatioMult;
             lots = dyn;
            }
          lots = MathMin(MathMax(lots, minAllowed), maxAllowed);
@@ -754,11 +756,11 @@ public:
         }
       else if(effectiveEntryMode == 1)
         {
-         lots = ClampToVolume(m_fixedLots > 0 ? m_fixedLots : fixedLots);
+         lots = ClampToVolume((m_fixedLots > 0 ? m_fixedLots : fixedLots) * riskRatioMult);
         }
       else
         {
-         lots = m_risk.CalcLots(sl_points, m_ratios[0]);
+         lots = m_risk.CalcLots(sl_points, effectiveRatio);
         }
       if(lots <= 0) return false;
       ulong t0 = GetTickCount64();

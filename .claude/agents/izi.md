@@ -125,6 +125,17 @@ Long/Short Position Tool (Risk/Reward Tool): pure shaded green target box (1.5R)
 red risk box (SL) without outer outlines, starting at the exact entry time and extending to the
 exit time (or current candle while open), with central glassmorphic Risk/Reward metric pill badge
 (`R:R 1:1.50`), dynamic live bar updates, and full self-healing across reloads.
+Visual entry arrowheads are explicitly painted on both MT5 and web charts: a yellow arrowhead facing up
+(BUY) positioned below the entry candle (`Low - 0.5 * ATR`), and a pink arrowhead facing down
+(SELL) positioned above the candle (`High + 0.5 * ATR`).
+Entry timing incorporates a dual-speed confirmation engine:
+1. Fast-Track Momentum Impulse: If the HalfTrend flip bar displays a sharp directional body or advance
+   $\ge 1.0\times\text{ATR}(14)$, the EA enters immediately at the flip point without waiting.
+2. Patient Waiting: In normal tape, it observes the standard `ConfirmCloses` waiting window with EMA clearance.
+Macro EMA-200 alignment operates adaptively rather than refusing trades: trend-aligned trades use standard 1.0x risk
+and 1.5R targets, while counter-macro trades use 0.5x risk and 1.0R scalp targets.
+Bitcoin trading operates 24/7/365 without server hour restrictions, and the cockpit/Telegram snapshot auto-routes
+to Bitcoin whenever Gold is closed (weekends and Monday-Friday 22:00 - 04:00 server).
 
 **Heartbeat interval is SERVICE-AUTHORITATIVE (2026-09-20):** MT5 preserves a
 chart EA's SAVED input values across recompiles, so changing the `HeartbeatSec`

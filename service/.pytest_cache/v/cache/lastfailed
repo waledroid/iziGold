@@ -4,5 +4,8 @@
   "tests/test_render.py::test_trade_event_close_sends_render_photo_when_telegram_configured": true,
   "tests/test_render.py::test_final_close_after_non_final_leg_sends_render_and_pl_message": true,
   "tests/test_entry_mode.py::test_mode_command_shows_both_states_and_four_buttons": true,
-  "tests/test_entry_mode.py::test_mode_command_shows_both_states_and_six_buttons": true
+  "tests/test_entry_mode.py::test_mode_command_shows_both_states_and_six_buttons": true,
+  "tests/test_backtest_golden.py::test_replay_matches_golden": true,
+  "tests/test_backtest_golden.py::test_strict_replay_matches_golden": true,
+  "tests/test_halftrend_characterization.py::test_every_combo_matches_its_golden": true
 }
