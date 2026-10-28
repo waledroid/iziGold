@@ -60,6 +60,7 @@ async def send_photo_snapshot(app, with_miniapp_btn: bool = False, target_symbol
     from app.config import is_gold_active_window
     tg = app.state.telegram
     gold_active = is_gold_active_window()
+    weekend = not gold_active
 
     sym = (target_symbol or "").strip().upper()
     if not sym:

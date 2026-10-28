@@ -1524,7 +1524,7 @@ them.
 **The verdict.** `CStrategy::LastSrAgree()` / `LastSrTier()` (default
 -1/""). Both HalfTrend lanes judge at the confirm: BUY is a WALL (0) if
 the entry sits inside a resistance box or the nearest one's bottom is
-within `SrRoomAtr` (1.0) × ATR(14, lane TF) above it; SELL mirrored
+within `SrRoomAtr` (0.3, tightened from 1.0 on 2026-10-28 to match SrExitRoomAtr so only walls directly touching price block entry) × ATR(14, lane TF) above it; SELL mirrored
 against support. `sr_tier` names the strongest wall (H4 > H1 > M15).
 Flows exactly like `rsi_agree`: UiSink → PostTradeEvent `sr_agree` +
 `sr_tier` → `TradeEventRequest` → `trades` migration → `recent_trades` →

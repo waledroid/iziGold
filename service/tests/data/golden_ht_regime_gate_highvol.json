@@ -11,15 +11,6 @@
   },
   {
    "lane": "ht",
-   "dir": "BUY",
-   "entry": 3982.9,
-   "legs": 1,
-   "exit": 3978.68,
-   "why": "stop",
-   "pl": -39.8
-  },
-  {
-   "lane": "ht",
    "dir": "SELL",
    "entry": 3969.23,
    "legs": 1,
@@ -30,47 +21,11 @@
   {
    "lane": "ht",
    "dir": "BUY",
-   "entry": 4081.05,
-   "legs": 1,
-   "exit": 4075.54,
-   "why": "stop",
-   "pl": -39.99
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4087.45,
-   "legs": 2,
-   "exit": 4093.51,
-   "why": "profit lock",
-   "pl": 6.26
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
    "entry": 4140.72,
    "legs": 1,
    "exit": 4130.66,
    "why": "reversal",
    "pl": -10.26
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4130.66,
-   "legs": 1,
-   "exit": 4118.87,
-   "why": "profit target",
-   "pl": 81.13
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4146.2,
-   "legs": 1,
-   "exit": 4142.52,
-   "why": "reversal",
-   "pl": -7.76
   },
   {
    "lane": "ht",
@@ -98,33 +53,6 @@
    "exit": 4334.26,
    "why": "profit target",
    "pl": 83.4
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4102.48,
-   "legs": 2,
-   "exit": 4034.82,
-   "why": "profit target",
-   "pl": 86.38
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4096.09,
-   "legs": 3,
-   "exit": 4113.59,
-   "why": "profit lock",
-   "pl": 8.23
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4116.37,
-   "legs": 1,
-   "exit": 4104.63,
-   "why": "stop",
-   "pl": -35.81
   },
   {
    "lane": "ht",
@@ -156,83 +84,11 @@
   {
    "lane": "ht",
    "dir": "SELL",
-   "entry": 4076.36,
-   "legs": 2,
-   "exit": 4065.08,
-   "why": "profit lock",
-   "pl": 18.16
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 4069.28,
-   "legs": 1,
-   "exit": 4040.61,
-   "why": "profit target",
-   "pl": 113.88
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3997.64,
-   "legs": 1,
-   "exit": 3990.44,
-   "why": "profit lock",
-   "pl": 21.0
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3912.84,
-   "legs": 1,
-   "exit": 3920.85,
-   "why": "stop",
-   "pl": -41.04
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 3941.35,
-   "legs": 3,
-   "exit": 3957.04,
-   "why": "profit lock",
-   "pl": 18.7
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 3969.91,
-   "legs": 1,
-   "exit": 3963.42,
-   "why": "stop",
-   "pl": -40.13
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
    "entry": 3957.43,
    "legs": 1,
    "exit": 3968.89,
    "why": "stop",
    "pl": -34.97
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3936.66,
-   "legs": 1,
-   "exit": 3954.54,
-   "why": "stop",
-   "pl": -36.16
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4012.65,
-   "legs": 1,
-   "exit": 4018.13,
-   "why": "profit lock",
-   "pl": 31.68
   },
   {
    "lane": "ht",
@@ -254,24 +110,6 @@
   },
   {
    "lane": "ht",
-   "dir": "SELL",
-   "entry": 3983.63,
-   "legs": 1,
-   "exit": 3977.11,
-   "why": "profit lock",
-   "pl": 18.96
-  },
-  {
-   "lane": "ht",
-   "dir": "SELL",
-   "entry": 3959.34,
-   "legs": 1,
-   "exit": 3935.24,
-   "why": "profit target",
-   "pl": 95.6
-  },
-  {
-   "lane": "ht",
    "dir": "BUY",
    "entry": 3982.27,
    "legs": 1,
@@ -286,16 +124,7 @@
    "legs": 1,
    "exit": 3967.55,
    "why": "reversal",
-   "pl": -6.75
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 3967.55,
-   "legs": 1,
-   "exit": 3971.42,
-   "why": "profit lock",
-   "pl": 22.02
+   "pl": -4.5
   },
   {
    "lane": "ht",
@@ -305,35 +134,8 @@
    "exit": 4007.54,
    "why": "stop",
    "pl": -34.21
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4012.17,
-   "legs": 1,
-   "exit": 4009.73,
-   "why": "stop",
-   "pl": -42.24
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 3997.96,
-   "legs": 1,
-   "exit": 3994.48,
-   "why": "stop",
-   "pl": -40.5
-  },
-  {
-   "lane": "ht",
-   "dir": "BUY",
-   "entry": 4006.23,
-   "legs": 1,
-   "exit": 4000.94,
-   "why": "stop",
-   "pl": -38.43
   }
  ],
- "final_balance": 4006.52,
- "max_dd": 190.2
+ "final_balance": 3848.62,
+ "max_dd": 219.26
 }

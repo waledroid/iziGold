@@ -172,7 +172,7 @@ input bool   SrEnforceEntry       = true;          // block new entries approach
 input int    SrMaxSpanBars        = 40;            // max historical bars to span backwards (0 = full history; 40 keeps chart clean)
 input double SrVisualMaxHeightPts = 250;           // max visual box height in points (250 pts = $2.50 / 25 pips; 0 = uncapped)
 input string SrTiers              = "H4,H1,M15";   // tiers the verdict honours (drawing always shows all three)
-input double SrRoomAtr            = 1.0;           // "wall" = opposing box within this x ATR(14, lane TF) of the entry, or containing it
+input double SrRoomAtr            = 0.3;           // "wall" = opposing box within this x ATR(14, lane TF) of the entry, or containing it (tightened to 0.3 ATR so only walls directly touching price block)
 input int    SrPivotWing          = 3;             // fractal wing: bars each side a swing must dominate
 input double SrMinHeightAtr       = 0.05;          // box height floor, x tier ATR(14) (reduced from 0.15 for precision)
 input double SrMaxHeightAtr       = 0.20;          // box height cap, x tier ATR(14) (reduced from 0.60 for precision)
